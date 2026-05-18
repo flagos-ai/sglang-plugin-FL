@@ -15,7 +15,7 @@ class BackendImplKind(str, Enum):
     """
     Kind of backend implementation.
 
-    - DEFAULT: Default implementation (FlagOS/FlagGems)
+    - DEFAULT: Default implementation (FlagOS)
     - REFERENCE: Reference implementation (PyTorch native)
     - VENDOR: Vendor-specific implementation (Ascend, CUDA, etc.)
     """

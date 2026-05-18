@@ -34,7 +34,7 @@ class FLBackendBase(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Backend name string (e.g., "flaggems", "ascend", "reference")."""
+        """Backend name string (e.g., "flagos", "ascend", "reference")."""
         pass
 
     @property

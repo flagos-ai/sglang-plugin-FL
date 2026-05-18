@@ -1,4 +1,4 @@
-# FlagGems normalization operator implementations.
+# FlagOS normalization operator implementations.
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Optional, Union
 import torch
 
 
-def rms_norm_flaggems(
+def rms_norm_flagos(
     obj,
     x: torch.Tensor,
     residual: Optional[torch.Tensor] = None,

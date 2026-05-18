@@ -1,6 +1,6 @@
 # Built-in operator implementations registration.
 #
-# Registers DEFAULT (FlagGems), REFERENCE (PyTorch), and VENDOR implementations.
+# Registers DEFAULT (FlagOS), REFERENCE (PyTorch), and VENDOR implementations.
 
 from __future__ import annotations
 
@@ -45,18 +45,18 @@ def register_builtins(registry: OpRegistry) -> None:
     """
     Register all built-in operator implementations.
 
-    Order: FlagGems (DEFAULT) → Reference (REFERENCE) → Vendors (VENDOR)
+    Order: FlagOS (DEFAULT) → Reference (REFERENCE) → Vendors (VENDOR)
     """
-    # Register FlagGems (DEFAULT)
+    # Register FlagOS (DEFAULT)
     try:
-        from .backends.flaggems.register_ops import (
-            register_builtins as register_flaggems,
+        from .backends.flagos.register_ops import (
+            register_builtins as register_flagos,
         )
 
-        register_flaggems(registry)
-        logger.debug("Registered FlagGems operators")
+        register_flagos(registry)
+        logger.debug("Registered FlagOS operators")
     except Exception as e:
-        logger.warning(f"Failed to register FlagGems operators: {e}")
+        logger.warning(f"Failed to register FlagOS operators: {e}")
 
     # Register Reference (PyTorch)
     try:

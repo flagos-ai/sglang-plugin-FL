@@ -1,4 +1,4 @@
-# FlagGems backend operator registrations.
+# FlagOS backend operator registrations.
 
 from __future__ import annotations
 
@@ -19,10 +19,10 @@ def _bind_is_available(fn, is_available_fn):
 
 
 def register_builtins(registry) -> None:
-    """Register all FlagGems (DEFAULT) operator implementations."""
-    from .flaggems import FlagGemsBackend
+    """Register all FlagOS (DEFAULT) operator implementations."""
+    from .flagos import FlagOSBackend
 
-    backend = FlagGemsBackend()
+    backend = FlagOSBackend()
     is_avail = backend.is_available
 
     impls = [

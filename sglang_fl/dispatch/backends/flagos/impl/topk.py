@@ -1,4 +1,4 @@
-# FlagGems TopK operator implementation.
+# FlagOS TopK operator implementation.
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import torch
 from sglang.srt.layers.moe.topk import StandardTopKOutput
 
 
-def topk_flaggems(
+def topk_flagos(
     obj,
     hidden_states: torch.Tensor,
     router_logits: torch.Tensor,

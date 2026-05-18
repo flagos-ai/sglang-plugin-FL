@@ -1,38 +1,38 @@
-# FlagGems backend class.
+# FlagOS backend class.
 
 from __future__ import annotations
 
 from .. import Backend
 
 
-class FlagGemsBackend(Backend):
-    """FlagGems (FlagOS) default backend — Triton-based implementations."""
+class FlagOSBackend(Backend):
+    """FlagOS default backend — Triton-based implementations from FlagGems and other FlagOS libraries."""
 
     _available = None
 
     @property
     def name(self) -> str:
-        return "flaggems"
+        return "flagos"
 
     def is_available(self) -> bool:
-        if FlagGemsBackend._available is None:
+        if FlagOSBackend._available is None:
             try:
                 import flag_gems  # noqa: F401
 
-                FlagGemsBackend._available = True
+                FlagOSBackend._available = True
             except ImportError:
-                FlagGemsBackend._available = False
-        return FlagGemsBackend._available
+                FlagOSBackend._available = False
+        return FlagOSBackend._available
 
     def silu_and_mul(self, obj, x):
-        from .impl.activation import silu_and_mul_flaggems
+        from .impl.activation import silu_and_mul_flagos
 
-        return silu_and_mul_flaggems(obj, x)
+        return silu_and_mul_flagos(obj, x)
 
     def rms_norm(self, obj, x, residual=None):
-        from .impl.normalization import rms_norm_flaggems
+        from .impl.normalization import rms_norm_flagos
 
-        return rms_norm_flaggems(obj, x, residual)
+        return rms_norm_flagos(obj, x, residual)
 
     def rotary_embedding(
         self,
@@ -45,9 +45,9 @@ class FlagGemsBackend(Backend):
         rotary_interleaved=False,
         inplace=True,
     ):
-        from .impl.rotary import rotary_embedding_flaggems
+        from .impl.rotary import rotary_embedding_flagos
 
-        return rotary_embedding_flaggems(
+        return rotary_embedding_flagos(
             obj, query, key, cos, sin, position_ids, rotary_interleaved, inplace
         )
 
@@ -60,9 +60,9 @@ class FlagGemsBackend(Backend):
         num_token_non_padded=None,
         expert_location_dispatch_info=None,
     ):
-        from .impl.topk import topk_flaggems
+        from .impl.topk import topk_flagos
 
-        return topk_flaggems(
+        return topk_flagos(
             obj,
             hidden_states,
             router_logits,
@@ -85,9 +85,9 @@ class FlagGemsBackend(Backend):
         num_accepted_tokens=None,
         use_qk_l2norm_in_kernel=False,
     ):
-        from .impl.fla import fused_recurrent_gated_delta_rule_flaggems
+        from .impl.fla import fused_recurrent_gated_delta_rule_flagos
 
-        return fused_recurrent_gated_delta_rule_flaggems(
+        return fused_recurrent_gated_delta_rule_flagos(
             q,
             k,
             v,

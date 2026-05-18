@@ -1,11 +1,11 @@
 # Copyright (c) 2026 BAAI. All rights reserved.
-"""FlagGems implementations for FLA ops."""
+"""FlagOS implementations for FLA ops."""
 
 from typing import Optional, Tuple
 import torch
 
 
-def fused_recurrent_gated_delta_rule_flaggems(
+def fused_recurrent_gated_delta_rule_flagos(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -19,7 +19,7 @@ def fused_recurrent_gated_delta_rule_flaggems(
     num_accepted_tokens: Optional[torch.Tensor] = None,
     use_qk_l2norm_in_kernel: bool = False,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-    """FlagGems implementation of fused_recurrent_gated_delta_rule."""
+    """FlagOS implementation of fused_recurrent_gated_delta_rule."""
     from flag_gems.fused.FLA import fused_recurrent_gated_delta_rule_fwd
 
     return fused_recurrent_gated_delta_rule_fwd(

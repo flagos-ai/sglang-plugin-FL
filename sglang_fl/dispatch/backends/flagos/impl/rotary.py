@@ -1,11 +1,11 @@
-# FlagGems rotary embedding operator implementations.
+# FlagOS rotary embedding operator implementations.
 
 from __future__ import annotations
 
 import torch
 
 
-def rotary_embedding_flaggems(
+def rotary_embedding_flagos(
     obj,
     query: torch.Tensor,
     key: torch.Tensor,
