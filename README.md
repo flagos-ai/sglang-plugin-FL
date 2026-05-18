@@ -34,23 +34,35 @@ This plugin provides a non-intrusive adaptation layer through three levels of re
 
 Chip vendors only need to implement a backend class + `register_ops.py`. The dispatch system's auto-discovery mechanism handles the rest. The same vendor implementations work across both sglang-plugin-FL and vllm-plugin-FL.
 
-## Verified Models
+## Environment
 
-In theory, sglang_fl can support all models available in SGLang, as long as no unsupported operators are involved.
+| Package | Version |
+|---------|---------|
+| SGLang | 0.5.11 |
+| sglang-kernel | 0.4.2 |
+| PyTorch | 2.11.0+cu130 |
+| Triton | 3.6.0 |
+| FlagGems | 4.2.1rc0 |
+| flashinfer | 0.6.8.post1 |
+| Python | 3.12 |
+| CUDA | 13.0 |
+
+## Verified Models
 
 | Model | TP | Status |
 |-------|-----|--------|
-| Qwen2.5-0.5B-Instruct | tp=1 | Verified |
+| Qwen3.6-27B (Hybrid Attention + FLA + MoE) | tp=1 | Verified |
+| Qwen3.6-35B-A3B (MoE, 256 experts) | tp=1 | Verified |
 | Qwen2.5-14B-Instruct | tp=8 | Verified |
 
 ## Quick Start
 
 ### Setup
 
-1. Install SGLang from the official repository (or from [sglang-FL](https://github.com/flagos-ai/sglang-FL) fork):
+1. Install SGLang v0.5.11:
 
 ```bash
-cd sglang/python && pip install .
+pip install "sglang[all]==0.5.11"
 ```
 
 2. Install [FlagGems](https://github.com/flagos-ai/FlagGems):
