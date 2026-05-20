@@ -67,6 +67,22 @@ def register_builtins(registry) -> None:
             priority=BackendPriority.REFERENCE,
         ),
         OpImpl(
+            op_name="rotary_embedding_with_kv_cache",
+            impl_id="reference.torch",
+            kind=BackendImplKind.REFERENCE,
+            fn=_bind_is_available(backend.rotary_embedding_with_kv_cache, is_avail),
+            vendor=None,
+            priority=BackendPriority.REFERENCE,
+        ),
+        OpImpl(
+            op_name="mrotary_embedding_with_kv_cache",
+            impl_id="reference.torch",
+            kind=BackendImplKind.REFERENCE,
+            fn=_bind_is_available(backend.mrotary_embedding_with_kv_cache, is_avail),
+            vendor=None,
+            priority=BackendPriority.REFERENCE,
+        ),
+        OpImpl(
             op_name="topk",
             impl_id="reference.torch",
             kind=BackendImplKind.REFERENCE,

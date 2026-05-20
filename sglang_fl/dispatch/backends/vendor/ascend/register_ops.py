@@ -50,6 +50,14 @@ def register_builtins(registry) -> None:
             vendor="ascend",
             priority=BackendPriority.VENDOR,
         ),
+        OpImpl(
+            op_name="rotary_embedding_with_kv_cache",
+            impl_id="vendor.ascend",
+            kind=BackendImplKind.VENDOR,
+            fn=_bind_is_available(backend.rotary_embedding_with_kv_cache, is_avail),
+            vendor="ascend",
+            priority=BackendPriority.VENDOR,
+        ),
     ]
 
     registry.register_many(impls)

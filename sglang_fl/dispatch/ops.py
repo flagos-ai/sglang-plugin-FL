@@ -111,3 +111,40 @@ class FLBackendBase(ABC):
             Tuple of (embedded_query, embedded_key)
         """
         pass
+
+    @abstractmethod
+    def rotary_embedding_with_kv_cache(
+        self,
+        obj,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        position_ids: torch.Tensor,
+        fused_set_kv_buffer_arg,
+        rotary_interleaved: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Fused rotary position embedding + KV cache write.
+
+        Single kernel applies RoPE to q/k, then writes rotated k and v to KV cache.
+        This avoids a separate memory round-trip for KV cache store.
+
+        Args:
+            obj: The calling nn.Module (for interface consistency)
+            query: Query tensor [num_tokens, num_heads, head_dim]
+            key: Key tensor [num_tokens, num_kv_heads, head_dim]
+            cos: Cosine cache [max_seq_len, rotary_dim]
+            sin: Sine cache [max_seq_len, rotary_dim]
+            position_ids: Position indices [num_tokens]
+            fused_set_kv_buffer_arg: FusedSetKVBufferArg or dict containing:
+                - value: V tensor [num_tokens, num_v_heads * head_dim]
+                - k_buffer/key_cache: KV cache key buffer
+                - v_buffer/value_cache: KV cache value buffer
+                - cache_loc/slot_mapping: indices for cache write
+            rotary_interleaved: Whether to use interleaved rotary
+
+        Returns:
+            Tuple of (embedded_query, embedded_key)
+        """
+        pass

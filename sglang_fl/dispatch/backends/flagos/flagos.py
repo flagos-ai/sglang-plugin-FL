@@ -51,6 +51,22 @@ class FlagOSBackend(Backend):
             obj, query, key, cos, sin, position_ids, rotary_interleaved, inplace
         )
 
+    def rotary_embedding_with_kv_cache(
+        self,
+        obj,
+        query,
+        key,
+        cos,
+        sin,
+        position_ids,
+        fused_set_kv_buffer_arg,
+        rotary_interleaved=False,
+    ):
+        raise NotImplementedError(
+            "rotary_embedding_with_kv_cache is not implemented in FlagOS backend. "
+            "Requires a fused RoPE + KV cache write kernel from FlagGems."
+        )
+
     def topk(
         self,
         obj,

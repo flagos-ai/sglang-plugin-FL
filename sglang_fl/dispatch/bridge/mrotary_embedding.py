@@ -4,13 +4,19 @@
 #   forward_cuda(self, positions, query, key, fused_set_kv_buffer_arg=None)
 #     -> tuple[Tensor, Tensor]
 #
-# Dispatch signature:
-#   fn(obj, positions, query, key) -> tuple[Tensor, Tensor]
+# Dispatch signatures:
+#   mrotary_embedding:
+#     fn(obj, positions, query, key) -> tuple[Tensor, Tensor]
+#
+#   mrotary_embedding_with_kv_cache:
+#     fn(obj, positions, query, key, fused_set_kv_buffer_arg)
+#     -> tuple[Tensor, Tensor]
 #
 # SGLang-specific handling:
 #   - positions can be 1D [num_tokens] or 2D [3, num_tokens] (multimodal)
 #   - mrope_section splits rotary_dim across 3 axes (text/image/video)
-#   - fused_set_kv_buffer_arg: not supported by dispatch, fall through to native
+#   - fused_set_kv_buffer_arg: dispatch as separate fused op
+#     "mrotary_embedding_with_kv_cache" (fused RoPE + KV cache write)
 
 from __future__ import annotations
 
@@ -29,8 +35,13 @@ def mrotary_embedding_bridge(
     fused_set_kv_buffer_arg=None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """SGLang MRotaryEmbedding forward → dispatch call_op("mrotary_embedding", ...)."""
-    # fused_set_kv_buffer_arg requires native kernel — fall through
     if fused_set_kv_buffer_arg is not None:
-        return self.forward_native(positions, query, key, fused_set_kv_buffer_arg)
-
+        return call_op(
+            "mrotary_embedding_with_kv_cache",
+            self,
+            positions,
+            query,
+            key,
+            fused_set_kv_buffer_arg,
+        )
     return call_op("mrotary_embedding", self, positions, query, key)

@@ -78,3 +78,19 @@ class AscendBackend(Backend):
             rotary_interleaved=rotary_interleaved,
             inplace=inplace,
         )
+
+    def rotary_embedding_with_kv_cache(
+        self,
+        obj,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        position_ids: torch.Tensor,
+        fused_set_kv_buffer_arg,
+        rotary_interleaved: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        raise NotImplementedError(
+            "rotary_embedding_with_kv_cache is not implemented in Ascend backend. "
+            "Requires a fused RoPE + KV cache write kernel from torch_npu."
+        )
