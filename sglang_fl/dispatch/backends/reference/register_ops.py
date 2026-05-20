@@ -74,6 +74,38 @@ def register_builtins(registry) -> None:
             vendor=None,
             priority=BackendPriority.REFERENCE,
         ),
+        OpImpl(
+            op_name="fused_moe",
+            impl_id="reference.torch",
+            kind=BackendImplKind.REFERENCE,
+            fn=_bind_is_available(backend.fused_moe, is_avail),
+            vendor=None,
+            priority=BackendPriority.REFERENCE,
+        ),
+        OpImpl(
+            op_name="chunk_gated_delta_rule",
+            impl_id="reference.triton",
+            kind=BackendImplKind.REFERENCE,
+            fn=_bind_is_available(backend.chunk_gated_delta_rule, is_avail),
+            vendor=None,
+            priority=BackendPriority.REFERENCE,
+        ),
+        OpImpl(
+            op_name="fused_recurrent_gated_delta_rule",
+            impl_id="reference.triton",
+            kind=BackendImplKind.REFERENCE,
+            fn=_bind_is_available(backend.fused_recurrent_gated_delta_rule, is_avail),
+            vendor=None,
+            priority=BackendPriority.REFERENCE,
+        ),
+        OpImpl(
+            op_name="fused_recurrent_gated_delta_rule_packed_decode",
+            impl_id="reference.triton",
+            kind=BackendImplKind.REFERENCE,
+            fn=_bind_is_available(backend.fused_recurrent_gated_delta_rule_packed_decode, is_avail),
+            vendor=None,
+            priority=BackendPriority.REFERENCE,
+        ),
     ]
 
     registry.register_many(impls)

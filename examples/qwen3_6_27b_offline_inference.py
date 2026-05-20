@@ -17,11 +17,18 @@ Environment variables:
 import os
 import sys
 
+import torch
+
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-27B")
 TP_SIZE = int(os.environ.get("TP_SIZE", "1"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "10"))
+
+# page_size=1 is required on MUSA to work around a sglang platform bug;
+# other platforms use the sglang default (no override needed).
+_is_musa = hasattr(torch, "musa") and torch.musa.is_available()
+_extra_engine_kwargs = {"page_size": 1} if _is_musa else {}
 
 PROMPTS = [
     "How many states are there in the United States?",
@@ -46,6 +53,7 @@ def run_engine():
         mem_fraction_static=0.85,
         disable_cuda_graph=True,
         disable_piecewise_cuda_graph=True,
+        **_extra_engine_kwargs,
     )
 
     sampling_params = {"max_new_tokens": MAX_TOKENS, "temperature": 0}
