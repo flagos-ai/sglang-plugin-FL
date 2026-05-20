@@ -19,6 +19,8 @@ import os
 import sys
 from pathlib import Path
 
+import torch
+
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-35B-A3B")
@@ -27,6 +29,11 @@ MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "10"))
 
 _HERE = Path(__file__).resolve().parent
 IMAGE_DIR = Path(os.environ.get("IMAGE_DIR", _HERE / "test_images"))
+
+# page_size=1 is required on MUSA to work around a sglang platform bug;
+# other platforms use the sglang default (no override needed).
+_is_musa = hasattr(torch, "musa") and torch.musa.is_available()
+_extra_engine_kwargs = {"page_size": 1} if _is_musa else {}
 
 TEXT_PROMPTS = [
     "How many states are there in the United States?",
@@ -124,6 +131,7 @@ def run_engine():
         mem_fraction_static=0.85,
         disable_cuda_graph=True,
         disable_piecewise_cuda_graph=True,
+        **_extra_engine_kwargs,
     )
 
     sampling_params = {"max_new_tokens": MAX_TOKENS, "temperature": 0}
