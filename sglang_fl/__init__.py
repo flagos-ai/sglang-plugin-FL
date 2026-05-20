@@ -603,6 +603,12 @@ def load_plugin():
         from sglang_fl.dispatch.fla_patch import patch_fla_functions
 
         patch_fla_functions()
+
+        # Patch RotaryEmbedding.__init__ to restore bridge after MUSA _forward_method stomp
+        # Must be called after the AROUND hook on dispatch_forward is registered (above).
+        from sglang_fl.dispatch.rotary_patch import patch_rotary_embedding_init
+
+        patch_rotary_embedding_init()
     else:
         logger.info("Layer 2 (Fused Ops) disabled (SGLANG_FL_OOT_ENABLED=0)")
 

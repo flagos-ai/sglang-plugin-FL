@@ -113,3 +113,28 @@ class ReferenceBackend(Backend):
         from .impl.mrotary_embedding import mrotary_embedding_torch
 
         return mrotary_embedding_torch(obj, positions, query, key)
+
+    def fused_moe(
+        self,
+        obj,
+        layer: torch.nn.Module,
+        dispatch_output,
+    ):
+        from .impl.fused_moe import fused_moe_torch
+
+        return fused_moe_torch(obj, layer, dispatch_output)
+
+    def chunk_gated_delta_rule(self, **kwargs):
+        from .impl.fla import chunk_gated_delta_rule_torch
+
+        return chunk_gated_delta_rule_torch(**kwargs)
+
+    def fused_recurrent_gated_delta_rule(self, **kwargs):
+        from .impl.fla import fused_recurrent_gated_delta_rule_torch
+
+        return fused_recurrent_gated_delta_rule_torch(**kwargs)
+
+    def fused_recurrent_gated_delta_rule_packed_decode(self, **kwargs):
+        from .impl.fla import fused_recurrent_gated_delta_rule_packed_decode_torch
+
+        return fused_recurrent_gated_delta_rule_packed_decode_torch(**kwargs)
