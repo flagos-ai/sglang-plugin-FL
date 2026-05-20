@@ -86,6 +86,30 @@ class CudaBackend(Backend):
             inplace=inplace,
         )
 
+    def rotary_embedding_with_kv_cache(
+        self,
+        obj,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        position_ids: torch.Tensor,
+        fused_set_kv_buffer_arg,
+        rotary_interleaved: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        from .impl.rotary import rotary_embedding_with_kv_cache_cuda
+
+        return rotary_embedding_with_kv_cache_cuda(
+            obj,
+            query,
+            key,
+            cos,
+            sin,
+            position_ids,
+            fused_set_kv_buffer_arg,
+            rotary_interleaved=rotary_interleaved,
+        )
+
     def topk(
         self,
         obj,
@@ -130,6 +154,20 @@ class CudaBackend(Backend):
         from .impl.mrotary_embedding import mrotary_embedding_cuda
 
         return mrotary_embedding_cuda(obj, positions, query, key)
+
+    def mrotary_embedding_with_kv_cache(
+        self,
+        obj,
+        positions: torch.Tensor,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        fused_set_kv_buffer_arg,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        from .impl.mrotary_embedding import mrotary_embedding_with_kv_cache_cuda
+
+        return mrotary_embedding_with_kv_cache_cuda(
+            obj, positions, query, key, fused_set_kv_buffer_arg
+        )
 
     def chunk_gated_delta_rule(
         self,

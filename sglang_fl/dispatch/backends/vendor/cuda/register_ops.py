@@ -67,6 +67,22 @@ def register_builtins(registry) -> None:
             priority=BackendPriority.VENDOR,
         ),
         OpImpl(
+            op_name="rotary_embedding_with_kv_cache",
+            impl_id="vendor.cuda",
+            kind=BackendImplKind.VENDOR,
+            fn=_bind_is_available(backend.rotary_embedding_with_kv_cache, is_avail),
+            vendor="cuda",
+            priority=BackendPriority.VENDOR,
+        ),
+        OpImpl(
+            op_name="mrotary_embedding_with_kv_cache",
+            impl_id="vendor.cuda",
+            kind=BackendImplKind.VENDOR,
+            fn=_bind_is_available(backend.mrotary_embedding_with_kv_cache, is_avail),
+            vendor="cuda",
+            priority=BackendPriority.VENDOR,
+        ),
+        OpImpl(
             op_name="topk",
             impl_id="vendor.cuda",
             kind=BackendImplKind.VENDOR,

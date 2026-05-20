@@ -5,16 +5,23 @@
 #                fused_set_kv_buffer_arg=None)
 #     -> tuple[Tensor, Tensor]
 #
-# Dispatch signature:
-#   fn(obj, query, key, cos, sin, position_ids, rotary_interleaved=False,
-#      inplace=True)
+# Dispatch signatures:
+#   rotary_embedding:
+#     fn(obj, query, key, cos, sin, position_ids, rotary_interleaved=False,
+#        inplace=True)
+#     -> tuple[Tensor, Tensor]
+#
+#   rotary_embedding_with_kv_cache:
+#     fn(obj, query, key, cos, sin, position_ids, fused_set_kv_buffer_arg,
+#        rotary_interleaved=False)
 #     -> tuple[Tensor, Tensor]
 #
 # SGLang-specific handling:
 #   - Extract cos/sin from self.cos_sin_cache (shape [max_seq_len, rotary_dim])
 #   - Handle offsets (add to positions)
 #   - Handle partial rotary_dim (only apply to first rotary_dim dimensions)
-#   - fused_set_kv_buffer_arg: not supported by dispatch, fall through to native
+#   - fused_set_kv_buffer_arg: dispatch as separate fused op
+#     "rotary_embedding_with_kv_cache" (fused RoPE + KV cache write)
 #   - Reshape query/key from [batch, num_heads*head_size] to [batch, num_heads, head_size]
 
 from __future__ import annotations
@@ -37,13 +44,9 @@ def rotary_embedding_bridge(
     """SGLang RotaryEmbedding forward → dispatch call_op("rotary_embedding", ...).
 
     Handles SGLang-specific parameter translation before delegating to dispatch.
+    When fused_set_kv_buffer_arg is provided, dispatches to the fused
+    "rotary_embedding_with_kv_cache" op instead.
     """
-    # fused_set_kv_buffer_arg requires native kernel (HIP-specific optimization)
-    if fused_set_kv_buffer_arg is not None:
-        return self.forward_native(
-            positions, query, key, offsets, fused_set_kv_buffer_arg
-        )
-
     # Handle offsets
     if offsets is not None:
         positions = positions + offsets
@@ -66,6 +69,19 @@ def rotary_embedding_bridge(
     query = query.view(batch_size, -1, head_size)
     key = key.view(batch_size, -1, head_size)
 
+    # Choose op based on whether fused KV cache write is requested
+    if fused_set_kv_buffer_arg is not None:
+        op_name = "rotary_embedding_with_kv_cache"
+        op_kwargs = dict(
+            rotary_interleaved=rotary_interleaved,
+        )
+    else:
+        op_name = "rotary_embedding"
+        op_kwargs = dict(
+            rotary_interleaved=rotary_interleaved,
+            inplace=True,
+        )
+
     # If rotary_dim < head_size, only apply to first rotary_dim dimensions
     rotary_dim = cos.shape[-1] * 2  # cos is half_dim, full rotary_dim = 2 * half_dim
     if rotary_dim < head_size:
@@ -74,32 +90,56 @@ def rotary_embedding_bridge(
         query_pass = query[..., rotary_dim:]
         key_pass = key[..., rotary_dim:]
 
-        q_embed, k_embed = call_op(
-            "rotary_embedding",
-            self,
-            query_rot,
-            key_rot,
-            cos,
-            sin,
-            positions,
-            rotary_interleaved=rotary_interleaved,
-            inplace=True,
-        )
+        if fused_set_kv_buffer_arg is not None:
+            q_embed, k_embed = call_op(
+                op_name,
+                self,
+                query_rot,
+                key_rot,
+                cos,
+                sin,
+                positions,
+                fused_set_kv_buffer_arg,
+                **op_kwargs,
+            )
+        else:
+            q_embed, k_embed = call_op(
+                op_name,
+                self,
+                query_rot,
+                key_rot,
+                cos,
+                sin,
+                positions,
+                **op_kwargs,
+            )
 
         query = torch.cat((q_embed, query_pass), dim=-1)
         key = torch.cat((k_embed, key_pass), dim=-1)
     else:
-        q_embed, k_embed = call_op(
-            "rotary_embedding",
-            self,
-            query,
-            key,
-            cos,
-            sin,
-            positions,
-            rotary_interleaved=rotary_interleaved,
-            inplace=True,
-        )
+        if fused_set_kv_buffer_arg is not None:
+            q_embed, k_embed = call_op(
+                op_name,
+                self,
+                query,
+                key,
+                cos,
+                sin,
+                positions,
+                fused_set_kv_buffer_arg,
+                **op_kwargs,
+            )
+        else:
+            q_embed, k_embed = call_op(
+                op_name,
+                self,
+                query,
+                key,
+                cos,
+                sin,
+                positions,
+                **op_kwargs,
+            )
         query = q_embed
         key = k_embed
 

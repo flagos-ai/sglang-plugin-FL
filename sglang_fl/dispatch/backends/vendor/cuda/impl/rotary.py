@@ -42,3 +42,48 @@ def rotary_embedding_cuda(
         rotary_interleaved,
     )
     return query, key
+
+
+def rotary_embedding_with_kv_cache_cuda(
+    obj,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    position_ids: torch.Tensor,
+    fused_set_kv_buffer_arg,
+    rotary_interleaved: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Fused RoPE + KV cache write using sgl_kernel.
+
+    Single kernel applies rotary embedding to q/k and writes rotated k + v to KV cache.
+
+    Args:
+        obj: The calling obj (for interface consistency)
+        query: Query tensor [num_tokens, num_heads, head_dim]
+        key: Key tensor [num_tokens, num_kv_heads, head_dim]
+        cos: Cosine cache
+        sin: Sine cache
+        position_ids: Position indices
+        fused_set_kv_buffer_arg: FusedSetKVBufferArg or dict with KV cache info
+        rotary_interleaved: Whether to use interleaved rotary
+
+    Returns:
+        Tuple of (embedded_query, embedded_key)
+    """
+    from sglang.jit_kernel.rope import apply_rope_with_cos_sin_cache_inplace
+
+    # Reconstruct cos_sin_cache from separate cos and sin
+    cos_sin_cache = torch.cat([cos, sin], dim=-1)
+    is_neox = not rotary_interleaved
+
+    apply_rope_with_cos_sin_cache_inplace(
+        positions=position_ids,
+        q=query,
+        k=key,
+        cos_sin_cache=cos_sin_cache,
+        is_neox=is_neox,
+        fused_args=fused_set_kv_buffer_arg,
+    )
+    return query, key

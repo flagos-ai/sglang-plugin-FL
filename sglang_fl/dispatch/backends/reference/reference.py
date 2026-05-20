@@ -74,6 +74,22 @@ class ReferenceBackend(Backend):
             inplace=inplace,
         )
 
+    def rotary_embedding_with_kv_cache(
+        self,
+        obj,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        position_ids: torch.Tensor,
+        fused_set_kv_buffer_arg,
+        rotary_interleaved: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        raise NotImplementedError(
+            "rotary_embedding_with_kv_cache is not implemented in reference backend. "
+            "Requires a fused RoPE + KV cache write kernel."
+        )
+
     def topk(
         self,
         obj,
@@ -113,3 +129,16 @@ class ReferenceBackend(Backend):
         from .impl.mrotary_embedding import mrotary_embedding_torch
 
         return mrotary_embedding_torch(obj, positions, query, key)
+
+    def mrotary_embedding_with_kv_cache(
+        self,
+        obj,
+        positions: torch.Tensor,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        fused_set_kv_buffer_arg,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        raise NotImplementedError(
+            "mrotary_embedding_with_kv_cache is not implemented in reference backend. "
+            "Requires a fused RoPE + KV cache write kernel."
+        )
