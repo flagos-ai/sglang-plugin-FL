@@ -1,4 +1,6 @@
 # Ascend normalization operator implementations.
+# rms_norm      : torch_npu.npu_rms_norm / npu_add_rms_norm (fused add+norm)
+# gemma_rms_norm: torch_npu.npu_gemma_rms_norm / sgl_kernel_npu add_gemma_rms_norm
 
 from __future__ import annotations
 
@@ -33,4 +35,24 @@ def rms_norm_ascend(
         return x, residual
 
     x, _ = torch_npu.npu_rms_norm(x, weight, epsilon)
+    return x
+
+
+def gemma_rms_norm_ascend(
+    obj,
+    x: torch.Tensor,
+    residual: Optional[torch.Tensor] = None,
+) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+    
+    import torch_npu
+    from sgl_kernel_npu.norm.add_rmsnorm_bias import add_gemma_rms_norm
+
+    weight = obj.weight
+    epsilon = obj.variance_epsilon
+
+    if residual is not None:
+        norm_out, residual = add_gemma_rms_norm(x, weight, residual, epsilon)
+        return norm_out, residual
+
+    x, _ = torch_npu.npu_gemma_rms_norm(x, weight, epsilon)
     return x

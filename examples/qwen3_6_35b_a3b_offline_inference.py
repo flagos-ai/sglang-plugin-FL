@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Qwen3.6-35B-A3B (MoE) offline inference with sglang-plugin-FL.
 
-This example verifies that the plugin can correctly serve a Qwen3.5 MoE model.
-It runs text and multimodal inference, checking that outputs are valid.
+Supports CUDA, MUSA, and Ascend NPU; platform-specific settings are applied
+automatically at runtime.
 
 Usage:
   python qwen3_6_35b_a3b_offline_inference.py
@@ -19,14 +19,43 @@ import os
 import sys
 from pathlib import Path
 
+import torch
+
+# ─── Platform detection ───────────────────────────────────────────────────────
+
+_is_musa = hasattr(torch, "musa") and torch.musa.is_available()
+_is_npu = hasattr(torch, "npu") and torch.npu.is_available()
+
+# Must be set before importing sglang.
+if _is_npu:
+    os.environ.setdefault("SGLANG_ENABLE_OVERLAP_PLAN_STREAM", "0")
+    os.environ.setdefault("SGLANG_ENABLE_SPEC_V2", "1")
+    os.environ.setdefault("HCCL_BUFFSIZE", "2400")
+    os.environ.setdefault("SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK", "128")
+
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-35B-A3B")
-TP_SIZE = int(os.environ.get("TP_SIZE", "1"))
+TP_SIZE = int(os.environ.get("TP_SIZE", "2" if _is_npu else "1"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "10"))
 
 _HERE = Path(__file__).resolve().parent
 IMAGE_DIR = Path(os.environ.get("IMAGE_DIR", _HERE / "test_images"))
+
+# page_size=1 is required on MUSA to work around a sglang platform bug.
+# Ascend NPU requires its own attention backend and extra runtime settings.
+if _is_musa:
+    _extra_engine_kwargs: dict = {"page_size": 1}
+elif _is_npu:
+    _extra_engine_kwargs = {
+        "attention_backend": "ascend",
+        "device": "npu",
+        "dtype": "bfloat16",
+        "trust_remote_code": True,
+        "disable_radix_cache": True,
+    }
+else:
+    _extra_engine_kwargs = {}
 
 TEXT_PROMPTS = [
     "How many states are there in the United States?",

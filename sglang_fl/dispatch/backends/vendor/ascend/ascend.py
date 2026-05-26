@@ -55,6 +55,16 @@ class AscendBackend(Backend):
 
         return rms_norm_ascend(obj, x, residual)
 
+    def gemma_rms_norm(
+        self,
+        obj,
+        x: torch.Tensor,
+        residual: Optional[torch.Tensor] = None,
+    ) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        from .impl.normalization import gemma_rms_norm_ascend
+
+        return gemma_rms_norm_ascend(obj, x, residual)
+
     def rotary_embedding(
         self,
         obj,
@@ -77,4 +87,69 @@ class AscendBackend(Backend):
             position_ids,
             rotary_interleaved=rotary_interleaved,
             inplace=inplace,
+        )
+
+    def mrotary_embedding(
+        self,
+        obj,
+        positions: torch.Tensor,
+        query: torch.Tensor,
+        key: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        from .impl.mrotary_embedding import mrotary_embedding_ascend
+
+        return mrotary_embedding_ascend(obj, positions, query, key)
+
+    def topk(
+        self,
+        obj,
+        hidden_states: torch.Tensor,
+        router_logits: torch.Tensor,
+        *,
+        num_token_non_padded=None,
+        expert_location_dispatch_info=None,
+    ):
+        from .impl.topk import topk_ascend
+
+        return topk_ascend(
+            obj,
+            hidden_states,
+            router_logits,
+            num_token_non_padded=num_token_non_padded,
+            expert_location_dispatch_info=expert_location_dispatch_info,
+        )
+
+    def fused_moe(self, obj, layer, dispatch_output):
+        from .impl.fused_moe import fused_moe_ascend
+
+        return fused_moe_ascend(obj, layer, dispatch_output)
+
+    def chunk_gated_delta_rule(
+        self,
+        q,
+        k,
+        v,
+        g,
+        beta,
+        scale,
+        initial_state=None,
+        initial_state_indices=None,
+        cu_seqlens=None,
+        head_first=False,
+        use_qk_l2norm_in_kernel=False,
+    ):
+        from .impl.fla import chunk_gated_delta_rule_ascend
+
+        return chunk_gated_delta_rule_ascend(
+            q,
+            k,
+            v,
+            g,
+            beta,
+            scale,
+            initial_state,
+            initial_state_indices,
+            cu_seqlens,
+            head_first,
+            use_qk_l2norm_in_kernel,
         )
