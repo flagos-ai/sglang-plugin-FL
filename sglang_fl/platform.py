@@ -206,21 +206,46 @@ class PlatformFL(SRTPlatform):
         return CudaGraphRunner
 
     def get_mha_kv_pool_cls(self) -> type:
+        if self._device_type == "npu":
+            from sglang.srt.hardware_backend.npu.memory_pool_npu import (
+                NPUMHATokenToKVPool,
+            )
+
+            return NPUMHATokenToKVPool
         from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
 
         return MHATokenToKVPool
 
     def get_mla_kv_pool_cls(self) -> type:
+        if self._device_type == "npu":
+            from sglang.srt.hardware_backend.npu.memory_pool_npu import (
+                NPUMLATokenToKVPool,
+            )
+
+            return NPUMLATokenToKVPool
         from sglang.srt.mem_cache.memory_pool import MLATokenToKVPool
 
         return MLATokenToKVPool
 
     def get_nsa_kv_pool_cls(self) -> type:
+        if self._device_type == "npu":
+            from sglang.srt.hardware_backend.npu.memory_pool_npu import (
+                NPUMLATokenToKVPool,
+            )
+
+            return NPUMLATokenToKVPool
         from sglang.srt.mem_cache.memory_pool import NSATokenToKVPool
 
         return NSATokenToKVPool
 
     def get_paged_allocator_cls(self) -> type:
+        if self._device_type == "npu":
+            from sglang.srt.hardware_backend.npu.allocator_npu import (
+                NPUPagedTokenToKVPoolAllocator,
+            )
+
+            return NPUPagedTokenToKVPoolAllocator
+
         from sglang.srt.mem_cache.allocator import PagedTokenToKVPoolAllocator
 
         return PagedTokenToKVPoolAllocator

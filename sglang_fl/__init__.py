@@ -391,10 +391,16 @@ def _setup_flaggems(config: dict = None):
         import logging as _logging
 
         class _AtenOnlyFilter(_logging.Filter):
-            """Only pass log records from flag_gems.ops.* (ATen replacements)."""
+            """Only pass log records from ATen-replacement ops (Layer 1).
+
+            Matches flag_gems.ops.* (standard Triton ops) and
+            flag_gems.runtime.backend.<vendor>.ops.* (OOT vendor ops).
+            Excludes fused/modules loggers which are Layer 2 internal calls.
+            """
 
             def filter(self, record):
-                return record.name.startswith("flag_gems.ops")
+                name = record.name
+                return name.startswith("flag_gems.ops") or ".ops." in name
 
         fg_logger = _logging.getLogger("flag_gems")
         for h in fg_logger.handlers:
@@ -620,6 +626,8 @@ def load_plugin():
         use_fg = _parse_bool(os.environ.get("USE_FLAGGEMS", "1"), default=True)
         aten_status = "OFF" if not use_fg else "ON"
         oot_status = f"prefer={config['prefer']}" if oot_enabled else "OFF"
+        # Reflects env-var configuration only; vendor-specific defaults (e.g. hccl
+        # on Ascend) are not shown here — see PlatformFL init log for the full result.
         dist_backend = os.environ.get("SGLANG_FL_DIST_BACKEND", "").strip() or (
             "flagcx" if os.environ.get("FLAGCX_PATH", "").strip() else "nccl"
         )
