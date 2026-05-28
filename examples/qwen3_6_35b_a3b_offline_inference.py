@@ -3,8 +3,7 @@
 """Qwen3.6-35B-A3B (MoE) offline inference with sglang-plugin-FL.
 
 This example verifies that the plugin can correctly serve a Qwen3.5 MoE model.
-It runs inference under three modes (baseline / aten / full) and checks that
-all modes produce valid output. With temperature=0, outputs should be identical.
+It runs text and multimodal inference, checking that outputs are valid.
 
 Usage:
   python qwen3_6_35b_a3b_offline_inference.py
@@ -13,10 +12,12 @@ Environment variables:
   MODEL_PATH    Model path (default: /models/Qwen3.6-35B-A3B)
   TP_SIZE       Tensor parallelism (default: 1)
   MAX_TOKENS    Max generation tokens (default: 10)
+  IMAGE_DIR     Test image directory (default: examples/test_images/ next to this file)
 """
 
 import os
 import sys
+from pathlib import Path
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -24,15 +25,91 @@ MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-35B-A3B")
 TP_SIZE = int(os.environ.get("TP_SIZE", "1"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "10"))
 
-PROMPTS = [
+_HERE = Path(__file__).resolve().parent
+IMAGE_DIR = Path(os.environ.get("IMAGE_DIR", _HERE / "test_images"))
+
+TEXT_PROMPTS = [
     "How many states are there in the United States?",
     "The capital of France is",
 ]
 
-EXPECTED_PARTS = {
+TEXT_EXPECTED = {
     "The capital of France is": "Paris",
     "How many states are there in the United States?": "50",
 }
+
+VL_CASES = [
+    {
+        "image": "red_square.jpg",
+        "question": "What color is shown in this image? Answer with one word.",
+        "expected": ["red"],
+    },
+    {
+        "image": "cat.jpg",
+        "question": "What animal is in this image? Answer with one word.",
+        "expected": ["cat"],
+    },
+    {
+        "image": "stop_sign.png",
+        "question": "What is the color of this sign? Answer with one word.",
+        "expected": ["red"],
+    },
+    {
+        "image": "digit_seven.png",
+        "question": "What digit is shown in this image? Answer with one digit.",
+        "expected": ["7"],
+    },
+]
+
+
+# ─── Prompt formatting ───────────────────────────────────────────────────────
+
+_tokenizer = None
+_processor = None
+
+
+def _get_tokenizer():
+    global _tokenizer
+    if _tokenizer is None:
+        from transformers import AutoTokenizer
+
+        _tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, trust_remote_code=True)
+    return _tokenizer
+
+
+def _get_processor():
+    global _processor
+    if _processor is None:
+        from transformers import AutoProcessor
+
+        _processor = AutoProcessor.from_pretrained(MODEL_PATH, trust_remote_code=True)
+    return _processor
+
+
+def _text_prompt(question: str) -> str:
+    messages = [{"role": "user", "content": question}]
+    return _get_tokenizer().apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+    )
+
+
+def _vl_prompt(question: str, image_uri: str) -> str:
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": image_uri}},
+                {"type": "text", "text": question},
+            ],
+        }
+    ]
+    return _get_processor().apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+    )
+
+
+def _image_uri(name: str) -> str:
+    return f"file://{(IMAGE_DIR / name).resolve()}"
 
 
 # ─── Inference ────────────────────────────────────────────────────────────────
@@ -50,36 +127,70 @@ def run_engine():
     )
 
     sampling_params = {"max_new_tokens": MAX_TOKENS, "temperature": 0}
+    vl_sampling = {"max_new_tokens": 64, "temperature": 0}
 
-    outputs = []
-    for prompt in PROMPTS:
-        result = engine.generate(prompt=prompt, sampling_params=sampling_params)
+    # --- Text inference ---
+    print("=== Text Inference ===")
+    text_outputs = []
+    for prompt in TEXT_PROMPTS:
+        result = engine.generate(
+            prompt=_text_prompt(prompt), sampling_params=sampling_params
+        )
         text = result["text"]
-        outputs.append(text)
-        print(f"Prompt: {prompt!r}, Generated text: {text!r}")
+        text_outputs.append(text)
+        print(f"  Prompt: {prompt!r}\n    → {text!r}")
+
+    # --- Multimodal inference ---
+    print("\n=== Multimodal Inference ===")
+    vl_outputs = []
+    for case in VL_CASES:
+        img_path = IMAGE_DIR / case["image"]
+        if not img_path.is_file():
+            print(f"  SKIP (missing image): {img_path}")
+            vl_outputs.append(None)
+            continue
+        uri = _image_uri(case["image"])
+        result = engine.generate(
+            prompt=_vl_prompt(case["question"], uri),
+            image_data=[uri],
+            sampling_params=vl_sampling,
+        )
+        text = result["text"]
+        vl_outputs.append(text)
+        print(f"  [{case['image']}] {case['question']}\n    → {text!r}")
 
     engine.shutdown()
-    return outputs
+    return text_outputs, vl_outputs
 
 
 # ─── Validation ───────────────────────────────────────────────────────────────
 
 
-def validate(outputs):
+def validate(text_outputs, vl_outputs):
     """Basic sanity checks on generated outputs."""
-    assert len(outputs) == len(PROMPTS), (
-        f"Expected {len(PROMPTS)} outputs, got {len(outputs)}"
-    )
-
-    for prompt, text in zip(PROMPTS, outputs):
+    # Text validation
+    assert len(text_outputs) == len(TEXT_PROMPTS)
+    for prompt, text in zip(TEXT_PROMPTS, text_outputs):
         assert len(text) > 0, f"Empty output for prompt: {prompt!r}"
-        if prompt in EXPECTED_PARTS:
-            expected = EXPECTED_PARTS[prompt]
+        if prompt in TEXT_EXPECTED:
+            expected = TEXT_EXPECTED[prompt]
             assert expected in text, (
                 f"Expected {expected!r} in output for {prompt!r}, got {text!r}"
             )
 
-    print("\n All validations passed.")
+    # VL validation
+    for case, text in zip(VL_CASES, vl_outputs):
+        if text is None:
+            continue
+        assert len(text) > 0, f"Empty output for VL case: {case['image']}"
+        lower = text.lower()
+        matched = any(pat.lower() in lower for pat in case["expected"])
+        assert matched, (
+            f"VL case [{case['image']}]: expected one of {case['expected']} "
+            f"in output, got {text!r}"
+        )
+
+    print("\nAll validations passed.")
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -90,5 +201,5 @@ if __name__ == "__main__":
         print("Set MODEL_PATH to the correct path.")
         sys.exit(1)
 
-    outputs = run_engine()
-    validate(outputs)
+    text_outputs, vl_outputs = run_engine()
+    validate(text_outputs, vl_outputs)
