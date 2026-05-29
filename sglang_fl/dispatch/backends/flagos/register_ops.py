@@ -66,6 +66,14 @@ def register_builtins(registry) -> None:
             vendor=None,
             priority=BackendPriority.DEFAULT,
         ),
+        OpImpl(
+            op_name="chunk_gated_delta_rule",
+            impl_id="default.flagos",
+            kind=BackendImplKind.DEFAULT,
+            fn=_bind_is_available(backend.chunk_gated_delta_rule, is_avail),
+            vendor=None,
+            priority=BackendPriority.DEFAULT,
+        ),
     ]
 
     registry.register_many(impls)
