@@ -70,6 +70,36 @@ class FlagOSBackend(Backend):
             expert_location_dispatch_info=expert_location_dispatch_info,
         )
 
+    def chunk_gated_delta_rule(
+        self,
+        q,
+        k,
+        v,
+        g,
+        beta,
+        scale,
+        initial_state=None,
+        initial_state_indices=None,
+        cu_seqlens=None,
+        head_first=False,
+        use_qk_l2norm_in_kernel=False,
+    ):
+        from .impl.fla import chunk_gated_delta_rule_flagos
+
+        return chunk_gated_delta_rule_flagos(
+            q,
+            k,
+            v,
+            g,
+            beta,
+            scale,
+            initial_state,
+            initial_state_indices,
+            cu_seqlens,
+            head_first,
+            use_qk_l2norm_in_kernel,
+        )
+
     def fused_recurrent_gated_delta_rule(
         self,
         q,
