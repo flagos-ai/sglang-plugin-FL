@@ -36,7 +36,7 @@ if _is_npu:
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-35B-A3B")
-TP_SIZE = int(os.environ.get("TP_SIZE", "2" if _is_npu else "1"))
+TP_SIZE = int(os.environ.get("TP_SIZE", "4" if _is_npu else "1"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "10"))
 
 _HERE = Path(__file__).resolve().parent
@@ -45,7 +45,7 @@ IMAGE_DIR = Path(os.environ.get("IMAGE_DIR", _HERE / "test_images"))
 # page_size=1 is required on MUSA to work around a sglang platform bug.
 # Ascend NPU requires its own attention backend and extra runtime settings.
 if _is_musa:
-    _extra_engine_kwargs: dict = {"page_size": 1}
+    _extra_engine_kwargs: dict = {"page_size": 1, "trust_remote_code": True}
 elif _is_npu:
     _extra_engine_kwargs = {
         "attention_backend": "ascend",
@@ -55,7 +55,7 @@ elif _is_npu:
         "disable_radix_cache": True,
     }
 else:
-    _extra_engine_kwargs = {}
+    _extra_engine_kwargs = {"trust_remote_code": True}
 
 TEXT_PROMPTS = [
     "How many states are there in the United States?",
