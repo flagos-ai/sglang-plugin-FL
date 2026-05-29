@@ -32,6 +32,7 @@ _DIST_BACKEND_MAP = {
     "iluvatar": "nccl",
     "metax": "nccl",
     "cambricon": "cncl",
+    "mthreads": "mccl",
 }
 
 
@@ -236,7 +237,7 @@ class PlatformFL(SRTPlatform):
         return self._device_type == "cuda"
 
     def is_pin_memory_available(self) -> bool:
-        return self._device_type in ("cuda", "npu", "xpu")
+        return self._device_type in ("cuda", "npu", "xpu", "musa")
 
     def supports_fp8(self) -> bool:
         if self._device_type == "cuda":

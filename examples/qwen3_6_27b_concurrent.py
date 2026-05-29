@@ -30,15 +30,42 @@ import sys
 import time
 from pathlib import Path
 
+import torch
+
+# ─── Platform detection ───────────────────────────────────────────────────────
+
+_is_musa = hasattr(torch, "musa") and torch.musa.is_available()
+_is_npu = hasattr(torch, "npu") and torch.npu.is_available()
+
+# Must be set before importing sglang.
+if _is_npu:
+    os.environ.setdefault("SGLANG_ENABLE_OVERLAP_PLAN_STREAM", "0")
+    os.environ.setdefault("SGLANG_ENABLE_SPEC_V2", "1")
+    os.environ.setdefault("HCCL_BUFFSIZE", "2400")
+    os.environ.setdefault("SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK", "128")
+
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-27B")
-TP_SIZE = int(os.environ.get("TP_SIZE", "1"))
+TP_SIZE = int(os.environ.get("TP_SIZE", "4" if _is_npu else "1"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "256"))
 CONCURRENT_N = int(os.environ.get("CONCURRENT_N", "16"))
 
 _HERE = Path(__file__).resolve().parent
 IMAGE_DIR = Path(os.environ.get("IMAGE_DIR", _HERE / "test_images"))
+
+if _is_musa:
+    _extra_engine_kwargs: dict = {"page_size": 1, "trust_remote_code": True}
+elif _is_npu:
+    _extra_engine_kwargs = {
+        "attention_backend": "ascend",
+        "device": "npu",
+        "dtype": "bfloat16",
+        "trust_remote_code": True,
+        "disable_radix_cache": True,
+    }
+else:
+    _extra_engine_kwargs = {"trust_remote_code": True}
 
 # ─── Test data ────────────────────────────────────────────────────────────────
 
@@ -151,6 +178,7 @@ def _make_engine():
         mem_fraction_static=0.85,
         disable_cuda_graph=True,
         disable_piecewise_cuda_graph=True,
+        **_extra_engine_kwargs,
     )
 
 
