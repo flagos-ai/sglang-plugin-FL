@@ -153,6 +153,7 @@ def run_engine():
         mem_fraction_static=0.85,
         disable_cuda_graph=True,
         disable_piecewise_cuda_graph=True,
+        **_extra_engine_kwargs,
     )
 
     sampling_params = {"max_new_tokens": MAX_TOKENS, "temperature": 0}
