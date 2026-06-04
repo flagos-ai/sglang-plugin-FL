@@ -36,7 +36,7 @@ if _is_npu:
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-27B")
-TP_SIZE = int(os.environ.get("TP_SIZE", "1"))
+TP_SIZE = int(os.environ.get("TP_SIZE", "4" if _is_npu else "1"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "10"))
 
 _HERE = Path(__file__).resolve().parent
@@ -204,11 +204,7 @@ def validate(text_outputs, vl_outputs):
         assert len(text) > 0, f"Empty output for prompt: {prompt!r}"
         if prompt in TEXT_EXPECTED:
             expected = TEXT_EXPECTED[prompt]
-            # Strip thinking content if present (Qwen3 may emit <think>...</think>)
-            answer = text
-            if "</think>" in answer:
-                answer = answer.split("</think>", 1)[1]
-            assert expected in answer, (
+            assert expected in text, (
                 f"Expected {expected!r} in output for {prompt!r}, got {text!r}"
             )
 
