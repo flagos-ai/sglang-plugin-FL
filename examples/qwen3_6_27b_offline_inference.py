@@ -19,9 +19,9 @@ import sys
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-MODEL_PATH = os.environ.get("MODEL_PATH", "/data/Qwen3.6-27B")
+MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-27B")
 TP_SIZE = int(os.environ.get("TP_SIZE", "1"))
-MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "128"))
+MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "10"))
 
 PROMPTS = [
     "How many states are there in the United States?",
