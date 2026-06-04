@@ -89,7 +89,9 @@ def parse_args():
     parser.add_argument(
         "--port", type=int, default=30000, help="API port (master only)"
     )
-    parser.add_argument("--master-addr", default="192.168.0.66", help="Master node IP")
+    parser.add_argument(
+        "--master-addr", required=True, help="Master node IP (required)"
+    )
     parser.add_argument(
         "--dist-port", type=int, default=20000, help="torch.distributed rendezvous port"
     )
