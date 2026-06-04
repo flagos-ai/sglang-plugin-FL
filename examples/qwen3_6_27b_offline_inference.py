@@ -19,9 +19,9 @@ import sys
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-27B")
+MODEL_PATH = os.environ.get("MODEL_PATH", "/data/Qwen3.6-27B")
 TP_SIZE = int(os.environ.get("TP_SIZE", "1"))
-MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "10"))
+MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "128"))
 
 PROMPTS = [
     "How many states are there in the United States?",
@@ -74,7 +74,11 @@ def validate(outputs):
         assert len(text) > 0, f"Empty output for prompt: {prompt!r}"
         if prompt in EXPECTED_PARTS:
             expected = EXPECTED_PARTS[prompt]
-            assert expected in text, (
+            # Strip thinking content if present (Qwen3 may emit <think>...</think>)
+            answer = text
+            if "</think>" in answer:
+                answer = answer.split("</think>", 1)[1]
+            assert expected in answer, (
                 f"Expected {expected!r} in output for {prompt!r}, got {text!r}"
             )
 

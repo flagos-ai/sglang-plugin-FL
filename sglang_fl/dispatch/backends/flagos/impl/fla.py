@@ -4,6 +4,32 @@
 from typing import Optional, Tuple
 import torch
 
+# Global flag to ensure triton allocator is only set once
+_TRITON_ALLOCATOR_INSTALLED = False
+
+
+def _ensure_triton_allocator(device: torch.device) -> None:
+    """Set up triton allocator if not already done.
+
+    This is required for FlagGems FLA kernels that use triton runtime memory allocation.
+    Pattern follows flag_gems.fused.moe_align_block_size._install_triton_default_allocator.
+    """
+    global _TRITON_ALLOCATOR_INSTALLED
+    if _TRITON_ALLOCATOR_INSTALLED:
+        return
+
+    try:
+        import triton
+
+        def _alloc(size: int, alignment: int, stream: Optional[int]):
+            return torch.empty((size,), dtype=torch.uint8, device=device).data_ptr()
+
+        triton.set_allocator(_alloc)
+        _TRITON_ALLOCATOR_INSTALLED = True
+    except ImportError:
+        # triton not available, kernels will fail anyway
+        pass
+
 
 def chunk_gated_delta_rule_flagos(
     q: torch.Tensor,
@@ -25,6 +51,8 @@ def chunk_gated_delta_rule_flagos(
     """
     from flag_gems.fused.FLA.chunk import chunk_gated_delta_rule_fwd
     from flag_gems.fused.chunk_gated_delta_rule import _l2_normalize_last_dim
+
+    _ensure_triton_allocator(q.device)
 
     if initial_state is not None and initial_state_indices is not None:
         initial_state = initial_state[initial_state_indices]
@@ -65,6 +93,8 @@ def fused_recurrent_gated_delta_rule_flagos(
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     """FlagOS implementation of fused_recurrent_gated_delta_rule."""
     from flag_gems.fused.FLA import fused_recurrent_gated_delta_rule_fwd
+
+    _ensure_triton_allocator(q.device)
 
     return fused_recurrent_gated_delta_rule_fwd(
         q=q,
