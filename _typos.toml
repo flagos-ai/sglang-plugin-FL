@@ -2,3 +2,5 @@
 # Ascend CANN is Huawei's official toolkit name
 CANN = "CANN"
 cann = "cann"
+# SGLang env var uses "INBALANCE" (upstream spelling)
+INBALANCE = "INBALANCE"
