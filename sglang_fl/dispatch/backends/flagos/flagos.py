@@ -70,6 +70,16 @@ class FlagOSBackend(Backend):
             expert_location_dispatch_info=expert_location_dispatch_info,
         )
 
+    def gemma_rms_norm(
+        self,
+        obj,
+        x: torch.Tensor,
+        residual: Optional[torch.Tensor] = None,
+    ) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        from .impl.gemma_rms_norm import gemma_rms_norm_flagos
+
+        return gemma_rms_norm_flagos(obj, x, residual)
+
     def chunk_gated_delta_rule(
         self,
         q,
