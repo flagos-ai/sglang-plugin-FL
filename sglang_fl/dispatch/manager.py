@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import atexit
 import os
 import threading
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Callable, Dict, Optional, Set, Tuple
 
 from .registry import OpRegistry
@@ -16,6 +18,105 @@ logger = get_logger()
 
 # Debug printing control
 _DISPATCH_DEBUG = os.getenv("SGLANG_FL_DISPATCH_DEBUG", "0") == "1"
+
+# Dispatch timing instrumentation (enable with SGLANG_FL_DISPATCH_TIMING=1)
+_DISPATCH_TIMING = os.getenv("SGLANG_FL_DISPATCH_TIMING", "0") == "1"
+
+# Disable call() cache for A/B testing (simulates pre-fix behavior)
+_DISABLE_CALL_CACHE = os.getenv("SGLANG_FL_DISABLE_CALL_CACHE", "0") == "1"
+
+
+@dataclass
+class _DispatchTimingStats:
+    """Accumulates dispatch call timing statistics."""
+
+    total_calls: int = 0
+    cache_hits: int = 0
+    total_resolve_ns: int = 0
+    per_op_calls: Dict[str, int] = field(default_factory=dict)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def record_hit(self, op_name: str) -> None:
+        with self.lock:
+            self.total_calls += 1
+            self.cache_hits += 1
+            self.per_op_calls[op_name] = self.per_op_calls.get(op_name, 0) + 1
+            if self.total_calls % 5000 == 0:
+                self._dump()
+
+    def record_miss(self, op_name: str, elapsed_ns: int) -> None:
+        with self.lock:
+            self.total_calls += 1
+            self.total_resolve_ns += elapsed_ns
+            self.per_op_calls[op_name] = self.per_op_calls.get(op_name, 0) + 1
+            if self.total_calls % 5000 == 0:
+                self._dump()
+
+    def _dump(self) -> None:
+        """Periodically write stats to file for subprocess visibility."""
+        try:
+            path = f"/tmp/sglang_fl_dispatch_timing_{os.getpid()}.log"
+            with open(path, "w") as f:
+                f.write(self.summary() + "\n")
+        except Exception:
+            pass
+
+    def summary(self) -> str:
+        misses = self.total_calls - self.cache_hits
+        avg_resolve_us = (self.total_resolve_ns / misses / 1000) if misses > 0 else 0
+        total_resolve_ms = self.total_resolve_ns / 1e6
+        lines = [
+            "=" * 60,
+            "SGLang-FL Dispatch Timing Report",
+            "=" * 60,
+            f"  Total call() invocations : {self.total_calls}",
+            f"  Cache hits               : {self.cache_hits}",
+            f"  Cache misses (resolved)  : {misses}",
+            f"  Total resolve time       : {total_resolve_ms:.3f} ms",
+            f"  Avg resolve time / miss  : {avg_resolve_us:.1f} μs",
+            f"  Unique ops dispatched    : {len(self.per_op_calls)}",
+            "=" * 60,
+        ]
+        return "\n".join(lines)
+
+
+_timing_stats: Optional[_DispatchTimingStats] = None
+_timing_log_path: Optional[str] = None
+
+if _DISPATCH_TIMING:
+    _timing_stats = _DispatchTimingStats()
+    _timing_log_path = os.environ.get(
+        "SGLANG_FL_DISPATCH_TIMING_LOG",
+        f"/tmp/sglang_fl_dispatch_timing_{os.getpid()}.log",
+    )
+
+    def _print_timing_report():
+        if _timing_stats and _timing_stats.total_calls > 0:
+            report = _timing_stats.summary()
+            logger.info("\n" + report)
+            import sys
+
+            print(report, file=sys.stderr)
+            # Write to file for subprocess visibility
+            if _timing_log_path:
+                try:
+                    with open(_timing_log_path, "w") as f:
+                        f.write(report + "\n")
+                except Exception:
+                    pass
+
+    atexit.register(_print_timing_report)
+
+    # Also dump on SIGUSR1 for subprocess visibility
+    import signal
+
+    def _sigusr1_handler(signum, frame):
+        _print_timing_report()
+
+    try:
+        signal.signal(signal.SIGUSR1, _sigusr1_handler)
+    except (OSError, ValueError):
+        pass
 
 
 @dataclass
@@ -255,7 +356,19 @@ class OpManager:
             self._log_first_call(op_name, impl_id, mode="direct")
             return fn(*args, **kwargs)
 
-        # Fallback mode
+        # Fallback mode: check cache first (same cache as resolve())
+        policy_fp = policy.fingerprint()
+        epoch = self._state.policy_epoch
+        cache_key = (op_name, policy_fp, epoch)
+        if not _DISABLE_CALL_CACHE:
+            cached_fn = self._dispatch_cache.get(cache_key)
+            if cached_fn is not None:
+                if _timing_stats is not None:
+                    _timing_stats.record_hit(op_name)
+                return cached_fn(*args, **kwargs)
+
+        # Cache miss: full resolve with fallback
+        _t0 = time.perf_counter_ns() if _timing_stats is not None else 0
         candidates = self.resolve_candidates(op_name)
         failed_impl_ids = self._failed_impls.get(op_name, set())
         available_candidates = [
@@ -280,6 +393,12 @@ class OpManager:
                     )
 
                 result = impl.fn(*args, **kwargs)
+
+                # Cache the successful impl for future calls
+                self._dispatch_cache[cache_key] = impl.fn
+
+                if _timing_stats is not None:
+                    _timing_stats.record_miss(op_name, time.perf_counter_ns() - _t0)
 
                 if idx > 0:
                     with self._lock:

@@ -304,6 +304,11 @@ def _make_dispatch_hook(config: dict = None):
         return None
 
     def _dispatch_hook(original_fn, self):
+        # Fast path: object-level cache (avoids MRO walk + bound method creation)
+        cached = getattr(self, "_fl_cached_fn", None)
+        if cached is not None:
+            return cached
+
         op_cls = type(self)
         op_name = op_cls.__name__
 
@@ -319,7 +324,9 @@ def _make_dispatch_hook(config: dict = None):
             # No bridge registered: return forward_cuda directly to bypass dispatch_forward.
             # This allows unregistered OOT ops (e.g., MoE before bridge is added) to use
             # their native CUDA implementation instead of falling into forward_native.
-            return self.forward_cuda
+            result = self.forward_cuda
+            self._fl_cached_fn = result
+            return result
 
         if _log_file:
             _log_file.write(f"[OOT-DISPATCH] {op_name} → dispatch\n")
@@ -327,7 +334,9 @@ def _make_dispatch_hook(config: dict = None):
 
         # Return a bound method that calls the bridge function
         # The bridge function has the same signature as forward_cuda
-        return bridge_fn.__get__(self, op_cls)
+        result = bridge_fn.__get__(self, op_cls)
+        self._fl_cached_fn = result
+        return result
 
     return _dispatch_hook
 
