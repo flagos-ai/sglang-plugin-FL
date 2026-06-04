@@ -110,3 +110,31 @@ def fused_recurrent_gated_delta_rule_flagos(
         num_accepted_tokens=num_accepted_tokens,
         use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
     )
+
+def fused_recurrent_gated_delta_rule_packed_decode_flagos(
+    mixed_qkv: torch.Tensor,
+    a: torch.Tensor,
+    b: torch.Tensor,
+    A_log: torch.Tensor,
+    dt_bias: torch.Tensor,
+    scale: float,
+    initial_state: torch.Tensor,
+    out: torch.Tensor,
+    ssm_state_indices: torch.Tensor,
+    use_qk_l2norm_in_kernel: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """flagos vendor implementation - uses SGLang's native triton kernel for packed decode."""
+    from ..gems_sglang.triton_fused_recurrent_gated_delta_rule_packed_decode import fused_recurrent_gated_delta_rule_packed_decode as fused_recurrent_gated_delta_rule_packed_decode_flagos
+    
+    return fused_recurrent_gated_delta_rule_packed_decode_flagos(
+        mixed_qkv=mixed_qkv,
+        a=a,
+        b=b,
+        A_log=A_log,
+        dt_bias=dt_bias,
+        scale=scale,
+        initial_state=initial_state,
+        out=out,
+        ssm_state_indices=ssm_state_indices,
+        use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
+    )

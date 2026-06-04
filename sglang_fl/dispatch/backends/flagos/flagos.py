@@ -131,3 +131,32 @@ class FlagOSBackend(Backend):
             num_accepted_tokens,
             use_qk_l2norm_in_kernel,
         )
+    
+    def fused_recurrent_gated_delta_rule_packed_decode(
+        self,
+        mixed_qkv,
+        a,
+        b,
+        A_log,
+        dt_bias,
+        scale,
+        initial_state,
+        out,
+        ssm_state_indices,
+        use_qk_l2norm_in_kernel=False,
+    ):
+        from .impl.fla import fused_recurrent_gated_delta_rule_packed_decode_flagos
+
+        return fused_recurrent_gated_delta_rule_packed_decode_flagos(
+            mixed_qkv,
+            a,
+            b,
+            A_log,
+            dt_bias,
+            scale,
+            initial_state,
+            out,
+            ssm_state_indices,
+            use_qk_l2norm_in_kernel,
+        )
+

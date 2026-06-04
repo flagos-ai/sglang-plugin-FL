@@ -59,6 +59,14 @@ def register_builtins(registry) -> None:
             priority=BackendPriority.DEFAULT,
         ),
         OpImpl(
+            op_name="chunk_gated_delta_rule",
+            impl_id="default.flagos",
+            kind=BackendImplKind.DEFAULT,
+            fn=_bind_is_available(backend.chunk_gated_delta_rule, is_avail),
+            vendor=None,
+            priority=BackendPriority.DEFAULT,
+        ),
+        OpImpl(
             op_name="fused_recurrent_gated_delta_rule",
             impl_id="default.flagos",
             kind=BackendImplKind.DEFAULT,
@@ -67,10 +75,10 @@ def register_builtins(registry) -> None:
             priority=BackendPriority.DEFAULT,
         ),
         OpImpl(
-            op_name="chunk_gated_delta_rule",
+            op_name="fused_recurrent_gated_delta_rule_packed_decode",
             impl_id="default.flagos",
             kind=BackendImplKind.DEFAULT,
-            fn=_bind_is_available(backend.chunk_gated_delta_rule, is_avail),
+            fn=_bind_is_available(backend.fused_recurrent_gated_delta_rule_packed_decode, is_avail),
             vendor=None,
             priority=BackendPriority.DEFAULT,
         ),
