@@ -43,6 +43,14 @@ def register_builtins(registry) -> None:
             priority=BackendPriority.DEFAULT,
         ),
         OpImpl(
+            op_name="gemma_rms_norm",
+            impl_id="default.flagos",
+            kind=BackendImplKind.DEFAULT,
+            fn=_bind_is_available(backend.gemma_rms_norm, is_avail),
+            vendor=None,
+            priority=BackendPriority.DEFAULT,
+        ),
+        OpImpl(
             op_name="rotary_embedding",
             impl_id="default.flagos",
             kind=BackendImplKind.DEFAULT,
