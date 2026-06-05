@@ -12,34 +12,34 @@ Usage:
   controlled by the --role argument.
 
   Step 1 — Start master on node 0 (e.g. 192.168.0.66):
-    python examples/qwen3_6_35b_a3b_multinode.py --role master --tp 8
+    python examples/qwen3_6_35b_a3b_multinode.py --role master --master-addr 192.168.0.66 --tp 2 --pp 2
 
   Step 2 — Start worker on node 1 (e.g. 192.168.0.65):
-    python examples/qwen3_6_35b_a3b_multinode.py --role worker --tp 8
+    python examples/qwen3_6_35b_a3b_multinode.py --role worker --master-addr 192.168.0.66 --tp 2 --pp 2
 
   NOTE: Start master FIRST, then start worker within a few minutes.
 
-Full tested command (2 nodes × 4 GPUs each):
+Full tested command (2 nodes × 2 GPUs each, TP=2 PP=2):
 
   [Node 0 / Master / 192.168.0.66]
-    CUDA_VISIBLE_DEVICES=0,1,2,3 \
-    SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero,index_put_ \
+    CUDA_VISIBLE_DEVICES=0,1 \
+    SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero,index_put_,_index_put_impl,_index_put_impl_ \
     SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK=0 \
-    NCCL_IB_DISABLE=1 NCCL_NET=Socket \
     GLOO_SOCKET_IFNAME=eth0 NCCL_SOCKET_IFNAME=eth0 \
-        python examples/qwen3_6_35b_a3b_multinode.py --role master --tp 8
+        python examples/qwen3_6_35b_a3b_multinode.py --role master --master-addr 192.168.0.66 --tp 2 --pp 2
 
   [Node 1 / Worker / 192.168.0.65]
-    CUDA_VISIBLE_DEVICES=4,5,6,7 \
-    SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero,index_put_ \
+    CUDA_VISIBLE_DEVICES=0,1 \
+    SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero,index_put_,_index_put_impl,_index_put_impl_ \
     SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK=0 \
-    NCCL_IB_DISABLE=1 NCCL_NET=Socket \
     GLOO_SOCKET_IFNAME=eth0 NCCL_SOCKET_IFNAME=eth0 \
-        python examples/qwen3_6_35b_a3b_multinode.py --role worker --tp 8
+        python examples/qwen3_6_35b_a3b_multinode.py --role worker --master-addr 192.168.0.66 --tp 2 --pp 2
+
+  Total GPUs: TP × PP = 2 × 2 = 4 (2 per node)
 
 Environment variables:
   MODEL_PATH       Model path (default: /models/Qwen3.6-35B-A3B)
-  CUDA_VISIBLE_DEVICES  GPU selection (e.g. 0,1,2,3)
+  CUDA_VISIBLE_DEVICES  GPU selection (e.g. 0,1)
   GLOO_SOCKET_IFNAME    Network interface for Gloo (default: eth0)
   NCCL_SOCKET_IFNAME    Network interface for NCCL (default: eth0)
   NCCL_IB_DISABLE       Set to 1 to disable InfiniBand
@@ -85,7 +85,8 @@ def parse_args():
         required=True,
         help="Node role: 'master' (node_rank=0, runs tests) or 'worker' (node_rank=1)",
     )
-    parser.add_argument("--tp", type=int, default=8, help="Tensor parallelism size")
+    parser.add_argument("--tp", type=int, default=2, help="Tensor parallelism size")
+    parser.add_argument("--pp", type=int, default=2, help="Pipeline parallelism size")
     parser.add_argument(
         "--port", type=int, default=30000, help="API port (master only)"
     )
@@ -323,7 +324,7 @@ def run_master(args):
     print("  sglang-plugin-FL Multi-Node Verification")
     print(f"  Role:   MASTER (node_rank={node_rank})")
     print(f"  Model:  {MODEL_PATH}")
-    print(f"  TP:     {args.tp}    Nodes: {args.nnodes}")
+    print(f"  TP:     {args.tp}    PP: {args.pp}    Nodes: {args.nnodes}")
     print(f"  Master: {args.master_addr}  dist={args.dist_port}  nccl={args.nccl_port}")
     print(f"  API:    http://localhost:{args.port}")
     print("=" * 56)
@@ -336,6 +337,8 @@ def run_master(args):
         MODEL_PATH,
         "--tp",
         str(args.tp),
+        "--pp-size",
+        str(args.pp),
         "--port",
         str(args.port),
         "--nnodes",
@@ -397,7 +400,7 @@ def run_worker(args):
     print("  sglang-plugin-FL Multi-Node Verification")
     print(f"  Role:   WORKER (node_rank={node_rank})")
     print(f"  Model:  {MODEL_PATH}")
-    print(f"  TP:     {args.tp}    Nodes: {args.nnodes}")
+    print(f"  TP:     {args.tp}    PP: {args.pp}    Nodes: {args.nnodes}")
     print(f"  Master: {args.master_addr}  dist={args.dist_port}  nccl={args.nccl_port}")
     print("=" * 56)
 
@@ -420,6 +423,8 @@ def run_worker(args):
         MODEL_PATH,
         "--tp",
         str(args.tp),
+        "--pp-size",
+        str(args.pp),
         "--nnodes",
         str(args.nnodes),
         "--node-rank",
