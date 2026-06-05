@@ -255,7 +255,15 @@ class OpManager:
             self._log_first_call(op_name, impl_id, mode="direct")
             return fn(*args, **kwargs)
 
-        # Fallback mode
+        # Fallback mode: check cache first (same cache as resolve())
+        policy_fp = policy.fingerprint()
+        epoch = self._state.policy_epoch
+        cache_key = (op_name, policy_fp, epoch)
+        cached_fn = self._dispatch_cache.get(cache_key)
+        if cached_fn is not None:
+            return cached_fn(*args, **kwargs)
+
+        # Cache miss: full resolve with fallback
         candidates = self.resolve_candidates(op_name)
         failed_impl_ids = self._failed_impls.get(op_name, set())
         available_candidates = [
@@ -280,6 +288,9 @@ class OpManager:
                     )
 
                 result = impl.fn(*args, **kwargs)
+
+                # Cache the successful impl for future calls
+                self._dispatch_cache[cache_key] = impl.fn
 
                 if idx > 0:
                     with self._lock:
