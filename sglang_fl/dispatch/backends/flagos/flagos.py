@@ -142,6 +142,20 @@ class FlagOSBackend(Backend):
             use_qk_l2norm_in_kernel,
         )
     
+    def mrotary_embedding(
+        self,
+        obj,
+        positions: torch.Tensor,
+        query: torch.Tensor,
+        key: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        from .impl.mrotary_embedding import mrotary_embedding_flagos
+        return mrotary_embedding_flagos(obj, positions, query, key)
+
+    def fused_moe(self, obj, layer, dispatch_output):
+        from .impl.fused_moe import fused_moe_flagos
+        return fused_moe_flagos(obj, layer, dispatch_output)
+
     def fused_recurrent_gated_delta_rule_packed_decode(
         self,
         mixed_qkv,
