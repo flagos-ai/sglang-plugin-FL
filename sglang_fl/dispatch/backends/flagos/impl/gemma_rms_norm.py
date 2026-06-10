@@ -17,6 +17,6 @@ def gemma_rms_norm_flagos(
 
     Delegates to obj._forward_impl which calls sgl_kernel.gemma_rmsnorm.
     """
-    from ..gems_sglang.gemma_rmsnorm_triton import gemma_rms_norm
+    from flaggems_sglang.gemma_rmsnorm_triton import gemma_rms_norm
 
     return gemma_rms_norm(x, obj.weight.data, eps=1e-6, residual=residual)
