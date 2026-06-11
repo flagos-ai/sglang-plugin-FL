@@ -59,7 +59,7 @@ def fused_moe_flagos(
     from sglang.srt.layers.moe.token_dispatcher.standard import StandardCombineInput
     from sglang.srt.layers.moe.topk import TopKOutputChecker
 
-    from flaggems_sglang.fused_moe_kernel import (
+    from flaggems_sglang import (
         triton_kernel_fused_experts,
         triton_kernel_fused_experts_with_bias,
     )

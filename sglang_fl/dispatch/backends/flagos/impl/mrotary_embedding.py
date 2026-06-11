@@ -23,7 +23,7 @@ def mrotary_embedding_flagos(
     because cos_sin_cache is an nn.Module registered buffer stored in
     obj._buffers, not in obj.__dict__.
     """
-    from flaggems_sglang.mrotary_embedding_kernel import triton_mrope_fused, _rope_1d
+    from flaggems_sglang.ops.mrotary_embedding import triton_mrope_fused, _rope_1d
 
     mrope_section = getattr(obj, "mrope_section", None)
 
