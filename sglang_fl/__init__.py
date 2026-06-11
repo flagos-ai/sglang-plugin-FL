@@ -559,6 +559,10 @@ def activate_platform() -> str | None:
             detector.vendor_name,
             detector.name,
         )
+        # Propagate vendor to env so flaggems_sglang's DeviceDetector
+        # (a separate singleton) can detect the device without running
+        # nvidia-smi, which may fail in worker subprocesses.
+        os.environ.setdefault("DNN_VENDOR", detector.vendor_name)
         return "sglang_fl.platform:PlatformFL"
     except Exception as e:
         logger.warning("sglang_fl platform activation failed: %s", e)
@@ -579,6 +583,17 @@ def load_plugin():
     if _plugin_loaded:
         return
     _plugin_loaded = True
+
+    # Ensure DNN_VENDOR is set for flaggems_sglang's DeviceDetector in workers
+    # where activate_platform() may not have been called yet.
+    if "DNN_VENDOR" not in os.environ:
+        try:
+            from flag_gems.runtime.backend.device import DeviceDetector
+
+            _det = DeviceDetector()
+            os.environ["DNN_VENDOR"] = _det.vendor_name
+        except Exception:
+            pass
 
     # Suppress info logs on non-rank-0 processes to avoid duplicate output
     if not _is_rank0():
