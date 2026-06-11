@@ -35,6 +35,14 @@ _DIST_BACKEND_MAP = {
     "mthreads": "mccl",
 }
 
+# Attention backend mapping: vendor_name -> default backend
+# The value must match a name registered in sglang.srt.layers.attention.attention_registry. 
+_ATTN_BACKEND_MAP = {
+    "nvidia": "flashinfer",
+    "ascend": "ascend",
+    "mthreads": "fa3",
+}
+
 
 def _get_device_detector():
     """Lazy import DeviceDetector to avoid import errors when flag_gems not installed."""
@@ -188,19 +196,20 @@ class PlatformFL(SRTPlatform):
     # ------------------------------------------------------------------
 
     def get_default_attention_backend(self) -> str:
-        """Return attention backend name.
+        """Return attention backend name from the per-vendor map.
 
-        CUDA with FlashAttention available -> "flashinfer" (SGLang default)
-        Non-CUDA -> "torch_native" (PyTorch SDPA, registered in attention registry)
+        Falls back to "torch_native" (PyTorch SDPA) for vendors not in the map.
         """
-        if self._device_type == "cuda":
-            return "flashinfer"
-        # Non-CUDA: torch_native uses F.scaled_dot_product_attention
-        return "torch_native"
+        return _ATTN_BACKEND_MAP.get(self._vendor_name, "torch_native")
 
     def get_graph_runner_cls(self) -> type:
         """Return graph runner class for this platform."""
-        # Import SGLang's default CUDA graph runner
+        if self._device_type == "npu":
+            from sglang.srt.hardware_backend.npu.graph_runner.npu_graph_runner import (
+                NPUGraphRunner,
+            )
+
+            return NPUGraphRunner
         from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
 
         return CudaGraphRunner
@@ -255,8 +264,14 @@ class PlatformFL(SRTPlatform):
     # ------------------------------------------------------------------
 
     def support_cuda_graph(self) -> bool:
-        """CUDA and NPU support graph capture."""
-        return self._device_type in ("cuda", "npu")
+        """Whether this device exposes a graph-capture API.
+
+        - cuda: native torch.cuda.CUDAGraph
+        - npu:  torch.npu.NPUGraph (via NPUGraphRunner override)
+        - musa: torch_musa proxies torch.cuda.CUDAGraph, so the default
+                CudaGraphRunner works unchanged
+        """
+        return self._device_type in ("cuda", "npu", "musa")
 
     def support_piecewise_cuda_graph(self) -> bool:
         return self._device_type == "cuda"
@@ -299,11 +314,15 @@ class PlatformFL(SRTPlatform):
     # ------------------------------------------------------------------
 
     def apply_server_args_defaults(self, server_args) -> None:
-        """Apply platform-specific defaults to server arguments."""
-        # Non-CUDA platforms may need attention backend override
-        if self._device_type != "cuda":
-            if (
-                not hasattr(server_args, "attention_backend")
-                or server_args.attention_backend is None
-            ):
-                server_args.attention_backend = "torch_native"
+        """Apply platform-specific defaults to server arguments.
+
+        CUDA is skipped — sglang's own defaulting handles it. For other vendors,
+        if the user didn't pick an attention backend, fill from _ATTN_BACKEND_MAP.
+        """
+        if self._device_type == "cuda":
+            return
+        if (
+            not hasattr(server_args, "attention_backend")
+            or server_args.attention_backend is None
+        ):
+            server_args.attention_backend = self.get_default_attention_backend()
