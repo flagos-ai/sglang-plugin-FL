@@ -3,7 +3,13 @@
 Wraps FlagCX (when available) or falls back to torch.distributed.
 Created per GroupCoordinator via AROUND hook on __init__.
 
-Adapted from vllm-plugin-FL's CommunicatorFL pattern.
+Why AROUND hooks instead of injecting flagcx as torch.distributed backend:
+  vLLM lets plugins override platform.dist_backend → passed to init_process_group.
+  SGLang SRT picks backend from a hardcoded dict in parallel_state.py (cuda→nccl);
+  model_runner.py calls get_default_distributed_backend(device) — a plain dict lookup
+  that never consults the platform interface. device_mixin.py defines
+  get_torch_distributed_backend_str() as [Planned] and the SRT path does not call it.
+  So we hook communication methods at the application layer instead.
 """
 
 import logging
