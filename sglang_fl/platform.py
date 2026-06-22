@@ -14,6 +14,7 @@ Environment variables:
   FLAGCX_PATH=<path>                         If set, default to flagcx backend
 """
 
+import importlib
 import logging
 import os
 from typing import Optional
@@ -296,11 +297,26 @@ class PlatformFL(SRTPlatform):
     # ------------------------------------------------------------------
 
     def init_backend(self) -> None:
-        """One-time backend initialization in each worker."""
+        """One-time backend initialization in each worker.
+
+        Auto-imports ``vendor/<vendor_name>/register_platform.py`` if present —
+        that module is where vendor-specific ``@register_attention_backend``
+        decorators live, which inject OOT backends into sglang's
+        ``ATTENTION_BACKENDS`` dict. See ``vendor/template/`` for a skeleton.
+        """
+        vendor_module = (
+            f"sglang_fl.dispatch.backends.vendor.{self._vendor_name}.register_platform"
+        )
+        try:
+            importlib.import_module(vendor_module)
+            status = "loaded"
+        except ImportError:
+            status = "absent"
         logger.info(
-            "PlatformFL init_backend: vendor=%s, device=%s",
+            "PlatformFL init_backend: vendor=%s, device=%s, vendor_module=%s",
             self._vendor_name,
             self._device_type,
+            status,
         )
 
     # ------------------------------------------------------------------
