@@ -33,6 +33,7 @@ _DIST_BACKEND_MAP = {
     "metax": "nccl",
     "cambricon": "cncl",
     "mthreads": "mccl",
+    "thead": "nccl",
 }
 
 
