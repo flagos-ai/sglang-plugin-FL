@@ -38,7 +38,12 @@ _DIST_BACKEND_MAP = {
 
 def _get_device_detector():
     """Lazy import DeviceDetector to avoid import errors when flag_gems not installed."""
-    from flag_gems.runtime.backend.device import DeviceDetector
+    try:
+        # FlagGems<=5.0.2: DeviceDetector lives in device.
+        from flag_gems.runtime.backend.device import DeviceDetector
+    except ImportError:
+        # FlagGems>5.0.2: DeviceDetector lives in device_finder.
+        from flag_gems.runtime.backend.device_finder import DeviceDetector
 
     return DeviceDetector()
 
