@@ -13,10 +13,16 @@ class CudaBackend(Backend):
     """
     CUDA backend for operator implementations.
 
-    Uses sgl_kernel (SGLang native CUDA kernels) for NVIDIA GPUs.
+    Uses sgl_kernel (SGLang native CUDA kernels) for NVIDIA GPUs
+    and CUDA-compatible vendors (e.g. thead/PPU).
     """
 
     _available: Optional[bool] = None
+
+    # Vendors whose devices are fully CUDA-compatible and should use
+    # CUDA backend implementations.  "nvidia" is the canonical vendor;
+    # others (e.g. thead/PPU) expose an identical CUDA runtime.
+    _CUDA_COMPATIBLE_VENDORS: set = {"nvidia", "thead"}
 
     @property
     def name(self) -> str:
@@ -27,20 +33,23 @@ class CudaBackend(Backend):
         return "nvidia"
 
     def is_available(self) -> bool:
-        """Check if CUDA hardware and sgl_kernel are available."""
+        """Check if CUDA hardware and sgl_kernel are available.
+
+        Returns True for NVIDIA GPUs and CUDA-compatible vendors (e.g. thead/PPU)
+        that expose an identical CUDA runtime environment.
+        """
         if CudaBackend._available is None:
             try:
                 if not torch.cuda.is_available() or torch.cuda.device_count() == 0:
                     CudaBackend._available = False
                     return False
                 # Use platform's vendor_name from FlagGems DeviceDetector
-                # to distinguish real NVIDIA GPUs from CUDA-alike devices
-                # (Iluvatar MACA, MetaX MUSA, etc.)
+                # to distinguish CUDA-compatible vendors from CUDA-alike devices
+                # that require their own backend (Iluvatar MACA, MetaX MUSA, etc.)
                 from sglang.srt.platforms import current_platform
 
-                CudaBackend._available = (
-                    getattr(current_platform, "_vendor_name", None) == "nvidia"
-                )
+                vendor = getattr(current_platform, "_vendor_name", None)
+                CudaBackend._available = vendor in self._CUDA_COMPATIBLE_VENDORS
             except (ImportError, Exception):
                 CudaBackend._available = False
         return CudaBackend._available
