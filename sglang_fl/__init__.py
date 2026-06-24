@@ -560,7 +560,12 @@ def activate_platform() -> str | None:
     or None if FlagGems DeviceDetector fails (no supported hardware).
     """
     try:
-        from flag_gems.runtime.backend.device import DeviceDetector
+        try:
+            # FlagGems<=5.0.2: DeviceDetector lives in device.
+            from flag_gems.runtime.backend.device import DeviceDetector
+        except ImportError:
+            # FlagGems>5.0.2: DeviceDetector lives in device_finder.
+            from flag_gems.runtime.backend.device_finder import DeviceDetector
 
         detector = DeviceDetector()
         logger.info(
