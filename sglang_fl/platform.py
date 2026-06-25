@@ -206,7 +206,12 @@ class PlatformFL(SRTPlatform):
 
     def get_graph_runner_cls(self) -> type:
         """Return graph runner class for this platform."""
-        # Import SGLang's default CUDA graph runner
+        if self._device_type == "npu":
+            from sglang.srt.hardware_backend.npu.graph_runner.npu_graph_runner import (
+                NPUGraphRunner,
+            )
+
+            return NPUGraphRunner
         from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
 
         return CudaGraphRunner
@@ -261,8 +266,14 @@ class PlatformFL(SRTPlatform):
     # ------------------------------------------------------------------
 
     def support_cuda_graph(self) -> bool:
-        """CUDA and NPU support graph capture."""
-        return self._device_type in ("cuda", "npu")
+        """Whether this device exposes a graph-capture API.
+
+        - cuda: native torch.cuda.CUDAGraph
+        - npu:  torch.npu.NPUGraph (via NPUGraphRunner override)
+        - musa: torch_musa proxies torch.cuda.CUDAGraph, so the default
+                CudaGraphRunner works unchanged
+        """
+        return self._device_type in ("cuda", "npu", "musa")
 
     def support_piecewise_cuda_graph(self) -> bool:
         return self._device_type == "cuda"
