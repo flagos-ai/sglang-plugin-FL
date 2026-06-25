@@ -6,13 +6,16 @@ Validates that sglang-plugin-FL correctly handles multi-node tensor parallelism
 by launching a distributed SGLang server across 2 nodes and running text,
 concurrent, multimodal (VL), and high-concurrency inference tests.
 
+Supports CUDA, MUSA, and Ascend NPU; platform-specific server flags and env
+vars are applied automatically at runtime.
+
 ============================================================================
 Usage:
   This script runs as EITHER master (node_rank=0) or worker (node_rank=1),
   controlled by the --role argument.
 
   Step 1 — Start master on node 0 (e.g. 192.168.0.66):
-    python examples/qwen3_6_35b_a3b_multinode.py --role master --master-addr 192.1-tp 2 --pp 2
+    python examples/qwen3_6_35b_a3b_multinode.py --role master --master-addr 192.168.0.66 --tp 2 --pp 2
 
   Step 2 — Start worker on node 1 (e.g. 192.168.0.65):
     python examples/qwen3_6_35b_a3b_multinode.py --role worker --master-addr 192.168.0.66 --tp 2 --pp 2
@@ -41,9 +44,15 @@ Full tested command (2 nodes × 2 GPUs each, TP=2 PP=2):
 
   Total GPUs: TP × PP = 2 × 2 = 4 (2 per node)
 
+  On MUSA, swap CUDA_VISIBLE_DEVICES → MUSA_VISIBLE_DEVICES; on Ascend NPU,
+  use ASCEND_RT_VISIBLE_DEVICES. SGLANG_FL_DIST_BACKEND=flagcx is recommended
+  on both non-CUDA platforms.
+
 Environment variables:
   MODEL_PATH       Model path (default: /models/Qwen3.6-35B-A3B)
-  CUDA_VISIBLE_DEVICES  GPU selection (e.g. 0,1)
+  CUDA_VISIBLE_DEVICES  GPU selection on CUDA (e.g. 0,1)
+  MUSA_VISIBLE_DEVICES  Device selection on MUSA
+  ASCEND_RT_VISIBLE_DEVICES  Device selection on Ascend NPU
   GLOO_SOCKET_IFNAME    Network interface for Gloo (default: eth0)
   NCCL_SOCKET_IFNAME    Network interface for NCCL (default: eth0)
   SGLANG_FL_DIST_BACKEND  Communication backend (flagcx / nccl)
@@ -67,6 +76,37 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
+
+import torch
+
+# ─── Platform detection ──────────────────────────────────────────────────────
+
+_is_musa = hasattr(torch, "musa") and torch.musa.is_available()
+_is_npu = hasattr(torch, "npu") and torch.npu.is_available()
+
+# Must be set before launching sglang. Subprocesses inherit os.environ.
+if _is_npu:
+    os.environ.setdefault("SGLANG_ENABLE_OVERLAP_PLAN_STREAM", "0")
+    os.environ.setdefault("SGLANG_ENABLE_SPEC_V2", "1")
+    os.environ.setdefault("HCCL_BUFFSIZE", "2400")
+    os.environ.setdefault("SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK", "128")
+elif _is_musa:
+    os.environ.setdefault("MCCL_IB_DISABLE", "1")
+    
+# Extra launch_server flags per platform.
+# - MUSA: page_size=1 works around a sglang platform bug.
+# - Ascend NPU: requires ascend attention backend, bfloat16, radix cache off.
+if _is_musa:
+    _PLATFORM_SERVER_ARGS: list = ["--page-size", "1"]
+elif _is_npu:
+    _PLATFORM_SERVER_ARGS = [
+        "--attention-backend", "ascend",
+        "--device", "npu",
+        "--dtype", "bfloat16",
+        "--disable-radix-cache",
+    ]
+else:
+    _PLATFORM_SERVER_ARGS = []
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -469,6 +509,7 @@ def run_master(args):
         "--disable-cuda-graph",
         "--disable-piecewise-cuda-graph",
         "--trust-remote-code",
+        *_PLATFORM_SERVER_ARGS,
     ]
 
     print("Launching server...")
@@ -559,6 +600,7 @@ def run_worker(args):
         "--disable-cuda-graph",
         "--disable-piecewise-cuda-graph",
         "--trust-remote-code",
+        *_PLATFORM_SERVER_ARGS,
     ]
 
     print("Starting worker node... (will block until master shuts down)\n")
@@ -589,3 +631,13 @@ if __name__ == "__main__":
         run_master(args)
     else:
         run_worker(args)
+
+
+    
+    # Optional: watchdog-vs-capture diagnostic (opt-in via SGLANG_FL_WATCHDOG_DIAG=1)
+    try:
+        from sglang_fl._watchdog_diag import install as _install_watchdog_diag
+
+        _install_watchdog_diag()
+    except Exception as _diag_e:
+        logger.warning(f"watchdog diag install failed: {_diag_e}")
