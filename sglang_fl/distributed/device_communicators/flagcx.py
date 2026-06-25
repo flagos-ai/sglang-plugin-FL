@@ -334,10 +334,6 @@ class FlagCXCommunicator:
         assert tensor.device == self.device, (
             f"FlagCX communicator on {self.device}, but tensor on {tensor.device}"
         )
-        os.write(
-            2,
-            f"[FlagCX P2P] send start: rank={self.rank}->dst={dst}, shape={tensor.shape}, numel={tensor.numel()}\n".encode(),
-        )
         flagcx_stream = self._get_stream()
         self.flagcx.flagcxSend(
             self._buffer_type(tensor.data_ptr()),
@@ -348,7 +344,6 @@ class FlagCXCommunicator:
             flagcx_stream,
         )
         self._free_stream(flagcx_stream)
-        os.write(2, f"[FlagCX P2P] send done: rank={self.rank}->dst={dst}\n".encode())
 
     def recv(self, tensor: torch.Tensor, src: int):
         """Receive tensor from source rank using FlagCX."""
@@ -357,10 +352,6 @@ class FlagCXCommunicator:
 
         assert tensor.device == self.device, (
             f"FlagCX communicator on {self.device}, but tensor on {tensor.device}"
-        )
-        os.write(
-            2,
-            f"[FlagCX P2P] recv start: src={src}->rank={self.rank}, shape={tensor.shape}, numel={tensor.numel()}\n".encode(),
         )
         flagcx_stream = self._get_stream()
         self.flagcx.flagcxRecv(
@@ -372,7 +363,6 @@ class FlagCXCommunicator:
             flagcx_stream,
         )
         self._free_stream(flagcx_stream)
-        os.write(2, f"[FlagCX P2P] recv done: src={src}->rank={self.rank}\n".encode())
 
     def group_start(self):
         """Start a group of collective operations."""

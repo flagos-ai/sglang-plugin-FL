@@ -417,78 +417,6 @@ def _setup_flaggems(config: dict = None):
                 h.addFilter(_AtenOnlyFilter())
 
 
-# ─── Strict mode: detect any torch.distributed GPU comm bypassing FlagCX ─────
-
-
-def _install_dist_traps():
-    """Monkey-patch torch.distributed GPU comm functions to detect leaks.
-
-    When SGLANG_FL_COMM_STRICT=1 and backend=flagcx, any call to
-    torch.distributed collective ops on a GPU (non-Gloo) group
-    will log a warning with a traceback, proving the call bypassed FlagCX.
-
-    CPU group (Gloo) calls are allowed — those are for metadata/object comm.
-
-    NOTE: This is a temporary verification tool. Remove after cross-machine
-    validation is complete. (TODO: delete _install_dist_traps)
-    """
-    import traceback
-
-    import torch.distributed as dist
-
-    # Gloo groups are safe (CPU metadata comm) — only trap NCCL/device groups
-    def _is_gpu_group(group):
-        if group is None:
-            return True  # default group is usually NCCL
-        try:
-            backend = dist.get_backend(group)
-            return backend != "gloo"
-        except Exception:
-            return True  # assume GPU if we can't tell
-
-    _trapped_fns = {}
-
-    def _make_trap(fn_name, original_fn):
-        def _trap(*args, **kwargs):
-            group = kwargs.get("group", None)
-            # For positional: all_reduce(tensor, op, group), broadcast(tensor, src, group)
-            # Try to extract group from common positional patterns
-            if group is None and len(args) >= 3:
-                candidate = args[2] if fn_name in ("send", "recv") else args[-1]
-                if isinstance(candidate, dist.ProcessGroup):
-                    group = candidate
-            if _is_gpu_group(group):
-                stack = "".join(traceback.format_stack(limit=8))
-                msg = (
-                    f"[COMM LEAK] torch.distributed.{fn_name}() called on GPU group! "
-                    f"This should go through FlagCX.\n{stack}"
-                )
-                os.write(2, msg.encode())
-            return original_fn(*args, **kwargs)
-
-        return _trap
-
-    for fn_name in [
-        "all_reduce",
-        "broadcast",
-        "send",
-        "recv",
-        "isend",
-        "irecv",
-        "reduce_scatter_tensor",
-        "all_gather_into_tensor",
-        "all_to_all",
-        "all_to_all_single",
-        "gather",
-    ]:
-        original = getattr(dist, fn_name, None)
-        if original is not None:
-            _trapped_fns[fn_name] = original
-            setattr(dist, fn_name, _make_trap(fn_name, original))
-
-    os.write(2, b"[COMM STRICT] torch.distributed GPU comm traps installed\n")
-
-
 # ─── Communicator AROUND hooks ────────────────────────────────────────────────
 
 
@@ -508,13 +436,6 @@ def _setup_communicator_hooks():
     from sglang.srt.plugins.hook_registry import HookRegistry, HookType
 
     _GC_TARGET = "sglang.srt.distributed.parallel_state.GroupCoordinator"
-
-    _COMM_DEBUG = os.environ.get("SGLANG_FL_COMM_DEBUG", "0") == "1"
-
-    def _comm_log(msg):
-        """Write debug message directly to fd 2 (stderr), bypassing Python logging/buffering."""
-        if _COMM_DEBUG:
-            os.write(2, f"[pid={os.getpid()}] {msg}\n".encode())
 
     # ── __init__ hook: create and attach CommunicatorFL ──
 
@@ -542,11 +463,6 @@ def _setup_communicator_hooks():
                     and self.pynccl_comm is not None
                 ):
                     self.pynccl_comm.disabled = True
-                    if _COMM_DEBUG:
-                        _comm_log(
-                            f"[Layer3] PyNccl disabled on rank={self.rank_in_group}, "
-                            f"all comm routed through FlagCX"
-                        )
             except Exception as e:
                 logger.warning(f"CommunicatorFL creation failed: {e}")
                 self.fl_communicator = None
@@ -558,8 +474,6 @@ def _setup_communicator_hooks():
     def _all_reduce_hook(original_fn, self, input_):
         comm = getattr(self, "fl_communicator", None)
         if comm is not None and not comm.disabled:
-            if _COMM_DEBUG:
-                _comm_log(f"[FlagCX] all_reduce: shape={input_.shape}")
             return comm.all_reduce(input_)
         return original_fn(self, input_)
 
@@ -568,8 +482,6 @@ def _setup_communicator_hooks():
     def _reduce_scatter_tensor_hook(original_fn, self, output, input_):
         comm = getattr(self, "fl_communicator", None)
         if comm is not None and not comm.disabled:
-            if _COMM_DEBUG:
-                _comm_log(f"[FlagCX] reduce_scatter: shape={input_.shape}")
             comm.reduce_scatter(output, input_)
             return
         return original_fn(self, output, input_)
@@ -579,8 +491,6 @@ def _setup_communicator_hooks():
     def _all_gather_into_tensor_hook(original_fn, self, output, input_):
         comm = getattr(self, "fl_communicator", None)
         if comm is not None and not comm.disabled:
-            if _COMM_DEBUG:
-                _comm_log(f"[FlagCX] all_gather: shape={input_.shape}")
             comm.all_gather(output, input_)
             return
         return original_fn(self, output, input_)
@@ -590,8 +500,6 @@ def _setup_communicator_hooks():
     def _reduce_scatterv_hook(original_fn, self, input_, output=None, sizes=None):
         comm = getattr(self, "fl_communicator", None)
         if comm is not None and not comm.disabled:
-            if _COMM_DEBUG:
-                _comm_log(f"[FlagCX] reduce_scatterv: shape={input_.shape}")
             return comm.reduce_scatterv(input_, output=output, sizes=sizes)
         return original_fn(self, input_, output=output, sizes=sizes)
 
@@ -600,8 +508,6 @@ def _setup_communicator_hooks():
     def _all_gatherv_hook(original_fn, self, input_, sizes=None):
         comm = getattr(self, "fl_communicator", None)
         if comm is not None and not comm.disabled:
-            if _COMM_DEBUG:
-                _comm_log(f"[FlagCX] all_gatherv: sizes={sizes}")
             return comm.all_gatherv(input_, sizes=sizes)
         return original_fn(self, input_, sizes=sizes)
 
@@ -612,8 +518,6 @@ def _setup_communicator_hooks():
         if comm is not None and not comm.disabled:
             if dst is None:
                 dst = (self.rank_in_group + 1) % self.world_size
-            if _COMM_DEBUG:
-                _comm_log(f"[FlagCX] send: dst={dst}, shape={tensor.shape}")
             comm.send(tensor, dst)
             return
         return original_fn(self, tensor, dst=dst)
@@ -625,8 +529,6 @@ def _setup_communicator_hooks():
         if comm is not None and not comm.disabled:
             if src is None:
                 src = (self.rank_in_group - 1) % self.world_size
-            if _COMM_DEBUG:
-                _comm_log(f"[FlagCX] recv: src={src}, size={size}")
             tensor = torch.empty(size, dtype=dtype, device=self.device)
             comm.recv(tensor, src)
             return tensor
@@ -637,8 +539,6 @@ def _setup_communicator_hooks():
     def _broadcast_hook(original_fn, self, input_, src=0):
         comm = getattr(self, "fl_communicator", None)
         if comm is not None and not comm.disabled:
-            if _COMM_DEBUG:
-                _comm_log(f"[FlagCX] broadcast: src={src}, shape={input_.shape}")
             return comm.broadcast(input_, src)
         return original_fn(self, input_, src)
 
@@ -651,8 +551,6 @@ def _setup_communicator_hooks():
         if comm is not None and not comm.disabled:
             if not torch.distributed.is_initialized() or self.world_size == 1:
                 return tensor_dict
-            if _COMM_DEBUG:
-                _comm_log(f"[FlagCX] broadcast_tensor_dict: src={src}")
             return comm.broadcast_tensor_dict(
                 tensor_dict=tensor_dict,
                 src=src,
@@ -683,8 +581,6 @@ def _setup_communicator_hooks():
                 return tensor_dict
             if dst is None:
                 dst = (self.rank_in_group + 1) % self.world_size
-            if _COMM_DEBUG:
-                _comm_log(f"[FlagCX] send_tensor_dict: dst={dst}")
             return comm.send_tensor_dict(
                 tensor_dict=tensor_dict,
                 dst=dst,
@@ -713,8 +609,6 @@ def _setup_communicator_hooks():
                 return None
             if src is None:
                 src = (self.rank_in_group - 1) % self.world_size
-            if _COMM_DEBUG:
-                _comm_log(f"[FlagCX] recv_tensor_dict: src={src}")
             return comm.recv_tensor_dict(
                 src=src,
                 recv_object_fn=self.recv_object,
@@ -761,11 +655,6 @@ def _setup_communicator_hooks():
         "CommunicatorFL AROUND hooks registered on GroupCoordinator "
         "(12 hooks: init + 8 collectives + broadcast_tensor_dict + send/recv_tensor_dict)"
     )
-
-    # ── Strict mode: trap any torch.distributed GPU comm that bypasses FlagCX ──
-    _COMM_STRICT = os.environ.get("SGLANG_FL_COMM_STRICT", "0") == "1"
-    if _COMM_STRICT and os.environ.get("SGLANG_FL_DIST_BACKEND", "") == "flagcx":
-        _install_dist_traps()
 
 
 # ─── Platform Plugin entry point ─────────────────────────────────────────────

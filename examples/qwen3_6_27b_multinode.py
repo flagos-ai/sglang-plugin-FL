@@ -25,8 +25,6 @@ Full tested command (2 nodes × 2 GPUs each, TP=2 PP=2):
     CUDA_VISIBLE_DEVICES=0,1 \
     SGLANG_FL_DIST_BACKEND=flagcx \
     FLAGCX_PATH=/mine/FlagCX_v0.13.0 \
-    SGLANG_FL_COMM_STRICT=1 \
-    SGLANG_FL_COMM_DEBUG=1 \
     SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero \
     SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK=0 \
     GLOO_SOCKET_IFNAME=eth0 NCCL_SOCKET_IFNAME=eth0 \
@@ -36,8 +34,6 @@ Full tested command (2 nodes × 2 GPUs each, TP=2 PP=2):
     CUDA_VISIBLE_DEVICES=0,1 \
     SGLANG_FL_DIST_BACKEND=flagcx \
     FLAGCX_PATH=/mine/FlagCX_v0.13.0 \
-    SGLANG_FL_COMM_STRICT=1 \
-    SGLANG_FL_COMM_DEBUG=1 \
     SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero \
     SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK=0 \
     GLOO_SOCKET_IFNAME=eth0 NCCL_SOCKET_IFNAME=eth0 \
@@ -52,8 +48,6 @@ Environment variables:
   NCCL_SOCKET_IFNAME    Network interface for NCCL (default: eth0)
   SGLANG_FL_DIST_BACKEND  Communication backend (flagcx / nccl)
   FLAGCX_PATH           Path to FlagCX installation
-  SGLANG_FL_COMM_STRICT   Enable GPU comm leak detection (1/0)
-  SGLANG_FL_COMM_DEBUG    Enable comm debug logging (1/0)
   SGLANG_FL_FLAGOS_BLACKLIST         Ops to exclude from FlagGems
   SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK  Set to 0 to skip memory check
 
