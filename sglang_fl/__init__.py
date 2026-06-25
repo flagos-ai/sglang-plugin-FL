@@ -426,10 +426,12 @@ def _setup_communicator_hooks():
     Auto-activates when the Platform Plugin is OOT. The CommunicatorFL
     transparently routes through FlagCX (if available) or torch.distributed.
 
-    Hooks:
-      - __init__: inject self.fl_communicator after original init
-      - all_reduce, reduce_scatter_tensor, all_gather_into_tensor,
-        reduce_scatterv, all_gatherv, send, recv: delegate to fl_communicator
+    Hooks (12 total):
+      - __init__: inject self.fl_communicator, suppress PyNccl when FlagCX active
+      - all_reduce, _reduce_scatter_tensor, _all_gather_into_tensor,
+        reduce_scatterv, all_gatherv, send, recv, broadcast: delegate to fl_communicator
+      - broadcast_tensor_dict, send_tensor_dict, recv_tensor_dict:
+        full method intercept for FlagCX coverage on composite operations
     """
     from sglang.srt.plugins.hook_registry import HookRegistry, HookType
 
@@ -453,6 +455,14 @@ def _setup_communicator_hooks():
                     rank_in_group=self.rank_in_group,
                     ranks=self.ranks,
                 )
+                # Suppress PyNccl when FlagCX is active to avoid conflicts
+                if (
+                    self.fl_communicator
+                    and self.fl_communicator._flagcx_comm
+                    and hasattr(self, "pynccl_comm")
+                    and self.pynccl_comm is not None
+                ):
+                    self.pynccl_comm.disabled = True
             except Exception as e:
                 logger.warning(f"CommunicatorFL creation failed: {e}")
                 self.fl_communicator = None
@@ -524,6 +534,88 @@ def _setup_communicator_hooks():
             return tensor
         return original_fn(self, size, dtype, src=src)
 
+    # ── broadcast hook ──
+
+    def _broadcast_hook(original_fn, self, input_, src=0):
+        comm = getattr(self, "fl_communicator", None)
+        if comm is not None and not comm.disabled:
+            return comm.broadcast(input_, src)
+        return original_fn(self, input_, src)
+
+    # ── broadcast_tensor_dict hook ──
+
+    def _broadcast_tensor_dict_hook(
+        original_fn, self, tensor_dict=None, src=0, group=None, metadata_group=None
+    ):
+        comm = getattr(self, "fl_communicator", None)
+        if comm is not None and not comm.disabled:
+            if not torch.distributed.is_initialized() or self.world_size == 1:
+                return tensor_dict
+            return comm.broadcast_tensor_dict(
+                tensor_dict=tensor_dict,
+                src=src,
+                rank_in_group=self.rank_in_group,
+                broadcast_object_fn=self.broadcast_object,
+            )
+        return original_fn(
+            self,
+            tensor_dict=tensor_dict,
+            src=src,
+            group=group,
+            metadata_group=metadata_group,
+        )
+
+    # ── send_tensor_dict hook ──
+
+    def _send_tensor_dict_hook(
+        original_fn,
+        self,
+        tensor_dict,
+        dst=None,
+        all_gather_group=None,
+        async_send=False,
+    ):
+        comm = getattr(self, "fl_communicator", None)
+        if comm is not None and not comm.disabled:
+            if self.world_size == 1:
+                return tensor_dict
+            if dst is None:
+                dst = (self.rank_in_group + 1) % self.world_size
+            return comm.send_tensor_dict(
+                tensor_dict=tensor_dict,
+                dst=dst,
+                send_object_fn=self.send_object,
+                all_gather_group=all_gather_group,
+            )
+        return original_fn(
+            self,
+            tensor_dict,
+            dst=dst,
+            all_gather_group=all_gather_group,
+            async_send=async_send,
+        )
+
+    # ── recv_tensor_dict hook ──
+
+    def _recv_tensor_dict_hook(
+        original_fn,
+        self,
+        src=None,
+        all_gather_group=None,
+    ):
+        comm = getattr(self, "fl_communicator", None)
+        if comm is not None and not comm.disabled:
+            if not torch.distributed.is_initialized() or self.world_size == 1:
+                return None
+            if src is None:
+                src = (self.rank_in_group - 1) % self.world_size
+            return comm.recv_tensor_dict(
+                src=src,
+                recv_object_fn=self.recv_object,
+                all_gather_group=all_gather_group,
+            )
+        return original_fn(self, src=src, all_gather_group=all_gather_group)
+
     # ── Register all hooks ──
 
     HookRegistry.register(f"{_GC_TARGET}.__init__", _init_hook, HookType.AROUND)
@@ -546,8 +638,23 @@ def _setup_communicator_hooks():
     )
     HookRegistry.register(f"{_GC_TARGET}.send", _send_hook, HookType.AROUND)
     HookRegistry.register(f"{_GC_TARGET}.recv", _recv_hook, HookType.AROUND)
+    HookRegistry.register(f"{_GC_TARGET}.broadcast", _broadcast_hook, HookType.AROUND)
+    HookRegistry.register(
+        f"{_GC_TARGET}.broadcast_tensor_dict",
+        _broadcast_tensor_dict_hook,
+        HookType.AROUND,
+    )
+    HookRegistry.register(
+        f"{_GC_TARGET}.send_tensor_dict", _send_tensor_dict_hook, HookType.AROUND
+    )
+    HookRegistry.register(
+        f"{_GC_TARGET}.recv_tensor_dict", _recv_tensor_dict_hook, HookType.AROUND
+    )
 
-    logger.info("CommunicatorFL AROUND hooks registered on GroupCoordinator")
+    logger.info(
+        "CommunicatorFL AROUND hooks registered on GroupCoordinator "
+        "(12 hooks: init + 8 collectives + broadcast_tensor_dict + send/recv_tensor_dict)"
+    )
 
 
 # ─── Platform Plugin entry point ─────────────────────────────────────────────

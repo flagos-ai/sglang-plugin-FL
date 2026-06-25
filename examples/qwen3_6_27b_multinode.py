@@ -4,7 +4,7 @@
 
 Validates that sglang-plugin-FL correctly handles multi-node tensor parallelism
 for the dense Qwen3.6-27B model by launching a distributed SGLang server across
-2 nodes and running text, concurrent, and multimodal (VL) inference tests.
+2 nodes and running text, concurrent, multimodal (VL), and high-concurrency tests.
 
 ============================================================================
 Usage:
@@ -23,14 +23,18 @@ Full tested command (2 nodes × 2 GPUs each, TP=2 PP=2):
 
   [Node 0 / Master / 192.168.0.66]
     CUDA_VISIBLE_DEVICES=0,1 \
-    SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero,index_put_,_index_put_impl,_index_put_impl_ \
+    SGLANG_FL_DIST_BACKEND=flagcx \
+    FLAGCX_PATH=/mine/FlagCX_v0.13.0 \
+    SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero \
     SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK=0 \
     GLOO_SOCKET_IFNAME=eth0 NCCL_SOCKET_IFNAME=eth0 \
         python examples/qwen3_6_27b_multinode.py --role master --master-addr 192.168.0.66 --tp 2 --pp 2
 
   [Node 1 / Worker / 192.168.0.65]
     CUDA_VISIBLE_DEVICES=0,1 \
-    SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero,index_put_,_index_put_impl,_index_put_impl_ \
+    SGLANG_FL_DIST_BACKEND=flagcx \
+    FLAGCX_PATH=/mine/FlagCX_v0.13.0 \
+    SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero \
     SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK=0 \
     GLOO_SOCKET_IFNAME=eth0 NCCL_SOCKET_IFNAME=eth0 \
         python examples/qwen3_6_27b_multinode.py --role worker --master-addr 192.168.0.66 --tp 2 --pp 2
@@ -42,8 +46,8 @@ Environment variables:
   CUDA_VISIBLE_DEVICES  GPU selection (e.g. 0,1)
   GLOO_SOCKET_IFNAME    Network interface for Gloo (default: eth0)
   NCCL_SOCKET_IFNAME    Network interface for NCCL (default: eth0)
-  NCCL_IB_DISABLE       Set to 1 to disable InfiniBand
-  NCCL_NET              Set to "Socket" to force TCP transport
+  SGLANG_FL_DIST_BACKEND  Communication backend (flagcx / nccl)
+  FLAGCX_PATH           Path to FlagCX installation
   SGLANG_FL_FLAGOS_BLACKLIST         Ops to exclude from FlagGems
   SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK  Set to 0 to skip memory check
 
@@ -111,6 +115,18 @@ def parse_args():
         default=600,
         help="Max seconds to wait for server ready (master only)",
     )
+    parser.add_argument(
+        "--text-concurrency",
+        type=int,
+        default=32,
+        help="Number of concurrent text requests for high-concurrency test",
+    )
+    parser.add_argument(
+        "--vl-concurrency",
+        type=int,
+        default=8,
+        help="Number of concurrent VL requests for high-concurrency test",
+    )
     return parser.parse_args()
 
 
@@ -135,7 +151,9 @@ def wait_for_server(port: int, timeout: int) -> bool:
     return False
 
 
-def chat_request(port: int, prompt: str, max_tokens: int = 32) -> str:
+def chat_request(
+    port: int, prompt: str, max_tokens: int = 32, timeout: int = 300
+) -> str:
     """Send a text chat completion request."""
     url = f"http://localhost:{port}/v1/chat/completions"
     payload = {
@@ -150,14 +168,16 @@ def chat_request(port: int, prompt: str, max_tokens: int = 32) -> str:
         req = urllib.request.Request(
             url, data=data, headers={"Content-Type": "application/json"}
         )
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             result = json.loads(resp.read())
             return result["choices"][0]["message"]["content"]
     except Exception as e:
         return f"ERROR: {e}"
 
 
-def vl_request(port: int, img_path: Path, question: str, max_tokens: int = 16) -> str:
+def vl_request(
+    port: int, img_path: Path, question: str, max_tokens: int = 16, timeout: int = 300
+) -> str:
     """Send a vision-language chat request with a base64-encoded image."""
     url = f"http://localhost:{port}/v1/chat/completions"
     mime = "image/png" if img_path.suffix == ".png" else "image/jpeg"
@@ -185,7 +205,7 @@ def vl_request(port: int, img_path: Path, question: str, max_tokens: int = 16) -
         req = urllib.request.Request(
             url, data=data, headers={"Content-Type": "application/json"}
         )
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             result = json.loads(resp.read())
             return result["choices"][0]["message"]["content"]
     except Exception as e:
@@ -224,12 +244,18 @@ class TestRunner:
         return self.failed == 0
 
 
-def run_tests(port: int, tp_size: int, nnodes: int) -> bool:
+def run_tests(
+    port: int,
+    tp_size: int,
+    nnodes: int,
+    text_concurrency: int = 32,
+    vl_concurrency: int = 8,
+) -> bool:
     """Run all verification tests. Returns True if all passed."""
     t = TestRunner()
 
-    # Test 1: Text Inference
-    print("\n=== Test 1: Text Inference ===")
+    # Test 1: Text Inference (Sequential)
+    print("\n=== Test 1: Text Inference (Sequential) ===")
     r = chat_request(
         port,
         "How many states are there in the United States? Answer with just the number.",
@@ -253,8 +279,9 @@ def run_tests(port: int, tp_size: int, nnodes: int) -> bool:
     t.check("Contains '2'", "2", r)
     t.check("Contains '7'", "7", r)
 
-    # Test 3: Concurrent Requests
-    print("\n=== Test 3: Concurrent Requests ===")
+    # Test 3: Concurrent Text x4
+    print("\n=== Test 3: Concurrent Text x4 ===")
+    t0 = time.time()
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         futures = {}
         for i in range(1, 5):
@@ -267,20 +294,58 @@ def run_tests(port: int, tp_size: int, nnodes: int) -> bool:
         for i in range(1, 5):
             r = futures[i].result()
             expected = str(i + i)
-            if expected not in r:
+            ok = expected in r
+            print(f"  {'PASS' if ok else 'FAIL'}: {i}+{i}={expected} -> {r}")
+            if not ok:
                 all_ok = False
-                print(f"  FAIL: {i}+{i} expected {expected}, got: {r}")
 
     t.total += 1
     if all_ok:
-        print("  PASS: All 4 concurrent requests correct")
         t.passed += 1
     else:
-        print("  FAIL: Some concurrent requests failed")
         t.failed += 1
+    print(f"  Time: {time.time() - t0:.1f}s")
 
-    # Test 4: Multimodal (VL)
-    print("\n=== Test 4: Multimodal (Vision-Language) ===")
+    # Test 4: High-Concurrency Text
+    print(f"\n=== Test 4: High-Concurrency Text x{text_concurrency} ===")
+    t0 = time.time()
+    ok_count = 0
+    fail_count = 0
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=text_concurrency
+    ) as executor:
+        futures = {}
+        for i in range(text_concurrency):
+            a, b = i + 1, i + 2
+            f = executor.submit(
+                chat_request, port, f"What is {a}+{b}? Answer with just the number.", 10
+            )
+            futures[i] = (a, b, f)
+
+        for i, (a, b, f) in futures.items():
+            try:
+                r = f.result(timeout=300)
+                expected = str(a + b)
+                if expected in r:
+                    ok_count += 1
+                else:
+                    fail_count += 1
+                    print(f"  FAIL: {a}+{b}={expected} -> {r}")
+            except Exception as e:
+                fail_count += 1
+                print(f"  FAIL: {a}+{b} -> ERROR: {e}")
+
+    t.total += 1
+    if fail_count == 0:
+        print(f"  PASS: {ok_count}/{text_concurrency} correct")
+        t.passed += 1
+    else:
+        print(f"  FAIL: {ok_count}/{text_concurrency} correct, {fail_count} failed")
+        t.failed += 1
+    print(f"  Time: {time.time() - t0:.1f}s")
+
+    # Test 5: Multimodal (VL) Sequential
+    print("\n=== Test 5: Multimodal (VL) Sequential ===")
     if IMG_DIR.is_dir():
         r = vl_request(
             port,
@@ -311,6 +376,53 @@ def run_tests(port: int, tp_size: int, nnodes: int) -> bool:
     else:
         print(f"  SKIP: test_images directory not found at {IMG_DIR}")
 
+    # Test 6: High-Concurrency VL
+    if IMG_DIR.is_dir() and vl_concurrency > 1:
+        print(f"\n=== Test 6: High-Concurrency VL x{vl_concurrency} ===")
+        vl_cases = [
+            (IMG_DIR / "red_square.jpg", "What color is this? One word.", "red"),
+            (IMG_DIR / "cat.jpg", "What animal? One word.", "cat"),
+            (IMG_DIR / "digit_seven.png", "What digit? Just the number.", "7"),
+            (IMG_DIR / "stop_sign.png", "What does this sign say? One word.", "stop"),
+        ]
+        # Cycle through images
+        all_cases = (vl_cases * ((vl_concurrency // len(vl_cases)) + 1))[
+            :vl_concurrency
+        ]
+        t0 = time.time()
+        ok_count = 0
+        fail_count = 0
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=vl_concurrency
+        ) as executor:
+            futures = {}
+            for i, (img, q, exp) in enumerate(all_cases):
+                futures[i] = (
+                    img.name,
+                    exp,
+                    executor.submit(vl_request, port, img, q, 10),
+                )
+            for i, (name, expected, f) in futures.items():
+                try:
+                    r = f.result(timeout=300)
+                    if expected.lower() in r.lower():
+                        ok_count += 1
+                    else:
+                        fail_count += 1
+                        print(f"  FAIL: {name} -> {r}")
+                except Exception as e:
+                    fail_count += 1
+                    print(f"  FAIL: {name} -> ERROR: {e}")
+
+        t.total += 1
+        if fail_count == 0:
+            print(f"  PASS: {ok_count}/{vl_concurrency} correct")
+            t.passed += 1
+        else:
+            print(f"  FAIL: {ok_count}/{vl_concurrency} correct, {fail_count} failed")
+            t.failed += 1
+        print(f"  Time: {time.time() - t0:.1f}s")
+
     return t.summary(tp_size, nnodes)
 
 
@@ -339,6 +451,9 @@ def run_master(args):
     print(f"  TP:     {args.tp}    PP: {args.pp}    Nodes: {args.nnodes}")
     print(f"  Master: {args.master_addr}  dist={args.dist_port}  nccl={args.nccl_port}")
     print(f"  API:    http://localhost:{args.port}")
+    print(
+        f"  Text concurrency: {args.text_concurrency}  VL concurrency: {args.vl_concurrency}"
+    )
     print("=" * 56)
 
     cmd = [
@@ -391,7 +506,13 @@ def run_master(args):
             sys.exit(1)
         print("\nServer ready!")
 
-        success = run_tests(args.port, args.tp, args.nnodes)
+        success = run_tests(
+            args.port,
+            args.tp,
+            args.nnodes,
+            text_concurrency=args.text_concurrency,
+            vl_concurrency=args.vl_concurrency,
+        )
         cleanup()
         sys.exit(0 if success else 1)
 

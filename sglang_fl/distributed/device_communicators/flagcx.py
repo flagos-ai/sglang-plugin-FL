@@ -16,6 +16,7 @@ Usage:
       python -m sglang.launch_server --tp 2 ...
 """
 
+import contextlib
 import ctypes
 import logging
 import os
@@ -132,7 +133,13 @@ class FlagCXCommunicator:
         self.device = device
 
         # Initialize FlagCX communicator
-        device_ctx = torch.cuda.device(self.device)
+        device_str = str(self.device)
+        if "musa" in device_str:
+            device_ctx = torch.musa.device(self.device)
+        elif "npu" in device_str:
+            device_ctx = contextlib.nullcontext()
+        else:
+            device_ctx = torch.cuda.device(self.device)
         with device_ctx:
             self.comm = self.flagcx.flagcxCommInitRank(
                 self.world_size, ctypes.byref(self.unique_id), self.rank
@@ -243,7 +250,7 @@ class FlagCXCommunicator:
             f"FlagCX communicator on {self.device}, but tensor on {input_.device}"
         )
         flagcx_stream = self._get_stream()
-        self.flagcx.flagcxGroupStart()
+        self.flagcx.flagcxGroupStart(self.comm)
         split_offset = 0
         for root, split_size in enumerate(sizes):
             chunk = input_[split_offset : split_offset + split_size, ...]
@@ -258,7 +265,7 @@ class FlagCXCommunicator:
                 flagcx_stream,
             )
             split_offset += split_size
-        self.flagcx.flagcxGroupEnd()
+        self.flagcx.flagcxGroupEnd(self.comm)
         self._free_stream(flagcx_stream)
 
     def all_gatherv(
@@ -276,7 +283,7 @@ class FlagCXCommunicator:
         )
         assert output.shape[0] == sum(sizes)
         flagcx_stream = self._get_stream()
-        self.flagcx.flagcxGroupStart()
+        self.flagcx.flagcxGroupStart(self.comm)
         split_offset = 0
         for root, split_size in enumerate(sizes):
             dst_slice = output[split_offset : split_offset + split_size]
@@ -290,7 +297,7 @@ class FlagCXCommunicator:
                 flagcx_stream,
             )
             split_offset += split_size
-        self.flagcx.flagcxGroupEnd()
+        self.flagcx.flagcxGroupEnd(self.comm)
         self._free_stream(flagcx_stream)
 
     def broadcast(self, tensor: torch.Tensor, src: int):
@@ -319,13 +326,62 @@ class FlagCXCommunicator:
         )
         self._free_stream(flagcx_stream)
 
+    def send(self, tensor: torch.Tensor, dst: int):
+        """Send tensor to destination rank using FlagCX."""
+        if self.disabled:
+            return
+
+        assert tensor.device == self.device, (
+            f"FlagCX communicator on {self.device}, but tensor on {tensor.device}"
+        )
+        flagcx_stream = self._get_stream()
+        self.flagcx.flagcxSend(
+            self._buffer_type(tensor.data_ptr()),
+            tensor.numel(),
+            self._dtype_enum.from_torch(tensor.dtype),
+            dst,
+            self.comm,
+            flagcx_stream,
+        )
+        self._free_stream(flagcx_stream)
+
+    def recv(self, tensor: torch.Tensor, src: int):
+        """Receive tensor from source rank using FlagCX."""
+        if self.disabled:
+            return
+
+        assert tensor.device == self.device, (
+            f"FlagCX communicator on {self.device}, but tensor on {tensor.device}"
+        )
+        flagcx_stream = self._get_stream()
+        self.flagcx.flagcxRecv(
+            self._buffer_type(tensor.data_ptr()),
+            tensor.numel(),
+            self._dtype_enum.from_torch(tensor.dtype),
+            src,
+            self.comm,
+            flagcx_stream,
+        )
+        self._free_stream(flagcx_stream)
+
     def group_start(self):
         """Start a group of collective operations."""
-        self.flagcx.flagcxGroupStart()
+        self.flagcx.flagcxGroupStart(self.comm)
 
     def group_end(self):
         """End a group of collective operations."""
-        self.flagcx.flagcxGroupEnd()
+        self.flagcx.flagcxGroupEnd(self.comm)
+
+    def destroy(self):
+        """Destroy FlagCX communicator and free resources."""
+        if hasattr(self, "comm") and self.comm is not None:
+            try:
+                self.flagcx.flagcxCommDestroy(self.comm)
+            except Exception as e:
+                logger.warning(f"FlagCX comm destroy failed: {e}")
+            self.comm = None
+            self.available = False
+            self.disabled = True
 
 
 def create_flagcx_communicator(group, device) -> FlagCXCommunicator:
