@@ -115,7 +115,7 @@ class FlagCXCommunicator:
 
         # Initialize FlagCX unique ID (rank 0 generates, then broadcast)
         if self.rank == 0:
-            self.unique_id = self.flagcx.flagcxGetUniqueId().contents
+            self.unique_id = self.flagcx.flagcxGetUniqueId()
         else:
             self.unique_id = flagcxUniqueId()
 
@@ -142,12 +142,12 @@ class FlagCXCommunicator:
             device_ctx = torch.cuda.device(self.device)
         with device_ctx:
             self.comm = self.flagcx.flagcxCommInitRank(
-                self.world_size, ctypes.byref(self.unique_id), self.rank
+                self.world_size, self.unique_id, self.rank
             )
             # Warmup: small all_reduce to ensure comm is ready
             warmup_data = torch.zeros(1, device=self.device)
             self._flagcx_all_reduce(warmup_data)
-            torch.cuda.current_stream().synchronize()
+            self._sync_current_stream()
             del warmup_data
 
         self.available = True
@@ -157,11 +157,52 @@ class FlagCXCommunicator:
             f"world_size={self.world_size}, device={self.device}"
         )
 
+    def _get_raw_stream_handle(self):
+        """Return the vendor-specific raw stream pointer (an int) for FlagCX streamCopy."""
+        device_str = str(self.device)
+        if "npu" in device_str:
+            return torch.npu.current_stream().npu_stream
+        if "musa" in device_str:
+            return torch.musa.current_stream().musa_stream
+        return torch.cuda.current_stream().cuda_stream
+
+    def _sync_current_stream(self):
+        """Synchronize the vendor-specific current stream for this device.
+
+        Skipped during graph capture: synchronize() is illegal while the
+        stream is being captured (NPU returns 107027 'stream is captured';
+        CUDA raises CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED). Inside a graph
+        the recorded op order already enforces causality, so the sync is
+        only needed in normal eager-mode forward — to make sure FlagCX
+        async send/recv/collective writes are visible before the caller
+        reads the buffer (e.g. PP forward_batch.input_ids on the next step).
+        """
+        device_str = str(self.device)
+        if "npu" in device_str:
+            stream = torch.npu.current_stream()
+        elif "musa" in device_str:
+            stream = torch.musa.current_stream()
+        else:
+            stream = torch.cuda.current_stream()
+        try:
+            stream.synchronize()
+        except RuntimeError as e:
+            if "captur" in str(e).lower():
+                return
+            raise
+
     def _get_stream(self):
-        """Get current CUDA stream wrapped for FlagCX."""
-        stream = torch.cuda.current_stream()
-        flagcx_stream = self.flagcx.adaptor_stream_copy(stream)
-        return flagcx_stream
+        """Bind a FlagCX stream onto the current vendor stream (bypasses wrapper's
+        musa/cuda-only attribute reflection so NPU works without patching FlagCX)."""
+        from plugin.interservice.flagcx_wrapper import flagcxStream_t
+        new_stream = flagcxStream_t()
+        self.flagcx.FLAGCX_CHECK(
+            self.flagcx.devHandle.contents.streamCopy(
+                ctypes.byref(new_stream),
+                ctypes.c_void_p(self._get_raw_stream_handle()),
+            )
+        )
+        return new_stream
 
     def _free_stream(self, flagcx_stream):
         """Free a FlagCX stream wrapper."""
