@@ -431,7 +431,12 @@ def _apply_vendor_patches() -> None:
     import importlib
 
     try:
-        from flag_gems.runtime.backend.device import DeviceDetector
+        try:
+            # FlagGems<=5.0.2: DeviceDetector lives in device.
+            from flag_gems.runtime.backend.device import DeviceDetector
+        except ImportError:
+            # FlagGems>5.0.2: DeviceDetector lives in device_finder.
+            from flag_gems.runtime.backend.device_finder import DeviceDetector
 
         vendor = DeviceDetector().vendor_name
     except Exception as e:
