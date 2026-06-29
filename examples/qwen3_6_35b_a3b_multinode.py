@@ -631,13 +631,3 @@ if __name__ == "__main__":
         run_master(args)
     else:
         run_worker(args)
-
-
-    
-    # Optional: watchdog-vs-capture diagnostic (opt-in via SGLANG_FL_WATCHDOG_DIAG=1)
-    try:
-        from sglang_fl._watchdog_diag import install as _install_watchdog_diag
-
-        _install_watchdog_diag()
-    except Exception as _diag_e:
-        logger.warning(f"watchdog diag install failed: {_diag_e}")
