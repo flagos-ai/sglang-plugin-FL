@@ -68,6 +68,25 @@ import time
 import urllib.request
 from pathlib import Path
 
+# ─── Platform detection ───────────────────────────────────────────────────────
+try:
+    import torch_txda  # noqa: F401
+    from torch_txda import transfer_to_txda
+except ImportError:
+    pass
+import torch
+
+_is_txda = hasattr(torch, "txda") and torch.txda.is_available()
+_is_npu = hasattr(torch, "npu") and torch.npu.is_available()
+
+if _is_txda:
+    os.environ.setdefault("SGLANG_FL_TIMER_ENABLE", "1")
+    os.environ.setdefault("SGLANG_FL_DIST_BACKEND", "tccl")
+if _is_npu:
+    os.environ.setdefault("SGLANG_ENABLE_OVERLAP_PLAN_STREAM", "0")
+    os.environ.setdefault("HCCL_BUFFSIZE", "2400")
+    os.environ.setdefault("SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK", "128")
+
 # ─── Configuration ───────────────────────────────────────────────────────────
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-35B-A3B")
@@ -470,6 +489,9 @@ def run_master(args):
         "--disable-piecewise-cuda-graph",
         "--trust-remote-code",
     ]
+    if _is_txda:
+        cmd.insert(cmd.index("--mem-fraction-static"), "--device")
+        cmd.insert(cmd.index("--mem-fraction-static"), "txda")
 
     print("Launching server...")
     server_proc = subprocess.Popen(cmd)
@@ -560,6 +582,9 @@ def run_worker(args):
         "--disable-piecewise-cuda-graph",
         "--trust-remote-code",
     ]
+    if _is_txda:
+        cmd.insert(cmd.index("--mem-fraction-static"), "--device")
+        cmd.insert(cmd.index("--mem-fraction-static"), "txda")
 
     print("Starting worker node... (will block until master shuts down)\n")
     try:

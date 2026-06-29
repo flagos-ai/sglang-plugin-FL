@@ -351,7 +351,11 @@ def _setup_flaggems(config: dict = None):
         logger.info("FlagGems disabled (USE_FLAGGEMS=0)")
         return
 
-    import flag_gems
+    try:
+        import flag_gems  # noqa: F811
+    except Exception as e:
+        logger.warning("FlagGems import failed (%s) — ATen replacement disabled", e)
+        return
 
     # Whitelist/blacklist: env > YAML config
     if config is not None:
@@ -500,6 +504,14 @@ def _setup_communicator_hooks():
             except Exception as e:
                 logger.warning(f"CommunicatorFL creation failed: {e}")
                 self.fl_communicator = None
+            # Suppress PyNccl when FlagCX is active to avoid conflicts
+            if (
+                self.fl_communicator
+                and self.fl_communicator._flagcx_comm
+                and hasattr(self, "pynccl_comm")
+                and self.pynccl_comm is not None
+            ):
+                self.pynccl_comm.disabled = True
         else:
             self.fl_communicator = None
 
@@ -716,7 +728,17 @@ def activate_platform() -> str | None:
         )
         return "sglang_fl.platform:PlatformFL"
     except Exception as e:
-        logger.warning("sglang_fl platform activation failed: %s", e)
+        logger.warning("sglang_fl platform activation via FlagGems failed: %s", e)
+        # Fallback: activate if txda is available via torch (e.g. when FlagGems
+        # DeviceDetector lacks txda support).
+        import torch as _torch
+
+        try:
+            import torch_txda  # noqa: F401
+        except ImportError:
+            pass
+        if hasattr(_torch, "txda") and _torch.txda.is_available():
+            return "sglang_fl.platform:PlatformFL"
         return None
 
 
@@ -743,6 +765,14 @@ def load_plugin():
 
     # 0. Build unified config (YAML + env vars)
     config = _build_config()
+
+    # Trigger txda monkey-patches (auto-executed on module import,
+    #       no-op on non-txda platforms). Import is guarded so that missing
+    #       txda dependencies never break other chips.
+    try:
+        import sglang_fl.dispatch.backends.vendor.txda  # noqa: F401
+    except Exception:
+        pass
 
     # 1. FlagGems ATen ops
     _setup_flaggems(config)

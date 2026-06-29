@@ -87,7 +87,7 @@ class CommunicatorFL:
         backend_name = "flagcx" if self._flagcx_comm else "torch.distributed"
         logger.info(
             f"CommunicatorFL created: world_size={world_size}, "
-            f"rank={rank_in_group}, backend={backend_name}"
+            f"rank={rank_in_group}, backend={backend_name}", flush=True
         )
 
     # ─── all_reduce ──────────────────────────────────────────────────────────

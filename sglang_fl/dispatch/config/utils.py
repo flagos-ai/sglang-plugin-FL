@@ -25,6 +25,7 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
+# import torch_txda
 import yaml
 
 # Directory containing config files (config/)
@@ -40,7 +41,8 @@ def get_platform_name() -> str:
     """
     try:
         import torch
-
+        if hasattr(torch, "txda") and torch.txda.is_available():
+            return "tsingmicro"
         if hasattr(torch, "npu") and torch.npu.is_available():
             return "ascend"
         if hasattr(torch, "musa") and torch.musa.is_available():
