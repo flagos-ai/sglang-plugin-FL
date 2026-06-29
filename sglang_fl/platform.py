@@ -35,6 +35,7 @@ _DIST_BACKEND_MAP = {
     "cambricon": "cncl",
     "mthreads": "mccl",
     "thead": "nccl",
+    "tsingmicro": "tccl",
 }
 
 # Attention backend mapping: vendor_name -> default backend
@@ -68,13 +69,29 @@ class PlatformFL(SRTPlatform):
 
     def __init__(self):
         super().__init__()
-        detector = _get_device_detector()
-
-        # Core device identity from FlagGems
-        self._vendor_name: str = detector.vendor_name  # "nvidia", "ascend", ...
-        self._device_type: str = detector.name  # "cuda", "npu", ...
-        self._dispatch_key: str = detector.dispatch_key  # "CUDA", "NPU", ...
-        self._device_count: int = detector.device_count
+        try:
+            # Core device identity from FlagGems
+            self._vendor_name: str = detector.vendor_name  # "nvidia", "ascend", ...
+            self._device_type: str = detector.name  # "cuda", "npu", ...
+            self._dispatch_key: str = detector.dispatch_key  # "CUDA", "NPU", ...
+            self._device_count: int = detector.device_count
+            logger.info(
+                "PlatformFL (FlagGems): vendor=%s device=%s count=%d",
+                self._vendor_name,
+                self._device_type,
+                self._device_count,
+            )
+        except Exception as e:
+            logger.warning("FlagGems DeviceDetector failed: %s; using torch fallback", e)
+            self._vendor_name, self._device_type, self._dispatch_key, self._device_count = (
+                self._detect_device_from_torch()
+            )
+            logger.info(
+                "PlatformFL (torch fallback): vendor=%s device=%s count=%d",
+                self._vendor_name,
+                self._device_type,
+                self._device_count,
+            )
 
         # Set class-level attributes expected by DeviceMixin
         self.device_name = self._device_type
@@ -93,12 +110,12 @@ class PlatformFL(SRTPlatform):
             backend.set_torch_backend_device_fn(self._vendor_name)
         except Exception:
             pass
-
         logger.info(
-            "PlatformFL initialized: vendor=%s, device=%s, dist_backend=%s",
+            "PlatformFL initialized: vendor=%s, device=%s, dist_backend=%s, count=%d",
             self._vendor_name,
             self._device_type,
             self._dist_backend,
+            self._device_count,
         )
 
     def _resolve_dist_backend(self) -> str:
@@ -112,6 +129,20 @@ class PlatformFL(SRTPlatform):
             return "flagcx"
         # Default by vendor
         return _DIST_BACKEND_MAP.get(self._vendor_name, "nccl")
+
+    @staticmethod
+    def _detect_device_from_torch() -> tuple[str, str, str, int]:
+        """Fallback device detection via torch when FlagGems DeviceDetector is unavailable."""
+        import torch as _torch
+
+        if hasattr(_torch, "txda") and _torch.txda.is_available():
+            return ("txda", "txda", "TXDA", _torch.txda.device_count())
+        if hasattr(_torch, "npu") and _torch.npu.is_available():
+            return ("ascend", "npu", "NPU", _torch.npu.device_count())
+        if hasattr(_torch, "musa") and _torch.musa.is_available():
+            return ("mthreads", "musa", "MUSA", _torch.musa.device_count())
+        return ("nvidia", "cuda", "CUDA", _torch.cuda.device_count())
+
 
     @property
     def vendor_name(self) -> str:
@@ -133,6 +164,16 @@ class PlatformFL(SRTPlatform):
 
     def is_out_of_tree(self) -> bool:
         return True
+
+    def get_compile_backend(self, mode: str | None = None) -> str:
+        """Return the compilation backend for this platform.
+
+        On txda and other non-CUDA platforms, triton's inductor backend
+        has no active driver, so we return "eager" to disable torch.compile.
+        """
+        if self._device_type == "txda":
+            return "eager"
+        return "inductor"
 
     # ------------------------------------------------------------------
     # Active methods (called by SGLang core)
@@ -284,7 +325,7 @@ class PlatformFL(SRTPlatform):
         return self._device_type == "cuda"
 
     def is_pin_memory_available(self) -> bool:
-        return self._device_type in ("cuda", "npu", "xpu", "musa")
+        return self._device_type in ("cuda", "npu", "xpu", "musa", "tsingmicro")
 
     def supports_fp8(self) -> bool:
         if self._device_type == "cuda":
