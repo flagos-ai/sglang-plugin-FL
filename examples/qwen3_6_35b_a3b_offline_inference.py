@@ -35,7 +35,7 @@ if _is_npu:
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-MODEL_PATH = os.environ.get("MODEL_PATH", "/data/Qwen3.6-35B-A3B")
+MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-35B-A3B")
 TP_SIZE = int(os.environ.get("TP_SIZE", "4" if _is_npu else "1"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "10"))
 
