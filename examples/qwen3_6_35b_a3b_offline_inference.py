@@ -193,7 +193,7 @@ def run_engine():
     )
 
     sampling_params = {"max_new_tokens": MAX_TOKENS, "temperature": 0}
-    vl_sampling = {"max_new_tokens": MAX_TOKENS, "temperature": 0}
+    vl_sampling = {"max_new_tokens": 64, "temperature": 0}
 
     # --- Text inference ---
     print("=== Text Inference ===")
@@ -223,8 +223,7 @@ def run_engine():
         )
         text = result["text"]
         vl_outputs.append(text)
-        print(f"  Prompt: [{case['image']}] {case['question']}\n    → {text!r}")
-
+        print(f" [{case['image']}] {case['question']}\n → {text!r}")
 
     engine.shutdown()
     return text_outputs, vl_outputs
