@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Qwen3.6-35B-A3B (MoE) offline inference with sglang-plugin-FL.
 
-Supports CUDA, MUSA, and Ascend NPU; platform-specific settings are applied
-automatically at runtime.
+Supports CUDA, MUSA, Ascend NPU, and TsingMicro txda; platform-specific
+settings are applied automatically at runtime.
 
 Usage:
   python qwen3_6_35b_a3b_offline_inference.py
@@ -17,14 +17,21 @@ Environment variables:
 
 import os
 import sys
+import types
 from pathlib import Path
-
+try:
+    import torch_txda  # noqa: F401
+    from torch_txda import transfer_to_txda
+except ImportError:
+    pass
 import torch
+
 
 # ─── Platform detection ───────────────────────────────────────────────────────
 
 _is_musa = hasattr(torch, "musa") and torch.musa.is_available()
 _is_npu = hasattr(torch, "npu") and torch.npu.is_available()
+_is_txda = hasattr(torch, "txda") and torch.txda.is_available()
 
 # Must be set before importing sglang.
 if _is_npu:
@@ -33,10 +40,15 @@ if _is_npu:
     os.environ.setdefault("HCCL_BUFFSIZE", "2400")
     os.environ.setdefault("SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK", "128")
 
+if _is_txda:
+    # os.environ.setdefault("SGLANG_ENABLE_OVERLAP_PLAN_STREAM", "0")
+    # os.environ.setdefault("TCCL_BUFFSIZE", "2400")
+    os.environ.setdefault("SGLANG_FL_TIMER_ENABLE", "1")
+
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-35B-A3B")
-TP_SIZE = int(os.environ.get("TP_SIZE", "4" if _is_npu else "1"))
+TP_SIZE = int(os.environ.get("TP_SIZE", "8" if _is_txda else ("4" if _is_npu else "1")))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "10"))
 
 _HERE = Path(__file__).resolve().parent
@@ -53,6 +65,29 @@ elif _is_npu:
         "dtype": "bfloat16",
         "trust_remote_code": True,
         "disable_radix_cache": True,
+    }
+elif _is_txda:
+    print("inference use txda")
+    # ─── Early stub-module injection ─────────────────────────────────────────────
+    # Must run at *import time*, before any SGLang submodule triggers a cascade
+    # of real imports of sgl_kernel / flashinfer / pynccl_allocator.  The
+    # patches subsystem's load_plugin() entry point runs too late for that.
+    try:
+        from sglang_fl.dispatch.backends.vendor.txda.patches.platform_stubs import patch as _patch_stubs
+        _patch_stubs()
+    except Exception:
+        pass  # best-effort: if this fails, the downstream import chain will show the real error
+    _extra_engine_kwargs = {
+        "device": "txda",
+        "dtype": "bfloat16",
+        "trust_remote_code": True,
+        "disable_radix_cache": True,
+        "watchdog_timeout": 3600,
+        "mm_attention_backend": "triton_attn",
+        "disable_fast_image_processor": True,
+        "mem_fraction_static": 0.6,
+        "context_length": 8192,
+        "chunked_prefill_size":256
     }
 else:
     _extra_engine_kwargs = {"trust_remote_code": True}
@@ -145,12 +180,13 @@ def _image_uri(name: str) -> str:
 
 
 def run_engine():
+
     from sglang.srt.entrypoints.engine import Engine
 
     engine = Engine(
         model_path=MODEL_PATH,
         tp_size=TP_SIZE,
-        mem_fraction_static=0.85,
+        # mem_fraction_static=0.85,
         disable_cuda_graph=True,
         disable_piecewise_cuda_graph=True,
         **_extra_engine_kwargs,
@@ -187,7 +223,7 @@ def run_engine():
         )
         text = result["text"]
         vl_outputs.append(text)
-        print(f"  [{case['image']}] {case['question']}\n    → {text!r}")
+        print(f" [{case['image']}] {case['question']}\n → {text!r}")
 
     engine.shutdown()
     return text_outputs, vl_outputs

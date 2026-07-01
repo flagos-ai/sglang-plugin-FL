@@ -423,9 +423,9 @@ def _setup_flaggems(config: dict = None):
 def _apply_vendor_patches() -> None:
     """Import vendor/<vendor_name>/patch.py to apply vendor monkey-patches
     on sglang internals. Called last in load_plugin(), after every sglang_fl
-    layer (FlagGems ATen, dispatch system, AROUND hooks, communicator). 
+    layer (FlagGems ATen, dispatch system, AROUND hooks, communicator).
     Resolves vendor_name via FlagGems' DeviceDetector — no PlatformFL needed,
-    so this still runs before sglang's model_runner is imported. Silently 
+    so this still runs before sglang's model_runner is imported. Silently
     skips when the vendor module is absent or hardware is unrecognised.
     """
     import importlib
@@ -443,7 +443,10 @@ def _apply_vendor_patches() -> None:
         logger.warning("vendor patch skipped: DeviceDetector failed (%s)", e)
         return
 
-    module = f"sglang_fl.dispatch.backends.vendor.{vendor}.patch"
+    if vendor == "tsingmicro":
+        module = f"sglang_fl.dispatch.backends.vendor.txda.patch"
+    else:
+        module = f"sglang_fl.dispatch.backends.vendor.{vendor}.patch"
     try:
         importlib.import_module(module)
         logger.info("vendor patch loaded: %s", module)
@@ -489,14 +492,6 @@ def _setup_communicator_hooks():
                     rank_in_group=self.rank_in_group,
                     ranks=self.ranks,
                 )
-                # Suppress PyNccl when FlagCX is active to avoid conflicts
-                if (
-                    self.fl_communicator
-                    and self.fl_communicator._flagcx_comm
-                    and hasattr(self, "pynccl_comm")
-                    and self.pynccl_comm is not None
-                ):
-                    self.pynccl_comm.disabled = True
             except Exception as e:
                 logger.warning(f"CommunicatorFL creation failed: {e}")
                 self.fl_communicator = None

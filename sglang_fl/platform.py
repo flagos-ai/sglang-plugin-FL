@@ -35,6 +35,7 @@ _DIST_BACKEND_MAP = {
     "cambricon": "cncl",
     "mthreads": "mccl",
     "thead": "nccl",
+    "tsingmicro": "tccl",
 }
 
 # Attention backend mapping: vendor_name -> default backend
@@ -93,12 +94,12 @@ class PlatformFL(SRTPlatform):
             backend.set_torch_backend_device_fn(self._vendor_name)
         except Exception:
             pass
-
         logger.info(
-            "PlatformFL initialized: vendor=%s, device=%s, dist_backend=%s",
+            "PlatformFL initialized: vendor=%s, device=%s, dist_backend=%s, count=%d",
             self._vendor_name,
             self._device_type,
             self._dist_backend,
+            self._device_count,
         )
 
     def _resolve_dist_backend(self) -> str:
@@ -133,6 +134,16 @@ class PlatformFL(SRTPlatform):
 
     def is_out_of_tree(self) -> bool:
         return True
+
+    def get_compile_backend(self, mode: str | None = None) -> str:
+        """Return the compilation backend for this platform.
+
+        On txda and other non-CUDA platforms, triton's inductor backend
+        has no active driver, so we return "eager" to disable torch.compile.
+        """
+        if self._device_type == "txda":
+            return "eager"
+        return "inductor"
 
     # ------------------------------------------------------------------
     # Active methods (called by SGLang core)
@@ -284,7 +295,7 @@ class PlatformFL(SRTPlatform):
         return self._device_type == "cuda"
 
     def is_pin_memory_available(self) -> bool:
-        return self._device_type in ("cuda", "npu", "xpu", "musa")
+        return self._device_type in ("cuda", "npu", "xpu", "musa", "tsingmicro")
 
     def supports_fp8(self) -> bool:
         if self._device_type == "cuda":
@@ -304,9 +315,14 @@ class PlatformFL(SRTPlatform):
         decorators live, which inject OOT backends into sglang's
         ``ATTENTION_BACKENDS`` dict. See ``vendor/template/`` for a skeleton.
         """
-        vendor_module = (
-            f"sglang_fl.dispatch.backends.vendor.{self._vendor_name}.register_platform"
-        )
+        if self._vendor_name == "tsingmicro":
+            vendor_module = (
+                f"sglang_fl.dispatch.backends.vendor.txda.register_platform"
+            )
+        else:
+            vendor_module = (
+                f"sglang_fl.dispatch.backends.vendor.{self._vendor_name}.register_platform"
+            )
         try:
             importlib.import_module(vendor_module)
             status = "loaded"

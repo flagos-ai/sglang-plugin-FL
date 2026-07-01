@@ -71,6 +71,19 @@ import time
 import urllib.request
 from pathlib import Path
 
+# ─── Platform detection ───────────────────────────────────────────────────────
+try:
+    import torch_txda  # noqa: F401
+    from torch_txda import transfer_to_txda
+except ImportError:
+    pass
+import torch
+
+_is_txda = hasattr(torch, "txda") and torch.txda.is_available()
+
+if _is_txda:
+    os.environ.setdefault("SGLANG_FL_TIMER_ENABLE", "1")
+
 # ─── Configuration ───────────────────────────────────────────────────────────
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-27B")
@@ -483,6 +496,21 @@ def run_master(args):
         "--trust-remote-code",
     ]
 
+    if _is_txda:
+        insert_pos = cmd.index("--mem-fraction-static")
+        cmd[insert_pos + 1] = "0.6"
+        for flag in reversed([
+            "--device", "txda",
+            "--dtype", "bfloat16",
+            "--disable-radix-cache",
+            "--watchdog-timeout", "3600",
+            "--mm-attention-backend", "triton_attn",
+            "--disable-fast-image-processor",
+            "--context-length", "8192",
+            "--chunked-prefill-size", "256",
+        ]):
+            cmd.insert(insert_pos, flag)
+
     print("Launching server...")
     server_proc = subprocess.Popen(cmd)
     print(f"Server PID: {server_proc.pid}")
@@ -572,6 +600,21 @@ def run_worker(args):
         "--disable-piecewise-cuda-graph",
         "--trust-remote-code",
     ]
+
+    if _is_txda:
+        insert_pos = cmd.index("--mem-fraction-static")
+        cmd[insert_pos + 1] = "0.6"
+        for flag in reversed([
+            "--device", "txda",
+            "--dtype", "bfloat16",
+            "--disable-radix-cache",
+            "--watchdog-timeout", "3600",
+            "--mm-attention-backend", "triton_attn",
+            "--disable-fast-image-processor",
+            "--context-length", "8192",
+            "--chunked-prefill-size", "256",
+        ]):
+            cmd.insert(insert_pos, flag)
 
     print("Starting worker node... (will block until master shuts down)\n")
     try:
