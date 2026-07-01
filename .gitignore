@@ -2,31 +2,16 @@
 build/
 dist/
 *.egg-info/
-*.o
-*.so
 
 # Python bytecode
 __pycache__/
 *.pyc
 *.pyo
 
-# Virtual environment
-.venv/
-venv/
-.python-version
-
 # IDE
 .idea/
 .vscode/
 *.swp
-*.swo
-*.swn
-*~
-\#*\#
-
-# OS metadata
-.DS_Store
-Thumbs.db
 
 # Testing
 .pytest_cache/
@@ -35,16 +20,3 @@ htmlcov/
 
 # Logs
 *.log
-log/
-examples/workers_logs/
-examples/logs/
-
-# Backup files
-*.bak
-
-# Fix files
-*.fix
-
-# patch files
-*.patch
-
