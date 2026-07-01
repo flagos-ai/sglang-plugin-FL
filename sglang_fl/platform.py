@@ -69,29 +69,13 @@ class PlatformFL(SRTPlatform):
 
     def __init__(self):
         super().__init__()
-        try:
-            # Core device identity from FlagGems
-            self._vendor_name: str = detector.vendor_name  # "nvidia", "ascend", ...
-            self._device_type: str = detector.name  # "cuda", "npu", ...
-            self._dispatch_key: str = detector.dispatch_key  # "CUDA", "NPU", ...
-            self._device_count: int = detector.device_count
-            logger.info(
-                "PlatformFL (FlagGems): vendor=%s device=%s count=%d",
-                self._vendor_name,
-                self._device_type,
-                self._device_count,
-            )
-        except Exception as e:
-            logger.warning("FlagGems DeviceDetector failed: %s; using torch fallback", e)
-            self._vendor_name, self._device_type, self._dispatch_key, self._device_count = (
-                self._detect_device_from_torch()
-            )
-            logger.info(
-                "PlatformFL (torch fallback): vendor=%s device=%s count=%d",
-                self._vendor_name,
-                self._device_type,
-                self._device_count,
-            )
+        detector = _get_device_detector()
+
+        # Core device identity from FlagGems
+        self._vendor_name: str = detector.vendor_name  # "nvidia", "ascend", ...
+        self._device_type: str = detector.name  # "cuda", "npu", ...
+        self._dispatch_key: str = detector.dispatch_key  # "CUDA", "NPU", ...
+        self._device_count: int = detector.device_count
 
         # Set class-level attributes expected by DeviceMixin
         self.device_name = self._device_type
@@ -129,20 +113,6 @@ class PlatformFL(SRTPlatform):
             return "flagcx"
         # Default by vendor
         return _DIST_BACKEND_MAP.get(self._vendor_name, "nccl")
-
-    @staticmethod
-    def _detect_device_from_torch() -> tuple[str, str, str, int]:
-        """Fallback device detection via torch when FlagGems DeviceDetector is unavailable."""
-        import torch as _torch
-
-        if hasattr(_torch, "txda") and _torch.txda.is_available():
-            return ("txda", "txda", "TXDA", _torch.txda.device_count())
-        if hasattr(_torch, "npu") and _torch.npu.is_available():
-            return ("ascend", "npu", "NPU", _torch.npu.device_count())
-        if hasattr(_torch, "musa") and _torch.musa.is_available():
-            return ("mthreads", "musa", "MUSA", _torch.musa.device_count())
-        return ("nvidia", "cuda", "CUDA", _torch.cuda.device_count())
-
 
     @property
     def vendor_name(self) -> str:
@@ -345,9 +315,14 @@ class PlatformFL(SRTPlatform):
         decorators live, which inject OOT backends into sglang's
         ``ATTENTION_BACKENDS`` dict. See ``vendor/template/`` for a skeleton.
         """
-        vendor_module = (
-            f"sglang_fl.dispatch.backends.vendor.{self._vendor_name}.register_platform"
-        )
+        if self._vendor_name == "tsingmicro":
+            vendor_module = (
+                f"sglang_fl.dispatch.backends.vendor.txda.register_platform"
+            )
+        else:
+            vendor_module = (
+                f"sglang_fl.dispatch.backends.vendor.{self._vendor_name}.register_platform"
+            )
         try:
             importlib.import_module(vendor_module)
             status = "loaded"
