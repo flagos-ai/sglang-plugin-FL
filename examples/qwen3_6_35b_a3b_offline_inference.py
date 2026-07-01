@@ -195,7 +195,7 @@ def run_engine():
     sampling_params = {"max_new_tokens": MAX_TOKENS, "temperature": 0}
     vl_sampling = {"max_new_tokens": MAX_TOKENS, "temperature": 0}
 
-    ## --- Text inference ---
+    # --- Text inference ---
     print("=== Text Inference ===")
     text_outputs = []
     for prompt in TEXT_PROMPTS:
@@ -206,7 +206,7 @@ def run_engine():
         text_outputs.append(text)
         print(f"  Prompt: {prompt!r}\n    → {text!r}")
 
-    ## --- Multimodal inference ---
+    # --- Multimodal inference ---
     print("\n=== Multimodal Inference ===")
     vl_outputs = []
     for case in VL_CASES:
@@ -235,7 +235,7 @@ def run_engine():
 
 def validate(text_outputs, vl_outputs):
     """Basic sanity checks on generated outputs."""
-    ## Text validation
+    # Text validation
     assert len(text_outputs) == len(TEXT_PROMPTS)
     for prompt, text in zip(TEXT_PROMPTS, text_outputs):
         assert len(text) > 0, f"Empty output for prompt: {prompt!r}"
@@ -245,7 +245,7 @@ def validate(text_outputs, vl_outputs):
                 f"Expected {expected!r} in output for {prompt!r}, got {text!r}"
             )
 
-    ## VL validation
+    # VL validation
     for case, text in zip(VL_CASES, vl_outputs):
         if text is None:
             continue
