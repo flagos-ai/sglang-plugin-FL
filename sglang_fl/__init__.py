@@ -711,7 +711,7 @@ def activate_platform() -> str | None:
         )
         return "sglang_fl.platform:PlatformFL"
     except Exception as e:
-        logger.warning("sglang_fl platform activation via FlagGems failed: %s", e)
+        logger.warning("sglang_fl platform activation failed: %s", e)
         return None
 
 
