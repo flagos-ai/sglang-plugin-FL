@@ -351,11 +351,7 @@ def _setup_flaggems(config: dict = None):
         logger.info("FlagGems disabled (USE_FLAGGEMS=0)")
         return
 
-    try:
-        import flag_gems  # noqa: F811
-    except Exception as e:
-        logger.warning("FlagGems import failed (%s) — ATen replacement disabled", e)
-        return
+    import flag_gems
 
     # Whitelist/blacklist: env > YAML config
     if config is not None:
@@ -716,16 +712,6 @@ def activate_platform() -> str | None:
         return "sglang_fl.platform:PlatformFL"
     except Exception as e:
         logger.warning("sglang_fl platform activation via FlagGems failed: %s", e)
-        # Fallback: activate if txda is available via torch (e.g. when FlagGems
-        # DeviceDetector lacks txda support).
-        import torch as _torch
-
-        try:
-            import torch_txda  # noqa: F401
-        except ImportError:
-            pass
-        if hasattr(_torch, "txda") and _torch.txda.is_available():
-            return "sglang_fl.platform:PlatformFL"
         return None
 
 
