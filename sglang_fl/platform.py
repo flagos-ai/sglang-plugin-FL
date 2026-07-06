@@ -51,6 +51,7 @@ _DIST_BACKEND_MAP = {
     "thead": "nccl",
     "enflame": "eccl"
     "tsingmicro": "tccl",
+    "hcu": "nccl"
 }
 
 # Attention backend mapping: vendor_name -> default backend
