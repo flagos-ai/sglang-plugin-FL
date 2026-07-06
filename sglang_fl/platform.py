@@ -50,6 +50,7 @@ _DIST_BACKEND_MAP = {
     "mthreads": "mccl",
     "thead": "nccl",
     "tsingmicro": "tccl",
+    "hcu": "nccl"
 }
 
 # Attention backend mapping: vendor_name -> default backend
