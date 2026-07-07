@@ -168,14 +168,6 @@ class FlagCXCommunicator:
 
     def _sync_current_stream(self):
         """Synchronize the vendor-specific current stream for this device.
-
-        Skipped during graph capture: synchronize() is illegal while the
-        stream is being captured (NPU returns 107027 'stream is captured';
-        CUDA raises CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED). Inside a graph
-        the recorded op order already enforces causality, so the sync is
-        only needed in normal eager-mode forward — to make sure FlagCX
-        async send/recv/collective writes are visible before the caller
-        reads the buffer (e.g. PP forward_batch.input_ids on the next step).
         """
         device_str = str(self.device)
         if "npu" in device_str:
@@ -187,8 +179,9 @@ class FlagCXCommunicator:
         try:
             stream.synchronize()
         except RuntimeError as e:
-            if "captur" in str(e).lower():
-                return
+            logger.error(
+                "stream.synchronize() failed on %s: %s", device_str, e
+            )
             raise
 
     def _get_stream(self):
