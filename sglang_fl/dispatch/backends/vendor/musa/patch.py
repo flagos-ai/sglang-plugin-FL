@@ -74,12 +74,42 @@ def _patch_pp_send_recv_order() -> None:
     logger.info("MUSA PP send/recv ordering patch applied")
 
 
+def _patch_pp_launch_batch_sync_after_run_batch() -> None:
+    try:
+        from sglang.srt.managers.scheduler_pp_mixin import SchedulerPPMixin
+    except Exception as e:
+        logger.warning("MUSA PP launch sync patch skipped: %s", e)
+        return
+
+    orig_fn = SchedulerPPMixin._pp_launch_batch
+
+    @wraps(orig_fn)
+    def pp_launch_batch_with_sync_after_run_batch(self, *args, **kwargs):
+        orig_run_batch = self.run_batch
+
+        @wraps(orig_run_batch)
+        def run_batch_with_sync(*run_args, **run_kwargs):
+            result = orig_run_batch(*run_args, **run_kwargs)
+            self.device_module.current_stream().synchronize()
+            return result
+
+        self.run_batch = run_batch_with_sync
+        try:
+            return orig_fn(self, *args, **kwargs)
+        finally:
+            self.run_batch = orig_run_batch
+
+    SchedulerPPMixin._pp_launch_batch = pp_launch_batch_with_sync_after_run_batch
+    logger.info("MUSA PP launch post-run_batch stream sync patch applied")
+
+
 def apply_musa_patches() -> None:
     global _patches_applied
     if _patches_applied:
         return
 
     _patch_pp_send_recv_order()
+    _patch_pp_launch_batch_sync_after_run_batch()
     _patches_applied = True
 
 
