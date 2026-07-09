@@ -1,11 +1,7 @@
-"""MUSA-specific monkey patches on SGLang internals."""
-
 from __future__ import annotations
 
 import logging
 from functools import wraps
-
-import torch
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +15,8 @@ def _patch_pp_send_recv_order() -> None:
     except Exception as e:
         logger.warning("MUSA PP send/recv order patch skipped: %s", e)
         return
+
+    import torch
 
     orig_fn = SchedulerPPMixin._pp_send_recv_and_preprocess_output_tensors
 
@@ -74,7 +72,7 @@ def _patch_pp_send_recv_order() -> None:
     logger.info("MUSA PP send/recv ordering patch applied")
 
 
-def _patch_pp_launch_batch_sync_after_run_batch() -> None:
+def _patch_pp_launch_batch_add_sync() -> None:
     try:
         from sglang.srt.managers.scheduler_pp_mixin import SchedulerPPMixin
     except Exception as e:
@@ -84,24 +82,13 @@ def _patch_pp_launch_batch_sync_after_run_batch() -> None:
     orig_fn = SchedulerPPMixin._pp_launch_batch
 
     @wraps(orig_fn)
-    def pp_launch_batch_with_sync_after_run_batch(self, *args, **kwargs):
-        orig_run_batch = self.run_batch
+    def pp_launch_batch_with_forward_stream_sync(self, *args, **kwargs):
+        result, event = orig_fn(self, *args, **kwargs)
+        self.forward_stream.synchronize()
+        return result, event
 
-        @wraps(orig_run_batch)
-        def run_batch_with_sync(*run_args, **run_kwargs):
-            result = orig_run_batch(*run_args, **run_kwargs)
-            self.device_module.current_stream().synchronize()
-            return result
-
-        self.run_batch = run_batch_with_sync
-        try:
-            return orig_fn(self, *args, **kwargs)
-        finally:
-            self.run_batch = orig_run_batch
-
-    SchedulerPPMixin._pp_launch_batch = pp_launch_batch_with_sync_after_run_batch
-    logger.info("MUSA PP launch post-run_batch stream sync patch applied")
-
+    SchedulerPPMixin._pp_launch_batch = pp_launch_batch_with_forward_stream_sync
+    logger.info("MUSA PP launch forward_stream sync patch applied")
 
 def apply_musa_patches() -> None:
     global _patches_applied
@@ -109,8 +96,6 @@ def apply_musa_patches() -> None:
         return
 
     _patch_pp_send_recv_order()
-    _patch_pp_launch_batch_sync_after_run_batch()
+    _patch_pp_launch_batch_add_sync()
     _patches_applied = True
-
-
-apply_musa_patches()
+    logger.info("All MUSA PP patches applied successfully")

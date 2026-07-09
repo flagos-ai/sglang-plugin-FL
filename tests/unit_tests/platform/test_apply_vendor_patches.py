@@ -19,6 +19,18 @@ class TestApplyVendorPatches:
         assert "vendor patch loaded" in caplog.text
         assert "fakevendor.patch" in caplog.text
 
+    def test_mthreads_vendor_loads_musa_patch_alias(
+        self, caplog, mock_device_detector, inject_vendor_module
+    ):
+        mock_device_detector("mthreads")
+        inject_vendor_module("musa", "patch")
+        with caplog.at_level(logging.INFO, logger="sglang_fl"):
+            _apply_vendor_patches()
+        assert "vendor patch absent" in caplog.text
+        assert "mthreads.patch" in caplog.text
+        assert "vendor patch loaded" in caplog.text
+        assert "musa.patch" in caplog.text
+
     def test_absent_when_patch_missing(self, caplog, mock_device_detector):
         mock_device_detector("nonexistent_vendor_xyz_for_test")
         with caplog.at_level(logging.INFO, logger="sglang_fl"):

@@ -250,19 +250,20 @@ def _make_dispatch_hook(config: dict = None):
       - Empty (default): all registered ops use OOT dispatch.
     """
     from sglang.srt.layers.activation import SiluAndMul
-    from sglang.srt.layers.layernorm import RMSNorm, GemmaRMSNorm
-    from sglang.srt.layers.rotary_embedding import RotaryEmbedding
-    from sglang.srt.layers.rotary_embedding.mrope import MRotaryEmbedding
+    from sglang.srt.layers.layernorm import GemmaRMSNorm, RMSNorm
     from sglang.srt.layers.moe.topk import TopK
     from sglang.srt.layers.quantization.unquant import UnquantizedFusedMoEMethod
+    from sglang.srt.layers.rotary_embedding import RotaryEmbedding
+    from sglang.srt.layers.rotary_embedding.mrope import MRotaryEmbedding
+
     from sglang_fl.dispatch.bridge import (
-        silu_and_mul_bridge,
-        rms_norm_bridge,
-        gemma_rms_norm_bridge,
-        rotary_embedding_bridge,
-        mrotary_embedding_bridge,
-        topk_bridge,
         fused_moe_bridge,
+        gemma_rms_norm_bridge,
+        mrotary_embedding_bridge,
+        rms_norm_bridge,
+        rotary_embedding_bridge,
+        silu_and_mul_bridge,
+        topk_bridge,
     )
 
     if config is None:
@@ -423,9 +424,9 @@ def _setup_flaggems(config: dict = None):
 def _apply_vendor_patches() -> None:
     """Import vendor/<vendor_name>/patch.py to apply vendor monkey-patches
     on sglang internals. Called last in load_plugin(), after every sglang_fl
-    layer (FlagGems ATen, dispatch system, AROUND hooks, communicator). 
+    layer (FlagGems ATen, dispatch system, AROUND hooks, communicator).
     Resolves vendor_name via FlagGems' DeviceDetector — no PlatformFL needed,
-    so this still runs before sglang's model_runner is imported. Silently 
+    so this still runs before sglang's model_runner is imported. Silently
     skips when the vendor module is absent or hardware is unrecognised.
     """
     import importlib
@@ -443,7 +444,11 @@ def _apply_vendor_patches() -> None:
         logger.warning("vendor patch skipped: DeviceDetector failed (%s)", e)
         return
 
-    module = f"sglang_fl.dispatch.backends.vendor.{vendor}.patch"
+    _VENDOR_DIR_MAP = {
+        "mthreads": "musa",
+    }
+    vendor_dir = _VENDOR_DIR_MAP.get(vendor, vendor)
+    module = f"sglang_fl.dispatch.backends.vendor.{vendor_dir}.patch"
     try:
         importlib.import_module(module)
         logger.info("vendor patch loaded: %s", module)
