@@ -78,6 +78,8 @@ class FlagCXCommunicator:
 
         self.available = False
 
+        self._stream_cache = {}
+
         # Import FlagCX wrapper
         try:
             (
@@ -185,21 +187,21 @@ class FlagCXCommunicator:
             raise
 
     def _get_stream(self):
-        """Bind a FlagCX stream onto the current vendor stream (bypasses wrapper's
-        musa/cuda-only attribute reflection so NPU works without patching FlagCX)."""
+        """Bind a FlagCX stream onto the current vendor stream, with per-handle cache."""
+        handle = self._get_raw_stream_handle()
+        cached = self._stream_cache.get(handle)
+        if cached is not None:
+            return cached
         from plugin.interservice.flagcx_wrapper import flagcxStream_t
         new_stream = flagcxStream_t()
         self.flagcx.FLAGCX_CHECK(
             self.flagcx.devHandle.contents.streamCopy(
                 ctypes.byref(new_stream),
-                ctypes.c_void_p(self._get_raw_stream_handle()),
+                ctypes.c_void_p(handle),
             )
         )
+        self._stream_cache[handle] = new_stream
         return new_stream
-
-    def _free_stream(self, flagcx_stream):
-        """Free a FlagCX stream wrapper."""
-        self.flagcx.adaptor_stream_free(flagcx_stream)
 
     def _flagcx_all_reduce(self, tensor: torch.Tensor) -> torch.Tensor:
         """Internal all_reduce using FlagCX API."""
@@ -214,7 +216,6 @@ class FlagCXCommunicator:
             self.comm,
             flagcx_stream,
         )
-        self._free_stream(flagcx_stream)
         return out_tensor
 
     def all_reduce(self, input_: torch.Tensor) -> torch.Tensor:
@@ -248,7 +249,6 @@ class FlagCXCommunicator:
             self.comm,
             flagcx_stream,
         )
-        self._free_stream(flagcx_stream)
 
     def all_gather(self, output: torch.Tensor, input_: torch.Tensor):
         """All-gather using FlagCX."""
@@ -267,7 +267,6 @@ class FlagCXCommunicator:
             self.comm,
             flagcx_stream,
         )
-        self._free_stream(flagcx_stream)
 
     def reduce_scatterv(
         self,
@@ -300,7 +299,6 @@ class FlagCXCommunicator:
             )
             split_offset += split_size
         self.flagcx.flagcxGroupEnd(self.comm)
-        self._free_stream(flagcx_stream)
 
     def all_gatherv(
         self,
@@ -332,7 +330,6 @@ class FlagCXCommunicator:
             )
             split_offset += split_size
         self.flagcx.flagcxGroupEnd(self.comm)
-        self._free_stream(flagcx_stream)
 
     def broadcast(self, tensor: torch.Tensor, src: int):
         """Broadcast tensor from src rank."""
@@ -358,7 +355,6 @@ class FlagCXCommunicator:
             self.comm,
             flagcx_stream,
         )
-        self._free_stream(flagcx_stream)
 
     def send(self, tensor: torch.Tensor, dst: int):
         """Send tensor to destination rank using FlagCX."""
@@ -377,7 +373,6 @@ class FlagCXCommunicator:
             self.comm,
             flagcx_stream,
         )
-        self._free_stream(flagcx_stream)
 
     def recv(self, tensor: torch.Tensor, src: int):
         """Receive tensor from source rank using FlagCX."""
@@ -396,7 +391,6 @@ class FlagCXCommunicator:
             self.comm,
             flagcx_stream,
         )
-        self._free_stream(flagcx_stream)
 
     def group_start(self):
         """Start a group of collective operations."""
@@ -406,16 +400,27 @@ class FlagCXCommunicator:
         """End a group of collective operations."""
         self.flagcx.flagcxGroupEnd(self.comm)
 
-    def destroy(self):
-        """Destroy FlagCX communicator and free resources."""
-        if hasattr(self, "comm") and self.comm is not None:
+    def __del__(self):
+        """Free cached streams and destroy the FlagCX comm on GC / interpreter shutdown."""
+        # self.flagcx may be missing (early-disabled path) or unusable (shutdown).
+        flagcx = getattr(self, "flagcx", None)
+        if flagcx is None:
+            return
+        cache = getattr(self, "_stream_cache", None)
+        if cache:
+            for cached_stream in cache.values():
+                try:
+                    flagcx.adaptor_stream_free(cached_stream)
+                except Exception:
+                    pass
+            cache.clear()
+        comm = getattr(self, "comm", None)
+        if comm is not None:
             try:
-                self.flagcx.flagcxCommDestroy(self.comm)
-            except Exception as e:
-                logger.warning(f"FlagCX comm destroy failed: {e}")
+                flagcx.flagcxCommDestroy(comm)
+            except Exception:
+                pass
             self.comm = None
-            self.available = False
-            self.disabled = True
 
 
 def create_flagcx_communicator(group, device) -> FlagCXCommunicator:
