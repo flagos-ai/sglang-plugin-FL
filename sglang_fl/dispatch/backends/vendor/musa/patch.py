@@ -99,3 +99,6 @@ def apply_musa_patches() -> None:
     _patch_pp_launch_batch_add_sync()
     _patches_applied = True
     logger.info("All MUSA PP patches applied successfully")
+
+
+apply_musa_patches()
