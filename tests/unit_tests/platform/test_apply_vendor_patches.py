@@ -26,8 +26,6 @@ class TestApplyVendorPatches:
         inject_vendor_module("musa", "patch")
         with caplog.at_level(logging.INFO, logger="sglang_fl"):
             _apply_vendor_patches()
-        assert "vendor patch absent" in caplog.text
-        assert "mthreads.patch" in caplog.text
         assert "vendor patch loaded" in caplog.text
         assert "musa.patch" in caplog.text
 

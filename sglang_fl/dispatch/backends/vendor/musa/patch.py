@@ -90,6 +90,32 @@ def _patch_pp_launch_batch_add_sync() -> None:
     SchedulerPPMixin._pp_launch_batch = pp_launch_batch_with_forward_stream_sync
     logger.info("MUSA PP launch forward_stream sync patch applied")
 
+
+def _patch_sampler_sgl_kernel_exports() -> None:
+    try:
+        import sglang.srt.layers.sampler as sampler
+    except Exception as e:
+        logger.warning("MUSA sampler sgl_kernel patch skipped: %s", e)
+        return
+
+    try:
+        from sgl_kernel import (
+            min_p_sampling_from_probs,
+            top_k_renorm_prob,
+            top_k_top_p_sampling_from_probs,
+            top_p_renorm_prob,
+        )
+    except Exception as e:
+        logger.warning("MUSA sampler sgl_kernel patch skipped: %s", e)
+        return
+
+    sampler.min_p_sampling_from_probs = min_p_sampling_from_probs
+    sampler.top_k_renorm_prob = top_k_renorm_prob
+    sampler.top_k_top_p_sampling_from_probs = top_k_top_p_sampling_from_probs
+    sampler.top_p_renorm_prob = top_p_renorm_prob
+    logger.info("MUSA sampler sgl_kernel patch applied")
+
+
 def apply_musa_patches() -> None:
     global _patches_applied
     if _patches_applied:
@@ -97,5 +123,9 @@ def apply_musa_patches() -> None:
 
     _patch_pp_send_recv_order()
     _patch_pp_launch_batch_add_sync()
+    _patch_sampler_sgl_kernel_exports()
     _patches_applied = True
-    logger.info("All MUSA PP patches applied successfully")
+    logger.info("All MUSA patches applied successfully")
+
+
+apply_musa_patches()
