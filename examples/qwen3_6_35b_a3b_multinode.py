@@ -95,7 +95,7 @@ if _is_npu:
     os.environ.setdefault("SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK", "128")
 elif _is_musa:
     os.environ.setdefault("MCCL_IB_DISABLE", "1")
-    
+
 # Extra launch_server flags per platform.
 # - MUSA: page_size=1 works around a sglang platform bug.
 # - Ascend NPU: requires ascend attention backend, bfloat16, radix cache off.
@@ -103,9 +103,12 @@ if _is_musa:
     _PLATFORM_SERVER_ARGS: list = ["--page-size", "1"]
 elif _is_npu:
     _PLATFORM_SERVER_ARGS = [
-        "--attention-backend", "ascend",
-        "--device", "npu",
-        "--dtype", "bfloat16",
+        "--attention-backend",
+        "ascend",
+        "--device",
+        "npu",
+        "--dtype",
+        "bfloat16",
         "--disable-radix-cache",
     ]
 else:
@@ -114,6 +117,7 @@ else:
 # ─── Configuration ───────────────────────────────────────────────────────────
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-35B-A3B")
+MM_ATTENTION_BACKEND = os.environ.get("MM_ATTENTION_BACKEND", "")
 
 _HERE = Path(__file__).resolve().parent
 IMG_DIR = Path(os.environ.get("IMAGE_DIR", _HERE / "test_images"))
@@ -540,6 +544,9 @@ def run_master(args):
         ]):
             cmd.insert(insert_pos, flag)
 
+    if MM_ATTENTION_BACKEND:
+        cmd += ["--mm-attention-backend", MM_ATTENTION_BACKEND]
+
     print("Launching server...")
     server_proc = subprocess.Popen(cmd)
     print(f"Server PID: {server_proc.pid}")
@@ -645,6 +652,9 @@ def run_worker(args):
             "--chunked-prefill-size", "256",
         ]):
             cmd.insert(insert_pos, flag)
+
+    if MM_ATTENTION_BACKEND:
+        cmd += ["--mm-attention-backend", MM_ATTENTION_BACKEND]
 
     print("Starting worker node... (will block until master shuts down)\n")
     try:

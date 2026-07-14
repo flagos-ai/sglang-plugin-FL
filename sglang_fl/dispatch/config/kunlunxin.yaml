@@ -1,0 +1,61 @@
+# SGLang-FL Dispatch Configuration for Kunlunxin Platform
+prefer: flagos
+
+# FlagGems Layer 1 (ATen -> klx Triton) blacklist. With USE_FLAGGEMS=1 (default),
+# ALL ~410 ATen ops route through FlagGems EXCEPT those listed here (they fall
+# back to vendor/native). Excluded because the klx FlagGems kernel is broken
+# (found by bisection):
+#   gelu                 -> corrupts Qwen3.5 vision tower (garbage VL output)
+#   mm, bmm              -> Triton autotune do_bench /0 (torch_xmlir cuda
+#                           Event.elapsed_time()==0); matmul stays on native xBLAS
+#   index_put(_),
+#   _index_put_impl_     -> incorrectly broadcasts 4-D MambaPool state tensor
+#                           (RuntimeError in MambaPool.alloc)
+#   stack                -> Triton VGather on uint8 image data in VL preprocessing
+#                           ("Only support I16/FP16/BF16/I32/FP32 in VGather" abort)
+# Everything else uses FlagGems. Verified 27B/35B-A3B offline+concurrent text+VL pass.
+# Override per-run with env SGLANG_FL_FLAGOS_BLACKLIST if needed.
+flagos_blacklist:
+  - gelu
+  - mm
+  - bmm
+  - index_put
+  - index_put_
+  - _index_put_impl_
+  - stack
+
+# Per-op backend order (overrides `prefer` for the listed op only).
+#   silu_and_mul : route to the kunlunxin VENDOR impl (sgl_kernel klx build),
+#                  NOT flagos. SiluAndMul.forward_cuda would otherwise take
+#                  sglang's jit_kernel path, which JIT-compiles a .cu with
+#                  nvcc -std=c++20 and aborts on Kunlun's CUDA 11.7 host
+#                  toolchain (c++17 max). The vendor impl calls the klx
+#                  sgl_kernel.silu_and_mul directly (no c++20 JIT). Falls back
+#                  to flagos if the vendor impl is unavailable.
+op_backends:
+  silu_and_mul:
+    - vendor
+    - flagos
+
+# OOT-dispatch blacklist (matched by sglang layer CLASS name). Blacklisted ops
+# skip the OOT bridge entirely and run sglang's own forward_cuda — which, for
+# these ops, ALREADY resolves to the klx sgl_kernel op on the cuda-compat device.
+# That is exactly the fast path a vendor impl would call, so no vendor code is
+# needed (and no fall-through to flagos):
+#   TopK          : TopK.forward_cuda -> select_experts -> sgl_kernel.topk_softmax
+#                   (also handles grouped-topk / correction-bias / renormalize).
+#   RMSNorm       : RMSNorm.forward_cuda -> sgl_kernel.rmsnorm / fused_add_rmsnorm.
+#   GemmaRMSNorm  : GemmaRMSNorm.forward_cuda -> sgl_kernel.gemma_rmsnorm /
+#                   gemma_fused_add_rmsnorm.
+#   RotaryEmbedding / MRotaryEmbedding : forward_cuda resolves to sgl_kernel's
+#                   apply_rope_pos_ids_cos_sin_cache on the cuda-compat device
+#                   (NOT the c++20 jit_kernel path), verified working on Kunlun.
+# NOTE: SiluAndMul is deliberately NOT blacklisted — its forward_cuda hits the
+# jit_kernel c++20 path on Kunlun, so it is routed through the OOT bridge to the
+# vendor sgl_kernel impl instead (see op_backends above).
+oot_blacklist:
+  - TopK
+  - RMSNorm
+  - GemmaRMSNorm
+  - RotaryEmbedding
+  - MRotaryEmbedding
