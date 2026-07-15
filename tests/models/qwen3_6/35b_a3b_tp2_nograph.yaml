@@ -1,0 +1,104 @@
+# Qwen3.6-35B-A3B SGLang smoke configuration, TP=2, no CUDA graph.
+#
+# This single case is intended to drive multiple e2e tasks:
+# - inference: uses the generate section
+# - serving: uses the serve section
+# - concurrent: uses the concurrent section
+
+llm:
+  model: "/data/models/Qwen/Qwen3.6-35B-A3B"
+  tp_size: 2
+  pp_size: 1
+  context_length: 8192
+  mem_fraction_static: 0.95
+  disable_cuda_graph: true
+  disable_piecewise_cuda_graph: true
+  trust_remote_code: true
+  disable_custom_all_reduce: true
+
+generate:
+  prompts:
+    - text: "How many states are there in the United States?"
+      expected: "50"
+    - text: "The capital of France is"
+      expected: "Paris"
+  sampling:
+    max_new_tokens: 10
+    temperature: 0.0
+
+  vl:
+    sampling:
+      max_new_tokens: 64
+      temperature: 0.0
+    cases:
+      - image: "examples/test_images/red_square.jpg"
+        question: "What color is shown in this image? Answer with one word."
+        expected: ["red"]
+      - image: "examples/test_images/cat.jpg"
+        question: "What animal is in this image? Answer with one word."
+        expected: ["cat"]
+      - image: "examples/test_images/stop_sign.png"
+        question: "What is the color of this sign? Answer with one word."
+        expected: ["red"]
+      - image: "examples/test_images/digit_seven.png"
+        question: "What digit is shown in this image? Answer with one digit."
+        expected: ["7"]
+
+serve:
+  served_model_name: "qwen"
+  startup_retries: 120
+  endpoints: ["chat"]
+  stream: false
+  max_tokens: 256
+  chat_messages:
+    - role: "user"
+      content: "Introduce yourself,please"
+  sampling:
+    temperature: 0.0
+
+concurrent:
+  modes: ["text", "vl", "mixed"]
+  concurrent_n: 16
+
+  text:
+    prompts:
+      - text: "How many states are there in the United States?"
+        expected: ["50"]
+      - text: "The capital of France is"
+        expected: ["paris"]
+      - text: "What is the largest planet in the solar system?"
+        expected: ["jupiter"]
+      - text: "Who wrote the play Romeo and Juliet?"
+        expected: ["shakespeare"]
+      - text: "What is 17 multiplied by 13?"
+        expected: ["221"]
+      - text: "Name the three primary colors of light."
+        expected: ["red", "green", "blue"]
+      - text: "What year did World War II end?"
+        expected: ["1945"]
+      - text: "Explain the concept of gravity in one sentence."
+        expected: ["mass", "force", "attract"]
+
+  vl:
+    cases:
+      - image: "examples/test_images/red_square.jpg"
+        question: "What color is shown in this image? Answer with one word."
+        expected: ["red"]
+      - image: "examples/test_images/cat.jpg"
+        question: "What animal is in this image? Answer with one word."
+        expected: ["cat"]
+      - image: "examples/test_images/stop_sign.png"
+        question: "What is the color of this sign? Answer with one word."
+        expected: ["red"]
+      - image: "examples/test_images/digit_seven.png"
+        question: "What digit is shown in this image? Answer with one digit."
+        expected: ["7"]
+
+  sampling:
+    text:
+      max_new_tokens: 256
+      temperature: 0.0
+    vl:
+      max_new_tokens: 64
+      temperature: 0.0
+

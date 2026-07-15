@@ -1,0 +1,152 @@
+# Platform Configuration Template
+# Copy and customize for your specific hardware platform.
+#
+# To create a new platform configuration:
+# 1. Copy this file: copy tests/platforms/template.yaml tests/platforms/my_platform.yaml
+# 2. Update platform-level settings (tolerance, unsupported_features, env_defaults)
+# 3. Update device_types with your hardware
+# 4. Configure device-specific test settings
+# 5. Run tests: python tests/run.py --platform my_platform --device my_device
+#
+# Existing platforms: cuda.yaml (NVIDIA GPU), ascend.yaml (Huawei NPU)
+#
+# Users can modify:
+# - unit tests: Add/remove paths in include and exclude lists
+# - e2e tests: Add/remove model cases in inference/serving support lists
+# - benchmark tests: Enable/disable throughput, latency, and serve smoke tests
+# - tolerance: Adjust numerical comparison tolerance for result validation
+# - unsupported_features: Exclude test cases matching specific feature tags
+# - env_defaults: Set platform-specific environment variables before pytest starts
+#
+# Notes for SGLang:
+# - Model cases are loaded from tests/models/<model>/<case>.yaml.
+# - Benchmark smoke cases are loaded from tests/benchmarks/configs/smoke.yaml.
+# - tests/run.py currently consumes unit, e2e, and benchmark sections.
+# - functional can be added later if SGLang functional_tests are introduced.
+
+# ---- Platform-level settings ------------------------------------------------
+# Platform name used by: python tests/run.py --platform my_platform
+platform: my_platform
+
+# Vendor name is metadata for reports/logging and future platform-specific logic.
+vendor: my_vendor
+
+# Hardware device descriptors for this platform.
+# The top-level device name is also accepted by run.py as --device.
+# Common optional fields:
+# - memory_gb: approximate device memory, useful for selecting large-model tests
+# - compute_capability: CUDA-style capability when applicable, e.g. "8.0"
+# - tags: free-form labels such as bf16, fp16, ascend, musa, hygon, dcu
+#
+# You can define multiple devices under the same platform:
+#   small_device:
+#     memory_gb: 32
+#     tags: [bf16]
+#   large_device:
+#     memory_gb: 80
+#     tags: [bf16, large-model]
+device_types:
+  my_device:
+    memory_gb: 80
+    tags: [bf16]
+
+# Default numerical tolerance for result comparison.
+# Different chips may produce slightly different numerical results due to
+# hardware precision, kernel implementation, accumulation order, or dtype.
+#
+# Resolution order used by PlatformConfig.get_tolerance():
+# 1. device_overrides[active_device].tolerance[category][dtype]
+# 2. tolerance[category][dtype]
+# 3. tolerance[category]["default"]
+# 4. built-in default: rtol=1e-5, atol=1e-8
+#
+# Typical categories:
+# - inference: model/e2e output numerical checks
+# - ops: functional op correctness checks, if added later
+# - benchmark: benchmark result sanity checks, if numerical tolerance is needed
+#
+# Typical dtype keys:
+# - default
+# - float16
+# - bfloat16
+# - float32
+tolerance:
+  inference:
+    default: {rtol: 1e-5, atol: 1e-8}
+    bfloat16: {rtol: 1e-3, atol: 1e-3}
+
+# Device-level overrides for specific devices or test categories.
+# This is useful when one device under the same platform needs looser or stricter
+# numerical tolerance than the platform default.
+#
+# Example:
+#   my_device:
+#     tolerance:
+#       inference:
+#         bfloat16: {rtol: 2e-3, atol: 2e-3}
+#
+# Keep this as {} if no per-device override is needed.
+device_overrides: {}
+
+# Features not supported on this platform.
+# If a model name contains any token below, tests/run.py skips that model case.
+# Common values may include: ["flaggems", "flashinfer", "triton", "large-model"]
+unsupported_features: []
+
+# Default environment variables for this platform.
+# tests/run.py applies these before invoking pytest, but existing user-provided
+# environment variables are preserved.
+#
+# Examples:
+#   CUDA_DEVICE_MAX_CONNECTIONS: "1"
+#   NCCL_ALGO: "Ring"
+#   SGLANG_FL_CONFIG: "/path/to/config.yaml"
+env_defaults: {}
+
+# ---- Device-specific test configurations ------------------------------------
+# This top-level key must match a name under device_types.
+my_device:
+  name: "my_device"
+  tests:
+    # Unit tests are lightweight and should not require real model files.
+    # Include patterns:
+    # - "*" means run all tests/unit_tests
+    # - a list can narrow pytest selection through -k expressions
+    # Exclude patterns are converted to --ignore tests/unit_tests/<pattern>.
+    unit:
+      include: "*"
+      exclude: []
+
+    # E2E tests require real model files and are slower.
+    # Format: task -> model family -> list of case names.
+    # Each case points to tests/models/<model>/<case>.yaml.
+    # Current structured task names are expected to align with:
+    # - tests/e2e_tests/inference/test_inference_smoke.py
+    # - tests/e2e_tests/serving/test_serving_smoke.py
+    e2e:
+      inference:
+        qwen3: ["06b_tp1"]
+      serving:
+        qwen3: ["4b_tp2"]
+
+    # Benchmark smoke tests are lightweight health checks for SGLang benchmark
+    # commands. The detailed CLI parameters live in:
+    # tests/benchmarks/configs/smoke.yaml
+    #
+    # Supported smoke names:
+    # - throughput -> python -m sglang.bench_offline_throughput
+    # - latency    -> python -m sglang.bench_one_batch
+    # - serve      -> python -m sglang.launch_server + python -m sglang.bench_serving
+    benchmark:
+      enabled: true
+      smoke: ["throughput", "latency", "serve"]
+
+    # Reserved for future SGLang functional tests, if tests/functional_tests is
+    # added later. The current runner does not consume this section yet.
+    # functional:
+    #   include: "*"
+    #   exclude: []
+    functional:
+      # Component tests (ops/compilation/distributed) — run all by default
+      include: "*"
+      exclude: []

@@ -1,0 +1,21 @@
+# Qwen3-0.6B model configuration (TP=2 not needed, single GPU)
+
+llm:
+  model: "/data/models/Qwen/Qwen3-0.6B"
+  context_length: 8192
+  mem_fraction_static: 0.7
+  trust_remote_code: true
+
+generate:
+  prompts:
+    - text: "How many states are there in the United States?"
+      expected: "50"
+    - text: "The capital of France is"
+      expected: "Paris"
+  sampling:
+    max_new_tokens: 16
+    temperature: 0.0
+  parametrize:
+  - disable_cuda_graph: true
+    disable_piecewise_cuda_graph: true
+    dtype: "bfloat16"

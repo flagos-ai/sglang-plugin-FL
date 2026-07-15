@@ -1,0 +1,45 @@
+throughput:
+  - name: throughput_smoke_dummy
+    model: qwen3
+    case: 06b_tp1
+    parameters:
+      dataset_name: random
+      random_input_len: 32
+      random_output_len: 1
+      num_prompts: 4
+      disable_cuda_graph: true
+      disable_piecewise_cuda_graph: true
+      load_format: dummy
+
+latency:
+  - name: latency_smoke_dummy
+    model: qwen3
+    case: 06b_tp1
+    parameters:
+      input_len: 32
+      output_len: 1
+      batch_size: 1
+      disable_cuda_graph: true
+      disable_piecewise_cuda_graph: true
+      load_format: dummy
+
+serve:
+  - name: serve_smoke_dummy
+    model: qwen3
+    case: 06b_tp1
+    server_parameters:
+      served_model_name: smoke-model
+      tp_size: 1
+      context_length: 1024
+      max_total_tokens: 1024
+      disable_cuda_graph: true
+      disable_piecewise_cuda_graph: true
+      load_format: dummy
+    client_parameters:
+      model: smoke-model
+      backend: sglang-oai-chat
+      dataset_name: random
+      random_input_len: 32
+      random_output_len: 4
+      num_prompts: 5
+
