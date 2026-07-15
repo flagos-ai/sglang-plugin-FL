@@ -60,7 +60,7 @@ SGLang 的推理引擎依赖 NVIDIA 专有组件：flashinfer 用于 attention�
 
 ## 快速开始
 
-### 安装
+### 方式 A：标准安装（NVIDIA CUDA）
 
 1. 安装 SGLang v0.5.11：
 
@@ -89,6 +89,58 @@ git clone https://github.com/flagos-ai/FlagCX.git
 cd FlagCX && make USE_NVIDIA=1
 export FLAGCX_PATH="$PWD"
 ```
+
+### 方式 B：Empty 安装（多芯 / 非 CUDA 平台）
+
+在非 NVIDIA 硬件（华为 Ascend、摩尔线程 MUSA 等）上运行时，使用 SGLang 的 **empty 安装**模式。该模式只安装 SGLang 的纯 Python 代码，不拉入 CUDA 专属依赖（torch、torchao、flashinfer 等），避免与厂商自有 PyTorch 版本冲突。
+
+> **前置条件**：需要 SGLang 支持 `srt_empty`，参见上游 [PR #31300](https://github.com/sgl-project/sglang/pull/31300)。
+
+```bash
+# Step 1: 安装厂商自有 PyTorch（因芯片而异）
+pip install torch torch_npu       # 华为 Ascend
+# pip install torch torch_musa    # 摩尔线程 MUSA
+# pip install torch               # NVIDIA（标准版）
+
+# Step 2: 安装 SGLang（empty 模式 — 不引入 torch 依赖冲突）
+git clone https://github.com/sgl-project/sglang.git
+cd sglang/python
+cp pyproject_other.toml pyproject.toml
+pip install -e ".[srt_empty]"
+
+# Step 3: 安装本插件
+git clone https://github.com/flagos-ai/sglang-plugin-FL
+cd sglang-plugin-FL && pip install -e .
+
+# Step 4: 安装 FlagGems
+pip install flag-gems
+
+# Step 5:（可选）安装 FlagCX 用于分布式通信
+git clone https://github.com/flagos-ai/FlagCX.git
+cd FlagCX && make USE_ASCEND=1  # 或 USE_NVIDIA=1, USE_MUSA=1
+export FLAGCX_PATH="$PWD"
+```
+
+#### Empty 模式下的运行方式
+
+由于 empty 模式不包含 `flashinfer` 和 `sgl_kernel`，运行时**必须**指定 attention backend 并禁用 vendor.cuda 路径：
+
+```bash
+export SGLANG_PLUGIN=sglang_fl
+export SGLANG_FL_DENY_VENDORS=cuda              # 跳过 sgl_kernel 路径，使用 FlagGems/reference
+export SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero  # FlagGems bug 规避
+export ATTENTION_BACKEND=triton                  # 使用 SGLang 自带 Triton attention（替代 flashinfer）
+
+python -m sglang.launch_server \
+    --model-path Qwen/Qwen2.5-0.5B-Instruct \
+    --port 30000 \
+    --disable-piecewise-cuda-graph
+```
+
+> **`ATTENTION_BACKEND` 说明**：
+> - `triton` — SGLang 自带的 Triton attention kernel，适用于**所有有 Triton 的平台**（NVIDIA、Ascend、MUSA 等）
+> - `ascend` — 华为 Ascend 专属优化 attention（在 NPU 上使用）
+> - 如果不设置，CUDA 类设备默认选 `flashinfer` — 在 empty 环境下**没有 flashinfer 会报错**
 
 ### 下载模型
 
