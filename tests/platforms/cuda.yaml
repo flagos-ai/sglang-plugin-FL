@@ -1,0 +1,83 @@
+# CUDA-Based Platform Configuration
+# Flexible test selection mechanism for NVIDIA GPU environments.
+#
+#
+# Users can modify:
+# - e2e: Add/remove model cases in inference and serving support lists
+# - benchmark: Enable/disable throughput, latency, and serve smoke tests
+# - unit: Add/remove paths in include and exclude lists
+# - tolerance: Adjust numerical comparison tolerance for result validation
+# - unsupported_features: Exclude test cases matching specific feature tags
+# - env_defaults: Set CUDA/NCCL/SGLang environment defaults before tests start
+#
+# ---- Platform-level settings ------------------------------------------------
+platform: cuda
+vendor: nvidia
+
+device_types:
+  a100:
+    compute_capability: "8.0"
+    memory_gb: 80
+    tags: [ampere, fp64, bf16]
+  a800:
+    compute_capability: "8.0"
+    memory_gb: 80
+    tags: [ampere, fp64, bf16, china-variant]
+  h100:
+    compute_capability: "9.0"
+    memory_gb: 80
+    tags: [hopper, fp8, bf16]
+
+# Default numerical tolerance for result comparison.
+tolerance:
+  inference:
+    default: {exact: true}
+
+# Device-level overrides for specific devices or categories.
+device_overrides:
+  h100:
+    tolerance:
+      inference:
+        default: {rtol: 1e-4, atol: 1e-7}
+
+# Features not supported on this platform.
+# Test cases whose model name contains any of these strings will be skipped.
+# Example: ["flaggems"] would skip "qwen3_flaggems" cases.
+unsupported_features: []
+
+# Default environment variables for this platform.
+# tests/run.py applies these before invoking pytest.
+env_defaults:
+  CUDA_DEVICE_MAX_CONNECTIONS: "1"
+  NCCL_ALGO: "Ring"
+
+# ---- Device-specific test configurations ------------------------------------
+a100:
+  name: "a100"
+  tests:
+    e2e:
+      # Add or remove test cases per model.
+      # Each case points to tests/models/<model>/<case>.yaml.
+      concurrent:
+        qwen3_6: ["35b_a3b_tp2_nograph", "27b_tp2_nograph"]
+      inference:
+        qwen3_6: ["35b_a3b_tp2_nograph",  "27b_tp2_nograph"]
+      serving:
+        qwen3: ["4b_tp2"]
+        qwen3_6: ["35b_a3b_tp2_nograph", "27b_tp2_nograph"]
+
+    functional:
+      # Reserved for future tests/functional_tests support.
+      # Current SGLang runner does not consume this section yet.
+      include: "*"
+      exclude: []
+
+    unit:
+      # Include patterns: "*" for all, or list specific paths.
+      include: "*"
+      # Exclude patterns: empty list or list paths to exclude.
+      exclude: []
+
+    benchmark:
+      enabled: true
+      smoke: ["throughput", "latency", "serve"]

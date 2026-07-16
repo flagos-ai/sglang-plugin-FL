@@ -1,0 +1,37 @@
+# Qwen3-4B model configuration (TP=2).
+
+llm:
+  model: "/data/models/Qwen/Qwen3-4B"
+  tp_size: 2
+  context_length: 1024
+  mem_fraction_static: 0.8
+  trust_remote_code: true
+  disable_cuda_graph: true
+  disable_piecewise_cuda_graph: true
+
+generate:
+  prompts:
+    - text: "How many states are there in the United States?"
+      expected: "50"
+    - text: "The capital of France is"
+      expected: "Paris"
+  sampling:
+    max_new_tokens: 16
+    temperature: 0.7
+
+serve:
+  served_model_name: "qwen"
+  endpoints: ["chat"]
+  stream: true
+  max_tokens: 256
+  chat_messages:
+    - role: "user"
+      content: "Give me a short introduction to large language models."
+  sampling:
+    temperature: 0.7
+    top_p: 0.8
+    presence_penalty: 1.5
+  extra_body:
+    top_k: 20
+    chat_template_kwargs:
+      enable_thinking: false

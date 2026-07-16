@@ -186,7 +186,7 @@ class FlagCXCommunicator:
     def all_reduce(self, input_: torch.Tensor) -> torch.Tensor:
         """All-reduce using FlagCX. Falls back to torch.distributed if disabled."""
         if self.disabled:
-            return super().all_reduce(input_)
+            return
 
         assert input_.device == self.device, (
             f"FlagCX communicator on {self.device}, but tensor on {input_.device}"
@@ -199,7 +199,7 @@ class FlagCXCommunicator:
     def reduce_scatter(self, output: torch.Tensor, input_: torch.Tensor):
         """Reduce-scatter using FlagCX."""
         if self.disabled:
-            return super().reduce_scatter(output, input_)
+            return
 
         assert input_.device == self.device, (
             f"FlagCX communicator on {self.device}, but tensor on {input_.device}"
@@ -219,7 +219,7 @@ class FlagCXCommunicator:
     def all_gather(self, output: torch.Tensor, input_: torch.Tensor):
         """All-gather using FlagCX."""
         if self.disabled:
-            return super().all_gather(output, input_)
+            return
 
         assert input_.device == self.device, (
             f"FlagCX communicator on {self.device}, but tensor on {input_.device}"
@@ -387,3 +387,4 @@ class FlagCXCommunicator:
 def create_flagcx_communicator(group, device) -> FlagCXCommunicator:
     """Factory function for FlagCX communicator (registered with GroupCoordinator)."""
     return FlagCXCommunicator(group=group, device=device)
+
