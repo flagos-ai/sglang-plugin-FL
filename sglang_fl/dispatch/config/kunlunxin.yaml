@@ -13,6 +13,7 @@ prefer: flagos
 #                           (RuntimeError in MambaPool.alloc)
 #   stack                -> Triton VGather on uint8 image data in VL preprocessing
 #                           ("Only support I16/FP16/BF16/I32/FP32 in VGather" abort)
+#   round, copy_         -> qwen3_6_35b_a3b_multinode
 # Everything else uses FlagGems. Verified 27B/35B-A3B offline+concurrent text+VL pass.
 # Override per-run with env SGLANG_FL_FLAGOS_BLACKLIST if needed.
 flagos_blacklist:
@@ -23,6 +24,9 @@ flagos_blacklist:
   - index_put_
   - _index_put_impl_
   - stack
+  - round
+  - round_
+  - copy_
 
 # Per-op backend order (overrides `prefer` for the listed op only).
 #   silu_and_mul : route to the kunlunxin VENDOR impl (sgl_kernel klx build),
