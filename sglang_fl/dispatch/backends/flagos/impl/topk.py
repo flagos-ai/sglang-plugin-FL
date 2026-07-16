@@ -32,7 +32,7 @@ def topk_flagos(
     Returns:
         TopKOutput (StandardTopKOutput format)
     """
-    topk = obj.topk_config.topk
+    topk = obj.topk_config.top_k
     renormalize = obj.topk_config.renormalize
 
     M = hidden_states.shape[0]
@@ -51,5 +51,5 @@ def topk_flagos(
     return StandardTopKOutput(
         topk_weights=topk_weights,
         topk_ids=topk_ids,
-        token_expert_indices=token_expert_indices,
+        router_logits=router_logits,
     )

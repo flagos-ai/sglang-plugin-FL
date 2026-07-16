@@ -189,7 +189,10 @@ def run_engine():
         vl_outputs.append(text)
         print(f"  [{case['image']}] {case['question']}\n    → {text!r}")
 
-    engine.shutdown()
+    try:
+        engine.shutdown()
+    except RuntimeError:
+        pass 
     return text_outputs, vl_outputs
 
 
