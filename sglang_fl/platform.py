@@ -38,11 +38,12 @@ _DIST_BACKEND_MAP = {
 }
 
 # Attention backend mapping: vendor_name -> default backend
-# The value must match a name registered in sglang.srt.layers.attention.attention_registry. 
+# The value must match a name registered in sglang.srt.layers.attention.attention_registry.
 _ATTN_BACKEND_MAP = {
     "nvidia": "flashinfer",
     "ascend": "ascend",
     "mthreads": "fa3",
+    "iluvatar": "triton",
 }
 
 
@@ -338,10 +339,10 @@ class PlatformFL(SRTPlatform):
     def apply_server_args_defaults(self, server_args) -> None:
         """Apply platform-specific defaults to server arguments.
 
-        CUDA is skipped — sglang's own defaulting handles it. For other vendors,
+        NVIDIA is skipped — sglang's own defaulting handles it. For other vendors,
         if the user didn't pick an attention backend, fill from _ATTN_BACKEND_MAP.
         """
-        if self._device_type == "cuda":
+        if self._vendor_name == "nvidia":
             return
         if (
             not hasattr(server_args, "attention_backend")
