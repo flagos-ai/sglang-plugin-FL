@@ -28,6 +28,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 import requests
@@ -67,6 +68,7 @@ class SGLangServer:
     host: str = "127.0.0.1"
     api_key: str = ""
     served_model_name: str = ""
+    extra_env: dict[str, str] = field(default_factory=dict)
     max_retries: int = 60
     poll_interval: int = 10
 
@@ -109,12 +111,14 @@ class SGLangServer:
             suffix=".log",
             delete=False,
         )
+        env = _append_no_proxy(os.environ.copy())
+        env.update(self.extra_env)
         self._process = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
             stdout=self._log_file,
             stderr=subprocess.STDOUT,
-            env=_append_no_proxy(os.environ.copy()),
+            env=env,
         )
         self._wait_ready()
 
@@ -185,14 +189,22 @@ class SGLangServer:
 
         self._fail_with_logs("SGLang service startup timed out")
 
+    def read_logs(self) -> str:
+        """Return the current server log contents."""
+        if self._log_file is None:
+            return ""
+        self._log_file.flush()
+        return Path(self._log_file.name).read_text(
+            encoding="utf-8", errors="replace"
+        )
     def _fail_with_logs(self, message: str) -> None:
         logs = ""
         log_path = ""
         if self._log_file:
             self._log_file.flush()
             log_path = self._log_file.name
-            with open(log_path, encoding="utf-8", errors="replace") as f:
-                logs = f.read()
+            logs = self.read_logs()
+
         # Keep log file for post-mortem inspection.
         self._keep_log = True
         self.stop()

@@ -723,6 +723,16 @@ def activate_platform() -> str | None:
 # ─── General Plugin entry point ──────────────────────────────────────────────
 
 _plugin_loaded = False
+_plugin_active = False
+
+
+def is_plugin_loaded() -> bool:
+    """Return whether SGLang invoked the general plugin entry point."""
+    return _plugin_loaded
+
+def is_plugin_active() -> bool:
+    """Return whether the general plugin completed its initialization."""
+    return _plugin_active
 
 
 def load_plugin():
@@ -730,10 +740,12 @@ def load_plugin():
 
     Idempotent: safe to call multiple times.
     """
-    global _plugin_loaded
+    global _plugin_active, _plugin_loaded
     if _plugin_loaded:
         return
     _plugin_loaded = True
+    if _is_rank0():
+        logger.info("sglang_fl plugin loading")
 
     # Suppress info logs on non-rank-0 processes to avoid duplicate output
     if not _is_rank0():
@@ -800,3 +812,5 @@ def load_plugin():
             "+" + "=" * 58 + "+"
         )
         logger.info(banner)
+
+    _plugin_active = True

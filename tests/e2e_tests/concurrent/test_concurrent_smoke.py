@@ -24,6 +24,8 @@ import pytest
 
 from sglang import Engine
 from tests.utils.model_config import ModelConfig
+from tests.e2e_tests.plugin_utils import assert_sglang_fl_plugin_loaded_and_active
+
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _IMAGE_DIR = Path(os.environ.get("IMAGE_DIR", _REPO_ROOT / "examples" / "test_images"))
@@ -395,6 +397,7 @@ def test_concurrent() -> None:
 
     engine = Engine(**_engine_kwargs())
     try:
+        assert_sglang_fl_plugin_loaded_and_active()
         for index, mode in enumerate(modes):
             if index > 0 and hasattr(engine, "flush_cache"):
                 engine.flush_cache()

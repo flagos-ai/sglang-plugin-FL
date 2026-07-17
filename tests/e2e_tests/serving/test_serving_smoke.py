@@ -10,13 +10,14 @@ Driven by environment variables set by ``tests/run.py``:
   ``35b_a3b_tp2_nograph``)
 
 Loads ``tests/models/<model>/<case>.yaml``, starts an SGLang server with the
-engine config, and validates configured endpoints (completion, chat, embedding).
+engine config, verifies sglang_fl activation and OOT bridge activity, and validates configured endpoints (completion, chat, embedding).
 
 Supports both non-streaming (raw requests) and streaming (OpenAI SDK) modes,
 controlled by the ``serve.stream`` flag in the model YAML.
 """
 
 import os
+from pathlib import Path
 
 import pytest
 import requests
@@ -52,7 +53,12 @@ if not os.path.exists(_CFG.model):
 
 
 @pytest.fixture(scope="module")
-def server():
+def plugin_dispatch_log(tmp_path_factory) -> Path:
+    return tmp_path_factory.mktemp("sglang_plugin") / "dispatch.log"
+
+
+@pytest.fixture(scope="module")
+def server(plugin_dispatch_log):
     """Start SGLang server with model config and optional serve overrides."""
     serve = _CFG.serve
 
@@ -66,6 +72,7 @@ def server():
         served_model_name=serve.served_model_name,
         max_retries=serve.startup_retries,
         extra_args=extra_args,
+        extra_env={"SGLANG_FL_DISPATCH_LOG": str(plugin_dispatch_log)},
     ) as srv:
         yield srv
 
@@ -90,6 +97,25 @@ def headers():
 
 _REQUEST_MODEL = _CFG.serve.request_model(_CFG.model)
 
+
+@pytest.mark.e2e
+def test_plugin_loaded(server):
+    """The server must invoke the sglang_fl general plugin entry point."""
+    logs = server.read_logs()
+    assert "sglang_fl plugin loading" in logs, (
+        "SGLang became ready without the sglang_fl plugin-load marker. "
+        f"Server log tail:\n{logs[-4000:]}"
+    )
+
+
+@pytest.mark.e2e
+def test_plugin_activated(server):
+    """The server must finish sglang_fl plugin initialization."""
+    logs = server.read_logs()
+    assert "sglang_fl activated" in logs, (
+        "SGLang became ready without the sglang_fl activation marker. "
+        f"Server log tail:\n{logs[-4000:]}"
+    )
 
 @pytest.mark.e2e
 def test_model_list(base_url, headers):
@@ -253,3 +279,18 @@ def test_endpoint(endpoint: str, base_url, headers):
     runner = _ENDPOINT_RUNNERS.get(endpoint)
     assert runner is not None, f"Unknown endpoint type: {endpoint}"
     runner(base_url, headers)
+
+@pytest.mark.e2e
+def test_plugin_dispatch_activity(server, base_url, headers, plugin_dispatch_log):
+    """A serving request must pass through at least one FL OOT bridge."""
+    endpoint = _CFG.serve.endpoints[0]
+    runner = _ENDPOINT_RUNNERS.get(endpoint)
+    assert runner is not None, f"Unknown endpoint type: {endpoint}"
+    runner(base_url, headers)
+
+    assert plugin_dispatch_log.exists(), "sglang_fl did not create its dispatch log"
+    logs = plugin_dispatch_log.read_text(encoding="utf-8", errors="replace")
+    assert "[OOT-DISPATCH]" in logs, (
+        "Serving requests completed without entering an sglang_fl OOT bridge. "
+        f"Dispatch log:\n{logs}"
+    )

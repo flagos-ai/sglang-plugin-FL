@@ -9,8 +9,8 @@ This test file is driven by two environment variables set by ``tests/run.py``:
 - ``FL_TEST_CASE``:  Case name within the family (e.g. ``06b_tp1``, ``o45_tp2``)
 
 It loads ``tests/models/<model>/<case>.yaml``, constructs the SGLang Engine,
-runs generation for each prompt (with optional parametrize combos), and
-asserts that outputs are non-empty.
+runs generation for each prompt (with optional parametrize combos), verifies
+the general plugin entry point is active, and asserts outputs are non-empty.
 
 Supports both text-only and multimodal (audio/image/video) models via the
 ``generate.modality`` field in the YAML config.
@@ -21,6 +21,7 @@ import os
 
 import pytest
 
+from tests.e2e_tests.plugin_utils import assert_sglang_fl_plugin_loaded_and_active
 from tests.utils.model_config import ModelConfig
 from sglang import Engine
 
@@ -354,6 +355,7 @@ def test_inference(combo: dict) -> None:
 
     llm = Engine(**llm_kwargs)
     try:
+        assert_sglang_fl_plugin_loaded_and_active()
         sampling_params = _CFG.sampling_kwargs()
 
         if gen.modality == "text":
