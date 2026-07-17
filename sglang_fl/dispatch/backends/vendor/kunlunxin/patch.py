@@ -6,6 +6,7 @@ Add one ``patch_xxx`` call per concern; put the implementation under ``patches/`
 
 import logging
 
+from .patches.attention_backend_choice import patch_attention_backend_choice
 from .patches.causal_conv1d import patch_causal_conv1d
 from .patches.clamp_position import patch_clamp_position
 from .patches.pp_send_first import patch_pp_send_recv_and_preprocess_output_tensors
@@ -26,6 +27,7 @@ def apply_kunlunxin_patches():
     patch_causal_conv1d()
     patch_suppress_pynccl()
     patch_pp_send_recv_and_preprocess_output_tensors()
+    patch_attention_backend_choice()
 
 
 apply_kunlunxin_patches()

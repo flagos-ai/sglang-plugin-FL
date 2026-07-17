@@ -27,6 +27,8 @@ flagos_blacklist:
   - round
   - round_
   - copy_
+  - nonzero_numpy
+  - index_copy_
 
 # Per-op backend order (overrides `prefer` for the listed op only).
 #   silu_and_mul : route to the kunlunxin VENDOR impl (sgl_kernel klx build),

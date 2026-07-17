@@ -118,6 +118,8 @@ else:
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-35B-A3B")
 MM_ATTENTION_BACKEND = os.environ.get("MM_ATTENTION_BACKEND", "")
+ATTENTION_BACKEND = os.environ.get("ATTENTION_BACKEND", "")
+DISABLE_CUDA_GRAPH = os.environ.get("ENABLE_CUDA_GRAPH", "0") != "1"
 
 _HERE = Path(__file__).resolve().parent
 IMG_DIR = Path(os.environ.get("IMAGE_DIR", _HERE / "test_images"))
@@ -524,7 +526,6 @@ def run_master(args):
         str(args.nccl_port),
         "--mem-fraction-static",
         "0.85",
-        "--disable-cuda-graph",
         "--disable-piecewise-cuda-graph",
         "--trust-remote-code",
         *_PLATFORM_SERVER_ARGS,
@@ -546,6 +547,10 @@ def run_master(args):
 
     if MM_ATTENTION_BACKEND:
         cmd += ["--mm-attention-backend", MM_ATTENTION_BACKEND]
+    if ATTENTION_BACKEND:
+        cmd += ["--attention-backend", ATTENTION_BACKEND]
+    if DISABLE_CUDA_GRAPH:
+        cmd += ["--disable-cuda-graph"]
 
     print("Launching server...")
     server_proc = subprocess.Popen(cmd)
@@ -633,7 +638,6 @@ def run_worker(args):
         str(args.nccl_port),
         "--mem-fraction-static",
         "0.85",
-        "--disable-cuda-graph",
         "--disable-piecewise-cuda-graph",
         "--trust-remote-code",
         *_PLATFORM_SERVER_ARGS,
@@ -655,6 +659,10 @@ def run_worker(args):
 
     if MM_ATTENTION_BACKEND:
         cmd += ["--mm-attention-backend", MM_ATTENTION_BACKEND]
+    if ATTENTION_BACKEND:
+        cmd += ["--attention-backend", ATTENTION_BACKEND]
+    if DISABLE_CUDA_GRAPH:
+        cmd += ["--disable-cuda-graph"]
 
     print("Starting worker node... (will block until master shuts down)\n")
     try:
