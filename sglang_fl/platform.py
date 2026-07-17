@@ -60,6 +60,7 @@ _ATTN_BACKEND_MAP = {
     "ascend": "ascend",
     "mthreads": "fa3",
     "kunlunxin": "kunlunxin",
+    "hygon": "hcu",
 }
 
 
@@ -331,8 +332,9 @@ class PlatformFL(SRTPlatform):
         decorators live, which inject OOT backends into sglang's
         ``ATTENTION_BACKENDS`` dict. See ``vendor/template/`` for a skeleton.
         """
+        vendor_name = "hcu" if self._vendor_name == "hygon" else self._vendor_name
         vendor_module = (
-            f"sglang_fl.dispatch.backends.vendor.{self._vendor_name}.register_platform"
+            f"sglang_fl.dispatch.backends.vendor.{vendor_name}.register_platform"
         )
         try:
             importlib.import_module(vendor_module)
