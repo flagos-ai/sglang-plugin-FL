@@ -49,9 +49,9 @@ _DIST_BACKEND_MAP = {
     "cambricon": "cncl",
     "mthreads": "mccl",
     "thead": "nccl",
-    "enflame": "eccl"
+    "enflame": "eccl",
     "tsingmicro": "tccl",
-    "hcu": "nccl"
+    "hygon": "nccl",
 }
 
 # Attention backend mapping: vendor_name -> default backend
@@ -60,9 +60,10 @@ _ATTN_BACKEND_MAP = {
     "nvidia": "flashinfer",
     "ascend": "ascend",
     "mthreads": "fa3",
-    "enflame": "fa3"
+    "enflame": "fa3",
     "kunlunxin": "kunlunxin",
     "iluvatar": "triton",
+    "hygon": "hcu",
 }
 
 

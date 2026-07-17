@@ -6,7 +6,7 @@ Validates that sglang-plugin-FL correctly handles multi-node tensor parallelism
 by launching a distributed SGLang server across 2 nodes and running text,
 concurrent, multimodal (VL), and high-concurrency inference tests.
 
-Supports CUDA, MUSA, Ascend NPU, and Iluvatar CoreX; platform-specific server
+Supports CUDA, MUSA, Ascend NPU, Hygon HCU, and Iluvatar CoreX; platform-specific server
 flags and env vars are applied automatically at runtime.
 
 ============================================================================
@@ -84,6 +84,7 @@ _is_txda = hasattr(torch, "txda") and torch.txda.is_available()
 _is_musa = hasattr(torch, "musa") and torch.musa.is_available()
 _is_npu = hasattr(torch, "npu") and torch.npu.is_available()
 _is_corex = hasattr(torch, "corex") and torch.cuda.is_available()
+_is_hcu = hasattr(torch, "__hcu_version__") and torch.cuda.is_available()
 
 if _is_txda:
     os.environ.setdefault("SGLANG_FL_TIMER_ENABLE", "1")
@@ -115,6 +116,11 @@ elif _is_corex:
         "--watchdog-timeout", "3600",
         "--cuda-graph-max-bs", "16",
         "--sleep-on-idle",
+    ]
+elif _is_hcu:
+    _PLATFORM_SERVER_ARGS = [
+        "--disable-radix-cache",
+        "--page-size", "64",
     ]
 else:
     _PLATFORM_SERVER_ARGS = []

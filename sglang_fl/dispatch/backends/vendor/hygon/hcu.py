@@ -14,9 +14,10 @@ import torch
 
 class hcuBackend(Backend):
     """
-    Template backend for operator implementations.
+    Hygon operator backend.
 
-    Replace this with your vendor-specific backend.
+    The class and backend name intentionally retain ``hcu`` because that is
+    the stable dispatch/runtime identifier used by SGLang and Torch Hygon.
     """
 
     _available: Optional[bool] = None
@@ -30,13 +31,16 @@ class hcuBackend(Backend):
         return "hcu"
 
     def is_available(self) -> bool:
-        """Check if vendor hardware/libraries are available."""
+        """Check if HCU hardware and runtime are available."""
         if hcuBackend._available is None:
             try:
-                import sglang_hcu
-                hcuBackend._available = True
-            except (ImportError, AttributeError):
-                hcuBackend._available = True
+                hcuBackend._available = (
+                    hasattr(torch, "__hcu_version__")
+                    and torch.cuda.is_available()
+                    and torch.cuda.device_count() > 0
+                )
+            except Exception:
+                hcuBackend._available = False
         return hcuBackend._available
 
     # ==================== Operator Implementations ====================
@@ -186,21 +190,4 @@ class hcuBackend(Backend):
             num_token_non_padded=num_token_non_padded,
             expert_location_dispatch_info=expert_location_dispatch_info,
         )
-
-
-    # def silu_and_mul(self, obj, x: torch.Tensor) -> torch.Tensor:
-    #     from .impl.activation import silu_and_mul_template
-    #     return silu_and_mul_template(obj, x)
-    #
-    # def rms_norm(self, obj, x, residual=None):
-    #     from .impl.normalization import rms_norm_template
-    #     return rms_norm_template(obj, x, residual)
-    #
-    # def rotary_embedding(self, obj, query, key, cos, sin, position_ids,
-    #                      rotary_interleaved=False, inplace=True):
-    #     from .impl.rotary import rotary_embedding_template
-    #     return rotary_embedding_template(
-    #         obj, query, key, cos, sin, position_ids,
-    #         rotary_interleaved, inplace,
-    #     )
 

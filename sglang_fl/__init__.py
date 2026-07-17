@@ -457,7 +457,8 @@ def _apply_vendor_patches() -> None:
         logger.warning("vendor patch skipped: DeviceDetector failed (%s)", e)
         return
 
-    module = f"sglang_fl.dispatch.backends.vendor.{vendor}.patch"
+    vendor_name = "hcu" if vendor == "hygon" else vendor
+    module = f"sglang_fl.dispatch.backends.vendor.{vendor_name}.patch"
     try:
         importlib.import_module(module)
         logger.info("vendor patch loaded: %s", module)
