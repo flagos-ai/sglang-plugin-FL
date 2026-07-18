@@ -1,3 +1,19 @@
+<!--
+ Copyright 2026 FlagOS Contributors
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+ -->
+
 # sglang-plugin-FL
 
 sglang-plugin-FL 是 [SGLang](https://github.com/sgl-project/sglang) 的 OOT（Out-of-Tree）插件，基于 FlagOS 统一多芯后端构建——包括统一算子库 [FlagGems](https://github.com/flagos-ai/FlagGems) 和统一通信库 [FlagCX](https://github.com/flagos-ai/FlagCX)。它将 SGLang 的推理能力扩展到多种硬件平台。无需修改 SGLang 的原始接口或使用方式，同一条命令即可在不同芯片上运行模型推理。
