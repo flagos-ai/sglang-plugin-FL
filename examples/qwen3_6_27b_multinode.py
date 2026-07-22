@@ -6,8 +6,8 @@ Validates that sglang-plugin-FL correctly handles multi-node tensor parallelism
 for the dense Qwen3.6-27B model by launching a distributed SGLang server across
 2 nodes and running text, concurrent, multimodal (VL), and high-concurrency tests.
 
-Supports CUDA, MUSA, and Ascend NPU; platform-specific server flags and env
-vars are applied automatically at runtime.
+Supports CUDA, MUSA, Ascend NPU, and Iluvatar CoreX; platform-specific server
+flags and env vars are applied automatically at runtime.
 
 ============================================================================
 Usage:
@@ -86,6 +86,7 @@ import torch
 _is_txda = hasattr(torch, "txda") and torch.txda.is_available()
 _is_musa = hasattr(torch, "musa") and torch.musa.is_available()
 _is_npu = hasattr(torch, "npu") and torch.npu.is_available()
+_is_corex = hasattr(torch, "corex") and torch.cuda.is_available()
 
 # Must be set before launching sglang. Subprocesses inherit os.environ.
 if _is_txda:
@@ -111,6 +112,12 @@ elif _is_npu:
         "--device", "npu",
         "--dtype", "bfloat16",
         "--disable-radix-cache",
+    ]
+elif _is_corex:
+    _PLATFORM_SERVER_ARGS = [
+        "--attention-backend", "triton",
+        "--watchdog-timeout", "3600",
+        "--cuda-graph-max-bs", "16",
     ]
 else:
     _PLATFORM_SERVER_ARGS = []
@@ -533,8 +540,7 @@ def run_master(args):
         str(args.nccl_port),
         "--mem-fraction-static",
         "0.85",
-        "--disable-cuda-graph",
-        "--disable-piecewise-cuda-graph",
+        *_CUDA_GRAPH_ARGS,
         "--trust-remote-code",
         *_PLATFORM_SERVER_ARGS,
     ]
@@ -640,8 +646,7 @@ def run_worker(args):
         str(args.nccl_port),
         "--mem-fraction-static",
         "0.85",
-        "--disable-cuda-graph",
-        "--disable-piecewise-cuda-graph",
+        *_CUDA_GRAPH_ARGS,
         "--trust-remote-code",
         *_PLATFORM_SERVER_ARGS,
     ]
