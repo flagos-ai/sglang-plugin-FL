@@ -87,6 +87,7 @@ _is_musa = hasattr(torch, "musa") and torch.musa.is_available()
 _is_npu = hasattr(torch, "npu") and torch.npu.is_available()
 _is_corex = hasattr(torch, "corex") and torch.cuda.is_available()
 _is_hcu = hasattr(torch, "__hcu_version__") and torch.cuda.is_available()
+_is_maca = "metax" in torch.__version__ and torch.cuda.is_available()
 
 if _is_txda:
     os.environ.setdefault("SGLANG_FL_TIMER_ENABLE", "1")
@@ -123,6 +124,12 @@ elif _is_hcu:
     _PLATFORM_SERVER_ARGS = [
         "--disable-radix-cache",
         "--page-size", "64",
+    ]
+elif _is_maca:
+    _PLATFORM_SERVER_ARGS = [
+        "--attention-backend", "flashinfer",
+        "--chunked-prefill-size", "4096",
+        "--disable-radix-cache",
     ]
 else:
     _PLATFORM_SERVER_ARGS = []

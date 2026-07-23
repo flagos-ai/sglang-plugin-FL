@@ -27,6 +27,7 @@ _is_npu = hasattr(torch, "npu") and torch.npu.is_available()
 _is_txda = hasattr(torch, "txda") and torch.txda.is_available()
 _is_corex = hasattr(torch, "corex") and torch.cuda.is_available()
 _is_hcu = hasattr(torch, "__hcu_version__") and torch.cuda.is_available()
+_is_maca = "metax" in torch.__version__ and torch.cuda.is_available()
 
 # Must be set before importing sglang.
 if _is_npu:
@@ -93,6 +94,13 @@ elif _is_hcu:
         "page_size": 64,
         "disable_radix_cache": True,
         "enable_breakable_cuda_graph": False,
+        "trust_remote_code": True,
+    }
+elif _is_maca:
+    _extra_engine_kwargs = {
+        "attention_backend": "flashinfer",
+        "chunked_prefill_size": 4096,
+        "disable_radix_cache": True,
         "trust_remote_code": True,
     }
 else:
