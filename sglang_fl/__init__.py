@@ -104,6 +104,68 @@ def _parse_op_prefer(val: str) -> dict:
     return result
 
 
+# ─── MUSA compatibility bootstrap ───────────────────────────────────────────
+# These shims bridge SGLang's CUDA-centric assumptions to the torch_musa
+# runtime, without modifying any sglang source files.
+#
+# In container deployments this logic was historically provided by a
+# PYTHONSTARTUP / venv sitecustomize.py. Embedding it here makes the plugin
+# self-contained — no external bootstrap script needed.
+
+
+def _setup_musa_compat() -> None:
+    """Apply MUSA runtime compatibility shims for SGLang on Mthreads hardware.
+
+    Must be called early (before any sglang.srt import that may trigger
+    sgl_kernel or torch.cuda internals). Idempotent.
+    """
+    _musa_active = hasattr(torch, "musa") and torch.musa.is_available()
+    if not _musa_active:
+        return
+
+    # 1. torchada shim — SGLang 0.5.11 detects MUSA via ``import torchada``
+    #    as a marker module. Provide a synthetic one so is_musa() returns True.
+    import sys
+    import types
+
+    sys.modules.setdefault("torchada", types.ModuleType("torchada"))
+    if not hasattr(torch.version, "musa") or torch.version.musa is None:
+        torch.version.musa = "5.1.0"
+
+    # 2. Legacy CUDA API mapping — SGLang helpers query torch.cuda for device
+    #    count / SM capability even after selecting the MUSA platform. Map
+    #    count to musa and stub SM capability so NVIDIA-only paths (DeepGEMM,
+    #    etc.) remain disabled.
+    if not torch.cuda.is_available():
+        torch.cuda.device_count = torch.musa.device_count
+        torch.cuda.get_device_capability = lambda device=None: (0, 0)
+
+    # 3. NCCL symmetric-memory allocator symbols — SGLang 0.5.11 imports
+    #    PyTorch 2.11 private CUDA allocator symbols even when NCCL symmetric
+    #    memory is disabled at runtime. PyTorch 2.7 (MUSA) lacks them, so
+    #    provide fail-loud guards.
+    try:
+        import torch.cuda.memory as _cuda_memory
+
+        def _unsupported_symmetric_memory(*args, **kwargs):
+            raise RuntimeError(
+                "NCCL symmetric-memory allocator is unsupported "
+                "on this MUSA/PyTorch runtime"
+            )
+
+        for _name in (
+            "_cuda_beginAllocateCurrentThreadToPool",
+            "_cuda_endAllocateToPool",
+            "_cuda_releasePool",
+        ):
+            if not hasattr(_cuda_memory, _name):
+                setattr(_cuda_memory, _name, _unsupported_symmetric_memory)
+    except Exception:
+        pass
+
+    logger.debug("MUSA compatibility shims applied (torchada, CUDA API map, allocator stubs)")
+
+
 # ─── Config builder ───────────────────────────────────────────────────────────
 
 
@@ -262,13 +324,13 @@ def _make_dispatch_hook(config: dict = None):
       - OOT_BLACKLIST: listed ops skip OOT dispatch (comma-separated class names)
       - Cannot set both simultaneously.
       - Empty (default): all registered ops use OOT dispatch.
+
+    NOTE: sglang.srt.layers imports are deferred inside _dispatch_hook to avoid
+    pulling in sgl_kernel (CUDA-only) at plugin registration time. The AROUND
+    hook itself is registered during load_plugin(), but the bridge map is only
+    built on the first actual dispatch call — well after SGLang's model_runner
+    and its dependencies are available.
     """
-    from sglang.srt.layers.activation import SiluAndMul
-    from sglang.srt.layers.layernorm import RMSNorm, GemmaRMSNorm
-    from sglang.srt.layers.rotary_embedding import RotaryEmbedding
-    from sglang.srt.layers.rotary_embedding.mrope import MRotaryEmbedding
-    from sglang.srt.layers.moe.topk import TopK
-    from sglang.srt.layers.quantization.unquant import UnquantizedFusedMoEMethod
     from sglang_fl.dispatch.bridge import (
         silu_and_mul_bridge,
         rms_norm_bridge,
@@ -299,19 +361,36 @@ def _make_dispatch_hook(config: dict = None):
     if blacklist:
         logger.info(f"OOT dispatch blacklist: {blacklist}")
 
-    # Map SGLang op classes to their bridge functions (via MRO inheritance)
-    _BRIDGE_MAP = {
-        SiluAndMul: silu_and_mul_bridge,
-        RMSNorm: rms_norm_bridge,
-        GemmaRMSNorm: gemma_rms_norm_bridge,
-        RotaryEmbedding: rotary_embedding_bridge,
-        MRotaryEmbedding: mrotary_embedding_bridge,
-        TopK: topk_bridge,
-        UnquantizedFusedMoEMethod: fused_moe_bridge,
-    }
+    # Lazy bridge map — populated on first _dispatch_hook call, after SGLang's
+    # model_runner imports are ready. Avoids sgl_kernel import failures on
+    # non-CUDA platforms at plugin registration time.
+    _BRIDGE_MAP = None
+
+    def _ensure_bridge_map():
+        """Build _BRIDGE_MAP on first use (deferred sglang.srt.layers imports)."""
+        nonlocal _BRIDGE_MAP
+        if _BRIDGE_MAP is not None:
+            return
+        from sglang.srt.layers.activation import SiluAndMul
+        from sglang.srt.layers.layernorm import RMSNorm, GemmaRMSNorm
+        from sglang.srt.layers.rotary_embedding import RotaryEmbedding
+        from sglang.srt.layers.rotary_embedding.mrope import MRotaryEmbedding
+        from sglang.srt.layers.moe.topk import TopK
+        from sglang.srt.layers.quantization.unquant import UnquantizedFusedMoEMethod
+
+        _BRIDGE_MAP = {
+            SiluAndMul: silu_and_mul_bridge,
+            RMSNorm: rms_norm_bridge,
+            GemmaRMSNorm: gemma_rms_norm_bridge,
+            RotaryEmbedding: rotary_embedding_bridge,
+            MRotaryEmbedding: mrotary_embedding_bridge,
+            TopK: topk_bridge,
+            UnquantizedFusedMoEMethod: fused_moe_bridge,
+        }
 
     def _find_bridge(cls):
         """Walk MRO to find a bridge function for the given class."""
+        _ensure_bridge_map()
         for parent in cls.__mro__:
             if parent in _BRIDGE_MAP:
                 return _BRIDGE_MAP[parent]
@@ -713,7 +792,13 @@ def activate_platform() -> str | None:
 
     Returns the fully-qualified class path of PlatformFL if hardware is detected,
     or None if FlagGems DeviceDetector fails (no supported hardware).
+
+    Idempotent: safe to call multiple times.
     """
+    # Apply MUSA compat shims immediately so SGLang's platform discovery and
+    # subsequent module loading (sgl_kernel, torch.cuda internals, etc.) see
+    # a correctly-bridged runtime.
+    _setup_musa_compat()
     try:
         try:
             # FlagGems<=5.0.2: DeviceDetector lives in device.
@@ -760,6 +845,10 @@ def load_plugin():
     _plugin_loaded = True
     if _is_rank0():
         logger.info("sglang_fl plugin loading")
+
+    # Apply MUSA compat shims (torchada, CUDA API map, allocator stubs)
+    # before any sglang.srt imports that may trigger sgl_kernel loading.
+    _setup_musa_compat()
 
     # Suppress info logs on non-rank-0 processes to avoid duplicate output
     if not _is_rank0():
