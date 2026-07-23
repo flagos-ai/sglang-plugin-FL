@@ -1,0 +1,26 @@
+# CUDA Hardware Configuration
+# This file defines CI/CD settings for NVIDIA GPU testing.
+
+platform: cuda
+
+# Docker image for this hardware
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.1.0-cuda-ci
+
+# Runner labels for this hardware
+runner_labels:
+  - ci-sglang-plugin-fl-nvidia
+
+# Container options (no --privileged; GPU access via NVIDIA_VISIBLE_DEVICES env var
+# which triggers nvidia-container-toolkit hook on the host docker daemon)
+# --user root is required: CI images install CUDA/NCCL libs under system paths,
+# and pip install needs write access to /usr/local. This matches org convention.
+container_options: >-
+  --hostname sglang-plugin-fl
+  --ipc=host
+  --shm-size=64g
+  --ulimit memlock=-1
+  --ulimit stack=67108864
+  --user root
+  -v /data/models:/data/models
+  -e NVIDIA_VISIBLE_DEVICES=all
+  -e NVIDIA_DRIVER_CAPABILITIES=compute,utility

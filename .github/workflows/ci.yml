@@ -1,0 +1,91 @@
+# CI Workflow for SGLang Plugin FL
+# Orchestrates lint, build, and per-platform testing.
+name: CI
+
+on:
+  schedule:
+    - cron: '0 18 * * *'  # daily at 2:00 AM CST (UTC+8)
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "examples/**"
+      - "LICENSE"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  # ============================================================
+  # Job 1: Lint (ruff check, ruff format, typos)
+  # ============================================================
+  lint:
+    uses: ./.github/workflows/_lint.yml
+    continue-on-error: true  # 报告 lint 问题但不阻塞 CI
+
+  # ============================================================
+  # Job 3: Build & install check
+  # ============================================================
+  build:
+    needs: lint
+    uses: ./.github/workflows/_build_wheel.yml
+
+  # ============================================================
+  # Job 4: Discover which platforms to test
+  # ============================================================
+  discover:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      platforms: ${{ steps.detect.outputs.platforms }}
+    steps:
+      - name: Checkout (attempt 1)
+        id: checkout1
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          sparse-checkout: |
+            .github/configs
+            .github/scripts
+        continue-on-error: true
+      - name: Checkout (attempt 2)
+        id: checkout2
+        if: steps.checkout1.outcome == 'failure'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          sparse-checkout: |
+            .github/configs
+            .github/scripts
+        continue-on-error: true
+      - name: Checkout (attempt 3)
+        if: steps.checkout2.outcome == 'failure'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          sparse-checkout: |
+            .github/configs
+            .github/scripts
+      - name: Install CI script dependencies
+        run: pip install -r .github/scripts/requirements-ci.txt
+      - name: Detect available platforms
+        id: detect
+        run: python3 .github/scripts/detect_platforms.py
+
+  # ============================================================
+  # Job 6a: CUDA platform testing
+  # ============================================================
+  test-cuda:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'cuda')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: cuda
+    secrets: inherit

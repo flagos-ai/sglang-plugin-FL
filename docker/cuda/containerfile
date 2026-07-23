@@ -1,0 +1,101 @@
+ARG CUDA_VERSION=12.8.1
+ARG UBUNTU_VERSION=22.04
+
+FROM harbor.baai.ac.cn/flagos-dev/cache:cuda-${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION}
+
+ARG PYTHON_VERSION=3.12
+ARG SGLANG_VERSION=0.5.11
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# System dependencies + Python + CUDA nvrtc
+# NOTE: cuda-nvrtc-13-0 provides the CUDA 13.0 runtime compiler library required
+# by PyTorch 2.11 (built against CUDA 13.0). The base image remains CUDA 12.8.1
+# for driver compatibility; these two versions coexist by design.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        git \
+        curl \
+        ca-certificates \
+        vim \
+        wget \
+        python3-pip \
+        libibverbs-dev \
+        libnuma-dev \
+        software-properties-common \
+        cuda-nvrtc-13-0 \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python${PYTHON_VERSION} \
+        python${PYTHON_VERSION}-dev \
+        python${PYTHON_VERSION}-venv \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${PYTHON_VERSION} 1 \
+    && update-alternatives --install /usr/bin/python python /usr/bin/python${PYTHON_VERSION} 1 \
+    && echo "/usr/local/cuda-13.0/targets/x86_64-linux/lib" > /etc/ld.so.conf.d/cuda-13.conf \
+    && ldconfig \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -sS https://bootstrap.pypa.io/get-pip.py | python3
+
+# Install PyTorch (CUDA 13.0 — required by sglang >=0.5.11)
+RUN pip install --no-cache-dir --timeout=600 --retries=3 \
+        torch==2.11.0 \
+        torchvision==0.26.0 \
+        torchaudio==2.11.0 \
+        --index-url https://download.pytorch.org/whl/cu130
+
+# Install sglang, FlagGems, and all pinned dependencies
+RUN pip install --no-cache-dir \
+        "sglang[runtime]==${SGLANG_VERSION}" \
+        "sglang-kernel==0.4.2" \
+        "flashinfer-python==0.6.8.post1" \
+        "flashinfer-cubin==0.6.8.post1" \
+        "nvidia-cutlass-dsl==4.4.2" \
+        "transformers==5.6.0" \
+        "huggingface_hub==1.23.0" \
+        "xgrammar==0.1.32" \
+        "scipy==1.13.1" \
+        pytest \
+        pytest-cov \
+        pytest-timeout \
+        pytest-json-report \
+        ruff \
+        pyyaml \
+    && pip install --no-cache-dir --no-deps "kernels==0.3.3" \
+    && pip uninstall -y torchcodec 2>/dev/null || true
+
+# Build FlagGems v5.3.1 and FlagCX v0.13.0 from source in one layer.
+#  - FlagGems v5.3.1: build backend is setuptools.build_meta (unlike v5.3.0 /
+#    master, which use scikit-build-core). Its build requires only
+#    setuptools<77 + setuptools-scm<10 -- no cmake/pybind11 -- and
+#    FLAGGEMS_BACKEND is runtime-detected (CUDA is the default), so no
+#    cmake.define config is passed. The PyPI sdist fails when setuptools
+#    isn't importable, so build from the git tag with --no-build-isolation.
+#    SETUPTOOLS_SCM_PRETEND_VERSION avoids setuptools-scm git-describe issues
+#    in the --depth 1 clone.
+#  - FlagCX: sglang_fl's flagcx.py loads $FLAGCX_PATH/build/lib/libflagcx.so
+#    and the wrapper at $FLAGCX_PATH/plugin/interservice/flagcx_wrapper.py
+#    (source-tree layout from `make`, not the PyPI wheel's site-packages
+#    layout). Host API only: no COMPILE_KERNEL, no cmake, no MPI. NCCL (the
+#    NVIDIA CCL adaptor) is taken from torch's bundled nvidia-nccl wheel.
+ARG FLAGGEMS_VERSION=v5.3.1
+ARG FLAGCX_VERSION=v0.13.0
+RUN pip install --no-cache-dir -U "setuptools<77" "setuptools-scm>=8,<10" wheel && \
+    git clone --branch ${FLAGGEMS_VERSION} --depth 1 \
+        https://github.com/flagos-ai/FlagGems /tmp/FlagGems && \
+    SETUPTOOLS_SCM_PRETEND_VERSION=${FLAGGEMS_VERSION#v} \
+    pip install --no-build-isolation /tmp/FlagGems && \
+    rm -rf /tmp/FlagGems && \
+    NCCL_DIR=$(python -c "import nvidia.nccl, os; print(os.path.dirname(nvidia.nccl.__file__))" 2>/dev/null || true) && \
+    git clone --branch ${FLAGCX_VERSION} --depth 1 \
+        https://github.com/flagos-ai/FlagCX /opt/FlagCX && \
+    cd /opt/FlagCX && \
+    git submodule update --init --recursive --depth 1 && \
+    make USE_NVIDIA=1 ${NCCL_DIR:+CCL_HOME="$NCCL_DIR"} -j"$(nproc)" && \
+    test -f build/lib/libflagcx.so && \
+    test -f plugin/interservice/flagcx_wrapper.py && \
+    PYTHONPATH=/opt/FlagCX python -c "from plugin.interservice.flagcx_wrapper import FLAGCXLibrary; print('flagcx wrapper import OK')" && \
+    rm -rf .git
+ENV FLAGCX_PATH=/opt/FlagCX
+
+WORKDIR /workspace

@@ -1,0 +1,68 @@
+name: Build Wheel
+
+on:
+  workflow_call:
+    inputs:
+      upload-artifact:
+        description: "Whether to upload the built wheel as an artifact"
+        required: false
+        type: boolean
+        default: true
+  workflow_dispatch:
+    inputs:
+      upload-artifact:
+        description: "Whether to upload the built wheel as an artifact"
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    name: Build Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (attempt 1)
+        id: checkout1
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        continue-on-error: true
+      - name: Checkout (attempt 2)
+        id: checkout2
+        if: steps.checkout1.outcome == 'failure'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        continue-on-error: true
+      - name: Checkout (attempt 3)
+        if: steps.checkout2.outcome == 'failure'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build package
+        run: python -m build --wheel
+
+      - name: Verify wheel
+        run: |
+          pip install dist/*.whl
+          # Verify package metadata (full import requires flag_gems runtime)
+          python -c "
+          from importlib.metadata import metadata, files
+          meta = metadata('sglang_fl')
+          print(f\"Package: {meta['Name']} {meta['Version']}\")
+          pkg_files = [str(f) for f in files('sglang_fl')]
+          assert any('sglang_fl' in f for f in pkg_files), 'sglang_fl module not found in wheel'
+          print(f'Installed files: {len(pkg_files)}')
+          print('Wheel verified successfully')
+          "
+
+      - name: Upload wheel
+        if: inputs.upload-artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: wheel
+          path: dist/*.whl

@@ -1,0 +1,88 @@
+# Reusable benchmark smoke workflow.
+#
+# Runs lightweight benchmark smoke tests for sglang bench throughput,
+# latency, and serve. These tests validate benchmark entrypoints and
+# basic plugin integration, not performance regression.
+name: Benchmark Smoke Test
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        description: "Platform name (e.g., cuda, ascend)"
+        required: true
+        type: string
+      ci_image:
+        description: "Docker image for the test container"
+        required: true
+        type: string
+      runner_labels:
+        description: "JSON array of runner labels"
+        required: true
+        type: string
+      container_options:
+        description: "Docker container options string"
+        required: false
+        type: string
+        default: ""
+      timeout:
+        description: "Timeout for the job in minutes"
+        required: false
+        type: number
+        default: 30
+    secrets:
+      CI_PROXY:
+        required: false
+
+jobs:
+  benchmark-test:
+    name: "Benchmark Smoke (${{ inputs.platform }})"
+    runs-on: ${{ fromJson(inputs.runner_labels) }}
+    timeout-minutes: ${{ inputs.timeout }}
+    container:
+      image: ${{ inputs.ci_image }}
+      options: ${{ inputs.container_options }}
+
+    steps:
+      - name: Checkout (attempt 1)
+        id: checkout1
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        env:
+          http_proxy: ${{ secrets.CI_PROXY }}
+          https_proxy: ${{ secrets.CI_PROXY }}
+        continue-on-error: true
+      - name: Checkout (attempt 2)
+        id: checkout2
+        if: steps.checkout1.outcome == 'failure'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        env:
+          http_proxy: ${{ secrets.CI_PROXY }}
+          https_proxy: ${{ secrets.CI_PROXY }}
+        continue-on-error: true
+      - name: Checkout (attempt 3)
+        if: steps.checkout2.outcome == 'failure'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        env:
+          http_proxy: ${{ secrets.CI_PROXY }}
+          https_proxy: ${{ secrets.CI_PROXY }}
+
+      - name: Check device availability
+        run: bash .github/scripts/${{ inputs.platform }}/check.sh
+
+      - name: Install project
+        run: bash .github/scripts/${{ inputs.platform }}/setup.sh
+
+      - name: Run benchmark smoke tests
+        run: |
+          python tests/run.py \
+            --platform ${{ inputs.platform }} \
+            --scope benchmark
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: benchmark-${{ inputs.platform }}
+          path: |
+            test-results-${{ inputs.platform }}.xml
+            test-results-${{ inputs.platform }}.json

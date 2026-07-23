@@ -53,8 +53,8 @@ tests/
 │   │   ├── 4b_tp2.yaml
 │   │   └── 06b_tp1.yaml
 │   └── qwen3_6/
-│       ├── 27b_tp2_nograph.yaml            (+ _vl / _old variants)
-│       └── 35b_a3b_tp2_nograph.yaml        (+ _vl / _old variants)
+│       ├── 27b_tp4_nograph.yaml            (+ _vl / _old variants)
+│       └── 35b_a3b_tp4_nograph.yaml        (+ _vl / _old variants)
 │
 ├── platforms/                      # Platform-specific test configs
 │   ├── cuda.yaml                   # NVIDIA GPU: device types, tolerance, matrix
@@ -164,7 +164,7 @@ python tests/run.py --platform cuda --device a100 --scope benchmark
 
 # Run a specific E2E task/model/case
 python tests/run.py --platform cuda --device a100 \
-    --scope e2e --task inference --model qwen3_6 --case 27b_tp2_nograph
+    --scope e2e --task inference --model qwen3_6 --case 27b_tp4_nograph
 
 # Run a specific benchmark type
 python tests/run.py --platform cuda --device a100 \
@@ -191,11 +191,11 @@ FL_TEST_MODEL=qwen3 FL_TEST_CASE=06b_tp1 \
     pytest tests/e2e_tests/inference/test_inference_smoke.py -v -s
 
 # Single E2E serving test
-FL_TEST_MODEL=qwen3_6 FL_TEST_CASE=27b_tp2_nograph \
+FL_TEST_MODEL=qwen3_6 FL_TEST_CASE=27b_tp4_nograph \
     pytest tests/e2e_tests/serving/test_serving_smoke.py -v -s
 
 # Single E2E concurrent test
-FL_TEST_MODEL=qwen3_6 FL_TEST_CASE=27b_tp2_nograph \
+FL_TEST_MODEL=qwen3_6 FL_TEST_CASE=27b_tp4_nograph \
     pytest tests/e2e_tests/concurrent/test_concurrent_smoke.py -v -s
 
 # Benchmark smoke tests are env-driven too (FL_BENCHMARK_CASE is a JSON blob
@@ -280,7 +280,7 @@ generate:
 ### Multimodal (image) model example
 
 ```yaml
-# tests/models/qwen3_6/35b_a3b_tp2_nograph_vl.yaml
+# tests/models/qwen3_6/35b_a3b_tp4_nograph_vl.yaml
 llm:
   model: "/data/models/Qwen/Qwen3.6-35B-A3B"
   tp_size: 2
@@ -398,12 +398,12 @@ a100:
   tests:
     e2e:
       concurrent:
-        qwen3_6: ["35b_a3b_tp2_nograph", "27b_tp2_nograph"]
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
       inference:
-        qwen3_6: ["35b_a3b_tp2_nograph", "27b_tp2_nograph"]
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
       serving:
         qwen3:   ["4b_tp2"]
-        qwen3_6: ["35b_a3b_tp2_nograph", "27b_tp2_nograph"]
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
     functional: { include: "*", exclude: [] }
     unit:       { include: "*", exclude: [] }
     benchmark:

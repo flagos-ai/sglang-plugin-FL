@@ -1,0 +1,52 @@
+# Reusable workflow: Send CI status notification to Feishu
+name: Feishu Notification
+
+on:
+  workflow_call:
+    inputs:
+      status:
+        description: "Overall CI status (success / failure / cancelled)"
+        required: true
+        type: string
+      platform:
+        description: "Platform name (e.g. cuda, ascend). Included in the notification title when set."
+        required: false
+        type: string
+        default: ""
+    secrets:
+      FEISHU_APP_ID:
+        required: false
+      FEISHU_APP_SECRET:
+        required: false
+      FEISHU_CHAT_ID:
+        required: false
+
+jobs:
+  notify:
+    name: "Notify (${{ inputs.platform }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    steps:
+      - name: Checkout scripts
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          sparse-checkout: .github/scripts
+      - name: Send Feishu notification
+        env:
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          FEISHU_CHAT_ID: ${{ secrets.FEISHU_CHAT_ID }}
+          CI_STATUS: ${{ inputs.status }}
+          PLATFORM: ${{ inputs.platform }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_SHA: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          if [ -f .github/scripts/notify_feishu.py ]; then
+            python .github/scripts/notify_feishu.py
+          else
+            echo "::notice::notify_feishu.py not found, skipping notification"
+          fi

@@ -1,16 +1,16 @@
-# Qwen3.6-35B-A3B SGLang smoke configuration, TP=2, no CUDA graph.
+# Qwen3.6-27B SGLang smoke configuration, TP=4, no CUDA graph.
 #
 # This single case is intended to drive multiple e2e tasks:
-# - inference: uses the generate section
+# - inference: uses the generate section and aligns with offline_inference
 # - serving: uses the serve section
-# - concurrent: uses the concurrent section
+# - concurrent: uses the concurrent section and aligns with concurrent examples
 
 llm:
-  model: "/data/models/Qwen/Qwen3.6-35B-A3B"
-  tp_size: 2
+  model: "/data/models/Qwen/Qwen3.6-27B"
+  tp_size: 4
   pp_size: 1
-  context_length: 8192
-  mem_fraction_static: 0.95
+  context_length: 4096
+  mem_fraction_static: 0.70
   disable_cuda_graph: true
   disable_piecewise_cuda_graph: true
   trust_remote_code: true
@@ -101,4 +101,3 @@ concurrent:
     vl:
       max_new_tokens: 64
       temperature: 0.0
-
