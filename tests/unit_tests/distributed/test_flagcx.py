@@ -75,20 +75,21 @@ def test_world_size_one_disables_communicator(monkeypatch, tmp_path: Path) -> No
     assert comm.group == "group"
 
 
-def test_destroy_marks_communicator_unavailable() -> None:
+def test_del_destroys_communicator() -> None:
+    # FlagCXCommunicator.destroy() was removed in #32 and replaced by __del__
+    # (GC-based teardown). Test the actual teardown path: __del__ calls
+    # flagcxCommDestroy and nulls the comm handle. Unlike the old destroy(),
+    # __del__ does not flip available/disabled, so those are not asserted.
     from sglang_fl.distributed.device_communicators.flagcx import FlagCXCommunicator
 
     comm = FlagCXCommunicator.__new__(FlagCXCommunicator)
     comm.comm = object()
-    comm.available = True
-    comm.disabled = False
     comm.flagcx = Mock()
+    comm._stream_cache = {}
 
-    comm.destroy()
+    comm.__del__()
 
     assert comm.comm is None
-    assert comm.available is False
-    assert comm.disabled is True
     comm.flagcx.flagcxCommDestroy.assert_called_once()
 
 
