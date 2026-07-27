@@ -960,6 +960,33 @@ def _create_flashattention_v3_backend_hook(runner):
     )
     return FlashAttentionBackend(runner)
 
+def normal_decode_set_metadata(
+    cache_seqlens_int32: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    page_table: torch.Tensor,
+    req_to_token: torch.Tensor,
+    req_pool_indices: torch.Tensor,
+    strided_indices: torch.Tensor,
+    max_seq_pages: torch.Tensor,
+    seq_lens: torch.Tensor,
+    seq_len_delta: int,
+    page_size: int,
+    swa_page_table: Optional[torch.Tensor] = None,
+    token_to_kv_pool: Optional[SWAKVPool] = None,
+):
+    cache_seqlens_int32.copy_(seq_lens + seq_len_delta)
+    cu_seqlens_k[1:].copy_(torch.cumsum(cache_seqlens_int32, dim=0, dtype=torch.int32))
+    page_indices = req_to_token[
+        req_pool_indices[:, None],
+        strided_indices[:max_seq_pages][None, :],
+    ]
+    page_table[:, :max_seq_pages].copy_(page_indices // page_size)
+
+    if swa_page_table is not None and token_to_kv_pool is not None:
+        assert isinstance(token_to_kv_pool, SWAKVPool)
+        swa_page_indices = token_to_kv_pool.translate_loc_from_full_to_swa(page_indices)
+        swa_page_table[:, :max_seq_pages].copy_(swa_page_indices // page_size)
+
 def patch_flashattention_backend():
     from sglang.srt.plugins.hook_registry import HookRegistry, HookType
     FLASH_ATTN_BACKEND = "sglang.srt.layers.attention.flashattention_backend.FlashAttentionBackend"
@@ -970,3 +997,6 @@ def patch_flashattention_backend():
 
     _TARGET_FUNC = "sglang.srt.layers.attention.attention_registry.create_flashattention_v3_backend"
     HookRegistry.register(f"{_TARGET_FUNC}", _create_flashattention_v3_backend_hook, HookType.REPLACE)
+
+    _SET_META_DATA_FUNC = "sglang.srt.layers.attention.flashattention_backend.normal_decode_set_metadata"
+    HookRegistry.register(f"{_SET_META_DATA_FUNC}", normal_decode_set_metadata, HookType.REPLACE)

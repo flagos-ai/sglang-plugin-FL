@@ -279,8 +279,9 @@ class PlatformFL(SRTPlatform):
         - npu:  torch.npu.NPUGraph (via NPUGraphRunner override)
         - musa: torch_musa proxies torch.cuda.CUDAGraph, so the default
                 CudaGraphRunner works unchanged
+        - gcu:  CudaGraphRunner overrides _capture_graph
         """
-        return self._device_type in ("cuda", "npu", "musa")
+        return self._device_type in ("cuda", "npu", "musa", "gcu")
 
     def support_piecewise_cuda_graph(self) -> bool:
         return self._device_type == "cuda"

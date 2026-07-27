@@ -7,6 +7,9 @@ from .patches.vision import patch_vision_flashattention_backend
 from .patches.server_args import patch_server_args
 from .patches.parallel_state import patch_parallel_state
 from .patches.qwen3_vl import patch_qwen3_vl
+from .patches.cuda_graph_runner import patch_cuda_graph_runner
+from .patches.mem_cache import patch_mem_cache
+from .patches.causal_conv1d import patch_causal_conv1d_fn
 
 logger = logging.getLogger(__name__)
 _patches_applied = False
@@ -25,5 +28,8 @@ def apply_gcu_patches():
     patch_vision_flashattention_backend()
     patch_parallel_state()
     patch_qwen3_vl()
+    patch_cuda_graph_runner()
+    patch_mem_cache()
+    patch_causal_conv1d_fn()
 
 apply_gcu_patches()
