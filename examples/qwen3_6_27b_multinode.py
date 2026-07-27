@@ -540,7 +540,8 @@ def run_master(args):
         str(args.nccl_port),
         "--mem-fraction-static",
         "0.85",
-        *_CUDA_GRAPH_ARGS,
+        "--disable-cuda-graph",
+        "--disable-piecewise-cuda-graph",
         "--trust-remote-code",
         *_PLATFORM_SERVER_ARGS,
     ]
@@ -646,7 +647,8 @@ def run_worker(args):
         str(args.nccl_port),
         "--mem-fraction-static",
         "0.85",
-        *_CUDA_GRAPH_ARGS,
+        "--disable-cuda-graph",
+        "--disable-piecewise-cuda-graph",
         "--trust-remote-code",
         *_PLATFORM_SERVER_ARGS,
     ]
