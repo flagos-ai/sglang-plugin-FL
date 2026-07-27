@@ -6,6 +6,7 @@
 # - e2e: Add/remove model cases in inference and serving support lists
 # - benchmark: Enable/disable throughput, latency, and serve smoke tests
 # - unit: Add/remove paths in include and exclude lists
+# - functional: Adjust include/exclude patterns for component (ops/compilation/distributed) tests
 # - tolerance: Adjust numerical comparison tolerance for result validation
 # - unsupported_features: Exclude test cases matching specific feature tags
 # - env_defaults: Set CUDA/NCCL/SGLang environment defaults before tests start
@@ -66,9 +67,9 @@ a100:
         qwen3: ["4b_tp2"]
         qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
 
+    # Functional tests (ops correctness, graph capture, collective ops).
+    # Consumed by tests/run.py --scope functional; include/exclude work like unit.
     functional:
-      # Reserved for future tests/functional_tests support.
-      # Current SGLang runner does not consume this section yet.
       include: "*"
       exclude: []
 

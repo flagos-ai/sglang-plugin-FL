@@ -67,6 +67,7 @@ class TestRunner:
         task: str | None = None,
         model: str | None = None,
         case: str | None = None,
+        cases: list[dict] | None = None,
         benchmark: str | None = None,
         extra_pytest_args: list[str] | None = None,
     ) -> None:
@@ -75,6 +76,7 @@ class TestRunner:
         self.task = task
         self.model = model
         self.case = case
+        self.cases = cases  # explicit [{model, case}] allow-list from CI matrix
         self.benchmark = benchmark
         self.extra_pytest_args = extra_pytest_args or []
 
@@ -128,11 +130,20 @@ class TestRunner:
     def _discover_e2e_tests(self) -> list[TestCase]:
         cases: list[TestCase] = []
 
+        # CI matrix smart-skip: when an explicit allow-list of {model, case} is
+        # provided (from generate_matrix --changed-files narrowing), run only
+        # those combinations.
+        allowed: set[tuple[str, str]] | None = None
+        if self.cases is not None:
+            allowed = {(c["model"], c["case"]) for c in self.cases}
+
         # Future-compatible structured e2e discovery.
         for item in self.config.get_e2e_tests().get_cases(task=self.task, model=self.model):
             model_name = item["model"]
             case_name = item["case"]
             if self.case and self.case != case_name:
+                continue
+            if allowed is not None and (model_name, case_name) not in allowed:
                 continue
             if self.config.should_skip_model(model_name):
                 print(f"[run] Skipping e2e/{model_name}/{case_name} (unsupported feature)")
@@ -277,6 +288,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--task", default=None, help="Task filter, e.g. inference/serving")
     parser.add_argument("--model", default=None, help="Model family filter, e.g. qwen3")
     parser.add_argument("--case", default=None, help="Model case filter, e.g. 06b_tp1")
+    parser.add_argument(
+        "--cases",
+        default=None,
+        help="JSON array of {model,case} dicts to run (CI matrix smart-skip).",
+    )
     parser.add_argument("--benchmark", choices=["throughput", "latency", "serve"], default=None)
     parser.add_argument("pytest_args", nargs=argparse.REMAINDER, help="Extra pytest args after '--'")
     return parser.parse_args(argv)
@@ -288,6 +304,10 @@ def main(argv: list[str] | None = None) -> int:
     if extra_pytest_args and extra_pytest_args[0] == "--":
         extra_pytest_args = extra_pytest_args[1:]
 
+    cases_filter: list[dict] | None = None
+    if args.cases:
+        cases_filter = json.loads(args.cases)
+
     runner = TestRunner(
         platform=args.platform,
         device=args.device,
@@ -295,6 +315,7 @@ def main(argv: list[str] | None = None) -> int:
         task=args.task,
         model=args.model,
         case=args.case,
+        cases=cases_filter,
         benchmark=args.benchmark,
         extra_pytest_args=extra_pytest_args,
     )

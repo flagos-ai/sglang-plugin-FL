@@ -14,7 +14,6 @@ Usage (in a workflow step)::
 
 Outputs:
     e2e  — JSON array of ``{task, device, cases, timeout}`` objects grouped by (task, device).
-    unit — JSON array of ``{device, include, exclude}`` objects.
 """
 
 from __future__ import annotations
@@ -113,25 +112,6 @@ def build_e2e_matrix(
     return matrix
 
 
-def build_unit_matrix(config: dict, devices: list[str]) -> list[dict]:
-    """Unit test matrix — one entry per device with include/exclude patterns."""
-    matrix: list[dict] = []
-
-    for device in devices:
-        device_cfg = config.get(device, {})
-        tests = device_cfg.get("tests", {})
-        unit = tests.get("unit", {})
-        matrix.append(
-            {
-                "device": device,
-                "include": unit.get("include", "*"),
-                "exclude": json.dumps(unit.get("exclude", []), separators=(",", ":")),
-            }
-        )
-
-    return matrix
-
-
 def load_changed_files(path: str) -> list[str]:
     """Load list of changed file paths from a text file (one per line)."""
     try:
@@ -140,13 +120,56 @@ def load_changed_files(path: str) -> list[str]:
         return []
 
 
+# Any changed file starting with one of these prefixes triggers a full e2e run.
+_FULL_RUN_PREFIXES: list[str] = [
+    "sglang_fl/",
+    "pyproject.toml",
+    "tests/e2e_tests/",
+    "tests/utils/",
+    "tests/run.py",
+    "tests/platforms/",
+    "tests/conftest.py",
+    ".github/",
+]
+
+
 def filter_e2e_by_changes(matrix: list[dict], changed: list[str]) -> list[dict]:
-    """Smart-skip: if only docs/CI/examples changed, skip e2e tests."""
-    skip_prefixes = ("docs/", ".github/", "examples/", "README", "LICENSE")
-    if all(any(f.startswith(prefix) for prefix in skip_prefixes) for f in changed):
-        print("::notice::Only docs/CI files changed — skipping e2e tests")
-        return []
-    return matrix
+    """Narrow the e2e matrix based on changed files (PR smart-skip).
+
+    Rules:
+    - If *any* changed file matches a full-run prefix -> return all entries.
+    - If all changes are under ``tests/models/<model>/`` -> keep only entries
+      whose cases reference an affected model.
+    - Unknown paths (not matching any known prefix) -> full run for safety.
+    """
+    for f in changed:
+        if any(f.startswith(p) for p in _FULL_RUN_PREFIXES):
+            print("[filter] Core/CI file changed -> full e2e run")
+            return matrix
+
+    affected_models: set[str] = set()
+    for f in changed:
+        if f.startswith("tests/models/"):
+            parts = f.split("/")
+            if len(parts) >= 3:
+                affected_models.add(parts[2])
+        else:
+            # Unknown path outside known safe-to-ignore dirs -> full run
+            print(f"[filter] Unknown path '{f}' -> full e2e run")
+            return matrix
+
+    if not affected_models:
+        return matrix
+
+    print(f"[filter] Only model configs changed, affected: {sorted(affected_models)}")
+
+    filtered: list[dict] = []
+    for entry in matrix:
+        cases = json.loads(entry["cases"])
+        kept = [c for c in cases if c["model"] in affected_models]
+        if kept:
+            filtered.append({**entry, "cases": json.dumps(kept, separators=(",", ":"))})
+    return filtered
 
 
 def set_output(name: str, value: str) -> None:
@@ -174,7 +197,6 @@ def main() -> int:
     unsupported = config.get("unsupported_features", []) or []
 
     e2e_matrix = build_e2e_matrix(config, devices, unsupported)
-    unit_matrix = build_unit_matrix(config, devices)
 
     # Apply PR smart-skip filtering when changed files are provided
     if args.changed_files:
@@ -183,10 +205,8 @@ def main() -> int:
             e2e_matrix = filter_e2e_by_changes(e2e_matrix, changed)
 
     e2e_json = json.dumps(e2e_matrix, separators=(",", ":"))
-    unit_json = json.dumps(unit_matrix, separators=(",", ":"))
 
     set_output("e2e", e2e_json)
-    set_output("unit", unit_json)
 
     # Human-readable summary for CI logs
     print(f"Platform:    {args.platform}")
@@ -200,12 +220,6 @@ def main() -> int:
         )
         for c in case_list:
             print(f"      {c['model']}/{c['case']}")
-    print(f"Unit:        {len(unit_matrix)} config(s)")
-    for entry in unit_matrix:
-        print(
-            f"  - device={entry['device']} "
-            f"include={entry['include']} exclude={entry['exclude']}"
-        )
 
     return 0
 

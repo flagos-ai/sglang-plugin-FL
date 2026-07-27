@@ -30,7 +30,6 @@ jobs:
   # ============================================================
   lint:
     uses: ./.github/workflows/_lint.yml
-    continue-on-error: true  # 报告 lint 问题但不阻塞 CI
 
   # ============================================================
   # Job 3: Build & install check

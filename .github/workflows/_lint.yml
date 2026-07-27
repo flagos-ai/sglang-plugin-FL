@@ -8,6 +8,7 @@ jobs:
   lint:
     name: Lint Check
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - name: Checkout (attempt 1)
         id: checkout1

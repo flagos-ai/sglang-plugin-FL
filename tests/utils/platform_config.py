@@ -49,7 +49,20 @@ class TestFilter:
 class FunctionalTests:
     tests: dict[str, dict[str, list[str]]] = field(default_factory=dict)
 
-    def get_cases(self, task: str | None = None, model: str | None = None) -> list[dict[str, str]]:
+    def get_cases(
+        self,
+        task: str | None = None,
+        model: str | None = None,
+        test_list: str | None = None,
+    ) -> list[dict[str, str]]:
+        """Return a flat list of {task, model, case} dicts, optionally filtered.
+
+        Args:
+            task: Filter by task name.
+            model: Filter by model name.
+            test_list: Comma-separated list of case names to include.
+        """
+        allowed = {t.strip() for t in test_list.split(",")} if test_list else None
         cases: list[dict[str, str]] = []
         for task_name, models in self.tests.items():
             if task and task_name != task:
@@ -58,6 +71,8 @@ class FunctionalTests:
                 if model and model_name != model:
                     continue
                 for case in case_list:
+                    if allowed and case not in allowed:
+                        continue
                     cases.append({"task": task_name, "model": model_name, "case": case})
         return cases
 

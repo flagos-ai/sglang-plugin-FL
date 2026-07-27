@@ -12,6 +12,7 @@
 #
 # Users can modify:
 # - unit tests: Add/remove paths in include and exclude lists
+# - functional tests: Adjust include/exclude patterns for component tests
 # - e2e tests: Add/remove model cases in inference/serving support lists
 # - benchmark tests: Enable/disable throughput, latency, and serve smoke tests
 # - tolerance: Adjust numerical comparison tolerance for result validation
@@ -21,8 +22,7 @@
 # Notes for SGLang:
 # - Model cases are loaded from tests/models/<model>/<case>.yaml.
 # - Benchmark smoke cases are loaded from tests/benchmarks/configs/smoke.yaml.
-# - tests/run.py currently consumes unit, e2e, and benchmark sections.
-# - functional can be added later if SGLang functional_tests are introduced.
+# - tests/run.py consumes unit, e2e, functional, and benchmark sections.
 
 # ---- Platform-level settings ------------------------------------------------
 # Platform name used by: python tests/run.py --platform my_platform
@@ -141,12 +141,9 @@ my_device:
       enabled: true
       smoke: ["throughput", "latency", "serve"]
 
-    # Reserved for future SGLang functional tests, if tests/functional_tests is
-    # added later. The current runner does not consume this section yet.
-    # functional:
-    #   include: "*"
-    #   exclude: []
+    # Functional tests: component-level GPU tests (ops correctness, graph
+    # capture, collective ops). Consumed by tests/run.py --scope functional.
+    # include/exclude work like unit (pytest -k filter / --ignore paths).
     functional:
-      # Component tests (ops/compilation/distributed) — run all by default
       include: "*"
       exclude: []
