@@ -8,11 +8,6 @@ import torch
 import triton
 import triton.language as tl
 
-def is_gcu_30() -> bool:
-    """Check whether the current device is GCU 3.0 (major == 3)."""
-    major, _ = torch.gcu.get_device_capability("gcu")
-    return major == 3
-
 def chunk_gated_delta_rule_gcu(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -171,7 +166,8 @@ def fused_recurrent_gated_delta_rule_packed_decode_gcu(
     NV = triton.cdiv(V, BV)
 
     # GCU hardware limits
-    if is_gcu_30():
+    major, _ = torch.gcu.get_device_capability("gcu")
+    if major == 3:
         GCU_NUM_GRID = 24
         GCU_MAX_DSM_MEMORY = int(1.5 * 1024 * 1024)  # 1536 KB
     else:

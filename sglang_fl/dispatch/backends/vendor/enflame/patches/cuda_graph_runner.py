@@ -8,26 +8,11 @@ from sglang.srt.environ import envs
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH
 from sglang.srt.utils.torch_memory_saver_adapter import TorchMemorySaverAdapter
 from sglang.srt.utils import get_bool_env_var
-
-from sglang.srt.utils import (
-    is_hip,
+from sglang.srt.model_executor.breakable_cuda_graph.breakable_cuda_graph import (
+    BreakableCUDAGraph,
+    BreakableCUDAGraphCapture,
+    eager_on_graph,
 )
-
-_is_hip = is_hip()
-
-if not _is_hip:
-    from sglang.srt.model_executor.breakable_cuda_graph.breakable_cuda_graph import (
-        BreakableCUDAGraph,
-        BreakableCUDAGraphCapture,
-        eager_on_graph,
-    )
-
-# ---------------------------------------------------------------------------
-# Replacement: _cache_loc_dtype
-# ---------------------------------------------------------------------------
-
-def _cache_loc_dtype(self) -> torch.dtype:
-    return torch.int32
 
 # ---------------------------------------------------------------------------
 # Replacement: _capture_graph
@@ -76,11 +61,6 @@ def patch_cuda_graph_runner():
     """Register GCU-compatible overrides for CudaGraphRunner."""
     from sglang.srt.plugins.hook_registry import HookRegistry, HookType
 
-    HookRegistry.register(
-        f"{_CUDA_GRAPH_CLASS}._cache_loc_dtype",
-        _cache_loc_dtype,
-        HookType.REPLACE,
-    )
     HookRegistry.register(
         f"{_CUDA_GRAPH_CLASS}._capture_graph",
         _capture_graph,
