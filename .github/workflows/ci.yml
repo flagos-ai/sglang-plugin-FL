@@ -73,7 +73,7 @@ jobs:
             .github/configs
             .github/scripts
       - name: Install CI script dependencies
-        run: pip install -r .github/scripts/requirements-ci.txt
+        run: pip install pyyaml
       - name: Detect available platforms
         id: detect
         run: python3 .github/scripts/detect_platforms.py

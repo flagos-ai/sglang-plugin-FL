@@ -59,7 +59,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Install CI script dependencies
-        run: pip install -r .github/scripts/requirements-ci.txt
+        run: pip install pyyaml
       - id: load
         run: python .github/scripts/load_config.py --platform ${{ inputs.platform }}
       - id: changes
