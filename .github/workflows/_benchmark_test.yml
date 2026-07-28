@@ -30,9 +30,6 @@ on:
         required: false
         type: number
         default: 30
-    secrets:
-      CI_PROXY:
-        required: false
 
 jobs:
   benchmark-test:
@@ -47,24 +44,15 @@ jobs:
       - name: Checkout (attempt 1)
         id: checkout1
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        env:
-          http_proxy: ${{ secrets.CI_PROXY }}
-          https_proxy: ${{ secrets.CI_PROXY }}
         continue-on-error: true
       - name: Checkout (attempt 2)
         id: checkout2
         if: steps.checkout1.outcome == 'failure'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        env:
-          http_proxy: ${{ secrets.CI_PROXY }}
-          https_proxy: ${{ secrets.CI_PROXY }}
         continue-on-error: true
       - name: Checkout (attempt 3)
         if: steps.checkout2.outcome == 'failure'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        env:
-          http_proxy: ${{ secrets.CI_PROXY }}
-          https_proxy: ${{ secrets.CI_PROXY }}
 
       - name: Check device availability
         run: bash .github/scripts/${{ inputs.platform }}/check.sh

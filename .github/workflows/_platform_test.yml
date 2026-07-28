@@ -29,8 +29,6 @@ on:
         required: false
       FEISHU_CHAT_ID:
         required: false
-      CI_PROXY:
-        required: false
 
 jobs:
   setup:
@@ -89,8 +87,6 @@ jobs:
       ci_image: ${{ fromJson(needs.setup.outputs.config).ci_image }}
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
-    secrets:
-      CI_PROXY: ${{ secrets.CI_PROXY }}
 
   functional:
     needs: [setup, unit]
@@ -100,8 +96,6 @@ jobs:
       ci_image: ${{ fromJson(needs.setup.outputs.config).ci_image }}
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
-    secrets:
-      CI_PROXY: ${{ secrets.CI_PROXY }}
 
   e2e:
     needs: [setup, functional]
@@ -120,8 +114,6 @@ jobs:
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
       timeout: ${{ matrix.test.timeout || 60 }}
-    secrets:
-      CI_PROXY: ${{ secrets.CI_PROXY }}
 
   benchmark:
     needs: [setup, e2e]
@@ -132,8 +124,6 @@ jobs:
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
       timeout: 30
-    secrets:
-      CI_PROXY: ${{ secrets.CI_PROXY }}
 
   notify:
     needs: [unit, functional, e2e, benchmark]
