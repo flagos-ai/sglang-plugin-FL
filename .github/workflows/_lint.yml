@@ -8,7 +8,6 @@ jobs:
   lint:
     name: Lint Check
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - name: Checkout (attempt 1)
         id: checkout1
@@ -29,7 +28,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install ruff
-        run: pip install ruff
+        run: pip install ruff==0.15.9
 
       - name: Ruff check
         run: ruff check --output-format=github .
