@@ -87,9 +87,8 @@ jobs:
         run: bash .github/scripts/${{ inputs.platform }}/setup.sh
 
       - name: Run E2E tests
-        env:
-          # Workaround: flag-gems 5.0.0 count_nonzero bug with 3D tensors (fixed in dev, pending 5.0.1)
-          SGLANG_FL_FLAGOS_BLACKLIST: count_nonzero
+        # SGLANG_FL_FLAGOS_BLACKLIST is set per-platform in tests/platforms/<platform>.yaml (env_defaults),
+        # so e2e/benchmark inherit the right op blacklist per arch (cuda: count_nonzero; ascend: see ascend.yaml).
         run: |
           python tests/run.py \
             --platform ${{ inputs.platform }} \
