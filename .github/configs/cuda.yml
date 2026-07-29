@@ -4,7 +4,7 @@
 platform: cuda
 
 # Docker image for this hardware
-ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.1.0-cuda-ci
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-cuda-ci
 
 # Runner labels for this hardware
 runner_labels:
@@ -12,12 +12,14 @@ runner_labels:
 
 # Container volumes (hardware-specific paths)
 container_volumes:
-  - /data:/data
+  - /mnt/airs-business/cicd/models:/data/models/Qwen
 
 # Container options (no --privileged; GPU access via NVIDIA_VISIBLE_DEVICES env var
 # which triggers nvidia-container-toolkit hook on the host docker daemon)
 # --user root is required: CI images install CUDA/NCCL libs under system paths,
 # and pip install needs write access to /usr/local. This matches org convention.
+# --init: tini as PID 1 reaps orphan zombies from sglang TP workers on shutdown
+# (PID 1 was tail -f /dev/null, never wait()s -> zombies pile up, kill_process_tree times out)
 container_options: >-
   --hostname sglang-plugin-fl
   --ipc=host
@@ -27,3 +29,4 @@ container_options: >-
   --user root
   -e NVIDIA_VISIBLE_DEVICES=all
   -e NVIDIA_DRIVER_CAPABILITIES=compute,utility
+  --init

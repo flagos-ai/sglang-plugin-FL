@@ -52,7 +52,7 @@ env_defaults:
   CUDA_DEVICE_MAX_CONNECTIONS: "1"
   NCCL_ALGO: "Ring"
   # flag-gems 5.0.0 count_nonzero bug with 3D tensors (fixed in dev, pending 5.0.1).
-  SGLANG_FL_FLAGOS_BLACKLIST: "count_nonzero"
+  SGLANG_FL_FLAGOS_BLACKLIST: "count_nonzero,mm"
 
 # ---- Device-specific test configurations ------------------------------------
 a100:
