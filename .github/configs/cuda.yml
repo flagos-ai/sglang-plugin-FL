@@ -10,6 +10,10 @@ ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.1.0-cuda-ci
 runner_labels:
   - ci-sglang-plugin-fl-nvidia
 
+# Container volumes (hardware-specific paths)
+container_volumes:
+  - /data:/data
+
 # Container options (no --privileged; GPU access via NVIDIA_VISIBLE_DEVICES env var
 # which triggers nvidia-container-toolkit hook on the host docker daemon)
 # --user root is required: CI images install CUDA/NCCL libs under system paths,
@@ -21,6 +25,5 @@ container_options: >-
   --ulimit memlock=-1
   --ulimit stack=67108864
   --user root
-  -v /data/models:/data/models
   -e NVIDIA_VISIBLE_DEVICES=all
   -e NVIDIA_DRIVER_CAPABILITIES=compute,utility

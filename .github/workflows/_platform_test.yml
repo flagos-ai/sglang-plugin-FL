@@ -86,6 +86,7 @@ jobs:
       platform: ${{ inputs.platform }}
       ci_image: ${{ fromJson(needs.setup.outputs.config).ci_image }}
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
+      container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
 
   functional:
@@ -95,6 +96,7 @@ jobs:
       platform: ${{ inputs.platform }}
       ci_image: ${{ fromJson(needs.setup.outputs.config).ci_image }}
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
+      container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
 
   e2e:
@@ -112,6 +114,7 @@ jobs:
       cases: ${{ matrix.test.cases }}
       ci_image: ${{ fromJson(needs.setup.outputs.config).ci_image }}
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
+      container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
       timeout: ${{ matrix.test.timeout || 60 }}
 
@@ -122,6 +125,7 @@ jobs:
       platform: ${{ inputs.platform }}
       ci_image: ${{ fromJson(needs.setup.outputs.config).ci_image }}
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
+      container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
       timeout: 30
 

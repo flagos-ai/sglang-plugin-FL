@@ -29,6 +29,11 @@ on:
         description: "JSON array of runner labels"
         required: true
         type: string
+      container_volumes:
+        description: "JSON array of volume mounts"
+        required: false
+        type: string
+        default: "[]"
       container_options:
         description: "Docker container options string"
         required: false
@@ -52,6 +57,7 @@ jobs:
     timeout-minutes: ${{ inputs.timeout }}
     container:
       image: ${{ inputs.ci_image }}
+      volumes: ${{ fromJson(inputs.container_volumes) }}
       options: ${{ inputs.container_options }}
 
     steps:
