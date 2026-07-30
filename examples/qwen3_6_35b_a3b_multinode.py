@@ -103,12 +103,9 @@ if _is_musa:
     _PLATFORM_SERVER_ARGS: list = ["--page-size", "1"]
 elif _is_npu:
     _PLATFORM_SERVER_ARGS = [
-        "--attention-backend",
-        "ascend",
-        "--device",
-        "npu",
-        "--dtype",
-        "bfloat16",
+        "--attention-backend", "ascend",
+        "--device", "npu",
+        "--dtype", "bfloat16",
         "--disable-radix-cache",
     ]
 else:
@@ -118,7 +115,6 @@ else:
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-35B-A3B")
 MM_ATTENTION_BACKEND = os.environ.get("MM_ATTENTION_BACKEND", "")
-ATTENTION_BACKEND = os.environ.get("ATTENTION_BACKEND", "")
 DISABLE_CUDA_GRAPH = os.environ.get("ENABLE_CUDA_GRAPH", "0") != "1"
 
 _HERE = Path(__file__).resolve().parent
@@ -547,8 +543,6 @@ def run_master(args):
 
     if MM_ATTENTION_BACKEND:
         cmd += ["--mm-attention-backend", MM_ATTENTION_BACKEND]
-    if ATTENTION_BACKEND:
-        cmd += ["--attention-backend", ATTENTION_BACKEND]
     if DISABLE_CUDA_GRAPH:
         cmd += ["--disable-cuda-graph"]
 
@@ -659,8 +653,6 @@ def run_worker(args):
 
     if MM_ATTENTION_BACKEND:
         cmd += ["--mm-attention-backend", MM_ATTENTION_BACKEND]
-    if ATTENTION_BACKEND:
-        cmd += ["--attention-backend", ATTENTION_BACKEND]
     if DISABLE_CUDA_GRAPH:
         cmd += ["--disable-cuda-graph"]
 

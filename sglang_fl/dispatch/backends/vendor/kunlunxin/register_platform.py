@@ -3,6 +3,9 @@
 Auto-imported by ``PlatformFL.init_backend()`` when FlagGems reports
 vendor_name == "kunlunxin". Importing this module registers the
 ``kunlunxin`` attention backend into sglang's ATTENTION_BACKENDS dict.
+
+It is also the default backend on this vendor via ``_ATTN_BACKEND_MAP`` in
+``sglang_fl/platform.py``, so ``--attention-backend`` need not be passed.
 """
 
 from sglang.srt.layers.attention.attention_registry import register_attention_backend

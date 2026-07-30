@@ -58,6 +58,7 @@ _ATTN_BACKEND_MAP = {
     "nvidia": "flashinfer",
     "ascend": "ascend",
     "mthreads": "fa3",
+    "kunlunxin": "kunlunxin",
 }
 
 

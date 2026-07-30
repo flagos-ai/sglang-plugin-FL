@@ -45,7 +45,6 @@ MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-35B-A3B")
 TP_SIZE = int(os.environ.get("TP_SIZE", "4" if _is_npu or _is_txda else "1"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "10"))
 MM_ATTENTION_BACKEND = os.environ.get("MM_ATTENTION_BACKEND", "")
-ATTENTION_BACKEND = os.environ.get("ATTENTION_BACKEND", "")
 DISABLE_CUDA_GRAPH = os.environ.get("ENABLE_CUDA_GRAPH", "0") != "1"
 
 _HERE = Path(__file__).resolve().parent
@@ -89,8 +88,6 @@ else:
 
 if MM_ATTENTION_BACKEND:
     _extra_engine_kwargs["mm_attention_backend"] = MM_ATTENTION_BACKEND
-if ATTENTION_BACKEND:
-    _extra_engine_kwargs["attention_backend"] = ATTENTION_BACKEND
 
 TEXT_PROMPTS = [
     "How many states are there in the United States?",
