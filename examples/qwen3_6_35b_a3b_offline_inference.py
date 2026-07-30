@@ -44,8 +44,6 @@ if _is_txda:
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-35B-A3B")
 TP_SIZE = int(os.environ.get("TP_SIZE", "4" if _is_npu or _is_txda else "1"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "10"))
-MM_ATTENTION_BACKEND = os.environ.get("MM_ATTENTION_BACKEND", "")
-DISABLE_CUDA_GRAPH = os.environ.get("ENABLE_CUDA_GRAPH", "0") != "1"
 
 _HERE = Path(__file__).resolve().parent
 IMAGE_DIR = Path(os.environ.get("IMAGE_DIR", _HERE / "test_images"))
@@ -85,9 +83,6 @@ elif _is_txda:
     }
 else:
     _extra_engine_kwargs = {"trust_remote_code": True}
-
-if MM_ATTENTION_BACKEND:
-    _extra_engine_kwargs["mm_attention_backend"] = MM_ATTENTION_BACKEND
 
 TEXT_PROMPTS = [
     "How many states are there in the United States?",
@@ -184,7 +179,7 @@ def run_engine():
         model_path=MODEL_PATH,
         tp_size=TP_SIZE,
         mem_fraction_static=0.6 if _is_txda else 0.85,
-        disable_cuda_graph=DISABLE_CUDA_GRAPH,
+        disable_cuda_graph=True,
         disable_piecewise_cuda_graph=True,
         **_extra_engine_kwargs,
     )

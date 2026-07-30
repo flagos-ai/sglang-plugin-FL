@@ -95,7 +95,7 @@ if _is_npu:
     os.environ.setdefault("SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK", "128")
 elif _is_musa:
     os.environ.setdefault("MCCL_IB_DISABLE", "1")
-
+    
 # Extra launch_server flags per platform.
 # - MUSA: page_size=1 works around a sglang platform bug.
 # - Ascend NPU: requires ascend attention backend, bfloat16, radix cache off.
@@ -114,8 +114,6 @@ else:
 # ─── Configuration ───────────────────────────────────────────────────────────
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-35B-A3B")
-MM_ATTENTION_BACKEND = os.environ.get("MM_ATTENTION_BACKEND", "")
-DISABLE_CUDA_GRAPH = os.environ.get("ENABLE_CUDA_GRAPH", "0") != "1"
 
 _HERE = Path(__file__).resolve().parent
 IMG_DIR = Path(os.environ.get("IMAGE_DIR", _HERE / "test_images"))
@@ -522,6 +520,7 @@ def run_master(args):
         str(args.nccl_port),
         "--mem-fraction-static",
         "0.85",
+        "--disable-cuda-graph",
         "--disable-piecewise-cuda-graph",
         "--trust-remote-code",
         *_PLATFORM_SERVER_ARGS,
@@ -540,11 +539,6 @@ def run_master(args):
             "--chunked-prefill-size", "256",
         ]):
             cmd.insert(insert_pos, flag)
-
-    if MM_ATTENTION_BACKEND:
-        cmd += ["--mm-attention-backend", MM_ATTENTION_BACKEND]
-    if DISABLE_CUDA_GRAPH:
-        cmd += ["--disable-cuda-graph"]
 
     print("Launching server...")
     server_proc = subprocess.Popen(cmd)
@@ -632,6 +626,7 @@ def run_worker(args):
         str(args.nccl_port),
         "--mem-fraction-static",
         "0.85",
+        "--disable-cuda-graph",
         "--disable-piecewise-cuda-graph",
         "--trust-remote-code",
         *_PLATFORM_SERVER_ARGS,
@@ -650,11 +645,6 @@ def run_worker(args):
             "--chunked-prefill-size", "256",
         ]):
             cmd.insert(insert_pos, flag)
-
-    if MM_ATTENTION_BACKEND:
-        cmd += ["--mm-attention-backend", MM_ATTENTION_BACKEND]
-    if DISABLE_CUDA_GRAPH:
-        cmd += ["--disable-cuda-graph"]
 
     print("Starting worker node... (will block until master shuts down)\n")
     try:

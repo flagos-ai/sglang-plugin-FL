@@ -367,6 +367,9 @@ class PlatformFL(SRTPlatform):
         CUDA is skipped — sglang's own defaulting handles it. For other vendors,
         if the user didn't pick an attention backend, fill from _ATTN_BACKEND_MAP.
         """
+        if self._vendor_name == "kunlunxin":
+            server_args.mm_attention_backend = "sdpa"
+            server_args.disable_cuda_graph = False
         if self._device_type == "cuda":
             return
         if (
