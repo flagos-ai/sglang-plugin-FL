@@ -60,6 +60,8 @@ def get_platform_name() -> str:
             return "ascend"
         if hasattr(torch, "musa") and torch.musa.is_available():
             return "musa"
+        if "metax" in torch.__version__ and torch.cuda.is_available():
+            return "metax"
         if torch.cuda.is_available():
             return "nvidia"
     except ImportError:

@@ -86,6 +86,7 @@ import torch
 _is_txda = hasattr(torch, "txda") and torch.txda.is_available()
 _is_musa = hasattr(torch, "musa") and torch.musa.is_available()
 _is_npu = hasattr(torch, "npu") and torch.npu.is_available()
+_is_maca =  "metax" in torch.__version__ and torch.cuda.is_available()
 
 # Must be set before launching sglang. Subprocesses inherit os.environ.
 if _is_txda:
@@ -110,6 +111,12 @@ elif _is_npu:
         "--attention-backend", "ascend",
         "--device", "npu",
         "--dtype", "bfloat16",
+        "--disable-radix-cache",
+    ]
+elif _is_maca:
+    _PLATFORM_SERVER_ARGS = [
+        "--attention-backend", "flashinfer",
+        "--chunked-prefill-size", "4096",
         "--disable-radix-cache",
     ]
 else:
