@@ -14,3 +14,20 @@
 
 # SGLang-FL Dispatch Configuration for Ascend NPU
 prefer: flagos
+
+# FlagGems tag:    v5.3.0
+# FlagGems commit: 98fae44cdf2898f39c7f24f080d7c88b83d7c593
+flagos_blacklist:
+  - index_copy_
+  - gather
+  - count_nonzero
+  - index_put_
+  - _index_put_impl_
+  - cumsum
+  - fill_scalar_
+  - argmax
+  - index
+  - add_
+  - conv1d
+  - floor_divide
+  - true_divide_
