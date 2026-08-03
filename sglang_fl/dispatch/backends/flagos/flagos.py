@@ -84,6 +84,11 @@ class FlagOSBackend(Backend):
             expert_location_dispatch_info=expert_location_dispatch_info,
         )
 
+    def mrotary_embedding(self, obj, positions, query, key):
+        from .impl.mrotary_embedding import mrotary_embedding_flagos
+
+        return mrotary_embedding_flagos(obj, positions, query, key)
+
     def fused_recurrent_gated_delta_rule(
         self,
         q,
