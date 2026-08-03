@@ -18,6 +18,7 @@ prefer: flagos
 # FlagGems tag:    v5.3.0
 # FlagGems commit: 98fae44cdf2898f39c7f24f080d7c88b83d7c593
 flagos_blacklist:
+  - full_like
   - index_copy_
   - gather
   - count_nonzero
