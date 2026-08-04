@@ -14,7 +14,6 @@
 
 import logging
 import threading
-import torch
 
 from typing import List, Optional
 from sglang.srt.platforms import current_platform
