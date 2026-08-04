@@ -17,9 +17,7 @@ import sys
 
 logger = logging.getLogger(__name__)
 
-# NOTE: if SGLang grows a new caller, add it here. The unit test
-# ``test_alias_modules_cover_all_importers`` scans the installed SGLang source
-# and fails when this tuple drifts, rather than silently losing the patch.
+# NOTE: if SGLang grows a new caller, add it here.
 _ALIAS_MODULES = (
     "sglang.srt.disaggregation.utils",
     "sglang.srt.disaggregation.prefill",

@@ -806,7 +806,7 @@ def load_plugin():
 
     # 5. Vendor-specific patches — final overlay on top of all sglang_fl layers
     _apply_vendor_patches()
-    
+
     # 6. FlagCX PD-disaggregation transfer backend. the FlagCX connector itself is
     #    imported lazily, when the user actually selects this backend.
     disagg_flagcx = _parse_bool(
