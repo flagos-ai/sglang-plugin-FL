@@ -10,6 +10,7 @@ from .patches.qwen3_vl import patch_qwen3_vl
 from .patches.cuda_graph_runner import patch_cuda_graph_runner
 from .patches.mem_cache import patch_mem_cache
 from .patches.causal_conv1d import patch_causal_conv1d_fn
+from .patches.scheduler_pp_mixin import patch_scheduler_pp_mixin
 
 logger = logging.getLogger(__name__)
 _patches_applied = False
@@ -22,6 +23,7 @@ def apply_gcu_patches():
     _patches_applied = True
 
     patch_server_args()
+    patch_scheduler_pp_mixin()
     patch_supported_devices()
     patch_communicator_hooks()
     patch_flashattention_backend()
