@@ -128,7 +128,7 @@ def _text_prompt(question: str) -> str:
 # ─── Engine factories ────────────────────────────────────────────────────────
 
 
-def _make_mtp_engine():
+def _make_mtp_engine(disable_cuda_graph=False, disable_piecewise_cuda_graph=False):
     """Create engine with MTP (speculative decoding) enabled."""
     from sglang.srt.entrypoints.engine import Engine
 
@@ -136,8 +136,8 @@ def _make_mtp_engine():
         model_path=MODEL_PATH,
         tp_size=TP_SIZE,
         mem_fraction_static=0.8,
-        disable_cuda_graph=True,
-        disable_piecewise_cuda_graph=True,
+        disable_cuda_graph=disable_cuda_graph,
+        disable_piecewise_cuda_graph=disable_piecewise_cuda_graph,
         trust_remote_code=True,
         disable_radix_cache=True,
         speculative_algorithm="EAGLE",
@@ -147,7 +147,7 @@ def _make_mtp_engine():
     )
 
 
-def _make_baseline_engine():
+def _make_baseline_engine(disable_cuda_graph=False, disable_piecewise_cuda_graph=False):
     """Create engine without MTP (standard autoregressive)."""
     from sglang.srt.entrypoints.engine import Engine
 
@@ -155,8 +155,8 @@ def _make_baseline_engine():
         model_path=MODEL_PATH,
         tp_size=TP_SIZE,
         mem_fraction_static=0.8,
-        disable_cuda_graph=True,
-        disable_piecewise_cuda_graph=True,
+        disable_cuda_graph=disable_cuda_graph,
+        disable_piecewise_cuda_graph=disable_piecewise_cuda_graph,
         trust_remote_code=True,
     )
 
@@ -201,6 +201,16 @@ def main():
         "--skip-baseline", action="store_true", help="Skip baseline comparison (faster)"
     )
     parser.add_argument("--max-tokens", type=int, default=MAX_TOKENS)
+    parser.add_argument(
+        "--disable-cuda-graph",
+        action="store_true",
+        help="Disable CUDA graph capture (default: enabled)",
+    )
+    parser.add_argument(
+        "--disable-piecewise-cuda-graph",
+        action="store_true",
+        help="Disable piecewise CUDA graph (default: enabled)",
+    )
     args = parser.parse_args()
 
     if not os.path.exists(MODEL_PATH):
@@ -208,11 +218,14 @@ def main():
         sys.exit(1)
 
     max_tokens = args.max_tokens
+    disable_cg = args.disable_cuda_graph
+    disable_pcg = args.disable_piecewise_cuda_graph
+    mode_str = "eager" if disable_cg else ("cuda_graph" if not disable_pcg else "cuda_graph(no piecewise)")
     print("=" * 70)
     print("  Qwen3.6-27B MTP (Speculative Decoding) Validation")
     print("=" * 70)
     print(f"  Model: {MODEL_PATH}")
-    print(f"  TP: {TP_SIZE} | max_tokens: {max_tokens}")
+    print(f"  TP: {TP_SIZE} | max_tokens: {max_tokens} | mode: {mode_str}")
     print("  MTP: algorithm=EAGLE, num_steps=3, topk=1, draft_tokens=4")
     print(f"  Prompts: {len(PROMPTS)} (factual/math/code/explanation/creative)")
     print()
@@ -222,7 +235,9 @@ def main():
     print("-" * 50)
 
     t0 = time.perf_counter()
-    mtp_engine = _make_mtp_engine()
+    mtp_engine = _make_mtp_engine(
+        disable_cuda_graph=disable_cg, disable_piecewise_cuda_graph=disable_pcg
+    )
     print(f"  Engine loaded in {time.perf_counter() - t0:.1f}s")
 
     mtp_results = run_inference(mtp_engine, PROMPTS, max_tokens)
@@ -272,7 +287,9 @@ def main():
         print("-" * 50)
 
         t0 = time.perf_counter()
-        baseline_engine = _make_baseline_engine()
+        baseline_engine = _make_baseline_engine(
+            disable_cuda_graph=disable_cg, disable_piecewise_cuda_graph=disable_pcg
+        )
         print(f"  Engine loaded in {time.perf_counter() - t0:.1f}s")
 
         baseline_results = run_inference(baseline_engine, PROMPTS, max_tokens)
