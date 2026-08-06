@@ -440,4 +440,3 @@ class FlagCXCommunicator:
 def create_flagcx_communicator(group, device) -> FlagCXCommunicator:
     """Factory function for FlagCX communicator (registered with GroupCoordinator)."""
     return FlagCXCommunicator(group=group, device=device)
-
