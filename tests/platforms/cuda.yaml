@@ -64,6 +64,7 @@ a100:
       concurrent:
         qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
       inference:
+        qwen3: ["4b_tp2", "06b_tp1"]
         qwen3_6: ["35b_a3b_tp4_nograph",  "27b_tp4_nograph"]
       serving:
         qwen3: ["4b_tp2"]

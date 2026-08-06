@@ -7,12 +7,9 @@ llm:
   trust_remote_code: true
 
 generate:
-  # Prompts are fed as raw text (no chat template) to the Engine.generate path,
-  # so they must be natural-language continuations, not factual Q&A: a 0.6B base
-  # completion of a question just continues the question rather than answering it.
   prompts:
-    - text: "The sky is blue and the grass is"
-      expected: "green"
+    - text: "What is the capital of Germany?"
+      expected: "Berlin"
     - text: "The capital of France is"
       expected: "Paris"
   sampling:
