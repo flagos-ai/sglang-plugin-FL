@@ -23,7 +23,7 @@ from typing import Any
 import pytest
 
 from sglang import Engine
-from tests.utils.model_config import ModelConfig
+from tests.utils.model_config import ModelConfig, load_engine_overrides_from_env
 from tests.e2e_tests.plugin_utils import assert_sglang_fl_plugin_loaded_and_active
 
 
@@ -39,7 +39,9 @@ if not _MODEL or not _CASE:
         allow_module_level=True,
     )
 
-_CFG = ModelConfig.load(_MODEL, _CASE)
+_CFG = ModelConfig.load(
+    _MODEL, _CASE, engine_overrides=load_engine_overrides_from_env()
+)
 
 if not os.path.exists(_CFG.model):
     pytest.fail(f"Model not found: {_CFG.model}", pytrace=False)
