@@ -90,6 +90,11 @@ elif _is_txda:
 else:
     _extra_engine_kwargs = {"trust_remote_code": True}
 
+# Allow overriding attention backend via env var (e.g. ATTENTION_BACKEND=triton for national platforms)
+_attn_backend = os.environ.get("ATTENTION_BACKEND", "").strip()
+if _attn_backend:
+    _extra_engine_kwargs["attention_backend"] = _attn_backend
+
 # ─── Test data ────────────────────────────────────────────────────────────────
 
 TEXT_PROMPTS = [
