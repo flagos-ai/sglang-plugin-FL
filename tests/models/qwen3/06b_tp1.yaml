@@ -7,6 +7,10 @@ llm:
   trust_remote_code: true
 
 generate:
+  # Prompts are fed as raw text (no chat template) to the Engine.generate path,
+  # so they must be natural language-modeling continuations, not factual Q&A --
+  # a 0.6B base completion of a question just continues the question. These were
+  # verified on Qwen3-0.6B (MUSA) via raw completion.
   prompts:
     - text: "What is the capital of Germany?"
       expected: "Berlin"

@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import itertools
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,41 @@ def load_engine_overrides_from_env() -> dict[str, Any]:
     if not isinstance(overrides, dict):
         raise ValueError(f"{_ENGINE_OVERRIDES_ENV} must contain a JSON object")
     return overrides
+
+def _translate_cuda_graph_args(params: dict[str, Any]) -> dict[str, Any]:
+    """Translate 0.5.11-era cuda_graph kwargs to the installed sglang's ServerArgs schema.
+
+    sglang v0.5.16 split ``disable_cuda_graph`` into ``disable_prefill_cuda_graph`` +
+    ``disable_decode_cuda_graph`` and removed ``disable_piecewise_cuda_graph`` (folded
+    into the ``cuda_graph_backend_*`` system). Test yamls still use the 0.5.11 names.
+    The CLI accepts the old names as aliases, but ``ServerArgs(**kwargs)`` (the
+    Engine/inference path) rejects them with TypeError. Introspect ``ServerArgs`` so
+    this is a no-op on 0.5.11 (cuda/ascend) and only translates where the old names are
+    gone (musa/v0.5.16).
+    """
+    try:
+        from sglang.srt.server_args import ServerArgs
+        import dataclasses as _dc
+
+        if not _dc.is_dataclass(ServerArgs):
+            return params
+        valid = {f.name for f in _dc.fields(ServerArgs)}
+    except Exception:
+        return params
+    if "disable_cuda_graph" in valid and "disable_piecewise_cuda_graph" in valid:
+        return params  # 0.5.11 schema: old names valid, nothing to translate
+    out: dict[str, Any] = {}
+    for k, v in params.items():
+        if k in valid:
+            out[k] = v
+        elif k == "disable_cuda_graph" and v and "disable_decode_cuda_graph" in valid:
+            out.setdefault("disable_prefill_cuda_graph", True)
+            out["disable_decode_cuda_graph"] = True
+        elif k == "disable_piecewise_cuda_graph":
+            continue  # removed in v0.5.16; prefill+decode disabled above covers it
+        # else: drop unknown kwarg (ServerArgs would TypeError on it)
+    return out
+
 
 @dataclass
 class GenerateConfig:
@@ -171,13 +207,23 @@ class ModelConfig:
 
     def sglang_common_params(self) -> dict[str, Any]:
         """Return engine parameters using SGLang CLI names."""
-        return {"model_path": self.model, **self.engine}
+        params = {"model_path": self.model, **self.engine}
+        # MUSA-only: mate's flash_attn asserts ``page_table.stride(-1) == 1``, which
+        # the default page_size (64) trips on batched decode. The contiguity patch is
+        # intentionally not shipped, so force page_size=1 on MUSA only. Gated here
+        # (not in the shared model YAML) because tests/benchmarks/configs/smoke.yaml
+        # shares 06b_tp1 across platforms, so a YAML page_size would slow CUDA's
+        # benchmark for no benefit. ``setdefault`` leaves explicit values (e.g. the
+        # mamba-mandated page_size=1 on qwen3_6) untouched.
+        if os.environ.get("FL_TEST_PLATFORM") == "musa":
+            params.setdefault("page_size", 1)
+        return params
 
     def engine_kwargs(self, **overrides: Any) -> dict[str, Any]:
         """Return engine parameters as Python kwargs for SGLang Engine."""
         params = self.sglang_common_params()
         params.update(overrides)
-        return params
+        return _translate_cuda_graph_args(params)
 
     def sampling_kwargs(self, **overrides: Any) -> dict[str, Any]:
         """Return sampling parameters using SGLang Engine names."""
@@ -188,7 +234,7 @@ class ModelConfig:
     def benchmark_parameters(self, overrides: dict[str, Any]) -> dict[str, Any]:
         params = self.sglang_common_params()
         params.update(overrides)
-        return params
+        return _translate_cuda_graph_args(params)
 
     def server_parameters(self, overrides: dict[str, Any]) -> dict[str, Any]:
         params = self.sglang_common_params()
