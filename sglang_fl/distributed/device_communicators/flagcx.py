@@ -396,14 +396,6 @@ class FlagCXCommunicator:
         assert tensor.device == self.device, (
             f"FlagCX communicator on {self.device}, but tensor on {tensor.device}"
         )
-        from sglang_fl.dispatch.backends.vendor.hcu.patches.cuda_graph_pre_sample_fence import (
-            enqueue_replay_dependency_for_pp,
-        )
-
-        enqueue_replay_dependency_for_pp(
-            torch.get_device_module(self.device),
-            self.device,
-        )
         flagcx_stream = self._get_stream()
         self.flagcx.flagcxRecv(
             self._buffer_type(tensor.data_ptr()),

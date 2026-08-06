@@ -6,16 +6,18 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
-class _ReplayRecord:
+class _EventRecord:
     sequence: int
     event: object
 
 
 _LOCK = threading.Lock()
 _SEQUENCE = itertools.count(1)
-_LATEST_BY_DEVICE_AND_STREAM = {}
-_WAITED_SEQUENCE = {}
-_COMM_WAITED_SEQUENCE = {}
+_LATEST_REPLAY_BY_DEVICE_AND_STREAM = {}
+_LATEST_PP_SEND_BY_DEVICE_AND_STREAM = {}
+_SAMPLE_WAITED_REPLAY_SEQUENCE = {}
+_COMM_WAITED_REPLAY_SEQUENCE = {}
+_REPLAY_WAITED_SEND_SEQUENCE = {}
 
 
 def _stream_handle(stream) -> int:
@@ -40,7 +42,7 @@ def _device_key(device, device_module, stream) -> str:
     return device_key
 
 
-def _record_replay_completion(device_module, device) -> int:
+def _record_current_stream_event(device_module, device, records) -> int:
     stream = device_module.current_stream(device=device)
     event = device_module.Event()
     event.record(stream)
@@ -48,11 +50,27 @@ def _record_replay_completion(device_module, device) -> int:
     device_key = _device_key(device, device_module, stream)
     sequence = next(_SEQUENCE)
     with _LOCK:
-        _LATEST_BY_DEVICE_AND_STREAM[(device_key, stream_handle)] = _ReplayRecord(
+        records[(device_key, stream_handle)] = _EventRecord(
             sequence=sequence,
             event=event,
         )
     return sequence
+
+
+def _record_replay_completion(device_module, device) -> int:
+    return _record_current_stream_event(
+        device_module,
+        device,
+        _LATEST_REPLAY_BY_DEVICE_AND_STREAM,
+    )
+
+
+def _record_pp_send_completion(device_module, device) -> int:
+    return _record_current_stream_event(
+        device_module,
+        device,
+        _LATEST_PP_SEND_BY_DEVICE_AND_STREAM,
+    )
 
 
 def _wait_for_replay_before_sample(device_module, device) -> tuple[int, ...]:
@@ -62,10 +80,12 @@ def _wait_for_replay_before_sample(device_module, device) -> tuple[int, ...]:
         records = tuple(
             (stream_handle, record)
             for (record_device, stream_handle), record in (
-                _LATEST_BY_DEVICE_AND_STREAM.items()
+                _LATEST_REPLAY_BY_DEVICE_AND_STREAM.items()
             )
             if record_device == device_key
-            and _WAITED_SEQUENCE.get((device_key, stream_handle), 0)
+            and _SAMPLE_WAITED_REPLAY_SEQUENCE.get(
+                (device_key, stream_handle), 0
+            )
             < record.sequence
         )
 
@@ -76,9 +96,9 @@ def _wait_for_replay_before_sample(device_module, device) -> tuple[int, ...]:
         with _LOCK:
             for stream_handle, record in records:
                 key = (device_key, stream_handle)
-                _WAITED_SEQUENCE[key] = max(
+                _SAMPLE_WAITED_REPLAY_SEQUENCE[key] = max(
                     record.sequence,
-                    _WAITED_SEQUENCE.get(key, 0),
+                    _SAMPLE_WAITED_REPLAY_SEQUENCE.get(key, 0),
                 )
     return tuple(record.sequence for _, record in records)
 
@@ -92,10 +112,10 @@ def enqueue_replay_dependency_for_pp(device_module, device) -> tuple[int, ...]:
         records = tuple(
             (source_handle, record)
             for (record_device, source_handle), record in (
-                _LATEST_BY_DEVICE_AND_STREAM.items()
+                _LATEST_REPLAY_BY_DEVICE_AND_STREAM.items()
             )
             if record_device == device_key
-            and _COMM_WAITED_SEQUENCE.get(
+            and _COMM_WAITED_REPLAY_SEQUENCE.get(
                 (device_key, target_handle, source_handle), 0
             )
             < record.sequence
@@ -109,16 +129,70 @@ def enqueue_replay_dependency_for_pp(device_module, device) -> tuple[int, ...]:
         with _LOCK:
             for source_handle, record in records:
                 key = (device_key, target_handle, source_handle)
-                _COMM_WAITED_SEQUENCE[key] = max(
+                _COMM_WAITED_REPLAY_SEQUENCE[key] = max(
                     record.sequence,
-                    _COMM_WAITED_SEQUENCE.get(key, 0),
+                    _COMM_WAITED_REPLAY_SEQUENCE.get(key, 0),
+                )
+    return tuple(record.sequence for _, record in records)
+
+
+def _enqueue_pp_send_dependency_for_replay(
+    device_module,
+    device,
+) -> tuple[int, ...]:
+    """Prevent the next HCU graph replay from overwriting in-flight PP sends."""
+    target_stream = device_module.current_stream(device=device)
+    target_handle = _stream_handle(target_stream)
+    device_key = _device_key(device, device_module, target_stream)
+    with _LOCK:
+        records = tuple(
+            (source_handle, record)
+            for (record_device, source_handle), record in (
+                _LATEST_PP_SEND_BY_DEVICE_AND_STREAM.items()
+            )
+            if record_device == device_key
+            and _REPLAY_WAITED_SEND_SEQUENCE.get(
+                (device_key, target_handle, source_handle), 0
+            )
+            < record.sequence
+        )
+
+    for source_handle, record in records:
+        if source_handle != target_handle:
+            target_stream.wait_event(record.event)
+
+    if records:
+        with _LOCK:
+            for source_handle, record in records:
+                key = (device_key, target_handle, source_handle)
+                _REPLAY_WAITED_SEND_SEQUENCE[key] = max(
+                    record.sequence,
+                    _REPLAY_WAITED_SEND_SEQUENCE.get(key, 0),
                 )
     return tuple(record.sequence for _, record in records)
 
 
 def _cuda_graph_replay_hook(original_fn, runner, forward_batch, *args, **kwargs):
+    _enqueue_pp_send_dependency_for_replay(
+        runner.device_module,
+        runner.device,
+    )
     result = original_fn(runner, forward_batch, *args, **kwargs)
     _record_replay_completion(runner.device_module, runner.device)
+    return result
+
+
+def _send_tensor_dict_hook(original_fn, communicator, *args, **kwargs):
+    flagcx_comm = getattr(communicator, "_flagcx_comm", None)
+    if flagcx_comm is None or getattr(flagcx_comm, "disabled", False):
+        return original_fn(communicator, *args, **kwargs)
+
+    import torch
+
+    device_module = torch.get_device_module(communicator.device)
+    enqueue_replay_dependency_for_pp(device_module, communicator.device)
+    result = original_fn(communicator, *args, **kwargs)
+    _record_pp_send_completion(device_module, communicator.device)
     return result
 
 
@@ -143,8 +217,12 @@ def setup_cuda_graph_pre_sample_fence() -> None:
         HookType.AROUND,
     )
     HookRegistry.register(
+        "sglang_fl.distributed.communicator.CommunicatorFL.send_tensor_dict",
+        _send_tensor_dict_hook,
+        HookType.AROUND,
+    )
+    HookRegistry.register(
         "sglang.srt.model_executor.model_runner.ModelRunner.sample",
         _model_runner_sample_hook,
         HookType.AROUND,
     )
-
