@@ -30,6 +30,7 @@ This plugin registers:
   Layer 2: SGLang fused kernels via MultiPlatformOp.register_oot_forward +
            HookRegistry AROUND hook on dispatch_forward
   Layer 3: FlagCX communicator (via Platform Plugin get_communicator_class)
+  Layer 4: FlagCX PD-disaggregation KV transfer backend (opt-out via env)
 
 Environment variables:
   USE_FLAGGEMS=1|0                    Master switch for Layer 1 (default: 1)
@@ -52,6 +53,7 @@ Environment variables:
   SGLANG_FL_CONFIG=<path>             YAML config file (overrides platform defaults)
   SGLANG_FL_DIST_BACKEND=nccl|hccl|flagcx   Override distributed backend
   FLAGCX_PATH=<path>                         If set, default to flagcx backend
+  SGLANG_FL_DISAGG_FLAGCX=1|0         Register FlagCX PD-disagg backend (default: 1)
 """
 
 import logging
@@ -805,7 +807,21 @@ def load_plugin():
     # 5. Vendor-specific patches — final overlay on top of all sglang_fl layers
     _apply_vendor_patches()
 
-    # 6. Summary banner — confirm plugin is active (rank 0 only)
+    # 6. FlagCX PD-disaggregation transfer backend. the FlagCX connector itself is
+    #    imported lazily, when the user actually selects this backend.
+    disagg_flagcx = _parse_bool(
+        os.environ.get("SGLANG_FL_DISAGG_FLAGCX", "1"), default=True
+    )
+    if disagg_flagcx:
+        try:
+            from sglang_fl.disaggregation.patch import apply_disaggregation_patch
+
+            apply_disaggregation_patch()
+        except Exception as e:
+            logger.warning("FlagCX PD disaggregation registration failed: %s", e)
+            disagg_flagcx = False
+
+    # 7. Summary banner — confirm plugin is active (rank 0 only)
     if _is_rank0():
         use_fg = _parse_bool(os.environ.get("USE_FLAGGEMS", "1"), default=True)
         aten_status = "OFF" if not use_fg else "ON"
@@ -823,6 +839,11 @@ def load_plugin():
             "|" + f"  Layer 1 (ATen -> FlagGems):  {aten_status}".ljust(58) + "|\n"
             "|" + f"  Layer 2 (Fused Ops):         {oot_status}".ljust(58) + "|\n"
             "|" + f"  Layer 3 (Communication):     {dist_backend}".ljust(58) + "|\n"
+            "|"
+            + f"  Layer 4 (PD Disagg):         {'flagcx' if disagg_flagcx else 'OFF'}".ljust(
+                58
+            )
+            + "|\n"
             "+" + "=" * 58 + "+"
         )
         logger.info(banner)
