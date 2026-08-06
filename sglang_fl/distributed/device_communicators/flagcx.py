@@ -1,17 +1,3 @@
-# Copyright 2026 FlagOS Contributors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """FlagCX-based OOT communicator for SGLang plugin.
 
 Replaces torch.distributed collective ops with FlagCX API calls,
@@ -235,7 +221,7 @@ class FlagCXCommunicator:
     def all_reduce(self, input_: torch.Tensor) -> torch.Tensor:
         """All-reduce using FlagCX. Falls back to torch.distributed if disabled."""
         if self.disabled:
-            return
+            return super().all_reduce(input_)
 
         assert input_.device == self.device, (
             f"FlagCX communicator on {self.device}, but tensor on {input_.device}"
@@ -248,7 +234,7 @@ class FlagCXCommunicator:
     def reduce_scatter(self, output: torch.Tensor, input_: torch.Tensor):
         """Reduce-scatter using FlagCX."""
         if self.disabled:
-            return
+            return super().reduce_scatter(output, input_)
 
         assert input_.device == self.device, (
             f"FlagCX communicator on {self.device}, but tensor on {input_.device}"
@@ -267,7 +253,7 @@ class FlagCXCommunicator:
     def all_gather(self, output: torch.Tensor, input_: torch.Tensor):
         """All-gather using FlagCX."""
         if self.disabled:
-            return
+            return super().all_gather(output, input_)
 
         assert input_.device == self.device, (
             f"FlagCX communicator on {self.device}, but tensor on {input_.device}"
@@ -378,6 +364,14 @@ class FlagCXCommunicator:
         assert tensor.device == self.device, (
             f"FlagCX communicator on {self.device}, but tensor on {tensor.device}"
         )
+        from sglang_fl.dispatch.backends.vendor.hcu.patches.cuda_graph_pre_sample_fence import (
+            enqueue_replay_dependency_for_pp,
+        )
+
+        enqueue_replay_dependency_for_pp(
+            torch.get_device_module(self.device),
+            self.device,
+        )
         flagcx_stream = self._get_stream()
         self.flagcx.flagcxSend(
             self._buffer_type(tensor.data_ptr()),
@@ -440,4 +434,3 @@ class FlagCXCommunicator:
 def create_flagcx_communicator(group, device) -> FlagCXCommunicator:
     """Factory function for FlagCX communicator (registered with GroupCoordinator)."""
     return FlagCXCommunicator(group=group, device=device)
-
