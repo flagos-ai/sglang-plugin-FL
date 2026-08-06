@@ -43,7 +43,7 @@ class SelectionPolicy:
 
     Attributes:
         prefer: Which implementation kind to prefer ("flagos", "vendor", "reference")
-        strict: If True, enable fallback when primary fails
+        strict: If True, raise immediately when primary implementation fails
         per_op_order: Per-operator custom selection order
         deny_vendors: Set of vendor names to deny
         allow_vendors: Set of vendor names to allow (whitelist)
@@ -331,7 +331,7 @@ class PolicyManager:
         elif platform_policy:
             strict = platform_policy.strict
         else:
-            strict = True
+            strict = False
 
         if env_deny_str:
             deny_vendors = self._parse_csv_set(env_deny_str)
