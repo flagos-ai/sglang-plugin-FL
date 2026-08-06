@@ -8,8 +8,8 @@ llm:
 
 generate:
   prompts:
-    - text: "How many states are there in the United States?"
-      expected: "50"
+    - text: "What is the capital of Germany?"
+      expected: "Berlin"
     - text: "The capital of France is"
       expected: "Paris"
   sampling:
