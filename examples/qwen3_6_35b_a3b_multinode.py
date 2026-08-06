@@ -83,6 +83,7 @@ import torch
 _is_txda = hasattr(torch, "txda") and torch.txda.is_available()
 _is_musa = hasattr(torch, "musa") and torch.musa.is_available()
 _is_npu = hasattr(torch, "npu") and torch.npu.is_available()
+_is_hcu = hasattr(torch, "__hcu_version__") and torch.cuda.is_available()
 
 if _is_txda:
     os.environ.setdefault("SGLANG_FL_TIMER_ENABLE", "1")
@@ -107,6 +108,11 @@ elif _is_npu:
         "--device", "npu",
         "--dtype", "bfloat16",
         "--disable-radix-cache",
+    ]
+elif _is_hcu:
+    _PLATFORM_SERVER_ARGS = [
+        "--disable-radix-cache",
+        "--page-size", "64",
     ]
 else:
     _PLATFORM_SERVER_ARGS = []

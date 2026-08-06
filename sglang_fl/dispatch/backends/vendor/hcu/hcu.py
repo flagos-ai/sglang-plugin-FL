@@ -30,13 +30,16 @@ class hcuBackend(Backend):
         return "hcu"
 
     def is_available(self) -> bool:
-        """Check if vendor hardware/libraries are available."""
+        """Check if HCU hardware and runtime are available."""
         if hcuBackend._available is None:
             try:
-                import sglang_hcu
-                hcuBackend._available = True
-            except (ImportError, AttributeError):
-                hcuBackend._available = True
+                hcuBackend._available = (
+                    hasattr(torch, "__hcu_version__")
+                    and torch.cuda.is_available()
+                    and torch.cuda.device_count() > 0
+                )
+            except Exception:
+                hcuBackend._available = False
         return hcuBackend._available
 
     # ==================== Operator Implementations ====================
@@ -203,4 +206,3 @@ class hcuBackend(Backend):
     #         obj, query, key, cos, sin, position_ids,
     #         rotary_interleaved, inplace,
     #     )
-

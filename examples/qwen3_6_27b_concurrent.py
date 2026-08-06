@@ -36,6 +36,7 @@ import torch
 _is_musa = hasattr(torch, "musa") and torch.musa.is_available()
 _is_npu = hasattr(torch, "npu") and torch.npu.is_available()
 _is_txda = hasattr(torch, "txda") and torch.txda.is_available()
+_is_hcu = hasattr(torch, "__hcu_version__") and torch.cuda.is_available()
 
 # Must be set before importing sglang.
 if _is_npu:
@@ -86,6 +87,15 @@ elif _is_txda:
         "disable_fast_image_processor": True,
         "context_length": 8192,
         "chunked_prefill_size": 256,
+    }
+elif _is_hcu:
+    _extra_engine_kwargs = {
+        "dtype": "bfloat16",
+        "kv_cache_dtype": "bfloat16",
+        "page_size": 64,
+        "disable_radix_cache": True,
+        "enable_breakable_cuda_graph": False,
+        "trust_remote_code": True,
     }
 else:
     _extra_engine_kwargs = {"trust_remote_code": True}

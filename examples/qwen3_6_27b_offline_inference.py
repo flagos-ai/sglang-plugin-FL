@@ -13,7 +13,6 @@ Environment variables:
   TP_SIZE       Tensor parallelism (default: 1)
   MAX_TOKENS    Max generation tokens (default: 10)
   IMAGE_DIR     Test image directory (default: examples/test_images/ next to this file)
-  ENABLE_CUDA_GRAPH    Enable standard decode CUDA Graph (default: 0)
 """
 
 import os
@@ -26,12 +25,7 @@ import torch
 _is_musa = hasattr(torch, "musa") and torch.musa.is_available()
 _is_npu = hasattr(torch, "npu") and torch.npu.is_available()
 _is_txda = hasattr(torch, "txda") and torch.txda.is_available()
-try:
-    from flag_gems.runtime.backend.device import DeviceDetector
-except ImportError:
-    from flag_gems.runtime.backend.device_finder import DeviceDetector
-
-_is_hcu = DeviceDetector().vendor_name == "hygon"
+_is_hcu = hasattr(torch, "__hcu_version__") and torch.cuda.is_available()
 
 # Must be set before importing sglang.
 if _is_npu:
@@ -50,12 +44,6 @@ if _is_txda:
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-27B")
 TP_SIZE = int(os.environ.get("TP_SIZE", "4" if _is_npu or _is_txda else "1"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "10"))
-ENABLE_CUDA_GRAPH = os.environ.get("ENABLE_CUDA_GRAPH", "0").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
 
 _HERE = Path(__file__).resolve().parent
 IMAGE_DIR = Path(os.environ.get("IMAGE_DIR", _HERE / "test_images"))
@@ -89,6 +77,7 @@ elif _is_txda:
         "disable_fast_image_processor": True,
         "context_length": 8192,
         "chunked_prefill_size": 256,
+    }
 elif _is_hcu:
     _extra_engine_kwargs = {
         "dtype": "bfloat16",
@@ -197,19 +186,8 @@ def run_engine():
         mem_fraction_static=0.6 if _is_txda else 0.85,
         disable_cuda_graph=True,
         disable_piecewise_cuda_graph=True,
-    engine_kwargs = {
-        "model_path": MODEL_PATH,
-        "tp_size": TP_SIZE,
-        "mem_fraction_static": 0.85,
-        "disable_cuda_graph": not ENABLE_CUDA_GRAPH,
-        "disable_piecewise_cuda_graph": True,
         **_extra_engine_kwargs,
-    }
-    if ENABLE_CUDA_GRAPH:
-        # Requests are submitted one at a time in this offline example.
-        engine_kwargs["cuda_graph_bs"] = [1]
-
-    engine = Engine(**engine_kwargs)
+    )
 
     sampling_params = {"max_new_tokens": MAX_TOKENS, "temperature": 0}
     vl_sampling = {"max_new_tokens": 64, "temperature": 0}
