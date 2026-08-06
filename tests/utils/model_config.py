@@ -208,15 +208,6 @@ class ModelConfig:
     def sglang_common_params(self) -> dict[str, Any]:
         """Return engine parameters using SGLang CLI names."""
         params = {"model_path": self.model, **self.engine}
-        # MUSA-only: mate's flash_attn asserts ``page_table.stride(-1) == 1``, which
-        # the default page_size (64) trips on batched decode. The contiguity patch is
-        # intentionally not shipped, so force page_size=1 on MUSA only. Gated here
-        # (not in the shared model YAML) because tests/benchmarks/configs/smoke.yaml
-        # shares 06b_tp1 across platforms, so a YAML page_size would slow CUDA's
-        # benchmark for no benefit. ``setdefault`` leaves explicit values (e.g. the
-        # mamba-mandated page_size=1 on qwen3_6) untouched.
-        if os.environ.get("FL_TEST_PLATFORM") == "musa":
-            params.setdefault("page_size", 1)
         return params
 
     def engine_kwargs(self, **overrides: Any) -> dict[str, Any]:
