@@ -22,7 +22,7 @@ import os
 import pytest
 
 from tests.e2e_tests.plugin_utils import assert_sglang_fl_plugin_loaded_and_active
-from tests.utils.model_config import ModelConfig
+from tests.utils.model_config import ModelConfig, load_engine_overrides_from_env
 from sglang import Engine
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -40,7 +40,9 @@ if not _MODEL or not _CASE:
         allow_module_level=True,
     )
 
-_CFG = ModelConfig.load(_MODEL, _CASE)
+_CFG = ModelConfig.load(
+    _MODEL, _CASE, engine_overrides=load_engine_overrides_from_env()
+)
 
 _tokenizer = None
 

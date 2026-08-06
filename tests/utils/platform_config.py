@@ -83,6 +83,7 @@ class PlatformConfig:
     vendor: str
     device_types: dict[str, Any]
     tolerance: dict[str, dict[str, Tolerance]]
+    engine_overrides: dict[str, Any]
     device_overrides: dict[str, Any]
     env_defaults: dict[str, str]
     unsupported_features: list[str]
@@ -120,6 +121,9 @@ class PlatformConfig:
             vendor=raw.get("vendor", ""),
             device_types=device_types,
             tolerance=tolerance,
+            engine_overrides=_ensure_mapping(
+                 raw.get("engine_overrides"), "engine_overrides"
+            ),
             device_overrides=raw.get("device_overrides", {}) or {},
             env_defaults=raw.get("env_defaults", {}) or {},
             unsupported_features=raw.get("unsupported_features", []) or [],
@@ -146,6 +150,41 @@ class PlatformConfig:
     def get_benchmark_tests(self) -> dict[str, Any]:
         return self._tests_section("benchmark")
 
+    def get_engine_overrides(self, model: str, case: str) -> dict[str, Any]:
+        """Return SGLang engine overrides for one model case.
+
+        Device-specific values take precedence over platform-wide values.
+        The returned flat mapping is merged into the common model config later.
+        """
+        model_overrides = _ensure_mapping(
+            self.engine_overrides.get(model),
+            f"engine_overrides.{model}",
+        )
+        overrides = _ensure_mapping(
+            model_overrides.get(case),
+            f"engine_overrides.{model}.{case}",
+        )
+
+        device_override = self.device_overrides.get(self.device, {})
+        if isinstance(device_override, dict):
+            device_engine_overrides = _ensure_mapping(
+                device_override.get("engine_overrides"),
+                f"device_overrides.{self.device}.engine_overrides",
+            )
+            device_model_overrides = _ensure_mapping(
+                device_engine_overrides.get(model),
+                f"device_overrides.{self.device}.engine_overrides.{model}",
+            )
+            overrides.update(
+                _ensure_mapping(
+                    device_model_overrides.get(case),
+                    f"device_overrides.{self.device}.engine_overrides."
+                    f"{model}.{case}",
+                )
+            )
+
+        return overrides
+
     def get_tolerance(self, category: str = "inference", dtype: str = "default") -> Tolerance:
         device_override = self.device_overrides.get(self.device, {})
         if isinstance(device_override, dict):
@@ -169,6 +208,12 @@ class PlatformConfig:
     def _tests_section(self, name: str) -> dict[str, Any]:
         return self.device_tests.get(self.device, {}).get("tests", {}).get(name, {}) or {}
 
+def _ensure_mapping(raw: Any, field_name: str) -> dict[str, Any]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{field_name} must be a mapping, got {type(raw).__name__}")
+    return dict(raw)
 
 def _resolve_platform_file(platform: str, platforms_dir: Path) -> Path:
     direct = platforms_dir / f"{platform}.yaml"
