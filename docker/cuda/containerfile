@@ -97,5 +97,6 @@ RUN pip install --no-cache-dir -U "setuptools<77" "setuptools-scm>=8,<10" wheel 
     PYTHONPATH=/opt/FlagCX python -c "from plugin.interservice.flagcx_wrapper import FLAGCXLibrary; print('flagcx wrapper import OK')" && \
     rm -rf .git
 ENV FLAGCX_PATH=/opt/FlagCX
+ENV HF_ENDPOINT=https://hf-mirror.com
 
 WORKDIR /workspace

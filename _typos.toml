@@ -19,3 +19,5 @@ cann = "cann"
 # SGLang env var uses "INBALANCE" (upstream spelling)
 INBALANCE = "INBALANCE"
 lod = "lod"
+# MUSA / flashinfer C++ header file extension (.muh), e.g. flashinfer/sampling.muh
+muh = "muh"

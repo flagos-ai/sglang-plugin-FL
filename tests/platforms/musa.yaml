@@ -1,0 +1,106 @@
+# Moore Threads MUSA Platform Configuration
+# Flexible test selection mechanism for Moore Threads GPU (MTT S5000) environments.
+#
+# This file is a starter configuration. Adjust device_types, tolerance, and test cases
+# to match your actual Moore Threads hardware and model coverage. Keep this file UTF-8
+# encoded (no GBK/CP1252) or the loader will skip it with a warning.
+#
+# Users can modify:
+# - e2e: Add/remove model cases in inference and serving support lists
+# - benchmark: Enable/disable throughput, latency, and serve smoke tests
+# - unit: Add/remove paths in include and exclude lists
+# - tolerance: Adjust numerical comparison tolerance for result validation
+# - unsupported_features: Exclude test cases matching specific feature tags
+# - env_defaults: Set MUSA/torch_musa environment defaults before tests start
+#
+# ---- Platform-level settings ------------------------------------------------
+platform: musa
+vendor: mthreads
+
+device_types:
+  s5000:
+    memory_gb: 80
+    tags: [musa, bf16, fp16]
+
+# Platform-specific engine parameters supplement the common model configuration.
+# page_size=1 works around mate's flash_attn ``page_table.stride(-1) == 1`` assertion
+# (the default page_size=64 trips it on batched decode); the contiguity patch is not
+# shipped, so force page_size=1 here. The mamba models (qwen3_6) also mandate
+# page_size=1, so listing them keeps this explicit and harmless.
+engine_overrides:
+  qwen3:
+    06b_tp1:
+      page_size: 1
+    4b_tp2:
+      page_size: 1
+  qwen3_6:
+    27b_tp4_nograph:
+      page_size: 1
+    35b_a3b_tp4_nograph:
+      page_size: 1
+
+# Default numerical tolerance for result comparison.
+# Moore Threads MUSA kernels may produce slightly different numerics than CUDA due to
+# different accumulation order and kernel implementations; tune per model.
+tolerance:
+  inference:
+    default: {rtol: 1e-5, atol: 1e-8}
+    bfloat16: {rtol: 1e-3, atol: 1e-3}
+    float16: {rtol: 1e-3, atol: 1e-3}
+
+# Device-level overrides for specific devices or categories.
+# Keep as {} if no per-device override is needed.
+device_overrides: {}
+
+# Features not supported on this platform.
+# Test cases whose model name contains any of these strings will be skipped.
+unsupported_features: []
+
+# Default environment variables for this platform.
+# tests/run.py applies these before invoking pytest, but existing user-provided
+# environment variables are preserved.
+#
+# TORCH_COMPILE_DISABLE=1 and SGLANG_USE_MUSA_FUSED_KERNEL=1 are already set in the
+# image (docker/mthreads/containerfile): torch_musa's inductor backend is incompatible
+# with torch 2.7.1, so MUSA runs enforce_eager. SGLANG_FL_FLAGOS_BLACKLIST: FlagGems v5.3.1's
+# `mul` op recurses infinitely on MUSA (mul -> mul_broadcast_func -> mul), mirroring the
+# ascend blacklist; blacklisting it falls back to torch_musa's native mul. FlagGems v5.3.1's
+# `sort` op deadlocks under TP2 in the non-greedy (top_p) sampling path -- torch.sort
+# desyncs the two TP ranks so the following collective (token broadcast / next-layer
+# all-reduce) hangs; blacklisting it falls back to torch_musa's native sort. TP1 is
+# unaffected (no inter-rank collective), as is greedy/argmax decode (no sort). Add more
+# ops here if other FlagGems ops misbehave on MUSA during bring-up.
+env_defaults:
+  SGLANG_FL_FLAGOS_BLACKLIST: "mul,sort"
+
+# ---- Device-specific test configurations ------------------------------------
+s5000:
+  name: "s5000"
+  tests:
+    e2e:
+      # Add or remove test cases per model.
+      # Each case points to tests/models/<model>/<case>.yaml.
+      concurrent:
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      inference:
+        qwen3: ["06b_tp1"]
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      serving:
+        qwen3: ["4b_tp2"]
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+
+    functional:
+      # Reserved for future tests/functional_tests support.
+      # Current SGLang runner does not consume this section yet.
+      include: "*"
+      exclude: []
+
+    unit:
+      # Include patterns: "*" for all, or list specific paths.
+      include: "*"
+      # Exclude patterns: empty list or list paths to exclude.
+      exclude: []
+
+    benchmark:
+      enabled: true
+      smoke: ["throughput", "latency", "serve"]

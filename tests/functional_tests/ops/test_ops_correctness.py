@@ -240,6 +240,14 @@ def test_topk_output_contract(device) -> None:
 
 def test_fused_moe_output_contract(device) -> None:
     """Check fused_moe dispatches to a MoeRunner-compatible object."""
+    if device.type != "cuda":
+        pytest.skip(
+            "fused_moe non-CUDA vendor impls need a richer MoE object than this "
+            "mock provides (MUSA: obj.forward_musa; Ascend: layer.num_experts/"
+            "top_k + obj.with_bias/moe_runner_config). Mock only covers the CUDA "
+            "runner path (obj.runner.run); non-CUDA MoE correctness is covered by "
+            "e2e (qwen3_6 35b/27b)."
+        )
     try:
         from sglang.srt.layers.moe.token_dispatcher import StandardCombineInput
         from sglang.srt.layers.moe.token_dispatcher.standard import StandardDispatchOutput
