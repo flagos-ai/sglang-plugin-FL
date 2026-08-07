@@ -7,6 +7,9 @@
 
 llm:
   model: "/data/models/Qwen/Qwen3.6-27B"
+  # Ascend-only NPU args (attention_backend/device/dtype/disable_radix_cache) are
+  # injected per-platform via engine_overrides in tests/platforms/ascend.yaml, so
+  # this shared config stays runnable on CUDA (which defaults device=cuda).
   tp_size: 4
   pp_size: 1
   context_length: 4096

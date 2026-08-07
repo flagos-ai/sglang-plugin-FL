@@ -88,3 +88,14 @@ jobs:
     with:
       platform: cuda
     secrets: inherit
+
+  # ============================================================
+  # Job 6b: Ascend platform testing
+  # ============================================================
+  test-ascend:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'ascend')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: ascend
+    secrets: inherit
