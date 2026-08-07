@@ -23,7 +23,7 @@ import pytest
 import requests
 
 from tests.e2e_tests.serving.server_helper import _NO_PROXY, SGLangServer
-from tests.utils.model_config import ModelConfig
+from tests.utils.model_config import ModelConfig, load_engine_overrides_from_env
 
 # ---------------------------------------------------------------------------
 # Load config from environment (injected by run.py)
@@ -38,7 +38,9 @@ if not _MODEL or not _CASE:
         allow_module_level=True,
     )
 
-_CFG = ModelConfig.load(_MODEL, _CASE)
+_CFG = ModelConfig.load(
+    _MODEL, _CASE, engine_overrides=load_engine_overrides_from_env()
+)
 
 if not os.path.exists(_CFG.model):
     pytest.fail(

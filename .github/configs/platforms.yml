@@ -8,3 +8,5 @@
 platforms:
   cuda:
     enabled: true
+  musa:
+    enabled: true
