@@ -22,7 +22,7 @@ import os
 import pytest
 
 from tests.e2e_tests.plugin_utils import assert_sglang_fl_plugin_loaded_and_active
-from tests.utils.model_config import ModelConfig
+from tests.utils.model_config import ModelConfig, load_engine_overrides_from_env
 from sglang import Engine
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -40,7 +40,11 @@ if not _MODEL or not _CASE:
         allow_module_level=True,
     )
 
-_CFG = ModelConfig.load(_MODEL, _CASE)
+_CFG = ModelConfig.load(
+    _MODEL, _CASE, engine_overrides=load_engine_overrides_from_env()
+)
+
+_tokenizer = None
 
 if not os.path.exists(_CFG.model):
     pytest.fail(
@@ -52,6 +56,39 @@ if not os.path.exists(_CFG.model):
 # ---------------------------------------------------------------------------
 # Multimodal helpers
 # ---------------------------------------------------------------------------
+
+
+def _get_tokenizer():
+    """Load and cache the tokenizer used to render text chat prompts."""
+    global _tokenizer
+    if _tokenizer is None:
+        from transformers import AutoTokenizer
+
+        _tokenizer = AutoTokenizer.from_pretrained(
+            _CFG.model,
+            trust_remote_code=True,
+        )
+    return _tokenizer
+
+
+def _apply_chat_template(template_owner, messages: list[dict]) -> str:
+    """Render messages while tolerating templates without Qwen thinking kwargs."""
+    kwargs = {
+        "tokenize": False,
+        "add_generation_prompt": True,
+        "enable_thinking": False,
+    }
+    try:
+        return template_owner.apply_chat_template(messages, **kwargs)
+    except TypeError:
+        kwargs.pop("enable_thinking")
+        return template_owner.apply_chat_template(messages, **kwargs)
+
+
+def _build_text_prompt(question: str) -> str:
+    """Render a text question with the model's native chat template."""
+    messages = [{"role": "user", "content": question}]
+    return _apply_chat_template(_get_tokenizer(), messages)
 
 
 def _resolve_asset_uri(asset: str) -> str:
@@ -113,11 +150,7 @@ def _build_multimodal_prompt(
     )
 
     messages = [{"role": "user", "content": content}]
-    return tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True,
-    )
+    return _apply_chat_template(tokenizer, messages)
 
 
 def _build_image_prompt(processor, question: str, image_uri: str) -> str:
@@ -126,17 +159,12 @@ def _build_image_prompt(processor, question: str, image_uri: str) -> str:
         {
             "role": "user",
             "content": [
-                {"type": "image_url", "image_url": {"url": image_uri}},
+                {"type": "image", "image": {"url": image_uri}},
                 {"type": "text", "text": question},
             ],
         }
     ]
-    return processor.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True,
-        enable_thinking=False,
-    )
+    return _apply_chat_template(processor, messages)
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +218,7 @@ def _run_text_test(llm: Engine, sampling_params: dict) -> None:
         else:
             prompt_cfgs.append(p)
 
-    prompt_texts = [p["text"] for p in prompt_cfgs]
+    prompt_texts = [_build_text_prompt(p["text"]) for p in prompt_cfgs]
     outputs = llm.generate(prompt_texts, sampling_params)
     assert len(outputs) == len(prompt_cfgs), (
         f"Expected {len(prompt_cfgs)} outputs, got {len(outputs)}"

@@ -1,0 +1,64 @@
+# Ascend (Huawei NPU) Hardware Configuration
+# This file defines CI/CD settings for Huawei Ascend NPU testing.
+
+platform: ascend
+
+# Docker image for this hardware
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-ascend-ci-temp
+
+# Runner labels for this hardware
+runner_labels:
+  - self-hosted
+  - Linux
+  - ARM64
+  - flagcicd-910c
+
+# Container volumes. DooD mode (runner uses the node docker socket) does NOT
+# auto-mount anything - unlike the nvidia-container-toolkit hook CUDA relies on
+# (NVIDIA_VISIBLE_DEVICES), Ascend has no equivalent, so the driver userspace and
+# the model cache must be mounted explicitly from the node. Device nodes are
+# passed via --device in container_options below.
+# - /mnt/airs-business/cicd/models -> /data/models/Qwen: model cache. The
+#   flagcicd-910c runners have NO internet, so the e2e models are staged here
+#   out-of-band (SSH/rsync from an internal machine that already has them).
+#   The operator pubkey was installed on each host once (out-of-band); the
+#   models live at BOTH this host path and /data/models/Qwen. There is no
+#   in-CI download step.
+# - /usr/local/Ascend/driver: NPU driver userspace (libascend_hal.so, libruntime.so,
+#   tools/npu-smi). The CI image ships only the CANN toolkit; the driver lives on
+#   the node. check.sh auto-adds driver/tools to PATH so npu-smi runs without a
+#   rebuild. (slog mount omitted; re-add /usr/local/slog if the node has it.)
+container_volumes:
+  - /mnt/airs-business/cicd/models:/data/models/Qwen
+  - /usr/local/Ascend/driver:/usr/local/Ascend/driver
+
+# Container options (--device for NPU access; --init reaps orphan zombies).
+# NPU devices are passed via --device (there is no --gpus equivalent for Ascend);
+# adjust the /dev/davinciN list to match the runner's actual NPU count.
+# --user root is required: CI images install CANN/torch_npu libs under system paths,
+# and pip install needs write access to /usr/local. This matches org convention.
+# --init: tini as PID 1 reaps orphan zombies from sglang TP workers on shutdown
+# (PID 1 was tail -f /dev/null, never wait()s -> zombies pile up, kill_process_tree times out)
+# --dns: TEMPORARY. The flagcicd-910c host's Docker bridge does not forward DNS
+# to the host resolvers -- modelscope.cn fails inside the container with gaierror
+# "Temporary failure in name resolution" while the host itself has network (the
+# cuda runner's identical bridge config resolves fine on its own host). 8.8.8.8 +
+# 114.114.114.114 (CN public DNS) bypass the broken embedded-DNS forwarding.
+# Remove once the host's container DNS is fixed.
+container_options: >-
+  --hostname sglang-plugin-fl
+  --ipc=host
+  --dns 8.8.8.8
+  --dns 114.114.114.114
+  --shm-size=64g
+  --ulimit memlock=-1
+  --ulimit stack=67108864
+  --user root
+  --device /dev/davinci0
+  --device /dev/davinci1
+  --device /dev/davinci2
+  --device /dev/davinci3
+  --device /dev/davinci_manager
+  --device /dev/devmm_svm
+  --device /dev/hisi_hdc
+  --init

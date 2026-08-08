@@ -19,3 +19,10 @@ cann = "cann"
 # SGLang env var uses "INBALANCE" (upstream spelling)
 INBALANCE = "INBALANCE"
 lod = "lod"
+# torch.arange / np.arange - real API names, not a typo of "arrange"
+arange = "arange"
+# "unparseable" is a valid variant (common in parsing/compiler docs)
+unparseable = "unparseable"
+# Qwen-VL grid shape identifier: temporal x height x width (image_grid_thw /
+# video_grid_thw). Standard in Qwen2.5-VL / Qwen3-VL, not a typo of "the".
+thw = "thw"

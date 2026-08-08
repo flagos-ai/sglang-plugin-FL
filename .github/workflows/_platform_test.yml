@@ -80,7 +80,7 @@ jobs:
             $CHANGED_ARG
 
   unit:
-    needs: setup
+    needs: [setup]
     uses: ./.github/workflows/_unit_test.yml
     with:
       platform: ${{ inputs.platform }}
@@ -98,6 +98,7 @@ jobs:
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
+      timeout: 30
 
   e2e:
     needs: [setup, functional]
