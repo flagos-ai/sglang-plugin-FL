@@ -27,8 +27,13 @@ def fused_moe_cuda(
     """
     Fused MoE expert computation using SGLang's native Triton kernels.
 
-    This implementation delegates to SGLang's MoeRunner with the TRITON backend,
-    which uses the standard (non-triton_kernels, non-flashinfer) path.
+    Delegates to SGLang's native ``UnquantizedFusedMoEMethod.forward_cuda``, which
+    selects the runner backend (triton / deep_gemm / ...) and builds
+    ``TritonMoeQuantInfo`` correctly via ``get_triton_quant_info``. This mirrors the
+    MUSA backend (``obj.forward_musa``) and avoids re-implementing the quant_info
+    contract, which drifts across sglang versions: sglang 0.5.12's runner reads
+    ``use_fp8``/``use_int8``/... that a hand-built TritonMoeQuantInfo omits, raising
+    AttributeError on the MoE forward.
 
     Args:
         obj: The UnquantizedFusedMoEMethod instance
@@ -38,14 +43,4 @@ def fused_moe_cuda(
     Returns:
         CombineInput (StandardCombineInput)
     """
-    from sglang.srt.layers.moe.moe_runner.triton import TritonMoeQuantInfo
-
-    # Use the TRITON backend (standard path, not triton_kernels or flashinfer)
-    # This matches the final fallback in forward_cuda
-    quant_info = TritonMoeQuantInfo(
-        w13_weight=layer.w13_weight,
-        w2_weight=layer.w2_weight,
-        b13=getattr(layer, "w13_weight_bias", None),
-        b2=getattr(layer, "w2_weight_bias", None),
-    )
-    return obj.runner.run(dispatch_output, quant_info)
+    return obj.forward_cuda(layer, dispatch_output)
