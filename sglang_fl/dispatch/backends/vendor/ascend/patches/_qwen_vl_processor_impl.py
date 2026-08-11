@@ -316,42 +316,15 @@ def npu_apply_qwen_image_preprocess_patch():
     global _npu_preprocess_patched
     if _npu_preprocess_patched:
         return
+    apply_module_patch(
+        "transformers.models.qwen2_vl.image_processing_qwen2_vl.Qwen2VLImageProcessor",
+        "_preprocess",
+        [npu_wrapper_preprocess],
+    )
 
-    # Apply patches with try-except to handle modules that may not exist
-    try:
-        apply_module_patch(
-            "transformers.models.qwen2_vl.image_processing_qwen2_vl.Qwen2VLImageProcessor",
-            "_preprocess",
-            [npu_wrapper_preprocess],
-        )
-    except ModuleNotFoundError:
-        pass
-
-    try:
-        apply_module_patch(
-            "transformers.models.qwen2_vl.image_processing_qwen2_vl_fast.Qwen2VLImageProcessorFast",
-            "_preprocess",
-            [npu_wrapper_preprocess],
-        )
-    except ModuleNotFoundError:
-        pass
-
-    try:
-        apply_module_patch(
-            "transformers.models.qwen3_vl.video_processing_qwen3_vl.Qwen3VLVideoProcessor",
-            "_preprocess",
-            [npu_wrapper_video_preprocess],
-        )
-    except ModuleNotFoundError:
-        pass
-
-    try:
-        apply_module_patch(
-            "transformers.models.qwen3_vl.video_processing_qwen3_vl_fast.Qwen3VLVideoProcessorFast",
-            "_preprocess",
-            [npu_wrapper_video_preprocess],
-        )
-    except ModuleNotFoundError:
-        pass
-
+    apply_module_patch(
+        "transformers.models.qwen3_vl.video_processing_qwen3_vl.Qwen3VLVideoProcessor",
+        "_preprocess",
+        [npu_wrapper_video_preprocess],
+    )
     _npu_preprocess_patched = True
