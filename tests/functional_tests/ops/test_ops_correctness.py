@@ -281,7 +281,18 @@ def test_fused_moe_output_contract(device) -> None:
             dtype=torch.float16,
         ),
     )
-    obj = SimpleNamespace(runner=MockRunner())
+    runner = MockRunner()
+
+    def forward_cuda(layer, dispatch_output):
+        # The CUDA vendor impl delegates to native
+        # UnquantizedFusedMoEMethod.forward_cuda (mirrors MUSA -> obj.forward_musa),
+        # which builds a TritonMoeQuantInfo from the layer and calls runner.run.
+        return runner.run(
+            dispatch_output,
+            SimpleNamespace(w13_weight=layer.w13_weight, w2_weight=layer.w2_weight),
+        )
+
+    obj = SimpleNamespace(runner=runner, forward_cuda=forward_cuda)
 
     try:
         output = _call_selected("fused_moe", obj, layer, dispatch_output)
