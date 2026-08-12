@@ -19,3 +19,4 @@ cann = "cann"
 # SGLang env var uses "INBALANCE" (upstream spelling)
 INBALANCE = "INBALANCE"
 lod = "lod"
+thw = "thw"
