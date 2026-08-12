@@ -799,13 +799,22 @@ def load_plugin():
     else:
         logger.info("Layer 2 (Fused Ops) disabled (SGLANG_FL_OOT_ENABLED=0)")
 
-    # 4. Communicator hooks (CommunicatorFL with FlagCX/torch.distributed)
-    _setup_communicator_hooks()
+    # 5. Model adapters — extra model coverage (e.g. Qwen3.5 MoE bare text)
+    try:
+        from sglang_fl.adapters.compressed_tensors import (
+            register_compressed_tensors_normalize,
+        )
+        from sglang_fl.adapters.qwen3_5_moe_text import register_qwen3_5_moe_text
 
-    # 5. Vendor-specific patches — final overlay on top of all sglang_fl layers
+        register_qwen3_5_moe_text()
+        register_compressed_tensors_normalize()
+    except Exception as e:
+        logger.warning("sglang_fl: model adapter registration failed: %s", e)
+
+    # 6. Vendor-specific patches — final overlay on top of all sglang_fl layers
     _apply_vendor_patches()
 
-    # 6. Summary banner — confirm plugin is active (rank 0 only)
+    # 7. Summary banner — confirm plugin is active (rank 0 only)
     if _is_rank0():
         use_fg = _parse_bool(os.environ.get("USE_FLAGGEMS", "1"), default=True)
         aten_status = "OFF" if not use_fg else "ON"
