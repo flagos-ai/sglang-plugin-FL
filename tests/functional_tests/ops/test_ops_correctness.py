@@ -238,8 +238,8 @@ def test_topk_output_contract(device) -> None:
         atol=1e-3,
     )
 
-def test_fused_moe_output_contract(device) -> None:
-    """Check fused_moe dispatches to a MoeRunner-compatible object."""
+def test_fused_moe_output_contract(device, monkeypatch) -> None:
+    """Check the platform-independent fused_moe dispatch output contract."""
     try:
         from sglang.srt.layers.moe.token_dispatcher import StandardCombineInput
         from sglang.srt.layers.moe.token_dispatcher.standard import StandardDispatchOutput
@@ -247,15 +247,17 @@ def test_fused_moe_output_contract(device) -> None:
     except Exception as exc:  # pragma: no cover - depends on installed SGLang
         pytest.skip(f"SGLang MoE dispatcher types unavailable: {exc}")
 
-    class MockRunner:
-        def run(self, dispatch_output, quant_info):
-            assert quant_info.w13_weight is layer.w13_weight
-            assert quant_info.w2_weight is layer.w2_weight
-            weights = dispatch_output.topk_output.topk_weights.to(dispatch_output.hidden_states.dtype)
-            scale = weights.sum(dim=-1, keepdim=True)
-            return StandardCombineInput(hidden_states=dispatch_output.hidden_states * scale)
+    from sglang_fl.dispatch import BackendImplKind, OpImpl, OpManager, OpRegistry
+    from sglang_fl.dispatch import builtin_ops
 
-    num_tokens, hidden_size, num_experts, intermediate_size, top_k = 8, 16, 4, 32, 2
+    # Use an isolated registry so this contract test never enters a real CUDA,
+    # MUSA, Ascend, or future vendor kernel. Vendor implementations have their
+    # own backend tests; here we only validate dispatch and output shape/type.
+    registry = OpRegistry()
+    manager = OpManager(registry=registry)
+    monkeypatch.setattr(builtin_ops, "register_builtins", lambda _registry: None)
+
+    num_tokens, hidden_size, num_experts, top_k = 8, 16, 4, 2
     hidden_states = torch.randn(num_tokens, hidden_size, device=device, dtype=torch.float16)
     topk_weights = torch.softmax(
         torch.randn(num_tokens, top_k, device=device, dtype=torch.float32),
@@ -265,28 +267,30 @@ def test_fused_moe_output_contract(device) -> None:
     router_logits = torch.randn(num_tokens, num_experts, device=device, dtype=torch.float32)
     topk_output = StandardTopKOutput(topk_weights, topk_ids, router_logits)
     dispatch_output = StandardDispatchOutput(hidden_states, None, topk_output)
-    layer = SimpleNamespace(
-        w13_weight=torch.empty(
-            num_experts,
-            intermediate_size * 2,
-            hidden_size,
-            device=device,
-            dtype=torch.float16,
-        ),
-        w2_weight=torch.empty(
-            num_experts,
-            hidden_size,
-            intermediate_size,
-            device=device,
-            dtype=torch.float16,
-        ),
-    )
-    obj = SimpleNamespace(runner=MockRunner())
+    obj = SimpleNamespace()
+    layer = SimpleNamespace()
 
-    try:
-        output = _call_selected("fused_moe", obj, layer, dispatch_output)
-    except RuntimeError as exc:
-        _maybe_skip_unavailable(exc, "fused_moe")
+    def mock_fused_moe(obj_arg, layer_arg, dispatch_output_arg):
+        assert obj_arg is obj
+        assert layer_arg is layer
+        weights = dispatch_output_arg.topk_output.topk_weights.to(
+            dispatch_output_arg.hidden_states.dtype
+        )
+        scale = weights.sum(dim=-1, keepdim=True)
+        return StandardCombineInput(
+            hidden_states=dispatch_output_arg.hidden_states * scale
+        )
+
+    registry.register_impl(
+        OpImpl(
+            op_name="fused_moe",
+            impl_id="test.contract",
+            kind=BackendImplKind.DEFAULT,
+            fn=mock_fused_moe,
+        )
+    )
+
+    output = manager.call("fused_moe", obj, layer, dispatch_output)
 
     assert hasattr(output, "hidden_states")
     _assert_tensor_finite(output.hidden_states, (num_tokens, hidden_size))

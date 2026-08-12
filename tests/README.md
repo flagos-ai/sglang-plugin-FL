@@ -1,6 +1,6 @@
 # Tests
 
-Platform-agnostic test suite for the sglang-plugin-FL project. All tests are designed to run on NVIDIA CUDA (and future Ascend NPU) without modification.
+Platform-agnostic test suite for the sglang-plugin-FL project. Functional tests dynamically select the active accelerator, including CUDA, MUSA, Ascend NPU, and other FlagGems-supported devices.
 
 ## Architecture Overview
 
@@ -70,7 +70,7 @@ tests/
 │       └── test_concurrent_smoke.py# N-way async generation (text/vl/mixed)
 │
 ├── functional_tests/               # Component-level GPU tests (no model files)
-│   ├── conftest.py                 # `device` fixture (cuda, skip if absent)
+│   ├── conftest.py                 # Platform-aware accelerator `device` fixture
 │   ├── ops/
 │   │   └── test_ops_correctness.py # dispatch.call_op vs reference backend
 │   ├── compilation/
@@ -541,30 +541,30 @@ def test_my_kernel(device):
 
 ## Environment Variables
 
-| Variable | Set by | Purpose |
-|---|---|---|
-| `FL_TEST_PLATFORM` / `FL_TEST_DEVICE` | `run.py` | Active platform/device for the subprocess |
-| `FL_TEST_MODEL` / `FL_TEST_CASE` | `run.py` (e2e) | Selects `tests/models/<model>/<case>.yaml` |
-| `FL_BENCHMARK_CASE` | `run.py` (benchmark) | JSON blob of merged benchmark case params |
-| `FL_CONCURRENT_MODES` | user | Override concurrent modes: `text,vl,mixed` or `all` |
-| `FL_CONCURRENT_N` | user | Override async request count |
-| `FL_CONCURRENT_MAX_TOKENS` / `FL_CONCURRENT_VL_MAX_TOKENS` | user | Override text/vl `max_new_tokens` |
-| `FL_CONCURRENT_STRICT_TEXT` | user | `1` to enforce `expected` checks in text mode |
-| `IMAGE_DIR` | user | Directory for concurrent VL test images |
-| `MODEL_PATH` / `TP_SIZE` | user | Used by `validate.sh` and `test_*_align.py` |
-| `SGLANG_PLUGINS` | user/`validate.sh` | `__none__` disables plugin in baseline runs |
-| `SGLANG_FL_DISPATCH_LOG` | user/`validate.sh` | File path for OOT dispatch op log |
-| `SGLANG_FL_PER_OP` | user/`validate.sh` | Per-op backend overrides, e.g. `silu_and_mul=vendor:mock_npu` |
-| `SGLANG_FLAGGEMS_*` | user/`validate.sh` | FlagGems recording/log controls |
+| Variable                                                   | Set by               | Purpose                                                       |
+| ---------------------------------------------------------- | -------------------- | ------------------------------------------------------------- |
+| `FL_TEST_PLATFORM` / `FL_TEST_DEVICE`                      | `run.py`             | Active platform/device for the subprocess                     |
+| `FL_TEST_MODEL` / `FL_TEST_CASE`                           | `run.py` (e2e)       | Selects `tests/models/<model>/<case>.yaml`                    |
+| `FL_BENCHMARK_CASE`                                        | `run.py` (benchmark) | JSON blob of merged benchmark case params                     |
+| `FL_CONCURRENT_MODES`                                      | user                 | Override concurrent modes: `text,vl,mixed` or `all`           |
+| `FL_CONCURRENT_N`                                          | user                 | Override async request count                                  |
+| `FL_CONCURRENT_MAX_TOKENS` / `FL_CONCURRENT_VL_MAX_TOKENS` | user                 | Override text/vl `max_new_tokens`                             |
+| `FL_CONCURRENT_STRICT_TEXT`                                | user                 | `1` to enforce `expected` checks in text mode                 |
+| `IMAGE_DIR`                                                | user                 | Directory for concurrent VL test images                       |
+| `MODEL_PATH` / `TP_SIZE`                                   | user                 | Used by `validate.sh` and `test_*_align.py`                   |
+| `SGLANG_PLUGINS`                                           | user/`validate.sh`   | `__none__` disables plugin in baseline runs                   |
+| `SGLANG_FL_DISPATCH_LOG`                                   | user/`validate.sh`   | File path for OOT dispatch op log                             |
+| `SGLANG_FL_PER_OP`                                         | user/`validate.sh`   | Per-op backend overrides, e.g. `silu_and_mul=vendor:mock_npu` |
+| `SGLANG_FLAGGEMS_*`                                        | user/`validate.sh`   | FlagGems recording/log controls                               |
 
 ## Shared Fixtures
 
-| Fixture | Scope | Source | Description |
-|---|---|---|---|
-| `device` | session | `tests/functional_tests/conftest.py` | `torch.device("cuda")`, skips if CUDA unavailable |
-| `registry` | function | `tests/unit_tests/dispatch/conftest.py` | Fresh `OpRegistry` |
-| `make_impl` | function | `tests/unit_tests/dispatch/conftest.py` | Factory for `OpImpl` instances |
-| `dummy_fn` | function | `tests/unit_tests/dispatch/conftest.py` | Simple callable for `OpImpl` |
-| `sglang_fl_module` | function | `tests/unit_tests/flaggems/conftest.py` | Imported `sglang_fl` module |
-| `fake_flag_gems` | function | `tests/unit_tests/flaggems/conftest.py` | Mock `flag_gems` module with call capture |
-| `clean_flaggems_env` | autouse | `tests/unit_tests/flaggems/conftest.py` | Clears FlagGems env vars per test |
+| Fixture              | Scope    | Source                                  | Description                                       |
+| -------------------- | -------- | --------------------------------------- | ------------------------------------------------- |
+| `device`             | session  | `tests/functional_tests/conftest.py`    | Active FlagGems accelerator (`cuda`, `musa`, `npu`, etc.) |
+| `registry`           | function | `tests/unit_tests/dispatch/conftest.py` | Fresh `OpRegistry`                                |
+| `make_impl`          | function | `tests/unit_tests/dispatch/conftest.py` | Factory for `OpImpl` instances                    |
+| `dummy_fn`           | function | `tests/unit_tests/dispatch/conftest.py` | Simple callable for `OpImpl`                      |
+| `sglang_fl_module`   | function | `tests/unit_tests/flaggems/conftest.py` | Imported `sglang_fl` module                       |
+| `fake_flag_gems`     | function | `tests/unit_tests/flaggems/conftest.py` | Mock `flag_gems` module with call capture         |
+| `clean_flaggems_env` | autouse  | `tests/unit_tests/flaggems/conftest.py` | Clears FlagGems env vars per test                 |

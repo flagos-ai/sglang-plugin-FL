@@ -17,6 +17,45 @@ import torch.nn.functional as F
 pytestmark = [pytest.mark.functional]
 
 
+def _graph_api(device: torch.device):
+    """Resolve graph primitives from the active accelerator module.
+
+    CUDA, MUSA and Ascend expose CUDAGraph, MUSAGraph and NPUGraph
+    respectively.  The derived ``<DEVICE>Graph`` name also lets new private-use
+    backends participate without adding another device-name branch here.
+    """
+    device_module = getattr(torch, device.type, None)
+    if device_module is None:
+        pytest.skip(f"torch.{device.type} is unavailable")
+
+    graph_cls = getattr(device_module, f"{device.type.upper()}Graph", None)
+    if graph_cls is None:
+        # CUDA-compatible vendor modules sometimes retain the CUDA class name.
+        graph_cls = getattr(device_module, "CUDAGraph", None)
+
+    graph_capture = getattr(device_module, "graph", None)
+    synchronize = getattr(device_module, "synchronize", None)
+    missing = [
+        name
+        for name, value in (
+            (f"{device.type.upper()}Graph", graph_cls),
+            ("graph", graph_capture),
+            ("synchronize", synchronize),
+        )
+        if not callable(value)
+    ]
+    if missing:
+        reason = (
+            f"torch.{device.type} does not expose graph capture API: "
+            + ", ".join(missing)
+        )
+        if _platform_for(device.type).support_cuda_graph():
+            pytest.fail(reason)
+        pytest.skip(reason)
+
+    return graph_cls, graph_capture, synchronize
+
+
 def _platform_for(device_type: str):
     from sglang_fl.platform import PlatformFL
 
@@ -62,9 +101,8 @@ def test_npu_platform_uses_sglang_npu_graph_runner() -> None:
 
 @pytest.mark.gpu
 def test_basic_cuda_graph_capture_and_replay(device) -> None:
-    """Check basic CUDA graph capture/replay works in the functional environment."""
-    if device.type != "cuda":
-        pytest.skip("CUDA graph capture smoke test requires CUDA")
+    """Check graph capture/replay on the active accelerator."""
+    graph_cls, graph_capture, synchronize = _graph_api(device)
 
     static_input = torch.randn(4, 8, device=device)
     static_output = torch.empty_like(static_input)
@@ -73,14 +111,15 @@ def test_basic_cuda_graph_capture_and_replay(device) -> None:
         out.copy_(x * 2 + 1)
 
     computation(static_input, static_output)
-    torch.cuda.synchronize()
+    synchronize()
 
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph):
+    graph = graph_cls()
+    with graph_capture(graph):
         computation(static_input, static_output)
 
     new_input = torch.ones_like(static_input)
     static_input.copy_(new_input)
+
     graph.replay()
 
     assert torch.allclose(static_output, new_input * 2 + 1)
@@ -88,9 +127,8 @@ def test_basic_cuda_graph_capture_and_replay(device) -> None:
 
 @pytest.mark.gpu
 def test_call_op_silu_and_mul_cuda_graph_capture(device) -> None:
-    """Check FL dispatch/call_op does not break a small CUDA graph capture."""
-    if device.type != "cuda":
-        pytest.skip("call_op graph capture smoke test requires CUDA")
+    """Check FL dispatch/call_op inside the active accelerator graph."""
+    graph_cls, graph_capture, synchronize = _graph_api(device)
 
     from sglang_fl.dispatch import SelectionPolicy, call_op, policy_context
 
@@ -100,15 +138,16 @@ def test_call_op_silu_and_mul_cuda_graph_capture(device) -> None:
 
     with policy_context(policy):
         static_output.copy_(call_op("silu_and_mul", None, static_input))
-    torch.cuda.synchronize()
+    synchronize()
 
-    graph = torch.cuda.CUDAGraph()
+    graph = graph_cls()
     with policy_context(policy):
-        with torch.cuda.graph(graph):
+        with graph_capture(graph):
             static_output.copy_(call_op("silu_and_mul", None, static_input))
 
     new_input = torch.randn_like(static_input)
     static_input.copy_(new_input)
+
     graph.replay()
 
     half = new_input.shape[-1] // 2
