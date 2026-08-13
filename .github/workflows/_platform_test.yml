@@ -80,7 +80,7 @@ jobs:
             $CHANGED_ARG
 
   unit:
-    needs: setup
+    needs: [setup]
     uses: ./.github/workflows/_unit_test.yml
     with:
       platform: ${{ inputs.platform }}

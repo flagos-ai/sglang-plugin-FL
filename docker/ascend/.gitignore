@@ -1,0 +1,5 @@
+# Host NPU driver userspace tar -- proprietary + ~90m, never commit.
+# The image no longer bakes the driver (DooD mode mounts it from the host at
+# runtime), so this file is no longer a build input -- left excluded in case the
+# tar still lingers locally.
+ascend-driver-*.tar.gz

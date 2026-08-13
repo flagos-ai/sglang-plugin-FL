@@ -15,8 +15,27 @@
 # SGLang-FL Dispatch Configuration for Ascend NPU
 prefer: flagos
 
-# FlagGems tag:    v5.3.0
-# FlagGems commit: 98fae44cdf2898f39c7f24f080d7c88b83d7c593
+# FlagGems tag: v5.3.1 (host image docker/ascend/containerfile builds v5.3.1)
+#
+# ADDITIVE over the #55 baseline (origin/main flagos_blacklist): every op main
+# blacklists is kept; we only ADD on top. Nothing is removed relative to main,
+# so the diff vs main is purely additive (+mul, +linear, +concat):
+#   mul    : FlagGems v5.3.1 mul crashes/recurses on Ascend (was fine on v5.3.0).
+#   linear : ops.linear ~15ms/call per-launch overhead -> decode 0.25 tok/s.
+#   concat : FlagGems triton cat SIGSEGVs on Ascend (triton-ascend ttir_to_linalg
+#            compile path) during VL multimodal chunked-prefill embedding concat
+#            (mm_utils._get_chunked_prefill_embedding -> torch.concat) under the
+#            concurrent e2e. FlagGems ops/concat.py (and concatenate.py) alias the
+#            cat kernel, so torch.concat hits it; blacklisting "concat" routes it
+#            to the torch_npu native cat. Verified on 910C: VL concurrent 35B TP4
+#            segfaults (scheduler exit -11) without, passes with concat blacklisted.
+#            "cat" was previously blacklisted too but is NOT needed: the VL trigger
+#            is torch.concat (-> "concat"), and direct torch.cat does not crash
+#            (实测 on 910C, 2026-08-13). Re-add cat only if a direct torch.cat
+#            segfault ever appears.
+# conv1d was already in main's list (it stays); it is needed because the flag_gems
+# triton conv1d/conv2d autotuner crashes (aicore exception) on Qwen3.6-35B-A3B
+# causal_conv1d shapes.
 flagos_blacklist:
   - full_like
   - index_copy_
@@ -32,3 +51,14 @@ flagos_blacklist:
   - conv1d
   - floor_divide
   - true_divide_
+  - mul
+  - linear
+  - concat
+
+# OOT dispatch blacklist (sglang op CLASS names, not ATen op names): none needed.
+# MRotaryEmbedding was listed pre-verification but confirmed UNNECESSARY: with
+# attention_backend="ascend", the flagos mrotary path produces correct output
+# (Qwen3.6-27B verified 2026-08-07: "50"/"Paris" + VL all correct). The earlier
+# "5254" was caused by the missing attention_backend, NOT by flagos mrotary.
+# Do NOT re-add MRotaryEmbedding here without first re-checking attention_backend.
+# (When this key is absent the plugin defaults to oot_blacklist = [].)
