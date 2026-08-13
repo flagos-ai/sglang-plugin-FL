@@ -98,4 +98,17 @@ RUN pip install --no-cache-dir -U "setuptools<77" "setuptools-scm>=8,<10" wheel 
     rm -rf .git
 ENV FLAGCX_PATH=/opt/FlagCX
 
+# sglang's benchmark (bench_offline_throughput / bench_serving) fetches the 642 MB
+# ShareGPT dataset from HF even under --dataset-name random; hf-mirror.com only
+# 302-redirects to HF's US CDN, which the CI runtime proxy can't pull (ReadTimeout).
+# Bake it at BUILD time into a pinned HF cache, and run offline so the benchmark
+# reads it locally with zero runtime network. HF_HOME is pinned because the runner
+# overrides HOME=/github/home at runtime (a cache under /root would be invisible).
+ENV HF_HOME=/opt/hf-cache
+RUN HF_HUB_OFFLINE=0 python -c "from huggingface_hub import hf_hub_download as d; \
+    print(d('anon8231489123/ShareGPT_Vicuna_unfiltered', \
+    'ShareGPT_V3_unfiltered_cleaned_split.json', repo_type='dataset'))"
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
+
 WORKDIR /workspace

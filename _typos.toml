@@ -20,3 +20,5 @@ cann = "cann"
 INBALANCE = "INBALANCE"
 lod = "lod"
 thw = "thw"
+# MUSA / flashinfer C++ header file extension (.muh), e.g. flashinfer/sampling.muh
+muh = "muh"
