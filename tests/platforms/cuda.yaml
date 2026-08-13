@@ -29,13 +29,6 @@ device_types:
     memory_gb: 80
     tags: [hopper, fp8, bf16]
 
-# Platform-specific engine parameters supplement the common model configuration.
-engine_overrides:
-  qwen3_6:
-    27b_tp4_nograph:
-      page_size: 1
-    35b_a3b_tp4_nograph:
-      page_size: 1
 
 # Default numerical tolerance for result comparison.
 tolerance:

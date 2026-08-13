@@ -16,37 +16,23 @@ Supports both non-streaming (raw requests) and streaming (OpenAI SDK) modes,
 controlled by the ``serve.stream`` flag in the model YAML.
 """
 
-import os
 from pathlib import Path
 
 import pytest
 import requests
 
+from tests.e2e_tests.plugin_utils import (
+    build_text_prompt,
+    get_tokenizer,
+    load_e2e_model_config,
+)
 from tests.e2e_tests.serving.server_helper import _NO_PROXY, SGLangServer
-from tests.utils.model_config import ModelConfig, load_engine_overrides_from_env
 
 # ---------------------------------------------------------------------------
 # Load config from environment (injected by run.py)
 # ---------------------------------------------------------------------------
 
-_MODEL = os.environ.get("FL_TEST_MODEL", "")
-_CASE = os.environ.get("FL_TEST_CASE", "")
-
-if not _MODEL or not _CASE:
-    pytest.skip(
-        "FL_TEST_MODEL and FL_TEST_CASE must be set (injected by run.py)",
-        allow_module_level=True,
-    )
-
-_CFG = ModelConfig.load(
-    _MODEL, _CASE, engine_overrides=load_engine_overrides_from_env()
-)
-
-if not os.path.exists(_CFG.model):
-    pytest.fail(
-        f"Model not found: {_CFG.model}",
-        pytrace=False,
-    )
+_MODEL, _CASE, _CFG = load_e2e_model_config()
 
 
 # ---------------------------------------------------------------------------
@@ -133,12 +119,17 @@ def test_model_list(base_url, headers):
 # ---------------------------------------------------------------------------
 
 
+def _completion_prompt(question: str) -> str:
+    """Render a completion prompt with the model's native chat template."""
+    return build_text_prompt(get_tokenizer(_CFG.model), question)
+
+
 def _run_completion(base_url: str, headers: dict[str, str]) -> None:
     """Validate /v1/completions endpoint."""
     serve = _CFG.serve
     payload = {
         "model": _REQUEST_MODEL,
-        "prompt": serve.completion_prompt,
+        "prompt": _completion_prompt(serve.completion_prompt),
         "max_tokens": serve.max_tokens,
         **serve.sampling,
     }

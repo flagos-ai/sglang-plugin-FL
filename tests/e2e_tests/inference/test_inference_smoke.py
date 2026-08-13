@@ -17,12 +17,19 @@ Supports both text-only and multimodal (audio/image/video) models via the
 """
 
 from pathlib import Path
-import os
 
 import pytest
 
-from tests.e2e_tests.plugin_utils import assert_sglang_fl_plugin_loaded_and_active
-from tests.utils.model_config import ModelConfig, load_engine_overrides_from_env
+from tests.e2e_tests.plugin_utils import (
+    apply_chat_template,
+    assert_expected,
+    assert_sglang_fl_plugin_loaded_and_active,
+    build_text_prompt,
+    get_processor,
+    get_tokenizer,
+    load_e2e_model_config,
+    output_text,
+)
 from sglang import Engine
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -31,26 +38,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 # Load config from environment (injected by run.py)
 # ---------------------------------------------------------------------------
 
-_MODEL = os.environ.get("FL_TEST_MODEL", "")
-_CASE = os.environ.get("FL_TEST_CASE", "")
-
-if not _MODEL or not _CASE:
-    pytest.skip(
-        "FL_TEST_MODEL and FL_TEST_CASE must be set (injected by run.py)",
-        allow_module_level=True,
-    )
-
-_CFG = ModelConfig.load(
-    _MODEL, _CASE, engine_overrides=load_engine_overrides_from_env()
-)
-
-_tokenizer = None
-
-if not os.path.exists(_CFG.model):
-    pytest.fail(
-        f"Model not found: {_CFG.model}",
-        pytrace=False,
-    )
+_MODEL, _CASE, _CFG = load_e2e_model_config()
 
 
 # ---------------------------------------------------------------------------
@@ -58,37 +46,9 @@ if not os.path.exists(_CFG.model):
 # ---------------------------------------------------------------------------
 
 
-def _get_tokenizer():
-    """Load and cache the tokenizer used to render text chat prompts."""
-    global _tokenizer
-    if _tokenizer is None:
-        from transformers import AutoTokenizer
-
-        _tokenizer = AutoTokenizer.from_pretrained(
-            _CFG.model,
-            trust_remote_code=True,
-        )
-    return _tokenizer
-
-
-def _apply_chat_template(template_owner, messages: list[dict]) -> str:
-    """Render messages while tolerating templates without Qwen thinking kwargs."""
-    kwargs = {
-        "tokenize": False,
-        "add_generation_prompt": True,
-        "enable_thinking": False,
-    }
-    try:
-        return template_owner.apply_chat_template(messages, **kwargs)
-    except TypeError:
-        kwargs.pop("enable_thinking")
-        return template_owner.apply_chat_template(messages, **kwargs)
-
-
 def _build_text_prompt(question: str) -> str:
     """Render a text question with the model's native chat template."""
-    messages = [{"role": "user", "content": question}]
-    return _apply_chat_template(_get_tokenizer(), messages)
+    return build_text_prompt(get_tokenizer(_CFG.model), question)
 
 
 def _resolve_asset_uri(asset: str) -> str:
@@ -150,7 +110,7 @@ def _build_multimodal_prompt(
     )
 
     messages = [{"role": "user", "content": content}]
-    return _apply_chat_template(tokenizer, messages)
+    return apply_chat_template(tokenizer, messages)
 
 
 def _build_image_prompt(processor, question: str, image_uri: str) -> str:
@@ -159,12 +119,12 @@ def _build_image_prompt(processor, question: str, image_uri: str) -> str:
         {
             "role": "user",
             "content": [
-                {"type": "image", "image": {"url": image_uri}},
+                {"type": "image_url", "image_url": {"url": image_uri}},
                 {"type": "text", "text": question},
             ],
         }
     ]
-    return _apply_chat_template(processor, messages)
+    return apply_chat_template(processor, messages)
 
 
 # ---------------------------------------------------------------------------
@@ -181,23 +141,6 @@ def _get_max_asset_count() -> int:
         (p.get("asset_count", 0) for p in gen.prompts if isinstance(p, dict)),
         default=0,
     )
-
-
-def _output_text(output) -> str:
-    """Extract generated text from a SGLang Engine output object."""
-    if isinstance(output, dict):
-        return str(output.get("text", ""))
-    return str(getattr(output, "text", ""))
-
-
-def _assert_expected(text: str, expected, label: str) -> None:
-    """Assert an optional string/list expected value appears in the output."""
-    if not expected:
-        return
-    values = expected if isinstance(expected, list) else [expected]
-    lower = text.lower()
-    matched = any(str(item).lower() in lower for item in values)
-    assert matched, f"Expected one of {values!r} in output for {label}, got: {text!r}"
 
 
 def _run_text_test(llm: Engine, sampling_params: dict) -> None:
@@ -225,14 +168,13 @@ def _run_text_test(llm: Engine, sampling_params: dict) -> None:
     )
 
     for i, output in enumerate(outputs):
-        text = _output_text(output)
+        text = output_text(output)
         prompt = prompt_cfgs[i]["text"]
         expected = prompt_cfgs[i].get("expected")
 
-        assert len(text) > 0, f"Empty output for prompt[{i}]: {prompt}"
         print(f"  prompt[{i}]: {prompt!r}")
         print(f"  output[{i}]: {text!r}")
-        _assert_expected(text, expected, f"prompt[{i}]")
+        assert_expected(text, expected, f"prompt[{i}]: {prompt}")
 
 
 def _run_multimodal_test(llm: Engine, sampling_params: dict) -> None:
@@ -240,9 +182,7 @@ def _run_multimodal_test(llm: Engine, sampling_params: dict) -> None:
     gen = _CFG.generate
 
     if gen.modality == "image":
-        from transformers import AutoProcessor
-
-        processor = AutoProcessor.from_pretrained(_CFG.model, trust_remote_code=True)
+        processor = get_processor(_CFG.model)
         for i, prompt_cfg in enumerate(gen.prompts):
             assert isinstance(prompt_cfg, dict), (
                 f"Image prompts must be dicts, got: {type(prompt_cfg)}"
@@ -256,19 +196,13 @@ def _run_multimodal_test(llm: Engine, sampling_params: dict) -> None:
                 sampling_params=sampling_params,
             )
 
-            text = _output_text(output)
-            assert len(text) > 0, f"Empty output for image prompt[{i}]"
+            text = output_text(output)
             print(f"  [image] {prompt_cfg['image']}: {question}")
             print(f"  Output: {text!r}")
-            _assert_expected(text, prompt_cfg.get("expected"), f"image prompt[{i}]")
+            assert_expected(text, prompt_cfg.get("expected"), f"image prompt[{i}]")
         return
 
-    from transformers import AutoTokenizer
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        _CFG.model,
-        trust_remote_code=True,
-    )
+    tokenizer = get_tokenizer(_CFG.model)
 
     stop_tokens = ["<|im_end|>", "<|endoftext|>"]
     stop_ids = []
@@ -301,13 +235,11 @@ def _run_multimodal_test(llm: Engine, sampling_params: dict) -> None:
             **mm_kwargs,
         )
 
-        text = _output_text(output)
+        text = output_text(output)
         assert isinstance(text, str), f"Output is not str for prompt[{i}]"
-        assert len(text) > 0, f"Empty output for prompt[{i}]"
-
         print(f"  [{gen.modality} count={asset_count}] Q: {question}")
         print(f"  Output: {text!r}")
-        _assert_expected(text, prompt_cfg.get("expected"), f"prompt[{i}]")
+        assert_expected(text, prompt_cfg.get("expected"), f"prompt[{i}]")
 
 
 def _run_configured_vl_test(llm: Engine) -> None:
@@ -319,9 +251,7 @@ def _run_configured_vl_test(llm: Engine) -> None:
 
     print("\n=== generate.vl inference ===")
 
-    from transformers import AutoProcessor
-
-    processor = AutoProcessor.from_pretrained(_CFG.model, trust_remote_code=True)
+    processor = get_processor(_CFG.model)
     sampling_params = dict(_CFG.generate.sampling)
     sampling_params.update(vl.get("sampling", {}))
 
@@ -333,10 +263,9 @@ def _run_configured_vl_test(llm: Engine) -> None:
             image_data=[image_uri],
             sampling_params=sampling_params,
         )
-        text = _output_text(output)
+        text = output_text(output)
 
-        assert text.strip(), f"Empty output for generate.vl case[{i}]"
-        _assert_expected(text, case.get("expected"), f"generate.vl case[{i}]")
+        assert_expected(text, case.get("expected"), f"generate.vl case[{i}]")
         print(f"  [generate.vl/{i}] {case['image']}: {case['question']}")
         print(f"  output[{i}]: {text!r}")
 
