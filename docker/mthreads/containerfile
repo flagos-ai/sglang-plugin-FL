@@ -26,9 +26,10 @@
 #   row-major strides). sglang + sgl-kernel musa build from the same v0.5.12 checkout.
 #
 # FlagGems v5.3.1 ships a native _mthreads backend (built from source, replacing the
-# base image's flag_gems 5.0.0). FlagCX is NOT used on mthreads -- the plugin defaults
-# to the mccl distributed backend (torch_musa registers "mccl" with torch.distributed),
-# so FLAGCX_PATH is intentionally left unset (unlike cuda/ascend).
+# base image's flag_gems 5.0.0). FlagCX v0.13.0 is built with the MUSA adaptor
+# (USE_MUSA=1, which links -lmccl -lmusa), mirroring cuda/ascend: FLAGCX_PATH is set so
+# the plugin's CommunicatorFL routes collectives through FlagCX (driving the same mccl
+# the torch.distributed path uses) instead of torch.distributed/mccl.
 #
 # Build (the host needs an HTTP proxy to reach github; pass it via build-args so
 # credentials are never baked into the image -- ARGs are not persisted in the final layer).
@@ -153,6 +154,36 @@ RUN pip install --no-cache-dir -U "setuptools>=75,<77" "setuptools-scm>=8,<10" w
     pip install --no-build-isolation /tmp/FlagGems && \
     rm -rf /tmp/FlagGems
 
+# Build FlagCX v0.13.0 with the MUSA adaptor (USE_MUSA=1 -> -DUSE_MUSA_ADAPTOR,
+# CCL_LINK -lmccl -lmusa), mirroring docker/cuda & docker/ascend. CommunicatorFL then
+# routes collectives through FlagCX (driving the same mccl the torch.distributed path
+# uses) instead of torch.distributed/mccl. FlagCX's MUSA build defaults CCL_HOME to
+# /usr/local/musa (MUSA SDK ships libmccl + libmusa there); auto-detect so a relocated
+# SDK is handled and a missing one fails here with a pointer, not a mid-link error.
+ARG FLAGCX_VERSION=v0.13.0
+RUN TORCH_MUSA_DIR=$(python -c "import torch_musa,os;print(os.path.dirname(torch_musa.__file__))" 2>/dev/null || true) && \
+    MUSA_CCL_HOME="" && \
+    for p in ${MUSA_HOME:-/usr/local/musa} /usr/local/musa /opt/mthreads/musa /opt/mthreads $TORCH_MUSA_DIR; do \
+        if [ -f "$p/lib/libmccl.so" ]; then MUSA_CCL_HOME="$p"; break; fi; \
+    done && \
+    test -n "$MUSA_CCL_HOME" || { \
+        echo "ERROR: libmccl.so not found under any MUSA SDK candidate path" >&2; \
+        echo "  (${MUSA_HOME:-/usr/local/musa} /usr/local/musa /opt/mthreads/musa /opt/mthreads $TORCH_MUSA_DIR)" >&2; \
+        echo "  libmccl* present on image:" >&2; \
+        find / -name 'libmccl.so*' 2>/dev/null | head >&2; \
+        exit 1; \
+    } && \
+    git clone --branch ${FLAGCX_VERSION} --depth 1 \
+        https://github.com/flagos-ai/FlagCX /opt/FlagCX && \
+    cd /opt/FlagCX && \
+    git submodule update --init --recursive --depth 1 && \
+    make USE_MUSA=1 CCL_HOME="${MUSA_CCL_HOME}" -j"$(nproc)" && \
+    test -f build/lib/libflagcx.so && \
+    test -f plugin/interservice/flagcx_wrapper.py && \
+    PYTHONPATH=/opt/FlagCX python -c "from plugin.interservice.flagcx_wrapper import FLAGCXLibrary; print('flagcx wrapper import OK')" && \
+    rm -rf .git
+ENV FLAGCX_PATH=/opt/FlagCX
+
 # ---------- ci stage ----------
 FROM base AS ci
 
@@ -165,7 +196,8 @@ ARG no_proxy
 #   SGLANG_USE_MUSA_FUSED_KERNEL=1 : use sglang's MUSA fused kernels (sgl-kernel musa)
 #   TORCH_COMPILE_DISABLE=1 : torch_musa's inductor backend is incompatible with torch
 #     2.7.1 (make_fallback assertion); MUSA runs enforce_eager, so inductor is unneeded.
-#   FLAGCX_PATH is intentionally NOT set: mthreads uses the mccl backend, not flagcx.
+#   FLAGCX_PATH is inherited from the base stage (FlagCX USE_MUSA=1 build) -> the
+#   plugin's CommunicatorFL selects the flagcx backend (which drives mccl).
 ENV MTHREADS_VISIBLE_DEVICES=all \
     SGLANG_USE_MUSA_FUSED_KERNEL=1 \
     TORCH_COMPILE_DISABLE=1
