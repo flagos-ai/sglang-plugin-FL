@@ -118,6 +118,7 @@ elif _is_corex:
         "--attention-backend", "triton",
         "--watchdog-timeout", "3600",
         "--cuda-graph-max-bs", "16",
+        "--sleep-on-idle",
     ]
 else:
     _PLATFORM_SERVER_ARGS = []
