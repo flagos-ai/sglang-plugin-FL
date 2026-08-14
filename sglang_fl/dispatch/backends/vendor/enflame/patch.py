@@ -4,7 +4,6 @@ from .patches.supported_devices import patch_supported_devices
 from .patches.device_communicators import patch_communicator_hooks
 from .patches.flashattention_backend import patch_flashattention_backend
 from .patches.vision import patch_vision_flashattention_backend
-from .patches.server_args import patch_server_args
 from .patches.parallel_state import patch_parallel_state
 from .patches.qwen3_vl import patch_qwen3_vl
 from .patches.cuda_graph_runner import patch_cuda_graph_runner
@@ -23,7 +22,6 @@ def apply_gcu_patches():
         return
     _patches_applied = True
 
-    patch_server_args()
     patch_scheduler_pp_mixin()
     patch_supported_devices()
     patch_communicator_hooks()

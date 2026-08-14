@@ -346,6 +346,14 @@ class PlatformFL(SRTPlatform):
         """
         if self._device_type == "cuda":
             return
+        if self._device_type == "gcu":
+            server_args.device = "gcu"
+            server_args.attention_backend = "fa3"
+            server_args.mm_attention_backend = "fa3"
+            server_args.page_size = 64
+            server_args.watchdog_timeout = 100000
+            server_args.disable_radix_cache = True
+            return
         if (
             not hasattr(server_args, "attention_backend")
             or server_args.attention_backend is None
