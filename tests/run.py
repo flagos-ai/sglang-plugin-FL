@@ -54,6 +54,7 @@ class TestCase:
     task: str
     model: str = ""
     case: str = ""
+    engine_overrides: dict[str, Any] = field(default_factory=dict)
     extra_args: list[str] = field(default_factory=list)
     extra_env: dict[str, str] = field(default_factory=dict)
 
@@ -153,6 +154,9 @@ class TestRunner:
             if not (_REPO_ROOT / test_path).exists():
                 print(f"[run] Warning: structured e2e test not found: {test_path}")
                 continue
+
+            engine_overrides = self.config.get_engine_overrides(model_name, case_name)
+
             cases.append(
                 TestCase(
                     name=f"e2e/{task}/{model_name}/{case_name}",
@@ -160,6 +164,7 @@ class TestRunner:
                     task="e2e",
                     model=model_name,
                     case=case_name,
+                    engine_overrides=engine_overrides,
                     extra_args=["-v", "--tb=short", "-s"],
                     extra_env={"FL_TEST_MODEL": model_name, "FL_TEST_CASE": case_name},
                 )
@@ -233,13 +238,10 @@ class TestRunner:
                     print(f"[run] Skipping benchmark/{model_name}/{case_name} (unsupported feature)")
                     continue
 
-                model_cfg = ModelConfig.load(
-                    model_name,
-                    case_name,
-                    engine_overrides=self.config.get_engine_overrides(
-                        model_name, case_name
-                    ),
-                )
+                engine_overrides = self.config.get_engine_overrides(model_name, case_name,)
+                model_cfg = ModelConfig.load(model_name, case_name)
+                model_cfg.apply_engine_overrides(engine_overrides)
+
                 self._inject_model_config(runtime_case, model_cfg)
                 name = str(runtime_case.get("name", f"{bench_type}_smoke"))
                 cases.append(
@@ -249,6 +251,7 @@ class TestRunner:
                         task="benchmark",
                         model=model_name,
                         case=case_name,
+                        engine_overrides=engine_overrides,
                         extra_args=["-v", "--tb=short", "-s"],
                         extra_env={
                             "FL_BENCHMARK_TYPE": bench_type,
@@ -282,9 +285,9 @@ class TestRunner:
         print(f"[run] Command: {' '.join(cmd)}")
 
         extra_env = dict(case.extra_env)
-        if case.model and case.case:
+        if case.task == "e2e" and case.model and case.case:
             extra_env["FL_TEST_ENGINE_OVERRIDES"] = json.dumps(
-                self.config.get_engine_overrides(case.model, case.case)
+                case.engine_overrides
             )
 
         env = {**os.environ, **extra_env}

@@ -145,16 +145,22 @@ class ModelConfig:
         model: str,
         case: str | None = None,
         models_dir: Path | None = None,
-        engine_overrides: dict[str, Any] | None = None,
     ) -> "ModelConfig":
         models_dir = models_dir or _MODELS_DIR
         path = models_dir / model / f"{case}.yaml" if case else models_dir / f"{model}.yaml"
         if not path.exists():
             raise FileNotFoundError(f"Model config not found: {path}")
         config = cls.from_dict(_load_structured(path))
-        if engine_overrides:
-            config.engine.update(engine_overrides)
+
         return config
+
+    def apply_engine_overrides(
+        self,
+        overrides: dict[str, Any] | None,
+    ) -> None:
+        """Apply shallow overrides to engine parameters."""
+        if overrides:
+            self.engine.update(overrides)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "ModelConfig":

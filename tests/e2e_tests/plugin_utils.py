@@ -24,11 +24,8 @@ def load_e2e_model_config() -> tuple[str, str, ModelConfig]:
             allow_module_level=True,
         )
 
-    config = ModelConfig.load(
-        model,
-        case,
-        engine_overrides=load_engine_overrides_from_env(),
-    )
+    config = ModelConfig.load(model, case)
+    config.apply_engine_overrides(load_engine_overrides_from_env())
     if not Path(config.model).exists():
         pytest.fail(f"Model not found: {config.model}", pytrace=False)
     return model, case, config
