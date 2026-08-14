@@ -18,7 +18,6 @@ class MetaxBackend(Backend):
     """
 
     _available: Optional[bool] = None
-    _METAX_VENDOR_NAMES = {"metax", "maca"}
 
     @property
     def name(self) -> str:
@@ -35,13 +34,8 @@ class MetaxBackend(Backend):
                     from flag_gems.runtime.backend.device import DeviceDetector
                 except ImportError:
                     from flag_gems.runtime.backend.device_finder import DeviceDetector
-                vendor = DeviceDetector().vendor_name
 
-                MetaxBackend._available = (
-                    vendor in self._METAX_VENDOR_NAMES
-                    and torch.cuda.is_available()
-                    and torch.cuda.device_count() > 0
-                )
+                MetaxBackend._available = DeviceDetector().vendor_name == "metax"
             except Exception:
                 MetaxBackend._available = False
         return MetaxBackend._available
