@@ -9,6 +9,7 @@ from .patches.sgl_kernel import patch_sgl_kernel_cutlass_scaled_mm_alias
 from .patches.torchvision_image import patch_torchvision_decode_jpeg_cuda_to_cpu
 from .patches.sampler import patch_sampler
 from .patches.flashinfer_backend import patch_flashinfer_backend_classes
+from .patches.fused_moe import patch_fused_moe_functions
 from .patches.pynccl_wrapper import patch_pynccl_wrapper
 logger = logging.getLogger(__name__)
 _patches_applied = False
@@ -46,6 +47,10 @@ def _required_patches() -> tuple[tuple[str, Callable[[], None]], ...]:
         (
             "pynccl_wrapper",
             patch_pynccl_wrapper
+        ),
+        (
+            "fused_moe",
+            patch_fused_moe_functions,
         ),
     )
 
