@@ -20,7 +20,7 @@
 
 FROM swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang:v0.5.11-cann8.5.0-a3 AS base
 
-ARG FLAGGEMS_VERSION=v5.3.1
+ARG FLAGGEMS_VERSION=v5.3.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -40,18 +40,15 @@ WORKDIR /workspace
 # ---------- ci stage ----------
 FROM base AS ci
 
-ARG FLAGGEMS_VERSION=v5.3.1
+ARG FLAGGEMS_VERSION=v5.3.0
 
 # Build the project-specific components missing from the SGLang base image:
-# FlagGems v5.3.1 and FlagCX v0.13.0.
-#  - FlagGems v5.3.1: build backend switched from scikit-build-core to
-#    setuptools.build_meta (PEP 517). setup.py is now a pure shim that only sets
-#    packages, so there is no cmake.define.FLAGGEMS_BACKEND knob anymore -- the
-#    NPU backend ships as pure Python/Triton in the wheel and is selected at
-#    runtime from the base image's torch_npu + triton-ascend. The build needs
-#    only setuptools<77 + setuptools-scm<10; SETUPTOOLS_SCM_PRETEND_VERSION
-#    avoids git-describe issues in the --depth 1 clone. v5.3.1 also fixes the
-#    v5.3.0 Ascend argmax regression (duplicate @libentry(), #4467).
+# FlagGems v5.3.0 and FlagCX v0.13.0.
+#  - FlagGems v5.3.0 still uses scikit-build-core. Its Python/Triton NPU backend
+#    is selected at runtime from the base image's torch_npu + triton-ascend; the
+#    required PEP 517 build tools are installed explicitly for --no-build-isolation.
+#    The known Ascend argmax regression is avoided by the plugin's default op
+#    blacklist.
 #  - FlagCX v0.13.0: host-API only (COMPILE_KERNEL=0, no device code), built
 #    USE_ASCEND=1 against HCCL from the CANN toolkit at $ASCEND_TOOLKIT_HOME.
 #    sglang_fl's
@@ -59,10 +56,15 @@ ARG FLAGGEMS_VERSION=v5.3.1
 #    $FLAGCX_PATH/plugin/interservice/flagcx_wrapper.py (source-tree layout from
 #    `make`, not the PyPI wheel layout).
 ARG FLAGCX_VERSION=v0.13.0
-RUN pip install --no-cache-dir -U "setuptools<77" "setuptools-scm>=8,<10" wheel && \
+RUN pip install --no-cache-dir -U \
+        "setuptools>=64,<80" \
+        "scikit-build-core==0.12.2" \
+        "pybind11==3.0.3" \
+        "cmake>=3.20,<4.0" \
+        "ninja==1.13.0" \
+        wheel && \
     git clone --branch ${FLAGGEMS_VERSION} --depth 1 \
         https://github.com/flagos-ai/FlagGems /tmp/FlagGems && \
-    SETUPTOOLS_SCM_PRETEND_VERSION=${FLAGGEMS_VERSION#v} \
     pip install --no-build-isolation /tmp/FlagGems && \
     rm -rf /tmp/FlagGems && \
     git clone --branch ${FLAGCX_VERSION} --depth 1 \
@@ -77,14 +79,14 @@ RUN pip install --no-cache-dir -U "setuptools<77" "setuptools-scm>=8,<10" wheel 
     rm -rf .git
 ENV FLAGCX_PATH=/opt/FlagCX
 
-# FlagGems v5.3.1 retains all the v5.0.0->v5.3.0 fixes, so none of the old source
+# FlagGems v5.3.0 contains the required v5.0.0->v5.3.0 fixes, so none of the old source
 # patches are needed:
 #  - cann.libdevice: the CANN 8.5 backend supports the base image's
 #    triton-ascend 3.2.0 and falls back to the generic libdevice shim when needed.
 #  - fill_ empty-tensor: ships the `if N == 0: return self` guard (fix #4105).
 #  - exponential_ philox_seed int32->int64 compile bug: fixed in 373951815 (since v5.3.0).
-#  - argmax crash: duplicate @libentry() removed (#4467, since v5.3.1) -- this was
-#    the v5.3.0 regression that had made v5.3.0 undeployable on Ascend.
+#  - argmax remains excluded through sglang_fl/dispatch/config/ascend.yaml because
+#    v5.3.0 contains the duplicate @libentry() regression fixed in v5.3.1 (#4467).
 
 # Patch sglang's KV cache allocator: torch_npu's arange kernel coreDim is capped at
 # 65535, so `torch.arange(num_pages)` crashes when num_pages > 65535 (a 64GB NPU with
@@ -105,7 +107,7 @@ RUN SGLANG_SRC=$(python -m pip show sglang | sed -n 's/^Editable project locatio
 # and sglang.srt.platforms (the API sglang_fl.platform imports) is importable
 # -- this is the API sglang 0.4.7 lacked. A full `import torch_npu` validation
 # still runs on the offline host with the driver mounted.
-RUN python -c "import importlib.metadata as m; expected={'sglang':'0.5.11','torch':'2.8.0','torch-npu':'2.8.0','triton-ascend':'3.2.0','sgl-kernel-npu':'2026.3.1','flag-gems':'5.3.1'}; actual={k:m.version(k) for k in expected}; assert all(actual[k].startswith(v) for k,v in expected.items()), actual; print(actual)" && \
+RUN python -c "import importlib.metadata as m; expected={'sglang':'0.5.11','torch':'2.8.0','torch-npu':'2.8.0','triton-ascend':'3.2.0','sgl-kernel-npu':'2026.3.1','flag-gems':'5.3.0'}; actual={k:m.version(k) for k in expected}; assert all(actual[k].startswith(v) for k,v in expected.items()), actual; print(actual)" && \
     KERNEL_ROOT=$(python -c "import importlib.metadata as m; print(m.distribution('sgl-kernel-npu').locate_file(''))") && \
     test -f "${KERNEL_ROOT}/sgl_kernel_npu/norm/add_rmsnorm_bias.py" && \
     test -f "${KERNEL_ROOT}/sgl_kernel_npu/activation/swiglu_oai.py" && \
