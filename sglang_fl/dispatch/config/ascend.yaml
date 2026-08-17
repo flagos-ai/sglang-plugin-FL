@@ -15,24 +15,16 @@
 # SGLang-FL Dispatch Configuration for Ascend NPU
 prefer: flagos
 
-# FlagGems tag: v5.3.1 (host image docker/ascend/containerfile builds v5.3.1)
+# FlagGems tag: v5.3.0 (host image docker/ascend/containerfile builds v5.3.0)
 #
 # ADDITIVE over the #55 baseline (origin/main flagos_blacklist): every op main
 # blacklists is kept; we only ADD on top. Nothing is removed relative to main,
-# so the diff vs main is purely additive (+mul, +linear, +concat):
-#   mul    : FlagGems v5.3.1 mul crashes/recurses on Ascend (was fine on v5.3.0).
-#   linear : ops.linear ~15ms/call per-launch overhead -> decode 0.25 tok/s.
-#   concat : FlagGems triton cat SIGSEGVs on Ascend (triton-ascend ttir_to_linalg
-#            compile path) during VL multimodal chunked-prefill embedding concat
-#            (mm_utils._get_chunked_prefill_embedding -> torch.concat) under the
-#            concurrent e2e. FlagGems ops/concat.py (and concatenate.py) alias the
-#            cat kernel, so torch.concat hits it; blacklisting "concat" routes it
-#            to the torch_npu native cat. Verified on 910C: VL concurrent 35B TP4
-#            segfaults (scheduler exit -11) without, passes with concat blacklisted.
-#            "cat" was previously blacklisted too but is NOT needed: the VL trigger
-#            is torch.concat (-> "concat"), and direct torch.cat does not crash
-#            (实测 on 910C, 2026-08-13). Re-add cat only if a direct torch.cat
-#            segfault ever appears.
+# so the diff vs main is purely additive (+mul, +linear, +addmm, +concat):
+#   addmm  : F.linear with bias decomposes to aten.addmm even when "linear" is
+#            blacklisted. FlagGems v5.3.0's Ascend addmm kernel masks only K, not
+#            the M/N tail tiles; Qwen3-VL vision projection therefore triggers an
+#            AICore MTE DDR out-of-range fault during autotuning. Route addmm to
+#            torch_npu until the upstream kernel adds complete boundary masks.
 # conv1d was already in main's list (it stays); it is needed because the flag_gems
 # triton conv1d/conv2d autotuner crashes (aicore exception) on Qwen3.6-35B-A3B
 # causal_conv1d shapes.
@@ -51,9 +43,7 @@ flagos_blacklist:
   - conv1d
   - floor_divide
   - true_divide_
-  - mul
-  - linear
-  - concat
+  - addmm
 
 # OOT dispatch blacklist (sglang op CLASS names, not ATen op names): none needed.
 # MRotaryEmbedding was listed pre-verification but confirmed UNNECESSARY: with
