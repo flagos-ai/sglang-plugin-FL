@@ -48,7 +48,7 @@ def _call_selected(op_name: str, *args, **kwargs):
     # Functional tests should validate the preferred implementation when it is
     # available, while still allowing fallback so partially wired backends do not
     # hide the rest of the operator surface.
-    policy = SelectionPolicy.from_dict(prefer=_selected_prefer(), strict=True)
+    policy = SelectionPolicy.from_dict(prefer=_selected_prefer(), strict=False)
     with policy_context(policy):
         return call_op(op_name, *args, **kwargs)
 

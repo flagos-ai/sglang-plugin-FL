@@ -329,9 +329,9 @@ def _verify_prefer_flagos(text, artifacts):
     assert "RotaryEmbedding" in log, "RotaryEmbedding not in dispatch log"
     slog = artifacts.get("server_log", "")
     _assert_all_ops_using_backend(slog, "flagos")
-    # Default strict=True → fallback-enabled mode
+    # Default strict=False → fallback-enabled mode
     assert "mode=fallback-enabled" in slog, (
-        "Default strict=True should use fallback-enabled mode"
+        "Default strict=False should use fallback-enabled mode"
     )
 
 
@@ -394,20 +394,23 @@ def _verify_oot_disabled(text, artifacts):
     )
 
 
-def _verify_strict_off(text, artifacts):
-    """STRICT=0 disables fallback. Verify ops resolve in direct mode (no fallback chain)."""
+def _verify_strict_on(text, artifacts):
+    """STRICT=1 disables fallback and uses direct resolve mode."""
     log = artifacts.get("dispatch_log", "")
     assert "[OOT-DISPATCH]" in log, "dispatch log empty"
     assert "SiluAndMul" in log, "SiluAndMul not in dispatch log"
     assert "RMSNorm" in log, "RMSNorm not in dispatch log"
     assert "RotaryEmbedding" in log, "RotaryEmbedding not in dispatch log"
+
     slog = artifacts.get("server_log", "")
-    # STRICT=0 → direct mode (no fallback chain)
+
+    # STRICT=1 → direct mode, no fallback chain
     assert "mode=direct" in slog, (
-        "STRICT=0 should use direct resolve mode, but 'mode=direct' not found in server log"
+        "STRICT=1 should use direct resolve mode, but 'mode=direct' "
+        "was not found in server log"
     )
     assert "mode=fallback-enabled" not in slog, (
-        "STRICT=0 should NOT use fallback-enabled mode"
+        "STRICT=1 should NOT use fallback-enabled mode"
     )
 
 
@@ -558,17 +561,17 @@ def _verify_flaggems_log_once_off(text, artifacts):
 
 
 def _verify_yaml_strict(text, artifacts):
-    """YAML strict=false: direct resolve only, no fallback chain."""
+    """YAML strict=true: direct resolve only, no fallback chain."""
     log = artifacts.get("dispatch_log", "")
     assert "[OOT-DISPATCH]" in log, "dispatch log empty"
     assert "SiluAndMul" in log, "SiluAndMul not in dispatch log"
     slog = artifacts.get("server_log", "")
-    # strict=false → direct mode
+    # strict=true → direct mode
     assert "mode=direct" in slog, (
-        "YAML strict=false should use direct resolve mode, but 'mode=direct' not found"
+        "YAML strict=true should use direct resolve mode, but 'mode=direct' not found"
     )
     assert "mode=fallback-enabled" not in slog, (
-        "YAML strict=false should NOT use fallback-enabled mode"
+        "YAML strict=true should NOT use fallback-enabled mode"
     )
 
 
@@ -667,15 +670,15 @@ TESTS: List[TestCase] = [
         },
         verify=_verify_oot_disabled,
     ),
-    # ═══ Layer 2: SGLANG_FL_STRICT=0 ═════════════════════════════════════════
+    # ═══ Layer 2: SGLANG_FL_STRICT=1 ═════════════════════════════════════════
     TestCase(
-        name="strict-off",
-        description="SGLANG_FL_STRICT=0 → no fallback, direct resolve only",
+        name="strict-on",
+        description="SGLANG_FL_STRICT=1 → no fallback, direct resolve only",
         env={
-            "SGLANG_FL_STRICT": "0",
+            "SGLANG_FL_STRICT": "1",
             "SGLANG_FL_DISPATCH_LOG": "/tmp/test_e2e_dispatch.log",
         },
-        verify=_verify_strict_off,
+        verify=_verify_strict_on,
     ),
     # ═══ Layer 2: SGLANG_FL_DENY_VENDORS ═════════════════════════════════════
     TestCase(
@@ -813,11 +816,11 @@ TESTS: List[TestCase] = [
         },
         verify=_verify_flaggems_log_once_off,
     ),
-    # ═══ YAML: strict=false ═════════════════════════════════════════════════
+    # ═══ YAML: strict=true ═════════════════════════════════════════════════
     TestCase(
         name="yaml-strict",
-        description="YAML strict=false → direct resolve only, no fallback",
-        yaml_content="prefer: flagos\nstrict: false\n",
+        description="YAML strict=true → direct resolve only, no fallback",
+        yaml_content="prefer: flagos\nstrict: true\n",
         env={
             "SGLANG_FL_DISPATCH_LOG": "/tmp/test_e2e_dispatch.log",
         },
