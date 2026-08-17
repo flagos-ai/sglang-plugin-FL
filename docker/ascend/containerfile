@@ -72,6 +72,16 @@ RUN curl --fail --location --retry 5 --retry-delay 5 \
         "/tmp/sgl-kernel-npu-wheels/sgl_kernel_npu-${SGL_KERNEL_NPU_VERSION}-cp311-cp311-linux_aarch64.whl" && \
     rm -rf "/tmp/${SGL_KERNEL_NPU_ARCHIVE}" /tmp/sgl-kernel-npu-wheels
 
+# triton-ascend 3.2.1 moved insert_slice out of triton.language into the CANN
+# extension namespace. sgl-kernel-npu 2026.5.1 already uses al.insert_slice in
+# most solve_tril kernels, but its 64x64 merge kernel has six stale
+# tl.insert_slice calls. Patch only that known migration gap and fail the build
+# if the upstream wheel changes unexpectedly.
+RUN SOLVE_TRIL=$(python -c "import importlib.metadata as m; print(m.distribution('sgl-kernel-npu').locate_file('sgl_kernel_npu/fla/solve_tril.py'))") && \
+    test -f "${SOLVE_TRIL}" && \
+    python -c "import pathlib; p=pathlib.Path('${SOLVE_TRIL}'); s=p.read_text(); old='tl.insert_slice('; new='al.insert_slice('; count=s.count(old); assert count == 6, f'expected 6 stale insert_slice calls, found {count}'; patched=s.replace(old, new); assert old not in patched; p.write_text(patched); print(f'patched {count} stale tl.insert_slice calls in {p}')" && \
+    TORCH_DEVICE_BACKEND_AUTOLOAD=0 python -c "import triton.language.extra.cann.extension as al; assert hasattr(al, 'insert_slice'); print('CANN insert_slice extension OK')"
+
 # jemalloc preload for better memory allocation
 RUN echo "export LD_PRELOAD=/usr/lib/$(uname -m)-linux-gnu/libjemalloc.so.2:\${LD_PRELOAD}" >> ~/.bashrc
 
