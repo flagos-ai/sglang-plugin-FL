@@ -1,6 +1,7 @@
 # CI image for sglang-plugin-FL on Huawei Ascend NPU (910C / CANN 8.5.0).
 # Base: official SGLang v0.5.11 Ascend image (A3, Python 3.11), which already
-# provides CANN, torch/torch_npu, triton-ascend, SGLang, and sgl-kernel-npu.
+# provides CANN, torch/torch_npu, SGLang, and baseline Triton/NPU kernels. The
+# Triton and sgl-kernel-npu packages are upgraded below to the requested builds.
 #
 # Single-stage-publish image: the offline benchmark dataset is baked in (see the
 # "CI publish layer" at the bottom). The NPU driver userspace is NOT baked -- in
@@ -21,8 +22,17 @@
 FROM swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang:v0.5.11-cann8.5.0-a3 AS base
 
 ARG FLAGGEMS_VERSION=v5.3.0
+ARG TRITON_ASCEND_VERSION=3.2.1
+ARG TRITON_ASCEND_SHA256=1467b81425dc239f495a460b5c3d6ff1b035c117185791ec41c0bf3d7bb1fd7a
+ARG TRITON_ASCEND_WHEEL=triton_ascend-3.2.1-cp311-cp311-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl
+ARG SGL_KERNEL_NPU_RELEASE=2026.05.01.post2
+ARG SGL_KERNEL_NPU_VERSION=2026.5.1
+ARG SGL_KERNEL_NPU_SHA256=1c446e04b23497b97089591713637d512ed16135d0d97d71b6cf5c7db6787fc5
+ARG SGL_KERNEL_NPU_ARCHIVE=sgl-kernel-npu-2026.05.01.post2-torch2.8.0-py311-cann8.5.0-a3-aarch64.zip
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ENV PIP_TRUSTED_HOST=mirrors.aliyun.com
 
 # The base already contains the compiler toolchain and common CLI utilities.
 # Keep only the libraries used by distributed communication and jemalloc.
@@ -31,6 +41,36 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         numactl \
         libjemalloc2 \
     && rm -rf /var/lib/apt/lists/*
+
+# Replace the base image's triton-ascend 3.2.0 with the official 3.2.1 CPython
+# 3.11 ARM64 wheel. Release 3.2.1 includes fixes for cast/pow handling, which is
+# required by FlagGems during Qwen rotary-cache initialization. The release's
+# published compatibility matrix targets CANN 9.0, so CANN 8.5 compatibility is
+# validated by the downstream NPU e2e pipeline.
+RUN curl --fail --location --retry 5 --retry-delay 5 \
+        "https://gitcode.com/Ascend/triton-ascend/releases/download/v${TRITON_ASCEND_VERSION}/${TRITON_ASCEND_WHEEL}" \
+        --output "/tmp/${TRITON_ASCEND_WHEEL}" && \
+    echo "${TRITON_ASCEND_SHA256}  /tmp/${TRITON_ASCEND_WHEEL}" | sha256sum --check - && \
+    pip install --no-cache-dir --force-reinstall "/tmp/${TRITON_ASCEND_WHEEL}" && \
+    rm -f "/tmp/${TRITON_ASCEND_WHEEL}"
+
+# Replace the base image's sgl-kernel-npu 2026.3.1 and install its matching
+# attention/memory-saver wheels. This release archive is built for the exact
+# base stack: torch 2.8.0, Python 3.11, CANN 8.5.0, A3, ARM64.
+RUN curl --fail --location --retry 5 --retry-delay 5 \
+        "https://github.com/sgl-project/sgl-kernel-npu/releases/download/${SGL_KERNEL_NPU_RELEASE}/${SGL_KERNEL_NPU_ARCHIVE}" \
+        --output "/tmp/${SGL_KERNEL_NPU_ARCHIVE}" && \
+    echo "${SGL_KERNEL_NPU_SHA256}  /tmp/${SGL_KERNEL_NPU_ARCHIVE}" | sha256sum --check - && \
+    mkdir -p /tmp/sgl-kernel-npu-wheels && \
+    unzip -j "/tmp/${SGL_KERNEL_NPU_ARCHIVE}" '*.whl' -d /tmp/sgl-kernel-npu-wheels && \
+    test -f /tmp/sgl-kernel-npu-wheels/attentions-0.2-cp311-cp311-linux_aarch64.whl && \
+    test -f /tmp/sgl-kernel-npu-wheels/torch_memory_saver-0.0.8-cp311-cp311-linux_aarch64.whl && \
+    test -f "/tmp/sgl-kernel-npu-wheels/sgl_kernel_npu-${SGL_KERNEL_NPU_VERSION}-cp311-cp311-linux_aarch64.whl" && \
+    pip install --no-cache-dir --no-deps --force-reinstall \
+        /tmp/sgl-kernel-npu-wheels/attentions-0.2-cp311-cp311-linux_aarch64.whl \
+        /tmp/sgl-kernel-npu-wheels/torch_memory_saver-0.0.8-cp311-cp311-linux_aarch64.whl \
+        "/tmp/sgl-kernel-npu-wheels/sgl_kernel_npu-${SGL_KERNEL_NPU_VERSION}-cp311-cp311-linux_aarch64.whl" && \
+    rm -rf "/tmp/${SGL_KERNEL_NPU_ARCHIVE}" /tmp/sgl-kernel-npu-wheels
 
 # jemalloc preload for better memory allocation
 RUN echo "export LD_PRELOAD=/usr/lib/$(uname -m)-linux-gnu/libjemalloc.so.2:\${LD_PRELOAD}" >> ~/.bashrc
@@ -45,7 +85,7 @@ ARG FLAGGEMS_VERSION=v5.3.0
 # Build the project-specific components missing from the SGLang base image:
 # FlagGems v5.3.0 and FlagCX v0.13.0.
 #  - FlagGems v5.3.0 still uses scikit-build-core. Its Python/Triton NPU backend
-#    is selected at runtime from the base image's torch_npu + triton-ascend; the
+#    is selected at runtime from torch_npu + the upgraded triton-ascend; the
 #    required PEP 517 build tools are installed explicitly for --no-build-isolation.
 #    The known Ascend argmax regression is avoided by the plugin's default op
 #    blacklist.
@@ -82,7 +122,7 @@ ENV FLAGCX_PATH=/opt/FlagCX
 # FlagGems v5.3.0 contains the required v5.0.0->v5.3.0 fixes, so none of the old source
 # patches are needed:
 #  - cann.libdevice: the CANN 8.5 backend supports the base image's
-#    triton-ascend 3.2.0 and falls back to the generic libdevice shim when needed.
+#    triton-ascend 3.2.1 and falls back to the generic libdevice shim when needed.
 #  - fill_ empty-tensor: ships the `if N == 0: return self` guard (fix #4105).
 #  - exponential_ philox_seed int32->int64 compile bug: fixed in 373951815 (since v5.3.0).
 #  - argmax remains excluded through sglang_fl/dispatch/config/ascend.yaml because
@@ -107,7 +147,7 @@ RUN SGLANG_SRC=$(python -m pip show sglang | sed -n 's/^Editable project locatio
 # and sglang.srt.platforms (the API sglang_fl.platform imports) is importable
 # -- this is the API sglang 0.4.7 lacked. A full `import torch_npu` validation
 # still runs on the offline host with the driver mounted.
-RUN python -c "import importlib.metadata as m; expected={'sglang':'0.5.11','torch':'2.8.0','torch-npu':'2.8.0','triton-ascend':'3.2.0','sgl-kernel-npu':'2026.3.1','flag-gems':'5.3.0'}; actual={k:m.version(k) for k in expected}; assert all(actual[k].startswith(v) for k,v in expected.items()), actual; print(actual)" && \
+RUN python -c "import importlib.metadata as m; expected={'sglang':'0.5.11','torch':'2.8.0','torch-npu':'2.8.0','triton':'3.5.0','triton-ascend':'3.2.1','sgl-kernel-npu':'2026.5.1','attentions':'0.2','torch-memory-saver':'0.0.8','flag-gems':'5.3.0'}; actual={k:m.version(k) for k in expected}; assert all(actual[k].startswith(v) for k,v in expected.items()), actual; print(actual)" && \
     KERNEL_ROOT=$(python -c "import importlib.metadata as m; print(m.distribution('sgl-kernel-npu').locate_file(''))") && \
     test -f "${KERNEL_ROOT}/sgl_kernel_npu/norm/add_rmsnorm_bias.py" && \
     test -f "${KERNEL_ROOT}/sgl_kernel_npu/activation/swiglu_oai.py" && \
@@ -116,7 +156,8 @@ RUN python -c "import importlib.metadata as m; expected={'sglang':'0.5.11','torc
 
 # Test and dev tools
 RUN pip install --no-cache-dir \
-        pytest \
+        pytest==8.3.2 \
+        pytest-xdist==3.6.1 \
         pytest-cov \
         pytest-timeout \
         pytest-json-report \
