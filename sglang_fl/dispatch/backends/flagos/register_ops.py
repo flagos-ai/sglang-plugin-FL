@@ -91,3 +91,32 @@ def register_builtins(registry) -> None:
     ]
 
     registry.register_many(impls)
+
+    """Register all FlagGems-sglang operator implementations.
+    
+    Iterates over ``flaggems_sglang.all_registered_ops()`` and registers each
+    op by looking it up as ``flaggems_sglang.<op>``.
+    """
+    try:
+        import flaggems_sglang
+    except ImportError:
+        return
+
+    fg_impls = []
+    for op_name in flaggems_sglang.all_registered_ops():
+        fn = getattr(flaggems_sglang, op_name, None)
+        if fn is None:
+            continue
+
+        impls.append(
+            OpImpl(
+                op_name=op_name,
+                impl_id="default.flagos",
+                kind=BackendImplKind.DEFAULT,
+                fn=_bind_is_available(fn, is_avail),
+                vendor=None,
+                priority=BackendPriority.DEFAULT,
+            )
+        )
+
+    registry.register_many(fg_impls)
