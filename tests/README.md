@@ -337,27 +337,27 @@ concurrent:
 
 ### Config fields reference
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `llm.model` | str | Yes | Model path (case auto-skips if not found) |
-| `llm.*` | dict | Yes | SGLang Engine kwargs (`tp_size`, `context_length`, `mem_fraction_static`, `disable_cuda_graph`, `trust_remote_code`, …) |
-| `generate.modality` | str | No | `text` (default), `audio`, `image`, `video` |
-| `generate.prompts` | list | Yes | Strings or dicts with `text`/`expected` (text) or `image`/`question`/`expected` (VL) |
-| `generate.sampling` | dict | Yes | SGLang sampling params (`max_new_tokens`, `temperature`, …) |
-| `generate.parametrize` | list | No | Explicit engine-param override combos (one Engine per combo) |
-| `serve.endpoints` | list | No | `completion`, `chat`, `embedding` |
-| `serve.stream` | bool | No | Use OpenAI SDK streaming for chat (default `false`) |
-| `serve.served_model_name` | str | No | Override `--served-model-name` |
-| `serve.api_key` | str | No | API key for authenticated endpoints |
-| `serve.max_tokens` | int | No | Max tokens for serving requests (default 50) |
-| `serve.chat_messages` | list | No | Messages for `/v1/chat/completions` |
-| `serve.completion_prompt` | str | No | Prompt for `/v1/completions` |
-| `serve.extra_engine` | dict | No | Engine param overrides for serving only |
-| `serve.extra_body` | dict | No | Extra body fields merged into chat payload |
-| `concurrent.modes` | list | No | `text`, `vl`, `mixed` |
-| `concurrent.concurrent_n` | int | No | Async request count (default 4) |
-| `concurrent.text.prompts` | list | No | Text cases with `text`/`expected` |
-| `concurrent.vl.cases` | list | No | VL cases with `image`/`question`/`expected` |
+| Field                     | Type | Required | Description                                                                                                             |
+| ------------------------- | ---- | -------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `llm.model`               | str  | Yes      | Model path (case auto-skips if not found)                                                                               |
+| `llm.*`                   | dict | Yes      | SGLang Engine kwargs (`tp_size`, `context_length`, `mem_fraction_static`, `disable_cuda_graph`, `trust_remote_code`, …) |
+| `generate.modality`       | str  | No       | `text` (default), `audio`, `image`, `video`                                                                             |
+| `generate.prompts`        | list | Yes      | Strings or dicts with `text`/`expected` (text) or `image`/`question`/`expected` (VL)                                    |
+| `generate.sampling`       | dict | Yes      | SGLang sampling params (`max_new_tokens`, `temperature`, …)                                                             |
+| `generate.parametrize`    | list | No       | Explicit engine-param override combos (one Engine per combo)                                                            |
+| `serve.endpoints`         | list | No       | `completion`, `chat`, `embedding`                                                                                       |
+| `serve.stream`            | bool | No       | Use OpenAI SDK streaming for chat (default `false`)                                                                     |
+| `serve.served_model_name` | str  | No       | Override `--served-model-name`                                                                                          |
+| `serve.api_key`           | str  | No       | API key for authenticated endpoints                                                                                     |
+| `serve.max_tokens`        | int  | No       | Max tokens for serving requests (default 50)                                                                            |
+| `serve.chat_messages`     | list | No       | Messages for `/v1/chat/completions`                                                                                     |
+| `serve.completion_prompt` | str  | No       | Prompt for `/v1/completions`                                                                                            |
+| `serve.extra_engine`      | dict | No       | Engine param overrides for serving only                                                                                 |
+| `serve.extra_body`        | dict | No       | Extra body fields merged into chat payload                                                                              |
+| `concurrent.modes`        | list | No       | `text`, `vl`, `mixed`                                                                                                   |
+| `concurrent.concurrent_n` | int  | No       | Async request count (default 4)                                                                                         |
+| `concurrent.text.prompts` | list | No       | Text cases with `text`/`expected`                                                                                       |
+| `concurrent.vl.cases`     | list | No       | VL cases with `image`/`question`/`expected`                                                                             |
 
 ## Platform Config Format
 
@@ -409,6 +409,79 @@ a100:
     benchmark:
       enabled: true
       smoke: ["throughput", "latency", "serve"]
+```
+
+### Platform-specific engine overrides
+
+Use `engine_overrides` when a model case needs different SGLang engine
+parameters on a particular hardware platform. The common parameters remain in
+`tests/models/<model>/<case>.yaml`; the platform file only contains the values
+that differ for that platform.
+
+The mapping is organized as `model -> case -> engine parameters`. Both names
+must exactly match the model directory and case filename under `tests/models`:
+
+```yaml
+# tests/platforms/cuda.yaml
+engine_overrides:
+  qwen3_6:
+    27b_tp4_nograph:
+      page_size: 1
+    35b_a3b_tp4_nograph:
+      page_size: 1
+```
+
+For example, if the common model config contains:
+
+```yaml
+# tests/models/qwen3_6/27b_tp4_nograph.yaml
+llm:
+  model: /data/models/Qwen/Qwen3.6-27B
+  tp_size: 4
+  page_size: 16
+```
+
+running the case on CUDA produces the following effective engine parameters:
+
+```yaml
+model: /data/models/Qwen/Qwen3.6-27B
+tp_size: 4
+page_size: 1  # overridden by tests/platforms/cuda.yaml
+```
+
+An individual device can override the platform value again through
+`device_overrides`:
+
+```yaml
+engine_overrides:
+  qwen3_6:
+    27b_tp4_nograph:
+      page_size: 1
+
+device_overrides:
+  h100:
+    engine_overrides:
+      qwen3_6:
+        27b_tp4_nograph:
+          page_size: 2
+```
+
+The resolution order is:
+
+```text
+common model config < platform engine_overrides < active-device engine_overrides
+```
+
+Only the listed engine keys are added or replaced; other model settings are
+preserved. Parameter names must use SGLang Python/CLI snake_case names, such as
+`page_size`, `tp_size`, `context_length`, or `mem_fraction_static`.
+
+Run the case normally; `tests/run.py` selects and applies the matching override
+for E2E and benchmark tests:
+
+```bash
+python tests/run.py --platform cuda --device a100 --scope e2e \
+  --model qwen3_6 --case 27b_tp4_nograph
 ```
 
 ## Benchmark Smoke Config Format
@@ -521,21 +594,21 @@ def test_my_kernel(device):
 
 ## Test Scopes
 
-| Scope | Directory | GPU | Models | Runs via |
-|---|---|---|---|---|
-| `unit` | `tests/unit_tests/` | No | No | `pytest` directly |
-| `functional` | `tests/functional_tests/` | Yes | No | `pytest` directly |
-| `e2e` | `tests/e2e_tests/` | Yes | Yes | Subprocess per case (via `run.py`) |
-| `benchmark` | `tests/benchmarks/` | Yes | Dummy only | Subprocess per case (via `run.py`) |
+| Scope        | Directory                 | GPU | Models     | Runs via                           |
+| ------------ | ------------------------- | --- | ---------- | ---------------------------------- |
+| `unit`       | `tests/unit_tests/`       | No  | No         | `pytest` directly                  |
+| `functional` | `tests/functional_tests/` | Yes | No         | `pytest` directly                  |
+| `e2e`        | `tests/e2e_tests/`        | Yes | Yes        | Subprocess per case (via `run.py`) |
+| `benchmark`  | `tests/benchmarks/`       | Yes | Dummy only | Subprocess per case (via `run.py`) |
 
 ## Available Markers
 
-| Marker | Description |
-|---|---|
-| `@pytest.mark.gpu` | Requires a GPU/accelerator |
+| Marker                    | Description                 |
+| ------------------------- | --------------------------- |
+| `@pytest.mark.gpu`        | Requires a GPU/accelerator  |
 | `@pytest.mark.functional` | Functional correctness test |
-| `@pytest.mark.e2e` | End-to-end smoke test |
-| `@pytest.mark.benchmark` | Benchmark smoke test |
+| `@pytest.mark.e2e`        | End-to-end smoke test       |
+| `@pytest.mark.benchmark`  | Benchmark smoke test        |
 
 (Markers are auto-registered in `tests/conftest.py`.)
 

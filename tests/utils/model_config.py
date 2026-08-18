@@ -9,6 +9,7 @@ Model YAML files use SGLang-native engine parameter names such as
 
 from __future__ import annotations
 
+import os
 import itertools
 import json
 from dataclasses import dataclass, field
@@ -16,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 _MODELS_DIR = Path(__file__).resolve().parents[1] / "models"
-
+_ENGINE_OVERRIDES_ENV = "FL_TEST_ENGINE_OVERRIDES"
 
 def _load_structured(path: Path) -> dict[str, Any]:
     text = path.read_text(encoding="utf-8-sig")
@@ -28,6 +29,19 @@ def _load_structured(path: Path) -> dict[str, Any]:
         data = json.loads(text)
     return data if isinstance(data, dict) else {}
 
+
+def load_engine_overrides_from_env() -> dict[str, Any]:
+    """Load platform engine overrides forwarded by ``tests/run.py``."""
+    raw = os.environ.get(_ENGINE_OVERRIDES_ENV, "")
+    if not raw:
+        return {}
+    try:
+        overrides = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{_ENGINE_OVERRIDES_ENV} must contain valid JSON") from exc
+    if not isinstance(overrides, dict):
+        raise ValueError(f"{_ENGINE_OVERRIDES_ENV} must contain a JSON object")
+    return overrides
 
 @dataclass
 class GenerateConfig:
@@ -136,7 +150,17 @@ class ModelConfig:
         path = models_dir / model / f"{case}.yaml" if case else models_dir / f"{model}.yaml"
         if not path.exists():
             raise FileNotFoundError(f"Model config not found: {path}")
-        return cls.from_dict(_load_structured(path))
+        config = cls.from_dict(_load_structured(path))
+
+        return config
+
+    def apply_engine_overrides(
+        self,
+        overrides: dict[str, Any] | None,
+    ) -> None:
+        """Apply shallow overrides to engine parameters."""
+        if overrides:
+            self.engine.update(overrides)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "ModelConfig":

@@ -23,26 +23,22 @@ from typing import Any
 import pytest
 
 from sglang import Engine
-from tests.utils.model_config import ModelConfig
-from tests.e2e_tests.plugin_utils import assert_sglang_fl_plugin_loaded_and_active
+from tests.e2e_tests.plugin_utils import (
+    apply_chat_template,
+    assert_expected,
+    assert_sglang_fl_plugin_loaded_and_active,
+    build_text_prompt,
+    get_processor,
+    get_tokenizer,
+    load_e2e_model_config,
+    output_text,
+)
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _IMAGE_DIR = Path(os.environ.get("IMAGE_DIR", _REPO_ROOT / "examples" / "test_images"))
 
-_MODEL = os.environ.get("FL_TEST_MODEL", "")
-_CASE = os.environ.get("FL_TEST_CASE", "")
-
-if not _MODEL or not _CASE:
-    pytest.skip(
-        "FL_TEST_MODEL and FL_TEST_CASE must be set (injected by run.py)",
-        allow_module_level=True,
-    )
-
-_CFG = ModelConfig.load(_MODEL, _CASE)
-
-if not os.path.exists(_CFG.model):
-    pytest.fail(f"Model not found: {_CFG.model}", pytrace=False)
+_MODEL, _CASE, _CFG = load_e2e_model_config()
 
 _DEFAULT_TEXT_CASES = [
     {
@@ -136,10 +132,6 @@ _VL_SAMPLING["max_new_tokens"] = int(
     os.environ.get("FL_CONCURRENT_VL_MAX_TOKENS", _VL_SAMPLING["max_new_tokens"])
 )
 
-_tokenizer = None
-_processor = None
-
-
 def _selected_modes() -> list[str]:
     raw = os.environ.get("FL_CONCURRENT_MODES", "").strip()
     if raw:
@@ -152,40 +144,8 @@ def _selected_modes() -> list[str]:
     return ["vl"] if _CFG.generate.modality == "image" else ["text"]
 
 
-def _get_tokenizer():
-    global _tokenizer
-    if _tokenizer is None:
-        from transformers import AutoTokenizer
-
-        _tokenizer = AutoTokenizer.from_pretrained(_CFG.model, trust_remote_code=True)
-    return _tokenizer
-
-
-def _get_processor():
-    global _processor
-    if _processor is None:
-        from transformers import AutoProcessor
-
-        _processor = AutoProcessor.from_pretrained(_CFG.model, trust_remote_code=True)
-    return _processor
-
-
-def _apply_chat_template(template_owner, messages: list[dict[str, Any]]) -> str:
-    kwargs = {
-        "tokenize": False,
-        "add_generation_prompt": True,
-        "enable_thinking": False,
-    }
-    try:
-        return template_owner.apply_chat_template(messages, **kwargs)
-    except TypeError:
-        kwargs.pop("enable_thinking")
-        return template_owner.apply_chat_template(messages, **kwargs)
-
-
 def _text_prompt(question: str) -> str:
-    messages = [{"role": "user", "content": question}]
-    return _apply_chat_template(_get_tokenizer(), messages)
+    return build_text_prompt(get_tokenizer(_CFG.model), question)
 
 
 def _image_uri(name: str) -> str:
@@ -208,13 +168,7 @@ def _vl_prompt(question: str, image_uri: str) -> str:
             ],
         }
     ]
-    return _apply_chat_template(_get_processor(), messages)
-
-
-def _output_text(output: Any) -> str:
-    if isinstance(output, dict):
-        return str(output.get("text", ""))
-    return str(getattr(output, "text", ""))
+    return apply_chat_template(get_processor(_CFG.model), messages)
 
 
 def _completion_tokens(output: Any) -> int:
@@ -244,25 +198,18 @@ def _report(label: str, n_req: int, elapsed: float, latencies: list[float], tota
     )
 
 
-def _assert_expected(text: str, expected: list[str], label: str) -> None:
-    assert text.strip(), f"Empty output for {label}"
-    lower = text.lower()
-    matched = any(item.lower() in lower for item in expected)
-    assert matched, f"Expected one of {expected!r} in output for {label}, got: {text!r}"
-
-
 def _validate_text(pairs: list[tuple[str, str]]) -> None:
     for prompt, text in pairs:
         assert text.strip(), f"Empty output for {prompt}"
         expected = TEXT_EXPECTED.get(prompt, [])
         if expected:
-            _assert_expected(text, expected, prompt)
+            assert_expected(text, expected, prompt)
     print("  text validation passed.")
 
 
 def _validate_vl(pairs: list[tuple[dict[str, Any], str]]) -> None:
     for case, text in pairs:
-        _assert_expected(text, case["expected"], case["image"])
+        assert_expected(text, case["expected"], case["image"])
     print("  vl validation passed.")
 
 
@@ -302,10 +249,10 @@ def _run_text_concurrent(engine: Engine) -> list[tuple[str, str]]:
     total_tokens = sum(_completion_tokens(output) for _, output in results)
 
     for (label, _), (_, output) in zip(items[: min(len(items), len(base))], results):
-        print(f"  {label!r}\n    -> {_output_text(output)!r}")
+        print(f"  {label!r}\n    -> {output_text(output)!r}")
 
     _report("text-concurrent", CONCURRENT_N, elapsed, latencies, total_tokens)
-    return [(label, _output_text(output)) for (label, _), (_, output) in zip(items, results)]
+    return [(label, output_text(output)) for (label, _), (_, output) in zip(items, results)]
 
 
 def _run_vl_concurrent(engine: Engine) -> list[tuple[dict[str, Any], str]]:
@@ -335,10 +282,10 @@ def _run_vl_concurrent(engine: Engine) -> list[tuple[dict[str, Any], str]]:
     total_tokens = sum(_completion_tokens(output) for _, output in results)
 
     for (case, _, _), (_, output) in zip(items[: min(len(items), len(base))], results):
-        print(f"  [{case['image']}] {case['question']}\n    -> {_output_text(output)!r}")
+        print(f"  [{case['image']}] {case['question']}\n    -> {output_text(output)!r}")
 
     _report("vl-concurrent", CONCURRENT_N, elapsed, latencies, total_tokens)
-    return [(case, _output_text(output)) for (case, _, _), (_, output) in zip(items, results)]
+    return [(case, output_text(output)) for (case, _, _), (_, output) in zip(items, results)]
 
 
 def _run_mixed_concurrent(engine: Engine) -> tuple[list[tuple[str, str]], list[tuple[dict[str, Any], str]]]:
@@ -382,8 +329,8 @@ def _run_mixed_concurrent(engine: Engine) -> tuple[list[tuple[str, str]], list[t
     total_tokens = sum(_completion_tokens(output) for _, output in [*text_results, *vl_results])
 
     _report("mixed-concurrent", CONCURRENT_N, elapsed, latencies, total_tokens)
-    text_pairs = [(label, _output_text(output)) for (label, _), (_, output) in zip(text_items, text_results)]
-    vl_pairs = [(case, _output_text(output)) for (case, _, _), (_, output) in zip(vl_items, vl_results)]
+    text_pairs = [(label, output_text(output)) for (label, _), (_, output) in zip(text_items, text_results)]
+    vl_pairs = [(case, output_text(output)) for (case, _, _), (_, output) in zip(vl_items, vl_results)]
     return text_pairs, vl_pairs
 
 
@@ -414,9 +361,3 @@ def test_concurrent() -> None:
                 raise AssertionError(f"Unsupported concurrent mode: {mode}")
     finally:
         engine.shutdown()
-
-
-
-
-
-
