@@ -1,0 +1,63 @@
+# T-Head PPU Hardware Configuration
+# This file defines CI/CD settings for T-Head PPU (PPU-ZW810E) testing.
+
+platform: thead
+
+# Docker image for this hardware
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-thead-ci
+
+# Runner labels for this hardware
+runner_labels:
+  - flagcicd-810e
+
+# Container volumes (hardware-specific paths)
+# Model files live under the runner's model store and the test model configs reference
+# /data/models/Qwen/<model> in-container, so mount the store to that path (same pattern
+# as cuda.yml). Adjust the host side to wherever the thead runner exposes the models.
+container_volumes:
+  - /mnt/airs-business/cicd/models:/data/models/Qwen
+
+# Container options.
+# PPU device access: the host docker daemon ships ONLY runc -- there is no
+# ppu-container-runtime (unlike nvidia-container-toolkit for cuda or the mthreads
+# runtime for musa). The PPU is exposed as plain char devices (/dev/alixpu,
+# /dev/alixpu_ctl, /dev/alixpu_ppu0..N), so they are passed explicitly with
+# --device. This is sufficient (the PPU SDK userspace libs ship inside the image);
+# verified end-to-end: torch.cuda + ppu-smi + full plugin test suite pass with this.
+#
+# DinD compatibility: the thead CI runner is a T-Head DinD environment whose authZ
+# plugin FORBITS --privileged, --pid=host, --ipc=host, --cap-add, --security-opt.
+# So unlike cuda/musa (real-docker runners that use --ipc=host), thead deliberately
+# OMITS --ipc=host and uses --shm-size for NCCL/process shared memory instead.
+# This is the exact combination validated end-to-end (no --privileged, no --ipc).
+# --user root is required: the image installs libs under system paths and the
+# setup.sh step pip-installs the plugin into /usr/local.
+# --init: tini as PID 1 reaps orphan zombies from sglang TP workers on shutdown.
+# NOTE: --device is enumerated for a 16-card runner (/dev/alixpu_ppu0..15). If the
+# runner has a different card count, adjust this list to match (docker --device
+# accepts no globs). The declared device_type is zw810e @ 96GB (see tests/platforms/thead.yaml).
+container_options: >-
+  --hostname sglang-plugin-fl
+  --shm-size=64g
+  --ulimit memlock=-1
+  --ulimit stack=67108864
+  --user root
+  --init
+  --device /dev/alixpu
+  --device /dev/alixpu_ctl
+  --device /dev/alixpu_ppu0
+  --device /dev/alixpu_ppu1
+  --device /dev/alixpu_ppu2
+  --device /dev/alixpu_ppu3
+  --device /dev/alixpu_ppu4
+  --device /dev/alixpu_ppu5
+  --device /dev/alixpu_ppu6
+  --device /dev/alixpu_ppu7
+  --device /dev/alixpu_ppu8
+  --device /dev/alixpu_ppu9
+  --device /dev/alixpu_ppu10
+  --device /dev/alixpu_ppu11
+  --device /dev/alixpu_ppu12
+  --device /dev/alixpu_ppu13
+  --device /dev/alixpu_ppu14
+  --device /dev/alixpu_ppu15

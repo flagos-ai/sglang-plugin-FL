@@ -1,0 +1,99 @@
+# T-Head PPU Platform Configuration (PPU-ZW810E / 真武, CUDA-compatible).
+# Flexible test selection mechanism for T-Head PPU environments.
+#
+# The PPU reports vendor=nvidia via FlagGems DeviceDetector, so it routes through the
+# plugin's cuda/nvidia backend (sglang_fl/dispatch/config/nvidia.yaml: prefer: flagos)
+# exactly like tests/platforms/cuda.yaml. The e2e/functional/unit/benchmark case sets
+# are intentionally IDENTICAL to cuda.yaml.
+#
+# Users can modify:
+# - e2e: Add/remove model cases in inference and serving support lists
+# - benchmark: Enable/disable throughput, latency, and serve smoke tests
+# - unit: Add/remove paths in include and exclude lists
+# - functional: Adjust include/exclude patterns for component (ops/compilation/distributed) tests
+# - tolerance: Adjust numerical comparison tolerance for result validation
+# - unsupported_features: Exclude test cases matching specific feature tags
+# - env_defaults: Set CUDA/NCCL/SGLang environment defaults before tests start
+#
+# ---- Platform-level settings ------------------------------------------------
+platform: thead
+vendor: thead
+
+device_types:
+  zw810e:
+    compute_capability: "8.0"
+    memory_gb: 96
+    tags: [ppu, bf16, cuda-compatible]
+
+# Default numerical tolerance for result comparison.
+tolerance:
+  inference:
+    default: {exact: true}
+
+# Device-level overrides for specific devices or categories.
+device_overrides: {}
+
+# Features not supported on this platform.
+# Test cases whose model name contains any of these strings will be skipped.
+# Example: ["flaggems"] would skip "qwen3_flaggems" cases.
+unsupported_features: []
+
+# Default environment variables for this platform.
+# tests/run.py applies these before invoking pytest.
+# SGLANG_FL_FLAGOS_BLACKLIST: FlagGems 5.3.0rc2's `cumsum` raises ZeroDivisionError
+# (inp.numel() // M // N with M/N==0) and `count_nonzero` misbehaves on PPU during
+# position computation / sampling; blacklisting them falls back to torch native.
+# This mirrors T-Head's own reproduction recipe (SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero,cumsum)
+# and is the same mechanism cuda.yaml (count_nonzero,mm) and musa.yaml (mul,sort) use.
+#
+# SGLANG_SAIL_USE_ACEXT_CUDA / SGLANG_SAIL_DEEPGEMM_MOE: T-Head PPU vendor env vars
+# (NOT in upstream sglang; default True on PPU via sglang server_args.py). They gate the
+# accelerated MoE backends (DeepGEMM / ACCEXT). The plugin's cuda fused_moe bridge
+# (sglang_fl/dispatch/backends/vendor/cuda/impl/fused_moe.py) hand-builds a TritonMoeQuantInfo
+# with only 4 fields; accelerated MoE runners (selected for fp8/mxfp4 MoE, or wherever ACCEXT
+# forces a non-triton path) read additional fields it lacks (local_num_experts, etc.) and can
+# AttributeError. Setting these 0 routes MoE to the standard triton runner, which only reads
+# the fields the hand-build provides. This is verbatim what T-Head's official reproduction
+# recipe sets for MoE models, so we match the vendor's canonical config. Verified on PPU:
+# qwen3_6 35B-A3B tp4 e2e inference passes with this — the bf16 CI model tolerates the
+# hand-build either way, so these vars are defensive (for fp8/mxfp4 MoE) + vendor alignment.
+# Root cause (the redundant, drifted fused_moe bridge) should still be fixed in the plugin;
+# see issue-cuda-fused-moe.md.
+env_defaults:
+  CUDA_DEVICE_MAX_CONNECTIONS: "1"
+  NCCL_ALGO: "Ring"
+  SGLANG_FL_FLAGOS_BLACKLIST: "count_nonzero,cumsum"
+  SGLANG_SAIL_USE_ACEXT_CUDA: "0"
+  SGLANG_SAIL_DEEPGEMM_MOE: "0"
+
+# ---- Device-specific test configurations ------------------------------------
+zw810e:
+  name: "zw810e"
+  tests:
+    e2e:
+      # Add or remove test cases per model.
+      # Each case points to tests/models/<model>/<case>.yaml.
+      concurrent:
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      inference:
+        qwen3: ["4b_tp2", "06b_tp1"]
+        qwen3_6: ["35b_a3b_tp4_nograph",  "27b_tp4_nograph"]
+      serving:
+        qwen3: ["4b_tp2"]
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+
+    # Functional tests (ops correctness, graph capture, collective ops).
+    # Consumed by tests/run.py --scope functional; include/exclude work like unit.
+    functional:
+      include: "*"
+      exclude: []
+
+    unit:
+      # Include patterns: "*" for all, or list specific paths.
+      include: "*"
+      # Exclude patterns: empty list or list paths to exclude.
+      exclude: []
+
+    benchmark:
+      enabled: true
+      smoke: ["throughput", "latency", "serve"]
