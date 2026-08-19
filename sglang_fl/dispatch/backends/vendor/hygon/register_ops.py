@@ -1,7 +1,4 @@
-# Template backend operator registrations.
-#
-# Copy this file as your starting point for a new vendor backend.
-# Replace 'template' with your vendor name throughout.
+"""Register Hygon operator implementations."""
 
 from __future__ import annotations
 
@@ -22,7 +19,7 @@ def _bind_is_available(fn, is_available_fn):
 
 
 def register_builtins(registry) -> None:
-    """Register all Template (VENDOR) operator implementations."""
+    """Register all Hygon operator implementations."""
     from .hcu import hcuBackend  # noqa: F401
 
     backend = hcuBackend()
@@ -30,14 +27,6 @@ def register_builtins(registry) -> None:
 
     # TODO: Add your operator implementations here
     impls = [
-        # OpImpl(
-        #     op_name="silu_and_mul",
-        #     impl_id="vendor.template",
-        #     kind=BackendImplKind.VENDOR,
-        #     fn=_bind_is_available(backend.silu_and_mul, is_avail),
-        #     vendor="template",
-        #     priority=BackendPriority.VENDOR,
-        # ),
         OpImpl(
             op_name="chunk_gated_delta_rule",
             impl_id="vendor.hcu",
@@ -121,4 +110,3 @@ def register_builtins(registry) -> None:
     ]
 
     registry.register_many(impls)
-

@@ -1,7 +1,4 @@
-# Template backend implementation.
-#
-# Copy this directory as your starting point for a new vendor backend.
-# Replace 'template' with your vendor name throughout.
+# Hygon backend implementation.
 
 from __future__ import annotations
 
@@ -190,4 +187,3 @@ class hcuBackend(Backend):
             num_token_non_padded=num_token_non_padded,
             expert_location_dispatch_info=expert_location_dispatch_info,
         )
-
