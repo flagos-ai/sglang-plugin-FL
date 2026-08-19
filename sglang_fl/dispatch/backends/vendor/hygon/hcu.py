@@ -13,8 +13,6 @@ class hcuBackend(Backend):
     """
     Hygon operator backend.
 
-    The class and backend name intentionally retain ``hcu`` because that is
-    the stable dispatch/runtime identifier used by SGLang and Torch Hygon.
     """
 
     _available: Optional[bool] = None

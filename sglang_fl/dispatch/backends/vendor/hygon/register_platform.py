@@ -1,4 +1,4 @@
-"""Register the HCU attention backend with SGLang."""
+"""Register the Hygon attention implementation."""
 
 import logging
 
