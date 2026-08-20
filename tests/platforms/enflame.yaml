@@ -76,7 +76,7 @@ engine_overrides:
 # .github/configs/enflame.yml).
 # TORCHGCU_INDUCTOR_ENABLE: allow torch.compile inductor paths on GCU.
 env_defaults:
-  SGLANG_FL_FLAGOS_BLACKLIST: "scaled_dot_product_attention,cumsum,cumsum_out,count_nonzero"
+  SGLANG_FL_FLAGOS_BLACKLIST: "scaled_dot_product_attention,cumsum,cumsum_out,count_nonzero,unique,_unique2"
   SGLANG_FL_PLATFORM: "enflame"
   SGLANG_FL_DIST_BACKEND: "eccl"
   TORCH_GCU_ENABLE_INT64_AND_UINT64: "1"

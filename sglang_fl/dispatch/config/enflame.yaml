@@ -58,3 +58,5 @@ flagos_blacklist:
   - cumsum
   - cumsum_out
   - count_nonzero
+  - unique
+  - _unique2
