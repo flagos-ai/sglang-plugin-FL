@@ -264,25 +264,42 @@ class FlagcxKVManager(CommonKVManager):
     def register_buffer_to_engine(self):
         # Batch register KV data buffers
         if self.kv_args.kv_data_ptrs and self.kv_args.kv_data_lens:
-            self.engine.batch_register(
+            ret = self.engine.batch_register(
                 self.kv_args.kv_data_ptrs, self.kv_args.kv_data_lens
             )
+            if ret != 0:
+                logger.error(
+                    f"Failed to register KV data buffers to FlagCX engine: "
+                    f"{len(self.kv_args.kv_data_ptrs)} buffers, "
+                    f"total {sum(self.kv_args.kv_data_lens)} bytes"
+                )
 
         if self.kv_args.aux_data_ptrs and self.kv_args.aux_data_lens:
             if is_npu():
-                self.engine.batch_register(
+                ret = self.engine.batch_register(
                     self.kv_args.aux_data_ptrs, self.kv_args.aux_data_lens
                 )
             else:
-                self.engine.batch_register_host(
+                ret = self.engine.batch_register_host(
                     self.kv_args.aux_data_ptrs, self.kv_args.aux_data_lens
+                )
+            if ret != 0:
+                logger.error(
+                    f"Failed to register aux data buffers to FlagCX engine: "
+                    f"{len(self.kv_args.aux_data_ptrs)} buffers, "
+                    f"total {sum(self.kv_args.aux_data_lens)} bytes"
                 )
 
         for ptrs, lens in zip(
             self.kv_args.state_data_ptrs, self.kv_args.state_data_lens
         ):
             if ptrs and lens:
-                self.engine.batch_register(ptrs, lens)
+                ret = self.engine.batch_register(ptrs, lens)
+                if ret != 0:
+                    logger.error(
+                        f"Failed to register state data buffers to FlagCX engine: "
+                        f"{len(ptrs)} buffers, total {sum(lens)} bytes"
+                    )
 
     # ------------------------------------------------------------------
     # Staging buffer methods (all delegate to staging_handler.py)
@@ -864,6 +881,10 @@ class FlagcxKVManager(CommonKVManager):
         prefill_aux_index: int,
         dst_aux_ptrs: list[int],
     ):
+        if (
+            self.enable_custom_mem_pool and self.custom_mem_pool_type == "NVLINK"
+        ):
+            return self.send_aux_tcp(req, prefill_aux_index, dst_aux_ptrs)
 
         transfer_blocks = []
         prefill_aux_ptrs = self.kv_args.aux_data_ptrs
