@@ -6,8 +6,9 @@
 # is proprietary to Enflame and NOT installable from public PyPI, so we FROM
 # the release image (digest-pinned) and only add what the sglang plugin CI
 # needs: sglang 0.5.11 (stock PyPI wheel, --no-deps so the GCU torch stack is
-# never touched), its pure-python runtime deps, FlagGems v5.3.0 (repo
-# baseline alignment), the ShareGPT dataset bake, and pytest/dev tooling.
+# never touched), its pure-python runtime deps, the ShareGPT dataset bake,
+# and pytest/dev tooling. The base image's GCU-tuned FlagGems is kept (see
+# the FLAGGEMS_VERSION note below).
 #
 # Verified stack inside the base image (inspected 2026-08-19):
 #   ubuntu:24.04 · python 3.12.8 · torch 2.11.0+cpu · torch_gcu 2.11.0+3.8.20260713
@@ -141,13 +142,12 @@ COPY docker/enflame/sgl_kernel_stub /tmp/sgl_kernel_stub
 RUN pip install --no-cache-dir /tmp/sgl_kernel_stub && rm -rf /tmp/sgl_kernel_stub
 
 # ---------------------------------------------------------------------------
-# FlagGems repo-baseline alignment (v5.3.0)
+# FlagGems override (optional, disabled by default)
 # ---------------------------------------------------------------------------
-# v5.3.0 builds with scikit-build-core (unlike the setuptools-based v5.3.1),
-# so cmake/ninja/pybind11 are staged first. FLAGGEMS_BACKEND is
-# runtime-detected, and the triton 3.6.0 GCU build from the base image
-# compiles the kernels. SETUPTOOLS_SCM_PRETEND_VERSION avoids setuptools-scm
-# git-describe issues in the --depth 1 clone.
+# Only runs when FLAGGEMS_VERSION is set. v5.3.x builds with scikit-build-core
+# (unlike the setuptools-based v5.3.1), so cmake/ninja/pybind11 are staged
+# first. SETUPTOOLS_SCM_PRETEND_VERSION avoids setuptools-scm git-describe
+# issues in the --depth 1 clone.
 RUN if [ -n "${FLAGGEMS_VERSION}" ]; then \
         pip install --no-cache-dir -U "setuptools<77" "setuptools-scm>=8,<10" \
             scikit-build-core pybind11 ninja cmake wheel && \
