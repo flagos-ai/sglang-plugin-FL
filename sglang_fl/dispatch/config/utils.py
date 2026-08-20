@@ -31,7 +31,6 @@
 # Supported platforms:
 # - ascend: Huawei Ascend NPU
 # - nvidia: NVIDIA GPU (cuda)
-# - enflame: Enflame GCU (torch_gcu)
 # - (more platforms can be added)
 
 from __future__ import annotations
@@ -46,32 +45,12 @@ import yaml
 _CONFIG_DIR = Path(__file__).parent
 
 
-def _torch_gcu_module_available() -> bool:
-    """Return True when torch_gcu is importable and registers torch.gcu.
-
-    torch_gcu only registers the ``torch.gcu`` device module as an import side
-    effect, so on Enflame hosts the module must be imported before detection.
-    On every other platform the import is a cheap failure (module absent).
-    """
-    try:
-        import torch
-
-        if hasattr(torch, "gcu"):
-            return True
-        import torch_gcu  # noqa: F401
-
-        return hasattr(torch, "gcu")
-    except Exception:
-        return False
-
-
 def get_platform_name() -> str:
     """
     Detect the current hardware platform.
 
     Returns:
-        Platform name string: 'ascend', 'musa', 'iluvatar', 'enflame', 'hygon',
-        'nvidia', or 'unknown'
+        Platform name string: 'ascend', 'musa', 'iluvatar', 'nvidia', or 'unknown'
     """
     try:
         import torch
@@ -81,8 +60,6 @@ def get_platform_name() -> str:
             return "ascend"
         if hasattr(torch, "musa") and torch.musa.is_available():
             return "musa"
-        if _torch_gcu_module_available() and torch.gcu.is_available():
-            return "enflame"
         if hasattr(torch, "corex") and torch.cuda.is_available():
             return "iluvatar"
         if torch.cuda.is_available():

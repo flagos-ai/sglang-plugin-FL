@@ -52,7 +52,9 @@ ARG SGLANG_VERSION=0.5.11
 ARG FLAGGEMS_VERSION=v5.3.0
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    HF_ENDPOINT=https://huggingface.co
+    HF_ENDPOINT=https://huggingface.co \
+    SGLANG_FL_PLATFORM=enflame \
+    SGLANG_FL_DIST_BACKEND=eccl
 
 # ---------------------------------------------------------------------------
 # SGLang (stock wheel, dependency-free install)

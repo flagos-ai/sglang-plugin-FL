@@ -50,8 +50,6 @@ _DIST_BACKEND_MAP = {
     "mthreads": "mccl",
     "thead": "nccl",
     "tsingmicro": "tccl",
-    # Enflame GCU: torch_gcu.distributed registers the ECCL backend.
-    "enflame": "eccl",
 }
 
 # Attention backend mapping: vendor_name -> default backend
@@ -62,8 +60,6 @@ _ATTN_BACKEND_MAP = {
     "mthreads": "fa3",
     "kunlunxin": "kunlunxin",
     "iluvatar": "triton",
-    # Enflame GCU: torch_gcu SDPA via sglang's torch_native backend.
-    "enflame": "torch_native",
 }
 
 
@@ -372,14 +368,6 @@ class PlatformFL(SRTPlatform):
         NVIDIA is skipped — sglang's own defaulting handles it. For other vendors,
         if the user didn't pick an attention backend, fill from _ATTN_BACKEND_MAP.
         """
-        # OOT device types that sglang's get_device() cannot auto-resolve
-        # (it only knows cpu/cuda/xpu/npu/hpu/musa...). Without this, e.g. GCU
-        # silently resolves to "cpu". Resolvable device types are left alone.
-        if (
-            self._device_type not in ("cuda", "cpu", "npu", "xpu", "musa")
-            and getattr(server_args, "device", None) in (None, "", "cpu")
-        ):
-            server_args.device = self._device_type
         if self._vendor_name == "kunlunxin":
             server_args.mm_attention_backend = "sdpa"
             server_args.disable_cuda_graph = False
