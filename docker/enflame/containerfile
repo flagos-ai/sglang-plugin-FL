@@ -121,7 +121,12 @@ RUN pip install --no-cache-dir --no-deps "sglang==${SGLANG_VERSION}" && \
 #    CUDA's implicit int32->int64 promotion; topsatenCumsum hard-aborts on the
 #    dtype mismatch ("output tensor's data type must match the input"), so the
 #    input is cast explicitly (semantically identical on CUDA).
-RUN SRT="$(python -c 'import sglang.srt, os; print(os.path.dirname(sglang.srt.__file__))')" && \
+# NOTE: the sglang path is hardcoded (not resolved via `import sglang.srt`)
+# because the build sandbox has NO GCU devices — importing sglang.srt in the
+# base image transitively loads vllm_fl -> torch_gcu, which hard-aborts when
+# the GCU probe finds no hardware. The path is stable for the digest-pinned
+# base (python 3.12).
+RUN SRT="/usr/local/lib/python3.12/site-packages/sglang/srt" && \
     sed -i 's/SUPPORTED_DEVICES = \["cuda", "xpu", "hpu", "cpu", "npu", "musa", "mps"\]/SUPPORTED_DEVICES = ["cuda", "xpu", "hpu", "cpu", "npu", "musa", "mps", "gcu"]/' \
         "${SRT}/configs/device_config.py" && \
     sed -i 's/last_index = torch.cumsum(logits_metadata.extend_seq_lens, dim=0) - 1/last_index = torch.cumsum(logits_metadata.extend_seq_lens.to(torch.int64), dim=0) - 1/' \
