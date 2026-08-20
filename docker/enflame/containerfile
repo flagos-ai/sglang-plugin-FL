@@ -105,6 +105,27 @@ RUN pip install --no-cache-dir --no-deps "sglang==${SGLANG_VERSION}" && \
         zstandard
 
 # ---------------------------------------------------------------------------
+# In-image sglang source patches
+# ---------------------------------------------------------------------------
+# Deterministic seds against the pinned sglang==${SGLANG_VERSION} install.
+# These are IMAGE-level patches (the repo's plugin code is NOT modified); each
+# is guarded by a trailing grep so the build fails loudly if a future sglang
+# bump changes the patched lines.
+# 1) configs/device_config.py: SUPPORTED_DEVICES is a hardcoded whitelist with
+#    no extension hook — add "gcu" so ServerArgs(device="gcu") is accepted.
+# 2) layers/logits_processor.py: torch.cumsum(extend_seq_lens) relies on
+#    CUDA's implicit int32->int64 promotion; topsatenCumsum hard-aborts on the
+#    dtype mismatch ("output tensor's data type must match the input"), so the
+#    input is cast explicitly (semantically identical on CUDA).
+RUN SRT="$(python -c 'import sglang.srt, os; print(os.path.dirname(sglang.srt.__file__))')" && \
+    sed -i 's/SUPPORTED_DEVICES = \["cuda", "xpu", "hpu", "cpu", "npu", "musa", "mps"\]/SUPPORTED_DEVICES = ["cuda", "xpu", "hpu", "cpu", "npu", "musa", "mps", "gcu"]/' \
+        "${SRT}/configs/device_config.py" && \
+    sed -i 's/last_index = torch.cumsum(logits_metadata.extend_seq_lens, dim=0) - 1/last_index = torch.cumsum(logits_metadata.extend_seq_lens.to(torch.int64), dim=0) - 1/' \
+        "${SRT}/layers/logits_processor.py" && \
+    grep -q '"gcu"' "${SRT}/configs/device_config.py" && \
+    grep -q 'extend_seq_lens.to(torch.int64)' "${SRT}/layers/logits_processor.py"
+
+# ---------------------------------------------------------------------------
 # sgl_kernel import-time stub
 # ---------------------------------------------------------------------------
 # sglang 0.5.11 imports a few sgl_kernel symbols at module level
