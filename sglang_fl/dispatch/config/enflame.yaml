@@ -13,7 +13,10 @@
 # limitations under the License.
 
 # SGLang-FL Dispatch Configuration for Enflame GCU (torch_gcu).
-# Auto-loaded when torch.gcu.is_available() (see dispatch/config/utils.py).
+# Loaded via SGLANG_FL_CONFIG (highest-priority env override) — importing
+# sglang.srt flips torch.cuda.is_available() to True on GCU, which would
+# otherwise make the auto-detection load nvidia.yaml (see
+# .github/scripts/enflame/setup.sh and tests/platforms/enflame.yaml).
 
 prefer: flagos
 

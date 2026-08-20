@@ -45,11 +45,14 @@ ARG no_proxy
 
 # sglang version (repo baseline; matches docker/cuda/containerfile).
 ARG SGLANG_VERSION=0.5.11
-# FlagGems version for repo-baseline alignment. The base image ships a
-# 5.4.0.dev build curated by flagrelease for GCU; the CI image rebuilds the
-# pinned tag instead (v5.3.0 == the ascend baseline) so all plugin platforms
-# run the same FlagGems. Set FLAGGEMS_VERSION="" to keep the image's build.
-ARG FLAGGEMS_VERSION=v5.3.0
+# FlagGems version. The base image ships 5.4.0.dev589+ga96298230, curated by
+# flagrelease specifically for GCU — and it MUST be kept: FlagGems v5.3.0 was
+# tried and its GCU `index` op generates broken code_cache wrappers
+# (NameError: _has_strided_buffer undefined, hits sglang's overlap-utils
+# token-id resolution immediately). Aligning GCU to the v5.3.x repo baseline
+# needs an upstream FlagGems fix first. Set FLAGGEMS_VERSION to a tag to
+# override (build-time experiment knob).
+ARG FLAGGEMS_VERSION=
 
 ENV DEBIAN_FRONTEND=noninteractive \
     HF_ENDPOINT=https://huggingface.co \
