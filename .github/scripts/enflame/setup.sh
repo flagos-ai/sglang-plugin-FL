@@ -12,3 +12,14 @@ pip install -e ".[dev]" --no-build-isolation || pip install -e . --no-build-isol
 pip install pytest pytest-timeout pyyaml
 echo "=== Installation complete ==="
 python -c "import sglang_fl; print(f'sglang_fl {sglang_fl.__name__} loaded')"
+
+# Pin the plugin dispatch config to this platform's yaml via SGLANG_FL_CONFIG
+# (highest-priority override). Importing sglang.srt flips
+# torch.cuda.is_available() to True on GCU, which would otherwise make the
+# auto-detection load nvidia.yaml instead of enflame.yaml.
+if [[ -n "${GITHUB_ENV:-}" ]]; then
+  CFG_PATH="$(python -c \
+    'import os, sglang_fl.dispatch.config as c; print(os.path.join(os.path.dirname(c.__file__), "enflame.yaml"))')"
+  echo "SGLANG_FL_CONFIG=${CFG_PATH}" >> "${GITHUB_ENV}"
+  echo "SGLANG_FL_CONFIG=${CFG_PATH}"
+fi

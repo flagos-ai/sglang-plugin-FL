@@ -58,18 +58,25 @@ engine_overrides:
 # Default environment variables for this platform.
 # tests/run.py applies these before invoking pytest.
 #
-# SGLANG_FL_PLATFORM / SGLANG_FL_DIST_BACKEND: the plugin's auto platform
-# detection does not know GCU (torch.cuda is unavailable and there is no
-# torch.gcu probe in dispatch/config/utils.py), so the platform config
-# (sglang_fl/dispatch/config/enflame.yaml) is selected via the documented
-# env override, and the ECCL collective backend is pinned the same way
-# (default fallback would be nccl).
+# SGLANG_FL_FLAGOS_BLACKLIST: CRITICAL on GCU. Importing sglang.srt flips
+# torch.cuda.is_available() to True (torch_gcu registers a CUDA-compat layer
+# during sglang's platform probing), so the plugin's platform auto-detection
+# resolves to "nvidia" and loads nvidia.yaml — which has NO blacklist. The
+# env blacklist outranks any yaml, so it is set explicitly. Keep in sync
+# with sglang_fl/dispatch/config/enflame.yaml (flagos_blacklist).
+# cumsum / count_nonzero: the FlagGems GCU wrappers divide by a head-count
+# term that can be 0 (ZeroDivisionError in position computation / sampling)
+# — same failure signature as T-Head PPU. scaled_dot_product_attention:
+# FlagGems triton SDPA is not GCU-tuned; torch_gcu's native SDPA handles it.
+# SGLANG_FL_PLATFORM / SGLANG_FL_DIST_BACKEND: pin the platform name and the
+# ECCL collective backend (default fallback would be nccl).
 # TORCH_GCU_ENABLE_INT64_AND_UINT64 / ENABLE_I64_CHECK: torch_gcu disables
 # int64/uint64 kernels by default; sglang schedules int64 tensors, so enable
 # them (Enflame's own vLLM recipe uses the same pair, see vllm-plugin-FL
 # .github/configs/enflame.yml).
 # TORCHGCU_INDUCTOR_ENABLE: allow torch.compile inductor paths on GCU.
 env_defaults:
+  SGLANG_FL_FLAGOS_BLACKLIST: "scaled_dot_product_attention,cumsum,count_nonzero"
   SGLANG_FL_PLATFORM: "enflame"
   SGLANG_FL_DIST_BACKEND: "eccl"
   TORCH_GCU_ENABLE_INT64_AND_UINT64: "1"
