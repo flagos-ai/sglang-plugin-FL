@@ -6,8 +6,8 @@ Validates that sglang-plugin-FL correctly handles multi-node tensor parallelism
 by launching a distributed SGLang server across 2 nodes and running text,
 concurrent, multimodal (VL), and high-concurrency inference tests.
 
-Supports CUDA, MUSA, and Ascend NPU; platform-specific server flags and env
-vars are applied automatically at runtime.
+Supports CUDA, MUSA, Ascend NPU, and Iluvatar CoreX; platform-specific server
+flags and env vars are applied automatically at runtime.
 
 ============================================================================
 Usage:
@@ -76,15 +76,19 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
-
 import torch
 
 # ─── Platform detection ──────────────────────────────────────────────────────
 
+_is_txda = hasattr(torch, "txda") and torch.txda.is_available()
 _is_musa = hasattr(torch, "musa") and torch.musa.is_available()
 _is_npu = hasattr(torch, "npu") and torch.npu.is_available()
+_is_corex = hasattr(torch, "corex") and torch.cuda.is_available()
 
-# Must be set before launching sglang. Subprocesses inherit os.environ.
+if _is_txda:
+    os.environ.setdefault("SGLANG_FL_TIMER_ENABLE", "1")
+    os.environ.setdefault("SGLANG_REQ_WAITING_TIMEOUT", "-1")
+    os.environ.setdefault("SGLANG_REQ_RUNNING_TIMEOUT", "-1")
 if _is_npu:
     os.environ.setdefault("SGLANG_ENABLE_OVERLAP_PLAN_STREAM", "0")
     os.environ.setdefault("SGLANG_ENABLE_SPEC_V2", "1")
@@ -104,6 +108,13 @@ elif _is_npu:
         "--device", "npu",
         "--dtype", "bfloat16",
         "--disable-radix-cache",
+    ]
+elif _is_corex:
+    _PLATFORM_SERVER_ARGS = [
+        "--attention-backend", "triton",
+        "--watchdog-timeout", "3600",
+        "--cuda-graph-max-bs", "16",
+        "--sleep-on-idle",
     ]
 else:
     _PLATFORM_SERVER_ARGS = []
@@ -165,6 +176,12 @@ def parse_args():
         type=int,
         default=8,
         help="Number of concurrent VL requests for high-concurrency test",
+    )
+    parser.add_argument(
+        "--request-timeout",
+        type=int,
+        default=300,
+        help="HTTP request and result timeout in seconds (default: 300)",
     )
     return parser.parse_args()
 
@@ -289,6 +306,7 @@ def run_tests(
     nnodes: int,
     text_concurrency: int = 32,
     vl_concurrency: int = 8,
+    request_timeout: int = 300,
 ) -> bool:
     """Run all verification tests. Returns True if all passed."""
     t = TestRunner()
@@ -299,21 +317,22 @@ def run_tests(
         port,
         "How many states are there in the United States? Answer with just the number.",
         10,
+        timeout=request_timeout,
     )
     print(f"  Q: How many states?  A: {r}")
     t.check("US states = 50", "50", r)
 
-    r = chat_request(port, "What is the capital of France? Answer with one word.", 10)
+    r = chat_request(port, "What is the capital of France? Answer with one word.", 10, timeout=request_timeout)
     print(f"  Q: Capital of France?  A: {r}")
     t.check("Capital of France = Paris", "Paris", r)
 
-    r = chat_request(port, "What is 2+3? Answer with just the number.", 10)
+    r = chat_request(port, "What is 2+3? Answer with just the number.", 10, timeout=request_timeout)
     print(f"  Q: 2+3?  A: {r}")
     t.check("2+3 = 5", "5", r)
 
     # Test 2: Longer Generation
     print("\n=== Test 2: Longer Generation ===")
-    r = chat_request(port, "List the first 5 prime numbers, separated by commas.", 64)
+    r = chat_request(port, "List the first 5 prime numbers, separated by commas.", 64, timeout=request_timeout)
     print(f"  Q: First 5 primes  A: {r}")
     t.check("Contains '2'", "2", r)
     t.check("Contains '7'", "7", r)
@@ -325,13 +344,13 @@ def run_tests(
         futures = {}
         for i in range(1, 5):
             f = executor.submit(
-                chat_request, port, f"What is {i}+{i}? Answer with just the number.", 10
+                chat_request, port, f"What is {i}+{i}? Answer with just the number.", 10, request_timeout
             )
             futures[i] = f
 
         all_ok = True
         for i in range(1, 5):
-            r = futures[i].result()
+            r = futures[i].result(timeout=request_timeout)
             expected = str(i + i)
             ok = expected in r
             print(f"  {'PASS' if ok else 'FAIL'}: {i}+{i}={expected} -> {r}")
@@ -357,13 +376,13 @@ def run_tests(
         for i in range(text_concurrency):
             a, b = i + 1, i + 2
             f = executor.submit(
-                chat_request, port, f"What is {a}+{b}? Answer with just the number.", 10
+                chat_request, port, f"What is {a}+{b}? Answer with just the number.", 10, request_timeout
             )
             futures[i] = (a, b, f)
 
         for i, (a, b, f) in futures.items():
             try:
-                r = f.result(timeout=300)
+                r = f.result(timeout=request_timeout)
                 expected = str(a + b)
                 if expected in r:
                     ok_count += 1
@@ -391,6 +410,7 @@ def run_tests(
             IMG_DIR / "red_square.jpg",
             "What color is shown in this image? Answer with one word.",
             10,
+            timeout=request_timeout,
         )
         print(f"  Q: Color of square?  A: {r}")
         t.check("VL: red square = red", "red", r)
@@ -400,6 +420,7 @@ def run_tests(
             IMG_DIR / "cat.jpg",
             "What animal is in this image? Answer with one word.",
             10,
+            timeout=request_timeout,
         )
         print(f"  Q: Animal in image?  A: {r}")
         t.check("VL: cat image = cat", "cat", r)
@@ -409,6 +430,7 @@ def run_tests(
             IMG_DIR / "digit_seven.png",
             "What digit is shown in this image? Answer with one digit.",
             10,
+            timeout=request_timeout,
         )
         print(f"  Q: Digit in image?  A: {r}")
         t.check("VL: digit = 7", "7", r)
@@ -439,11 +461,11 @@ def run_tests(
                 futures[i] = (
                     img.name,
                     exp,
-                    executor.submit(vl_request, port, img, q, 10),
+                    executor.submit(vl_request, port, img, q, 10, request_timeout),
                 )
             for i, (name, expected, f) in futures.items():
                 try:
-                    r = f.result(timeout=300)
+                    r = f.result(timeout=request_timeout)
                     if expected.lower() in r.lower():
                         ok_count += 1
                     else:
@@ -480,7 +502,7 @@ def run_master(args):
     print(f"  Master: {args.master_addr}  dist={args.dist_port}  nccl={args.nccl_port}")
     print(f"  API:    http://localhost:{args.port}")
     print(
-        f"  Text concurrency: {args.text_concurrency}  VL concurrency: {args.vl_concurrency}"
+        f"  Text concurrency: {args.text_concurrency}  VL concurrency: {args.vl_concurrency}  Request timeout: {args.request_timeout}s"
     )
     print("=" * 56)
 
@@ -511,6 +533,20 @@ def run_master(args):
         "--trust-remote-code",
         *_PLATFORM_SERVER_ARGS,
     ]
+    if _is_txda:
+        insert_pos = cmd.index("--mem-fraction-static")
+        cmd[insert_pos + 1] = "0.6"
+        for flag in reversed([
+            "--device", "txda",
+            "--dtype", "bfloat16",
+            "--disable-radix-cache",
+            "--watchdog-timeout", "3600",
+            "--mm-attention-backend", "triton_attn",
+            "--disable-fast-image-processor",
+            "--context-length", "8192",
+            "--chunked-prefill-size", "256",
+        ]):
+            cmd.insert(insert_pos, flag)
 
     print("Launching server...")
     server_proc = subprocess.Popen(cmd)
@@ -541,6 +577,7 @@ def run_master(args):
             args.nnodes,
             text_concurrency=args.text_concurrency,
             vl_concurrency=args.vl_concurrency,
+            request_timeout=args.request_timeout,
         )
         cleanup()
         sys.exit(0 if success else 1)
@@ -602,6 +639,20 @@ def run_worker(args):
         "--trust-remote-code",
         *_PLATFORM_SERVER_ARGS,
     ]
+    if _is_txda:
+        insert_pos = cmd.index("--mem-fraction-static")
+        cmd[insert_pos + 1] = "0.6"
+        for flag in reversed([
+            "--device", "txda",
+            "--dtype", "bfloat16",
+            "--disable-radix-cache",
+            "--watchdog-timeout", "3600",
+            "--mm-attention-backend", "triton_attn",
+            "--disable-fast-image-processor",
+            "--context-length", "8192",
+            "--chunked-prefill-size", "256",
+        ]):
+            cmd.insert(insert_pos, flag)
 
     print("Starting worker node... (will block until master shuts down)\n")
     try:

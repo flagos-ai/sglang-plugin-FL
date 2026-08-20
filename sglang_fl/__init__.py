@@ -1,3 +1,17 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """SGLang OOT Plugin — FlagGems-based multi-chip adaptation.
 
 Two entry_points are registered:
@@ -423,9 +437,9 @@ def _setup_flaggems(config: dict = None):
 def _apply_vendor_patches() -> None:
     """Import vendor/<vendor_name>/patch.py to apply vendor monkey-patches
     on sglang internals. Called last in load_plugin(), after every sglang_fl
-    layer (FlagGems ATen, dispatch system, AROUND hooks, communicator). 
+    layer (FlagGems ATen, dispatch system, AROUND hooks, communicator).
     Resolves vendor_name via FlagGems' DeviceDetector — no PlatformFL needed,
-    so this still runs before sglang's model_runner is imported. Silently 
+    so this still runs before sglang's model_runner is imported. Silently
     skips when the vendor module is absent or hardware is unrecognised.
     """
     import importlib
@@ -723,6 +737,16 @@ def activate_platform() -> str | None:
 # ─── General Plugin entry point ──────────────────────────────────────────────
 
 _plugin_loaded = False
+_plugin_active = False
+
+
+def is_plugin_loaded() -> bool:
+    """Return whether SGLang invoked the general plugin entry point."""
+    return _plugin_loaded
+
+def is_plugin_active() -> bool:
+    """Return whether the general plugin completed its initialization."""
+    return _plugin_active
 
 
 def load_plugin():
@@ -730,10 +754,12 @@ def load_plugin():
 
     Idempotent: safe to call multiple times.
     """
-    global _plugin_loaded
+    global _plugin_active, _plugin_loaded
     if _plugin_loaded:
         return
     _plugin_loaded = True
+    if _is_rank0():
+        logger.info("sglang_fl plugin loading")
 
     # Suppress info logs on non-rank-0 processes to avoid duplicate output
     if not _is_rank0():
@@ -800,3 +826,5 @@ def load_plugin():
             "+" + "=" * 58 + "+"
         )
         logger.info(banner)
+
+    _plugin_active = True

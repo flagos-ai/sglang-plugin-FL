@@ -1,3 +1,17 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """SGLang Platform Plugin — FlagGems-based multi-chip platform.
 
 Registers as an SRTPlatform subclass via the `sglang.srt.platforms` entry_point.
@@ -36,15 +50,18 @@ _DIST_BACKEND_MAP = {
     "mthreads": "mccl",
     "thead": "nccl",
     "enflame": "eccl"
+    "tsingmicro": "tccl",
 }
 
 # Attention backend mapping: vendor_name -> default backend
-# The value must match a name registered in sglang.srt.layers.attention.attention_registry. 
+# The value must match a name registered in sglang.srt.layers.attention.attention_registry.
 _ATTN_BACKEND_MAP = {
     "nvidia": "flashinfer",
     "ascend": "ascend",
     "mthreads": "fa3",
     "enflame": "fa3"
+    "kunlunxin": "kunlunxin",
+    "iluvatar": "triton",
 }
 
 
@@ -95,12 +112,12 @@ class PlatformFL(SRTPlatform):
             backend.set_torch_backend_device_fn(self._vendor_name)
         except Exception:
             pass
-
         logger.info(
-            "PlatformFL initialized: vendor=%s, device=%s, dist_backend=%s",
+            "PlatformFL initialized: vendor=%s, device=%s, dist_backend=%s, count=%d",
             self._vendor_name,
             self._device_type,
             self._dist_backend,
+            self._device_count,
         )
 
     def _resolve_dist_backend(self) -> str:
@@ -135,6 +152,16 @@ class PlatformFL(SRTPlatform):
 
     def is_out_of_tree(self) -> bool:
         return True
+
+    def get_compile_backend(self, mode: str | None = None) -> str:
+        """Return the compilation backend for this platform.
+
+        On txda and other non-CUDA platforms, triton's inductor backend
+        has no active driver, so we return "eager" to disable torch.compile.
+        """
+        if self._device_type == "txda":
+            return "eager"
+        return "inductor"
 
     # ------------------------------------------------------------------
     # Active methods (called by SGLang core)
@@ -287,7 +314,7 @@ class PlatformFL(SRTPlatform):
         return self._device_type == "cuda"
 
     def is_pin_memory_available(self) -> bool:
-        return self._device_type in ("cuda", "npu", "xpu", "musa")
+        return self._device_type in ("cuda", "npu", "xpu", "musa", "tsingmicro")
 
     def supports_fp8(self) -> bool:
         if self._device_type == "cuda":
@@ -341,10 +368,13 @@ class PlatformFL(SRTPlatform):
     def apply_server_args_defaults(self, server_args) -> None:
         """Apply platform-specific defaults to server arguments.
 
-        CUDA is skipped — sglang's own defaulting handles it. For other vendors,
+        NVIDIA is skipped — sglang's own defaulting handles it. For other vendors,
         if the user didn't pick an attention backend, fill from _ATTN_BACKEND_MAP.
         """
-        if self._device_type == "cuda":
+        if self._vendor_name == "kunlunxin":
+            server_args.mm_attention_backend = "sdpa"
+            server_args.disable_cuda_graph = False
+        if self._vendor_name == "nvidia":
             return
         if self._device_type == "gcu":
             server_args.device = "gcu"

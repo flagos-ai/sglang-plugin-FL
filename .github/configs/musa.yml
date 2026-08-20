@@ -1,0 +1,35 @@
+# Moore Threads MUSA Hardware Configuration
+# This file defines CI/CD settings for Moore Threads GPU (MTT S5000) testing.
+
+platform: musa
+
+# Docker image for this hardware
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-musa-ci
+
+# Runner labels for this hardware
+runner_labels:
+  - ci-sglang-plugin-fl-mthreads
+
+# Container volumes (hardware-specific paths)
+# - /data:/data : model files live at /data/models/Qwen on the S5000 runner, and the
+#   test model configs reference /data/models/Qwen/<model> in-container, so mounting
+#   the whole /data keeps that path intact (same pattern as vllm-plugin-FL musa).
+container_volumes:
+  - /data:/data
+
+# Container options (no --privileged / --device / --gpus needed: the host docker daemon
+# uses the mthreads runtime by default, which injects GPUs from MTHREADS_VISIBLE_DEVICES
+# set in the image ENV. Verified on the S5000 CI host: torch.musa.is_available()==True
+# with a plain `docker run`.)
+# --user root is required: the CI image installs libs under system paths and the
+# setup.sh step pip-installs the plugin into /usr/local.
+# --init: tini as PID 1 reaps orphan zombies from sglang TP workers on shutdown
+# (same rationale as cuda/ascend).
+container_options: >-
+  --hostname sglang-plugin-fl
+  --ipc=host
+  --shm-size=64g
+  --ulimit memlock=-1
+  --ulimit stack=67108864
+  --user root
+  --init

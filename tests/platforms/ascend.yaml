@@ -1,0 +1,110 @@
+# Ascend (Huawei NPU) Platform Configuration
+# Flexible test selection mechanism for Huawei Ascend NPU environments.
+#
+# This file is a starter configuration. Adjust device_types, tolerance, and
+# test cases to match your actual Ascend hardware (e.g. 910B/910C) and model
+# coverage. Keep this file UTF-8 encoded (no GBK/CP1252) or the loader will
+# skip it with a warning.
+#
+# Users can modify:
+# - e2e: Add/remove model cases in inference and serving support lists
+# - benchmark: Enable/disable throughput, latency, and serve smoke tests
+# - unit: Add/remove paths in include and exclude lists
+# - tolerance: Adjust numerical comparison tolerance for result validation
+# - unsupported_features: Exclude test cases matching specific feature tags
+# - env_defaults: Set HCCL/torch_npu environment defaults before tests start
+#
+# ---- Platform-level settings ------------------------------------------------
+platform: ascend
+vendor: huawei
+
+device_types:
+  910c:
+    memory_gb: 64
+    tags: [ascend, bf16, fp16]
+  # Add more Ascend devices as needed, e.g.:
+  # 910b:
+  #   memory_gb: 64
+  #   tags: [ascend, bf16, fp16]
+
+# Platform-specific engine parameters that supplement the common model config
+# (merged via tests/utils/platform_config.py get_engine_overrides). These NPU
+# args are Ascend-only: they MUST NOT live in the shared model yamls, or CUDA
+# would inherit device="npu" and crash with "torch_npu is required".
+#   attention_backend="ascend" is load-bearing for qwen3_6 MoE correctness
+#   (without it 35B-A3B emits "5 ... state 1" instead of "50").
+engine_overrides:
+  qwen3_6:
+    27b_tp4_nograph:
+      attention_backend: "ascend"
+      device: "npu"
+      dtype: "bfloat16"
+      disable_radix_cache: true
+    35b_a3b_tp4_nograph:
+      attention_backend: "ascend"
+      device: "npu"
+      dtype: "bfloat16"
+      disable_radix_cache: true
+
+# Default numerical tolerance for result comparison.
+# Ascend NPU kernels may produce slightly different numerics than CUDA due to
+# different accumulation order and kernel implementations; tune per model.
+tolerance:
+  inference:
+    default: {rtol: 1e-5, atol: 1e-8}
+    bfloat16: {rtol: 1e-3, atol: 1e-3}
+    float16: {rtol: 1e-3, atol: 1e-3}
+
+# Device-level overrides for specific devices or categories.
+# Keep as {} if no per-device override is needed.
+device_overrides: {}
+
+# Features not supported on this platform.
+# Test cases whose model name contains any of these strings will be skipped.
+# Common values to consider: ["flashinfer", "triton"] (Ascend uses torch_npu).
+unsupported_features: []
+
+# Default environment variables for this platform.
+# tests/run.py applies these before invoking pytest (os.environ.setdefault).
+#
+# The op/OOT blacklists are intentionally NOT set here. The authoritative lists
+# live in sglang_fl/dispatch/config/ascend.yaml (auto-loaded by the plugin when
+# torch.npu.is_available()); setting them as env would override that file, since
+# run.py setdefault lets a non-empty env win. Keep this empty so the config applies.
+env_defaults:
+  # NOTE: do NOT re-add ASCEND_LAUNCH_BLOCKING=1 casually. Sync mode forces eager
+  # kernel compile and triggers "ParseDynamicKernels fail /
+  # Cast ADD_TO_LAUNCHER_LIST_AICORE failed" on aclnnInplaceCopy/aclnnReduceSum.
+  # Async (default) mode compiles these lazily and avoids the failure.
+
+# ---- Device-specific test configurations ------------------------------------
+910c:
+  name: "910c"
+  tests:
+    e2e:
+      # Add or remove test cases per model.
+      # Each case points to tests/models/<model>/<case>.yaml.
+      concurrent:
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      inference:
+        qwen3: ["4b_tp2", "06b_tp1"]
+        qwen3_6: ["35b_a3b_tp4_nograph",  "27b_tp4_nograph"]
+      serving:
+        qwen3: ["4b_tp2"]
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+
+    functional:
+      # Reserved for future tests/functional_tests support.
+      # Current SGLang runner does not consume this section yet.
+      include: "*"
+      exclude: []
+
+    unit:
+      # Include patterns: "*" for all, or list specific paths.
+      include: "*"
+      # Exclude patterns: empty list or list paths to exclude.
+      exclude: []
+
+    benchmark:
+      enabled: true
+      smoke: ["throughput", "latency", "serve"]

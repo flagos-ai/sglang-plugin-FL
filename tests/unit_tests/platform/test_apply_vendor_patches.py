@@ -1,3 +1,17 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Tests for _apply_vendor_patches in sglang_fl/__init__.py.
 
 import importlib
@@ -18,6 +32,14 @@ class TestApplyVendorPatches:
             _apply_vendor_patches()
         assert "vendor patch loaded" in caplog.text
         assert "fakevendor.patch" in caplog.text
+
+    def test_mthreads_vendor_loads_patch(self, caplog, mock_device_detector):
+        """mthreads vendor has a real patch.py on disk - verify it loads directly."""
+        mock_device_detector("mthreads")
+        with caplog.at_level(logging.INFO, logger="sglang_fl"):
+            _apply_vendor_patches()
+        assert "vendor patch loaded" in caplog.text
+        assert "mthreads.patch" in caplog.text
 
     def test_absent_when_patch_missing(self, caplog, mock_device_detector):
         mock_device_detector("nonexistent_vendor_xyz_for_test")

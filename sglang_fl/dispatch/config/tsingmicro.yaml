@@ -1,0 +1,11 @@
+# SGLang-FL Dispatch Configuration for tsingmicro (TXDA) platform
+prefer: flagos
+
+# Per-operator backend selection order.
+# Tokens: vendor (platform-native), flagos (FlagGems/Triton), reference (pure PyTorch)
+# Each op tries candidates left-to-right; falls to the next on failure.
+op_backends:
+  silu_and_mul:
+    - reference
+    - vendor       # vendor.tsingmicro – pure PyTorch, safe on TXDA hardware
+    - flagos       # default.flagos – Triton kernel, may not be TXDA-verified

@@ -1,6 +1,30 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 [default.extend-words]
 # Ascend CANN is Huawei's official toolkit name
 CANN = "CANN"
 cann = "cann"
 # SGLang env var uses "INBALANCE" (upstream spelling)
 INBALANCE = "INBALANCE"
+lod = "lod"
+# torch.arange / np.arange - real API names, not a typo of "arrange"
+arange = "arange"
+# "unparseable" is a valid variant (common in parsing/compiler docs)
+unparseable = "unparseable"
+# Qwen-VL grid shape identifier: temporal x height x width (image_grid_thw /
+# video_grid_thw). Standard in Qwen2.5-VL / Qwen3-VL, not a typo of "the".
+thw = "thw"
+# MUSA / flashinfer C++ header file extension (.muh), e.g. flashinfer/sampling.muh
+muh = "muh"
