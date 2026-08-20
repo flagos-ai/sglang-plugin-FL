@@ -50,8 +50,6 @@ _DIST_BACKEND_MAP = {
     "mthreads": "mccl",
     "thead": "nccl",
     "tsingmicro": "tccl",
-    # Hygon DCU (DTK): torch.distributed exposes the NCCL API backed by HCCL.
-    "hygon": "nccl",
     # Enflame GCU: torch_gcu.distributed registers the ECCL backend.
     "enflame": "eccl",
 }

@@ -1,0 +1,24 @@
+# Stub of the CUDA-only `sgl_kernel` package for non-CUDA sglang-plugin-FL CI
+# images (installed by docker/enflame/containerfile).
+#
+# sglang 0.5.11 imports a handful of `sgl_kernel` symbols at module level
+# (e.g. sglang/srt/mem_cache/memory_pool_host.py imports
+# sgl_kernel.kvcacheio) even on devices that have no CUDA sgl-kernel build.
+# On GCU those kernels never execute at runtime: the plugin's dispatch layer
+# (sglang_fl AROUND hook) routes every fused kernel to the flagos / vendor /
+# reference backends instead. This stub therefore only makes the imports
+# succeed; every attribute resolves to a callable that raises loudly if some
+# un-intercepted path ever reaches for a CUDA kernel.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sgl-kernel-stub"
+version = "0.0.0"
+description = "Import-time stub of sgl_kernel for non-CUDA sglang-plugin-FL CI images"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+packages = ["sgl_kernel"]

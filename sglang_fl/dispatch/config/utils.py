@@ -31,7 +31,6 @@
 # Supported platforms:
 # - ascend: Huawei Ascend NPU
 # - nvidia: NVIDIA GPU (cuda)
-# - hygon: Hygon DCU (DTK/HIP)
 # - enflame: Enflame GCU (torch_gcu)
 # - (more platforms can be added)
 
@@ -86,10 +85,6 @@ def get_platform_name() -> str:
             return "enflame"
         if hasattr(torch, "corex") and torch.cuda.is_available():
             return "iluvatar"
-        # Hygon DCU torch (DTK) is HIP-based and reports torch.cuda as
-        # available, but additionally exposes the __hcu_version__ attribute.
-        if getattr(torch, "__hcu_version__", None) and torch.cuda.is_available():
-            return "hygon"
         if torch.cuda.is_available():
             return "nvidia"
     except ImportError:
