@@ -98,4 +98,17 @@ RUN HF_HUB_OFFLINE=0 python -c "from huggingface_hub import hf_hub_download as d
 ENV HF_HUB_OFFLINE=1
 ENV TRANSFORMERS_OFFLINE=1
 
+# Enable the plugin's FlagCX communication layer by default. The T-Head base
+# image already contains the vendor-built FlagCX v0.13.0 source tree and
+# libflagcx.so; bake its source-tree path into the CI image so PlatformFL selects
+# FlagCX instead of silently defaulting to NCCL.
+ENV FLAGCX_PATH=/sgl-workspace/FlagCX \
+    SGLANG_FL_DIST_BACKEND=flagcx
+
+# Fail the image build if the preinstalled FlagCX tree is incomplete or its
+# shared library cannot be loaded with the PPU runtime bundled in the base image.
+RUN test -f "${FLAGCX_PATH}/build/lib/libflagcx.so" && \
+    test -f "${FLAGCX_PATH}/plugin/interservice/flagcx_wrapper.py" && \
+    PYTHONPATH="${FLAGCX_PATH}" python -c "import os; from plugin.interservice.flagcx_wrapper import FLAGCXLibrary; path = os.path.join(os.environ['FLAGCX_PATH'], 'build', 'lib', 'libflagcx.so'); FLAGCXLibrary(path); print(f'FlagCX loaded from {path}')"
+
 WORKDIR /workspace
