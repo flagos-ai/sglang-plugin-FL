@@ -81,7 +81,7 @@ RUN pip install --no-cache-dir --no-deps "sglang==${SGLANG_VERSION}" && \
         gguf \
         interegular \
         IPython \
-        llguidance>=0.7.11,<0.8.0 \
+        "llguidance>=0.7.11,<0.8.0" \
         modelscope \
         msgspec \
         ninja \
@@ -93,13 +93,13 @@ RUN pip install --no-cache-dir --no-deps "sglang==${SGLANG_VERSION}" && \
         packaging \
         partial_json_parser \
         pillow \
-        prometheus-client>=0.20.0 \
+        "prometheus-client>=0.20.0" \
         psutil \
         py-spy \
         pybase64 \
         pydantic \
         python-multipart \
-        pyzmq>=25.1.2 \
+        "pyzmq>=25.1.2" \
         requests \
         scipy \
         tornado \
