@@ -58,6 +58,7 @@ export FLAGCX_PATH=/path/to/FlagCX
 export FLAGCX_P2P_SLICE_SIZE=65536    # slice size per one-sided RDMA write (recommended)
 export FLAGCX_P2P_WORKERS_PER_POOL=2  # transfer workers per pool (recommended)
 export FLAGCX_P2P_QPS_PER_CONN=2      # queue pairs per connection (recommended)
+export SGLANG_SEND_AUX_TCP=0          # 1 → send aux data (output ids/logprobs) over TCP instead of RDMA
 ```
 
 | Variable | Description |
@@ -69,6 +70,7 @@ export FLAGCX_P2P_QPS_PER_CONN=2      # queue pairs per connection (recommended)
 | `FLAGCX_IB_HCA` | Usually **no need to set manually**: `conn.py:257` applies `setdefault` using the value of `--disaggregation-ib-device` |
 | `SGLANG_FL_DISAGG_FLAGCX` | Layer 4 switch, default `1`; setting `0` makes `flagcx` an invalid backend value |
 | `SGLANG_FL_OOT_ENABLED` / `USE_FLAGGEMS` | Layer 2 / Layer 1 switches; enable them one at a time during performance tuning |
+| `SGLANG_SEND_AUX_TCP` | Optional, default:0; Send aux data (first-token metadata) over TCP instead of RDMA |
 
 Throughout this guide, replace the placeholders with your own values:
 
