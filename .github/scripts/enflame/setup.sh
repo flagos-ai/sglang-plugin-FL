@@ -13,13 +13,9 @@ pip install pytest pytest-timeout pyyaml
 echo "=== Installation complete ==="
 python -c "import sglang_fl; print(f'sglang_fl {sglang_fl.__name__} loaded')"
 
-# Pin the plugin dispatch config to this platform's yaml via SGLANG_FL_CONFIG
-# (highest-priority override). Importing sglang.srt flips
-# torch.cuda.is_available() to True on GCU, which would otherwise make the
-# auto-detection load nvidia.yaml instead of enflame.yaml.
-if [[ -n "${GITHUB_ENV:-}" ]]; then
-  CFG_PATH="$(python -c \
-    'import os, sglang_fl.dispatch.config as c; print(os.path.join(os.path.dirname(c.__file__), "enflame.yaml"))')"
-  echo "SGLANG_FL_CONFIG=${CFG_PATH}" >> "${GITHUB_ENV}"
-  echo "SGLANG_FL_CONFIG=${CFG_PATH}"
-fi
+# NOTE: no SGLANG_FL_CONFIG export (an earlier revision did): GITHUB_ENV
+# persists into the unit step, and a preset SGLANG_FL_CONFIG changes the
+# dispatch manager's resolution enough to break the env-policy unit tests
+# (no other platform's setup.sh exports it either). The load-bearing GCU
+# fix — the op blacklist — is carried by tests/platforms/enflame.yaml
+# env_defaults instead (env outranks any yaml).

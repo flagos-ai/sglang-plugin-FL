@@ -68,8 +68,13 @@ engine_overrides:
 # term that can be 0 (ZeroDivisionError in position computation / sampling)
 # — same failure signature as T-Head PPU. scaled_dot_product_attention:
 # FlagGems triton SDPA is not GCU-tuned; torch_gcu's native SDPA handles it.
-# SGLANG_FL_PLATFORM / SGLANG_FL_DIST_BACKEND: pin the platform name and the
-# ECCL collective backend (default fallback would be nccl).
+# SGLANG_FL_DIST_BACKEND: pin the ECCL collective backend (the default
+# vendor-map fallback would be nccl).
+# NOTE: SGLANG_FL_PLATFORM is intentionally NOT set. tests/run.py applies
+# env_defaults to the unit scope too, and a preset SGLANG_FL_PLATFORM forces
+# the dispatch manager to load the enflame platform config, breaking the
+# env-policy unit tests (ascend.yaml keeps its env_defaults empty for the
+# same reason). The blacklist env above carries the load-bearing part.
 # TORCH_GCU_ENABLE_INT64_AND_UINT64 / ENABLE_I64_CHECK: torch_gcu disables
 # int64/uint64 kernels by default; sglang schedules int64 tensors, so enable
 # them (Enflame's own vLLM recipe uses the same pair, see vllm-plugin-FL
@@ -77,7 +82,6 @@ engine_overrides:
 # TORCHGCU_INDUCTOR_ENABLE: allow torch.compile inductor paths on GCU.
 env_defaults:
   SGLANG_FL_FLAGOS_BLACKLIST: "scaled_dot_product_attention,cumsum,cumsum_out,count_nonzero,unique,_unique2"
-  SGLANG_FL_PLATFORM: "enflame"
   SGLANG_FL_DIST_BACKEND: "eccl"
   TORCH_GCU_ENABLE_INT64_AND_UINT64: "1"
   ENABLE_I64_CHECK: "0"

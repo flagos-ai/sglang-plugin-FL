@@ -61,12 +61,19 @@ ARG FLAGGEMS_VERSION=
 # Optional HTTP proxy for the git clone below ONLY (pip must stay direct —
 # the CI proxy does not carry pypi.org). Passed via --build-arg GIT_PROXY=...
 ARG GIT_PROXY=
+# Optional pip index override for the pip steps (e.g. a fast CN mirror on
+# slow pypi.org routes): --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+# Empty (default) = pypi.org direct.
+ARG PIP_INDEX_URL=
 
+# NOTE: no SGLANG_FL_* envs are baked (an earlier revision baked platform/
+# dist-backend/blacklist). Plugin envs live in tests/platforms/enflame.yaml
+# env_defaults, applied per-scope by tests/run.py: baking them into the image
+# leaks them into the unit scope, where SGLANG_FL_PLATFORM breaks the
+# env-policy unit tests. The image stays plugin-env-neutral like the cuda
+# and ascend CI images.
 ENV DEBIAN_FRONTEND=noninteractive \
-    HF_ENDPOINT=https://huggingface.co \
-    SGLANG_FL_PLATFORM=enflame \
-    SGLANG_FL_DIST_BACKEND=eccl \
-    SGLANG_FL_FLAGOS_BLACKLIST=scaled_dot_product_attention,cumsum,cumsum_out,count_nonzero,unique,_unique2
+    HF_ENDPOINT=https://huggingface.co
 
 # ---------------------------------------------------------------------------
 # SGLang (stock wheel, dependency-free install)
@@ -124,10 +131,13 @@ RUN pip install --no-cache-dir --no-deps "sglang==${SGLANG_VERSION}" && \
 # bump changes the patched lines.
 # 1) configs/device_config.py: SUPPORTED_DEVICES is a hardcoded whitelist with
 #    no extension hook — add "gcu" so ServerArgs(device="gcu") is accepted.
-# 2) layers/logits_processor.py: torch.cumsum(extend_seq_lens) relies on
-#    CUDA's implicit int32->int64 promotion; topsatenCumsum hard-aborts on the
-#    dtype mismatch ("output tensor's data type must match the input"), so the
-#    input is cast explicitly (semantically identical on CUDA).
+# 2) torch.cumsum dtype casts (all seq-lens sites): CUDA implicitly promotes
+#    int32 seq-lens tensors to int64 inside cumsum; topsatenCumsum hard-aborts
+#    on the dtype mismatch ("output tensor's data type must match the input").
+#    A regex sweep casts every torch.cumsum(<arg containing "lens">, dim=0)
+#    input explicitly — semantically identical on CUDA. Args already carrying
+#    .to(torch.int64) contain parentheses and cannot match; float cumsums
+#    never take a "lens" argument.
 # NOTE: the sglang path is hardcoded (not resolved via `import sglang.srt`)
 # because the build sandbox has NO GCU devices — importing sglang.srt in the
 # base image transitively loads vllm_fl -> torch_gcu, which hard-aborts when
@@ -136,10 +146,10 @@ RUN pip install --no-cache-dir --no-deps "sglang==${SGLANG_VERSION}" && \
 RUN SRT="/usr/local/lib/python3.12/site-packages/sglang/srt" && \
     sed -i 's/SUPPORTED_DEVICES = \["cuda", "xpu", "hpu", "cpu", "npu", "musa", "mps"\]/SUPPORTED_DEVICES = ["cuda", "xpu", "hpu", "cpu", "npu", "musa", "mps", "gcu"]/' \
         "${SRT}/configs/device_config.py" && \
-    sed -i 's/last_index = torch.cumsum(logits_metadata.extend_seq_lens, dim=0) - 1/last_index = torch.cumsum(logits_metadata.extend_seq_lens.to(torch.int64), dim=0) - 1/' \
-        "${SRT}/layers/logits_processor.py" && \
-    grep -q '"gcu"' "${SRT}/configs/device_config.py" && \
-    grep -q 'extend_seq_lens.to(torch.int64)' "${SRT}/layers/logits_processor.py"
+    python -c "import re, pathlib; pat = re.compile(r'torch\.cumsum\(([^()]*lens[^()]*?), dim=0\)'); root = pathlib.Path('${SRT}'); files = [p for p in root.rglob('*.py') if pat.search(p.read_text())]; [p.write_text(pat.sub(r'torch.cumsum(\1.to(torch.int64), dim=0)', p.read_text())) for p in files]; print('cumsum int64 casts:', len(files), 'files')" && \
+    grep -qF '"gcu"' "${SRT}/configs/device_config.py" && \
+    grep -qF 'extend_seq_lens[:-1].to(torch.int64)' "${SRT}/model_executor/forward_batch_info.py" && \
+    grep -qF 'seq_lens.to(torch.int64), dim=0' "${SRT}/layers/attention/triton_backend.py"
 
 # ---------------------------------------------------------------------------
 # sgl_kernel import-time stub
