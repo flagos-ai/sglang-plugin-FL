@@ -55,7 +55,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HF_ENDPOINT=https://huggingface.co \
     SGLANG_FL_PLATFORM=enflame \
     SGLANG_FL_DIST_BACKEND=eccl \
-    SGLANG_FL_FLAGOS_BLACKLIST=scaled_dot_product_attention,cumsum,count_nonzero
+    SGLANG_FL_FLAGOS_BLACKLIST=scaled_dot_product_attention,cumsum,cumsum_out,count_nonzero
 
 # ---------------------------------------------------------------------------
 # SGLang (stock wheel, dependency-free install)

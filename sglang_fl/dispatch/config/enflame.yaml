@@ -53,4 +53,5 @@ op_backends:
 flagos_blacklist:
   - scaled_dot_product_attention
   - cumsum
+  - cumsum_out
   - count_nonzero
