@@ -45,5 +45,12 @@ op_backends:
 # scaled_dot_product_attention: FlagGems triton SDPA misbehaves on GCU —
 # let torch_gcu's native SDPA handle it (same entry as vllm-fl's enflame
 # config).
+# cumsum / count_nonzero: the GCU backend's wrappers divide by a head-count
+# term that can be 0 (ZeroDivisionError during position computation /
+# sampling) — identical failure signature to T-Head PPU (see the thead
+# platform's SGLANG_FL_FLAGOS_BLACKLIST note). Blacklisting falls those ops
+# back to torch native.
 flagos_blacklist:
   - scaled_dot_product_attention
+  - cumsum
+  - count_nonzero
