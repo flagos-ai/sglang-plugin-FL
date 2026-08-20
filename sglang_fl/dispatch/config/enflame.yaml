@@ -1,0 +1,49 @@
+# Copyright 2026 BAAI. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# SGLang-FL Dispatch Configuration for Enflame GCU (torch_gcu).
+# Auto-loaded when torch.gcu.is_available() (see dispatch/config/utils.py).
+
+prefer: flagos
+
+strict: false
+
+# Per-operator backend execution order (Optional).
+# Attention runs through torch_gcu's SDPA/vendor kernels first; FlagGems'
+# triton scaled_dot_product_attention fallback is not GCU-tuned, so it stays
+# behind the vendor path (mirrors vllm_fl/dispatch/config/enflame.yaml).
+op_backends:
+  attention_backend:
+    - vendor:gcu
+    - flagos
+    - reference
+  rms_norm:
+    - flagos
+    - vendor:gcu
+    - reference
+  silu_and_mul:
+    - flagos
+    - vendor:gcu
+    - reference
+  rotary_embedding:
+    - flagos
+    - vendor:gcu
+    - reference
+
+# FlagOS operator blacklist.
+# scaled_dot_product_attention: FlagGems triton SDPA misbehaves on GCU —
+# let torch_gcu's native SDPA handle it (same entry as vllm-fl's enflame
+# config).
+flagos_blacklist:
+  - scaled_dot_product_attention

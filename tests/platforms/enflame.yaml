@@ -1,0 +1,84 @@
+# Enflame GCU Platform Configuration (S60 / torch_gcu).
+# Flexible test selection mechanism for Enflame GCU environments.
+#
+# The GCU is exposed through Enflame's torch_gcu (device "gcu", vendor
+# "enflame" via FlagGems DeviceDetector); torch.cuda is NOT available, so the
+# plugin's PlatformFL provides the OOT platform (device identity, ECCL dist
+# backend, torch_native attention). The e2e/functional/unit/benchmark case
+# sets are intentionally IDENTICAL to cuda.yaml / thead.yaml / ascend.yaml.
+#
+# Users can modify:
+# - e2e: Add/remove model cases in inference and serving support lists
+# - benchmark: Enable/disable throughput, latency, and serve smoke tests
+# - unit: Add/remove paths in include and exclude lists
+# - functional: Adjust include/exclude patterns for component (ops/compilation/distributed) tests
+# - tolerance: Adjust numerical comparison tolerance for result validation
+# - unsupported_features: Exclude test cases matching specific feature tags
+# - env_defaults: Set TORCH_GCU/SGLang environment defaults before tests start
+#
+# ---- Platform-level settings ------------------------------------------------
+platform: enflame
+vendor: gcu
+
+device_types:
+  s60:
+    memory_gb: 42
+    tags: [enflame, gcu, bf16, fp16, fp32]
+
+# Default numerical tolerance for result comparison.
+tolerance:
+  inference:
+    default: {exact: true}
+
+# Device-level overrides for specific devices or categories.
+device_overrides: {}
+
+# Features not supported on this platform.
+# Test cases whose model name contains any of these strings will be skipped.
+# Example: ["flaggems"] would skip "qwen3_flaggems" cases.
+unsupported_features: []
+
+# Default environment variables for this platform.
+# tests/run.py applies these before invoking pytest.
+#
+# TORCH_GCU_ENABLE_INT64_AND_UINT64 / ENABLE_I64_CHECK: torch_gcu disables
+# int64/uint64 kernels by default; sglang schedules int64 tensors, so enable
+# them (Enflame's own vLLM recipe uses the same pair, see vllm-plugin-FL
+# .github/configs/enflame.yml).
+# TORCHGCU_INDUCTOR_ENABLE: allow torch.compile inductor paths on GCU.
+env_defaults:
+  TORCH_GCU_ENABLE_INT64_AND_UINT64: "1"
+  ENABLE_I64_CHECK: "0"
+  TORCHGCU_INDUCTOR_ENABLE: "1"
+
+# ---- Device-specific test configurations ------------------------------------
+s60:
+  name: "s60"
+  tests:
+    e2e:
+      # Add or remove test cases per model.
+      # Each case points to tests/models/<model>/<case>.yaml.
+      concurrent:
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      inference:
+        qwen3: ["4b_tp2", "06b_tp1"]
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      serving:
+        qwen3: ["4b_tp2"]
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+
+    # Functional tests (ops correctness, graph capture, collective ops).
+    # Consumed by tests/run.py --scope functional; include/exclude work like unit.
+    functional:
+      include: "*"
+      exclude: []
+
+    unit:
+      # Include patterns: "*" for all, or list specific paths.
+      include: "*"
+      # Exclude patterns: empty list or list paths to exclude.
+      exclude: []
+
+    benchmark:
+      enabled: true
+      smoke: ["throughput", "latency", "serve"]

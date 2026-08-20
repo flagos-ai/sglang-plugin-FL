@@ -1,0 +1,151 @@
+# CI image for sglang-plugin-FL on Enflame GCU (S60, torch_gcu).
+#
+# Thin layer on top of the FlagOS enflame release image (flagrelease-built):
+# the vendor stack — topsrider 1.9.29 userspace, torch 2.11.0+cpu +
+# torch_gcu 2.11.0+3.8.20260713, triton 3.6.0 (GCU backend), vllm 0.20.2 —
+# is proprietary to Enflame and NOT installable from public PyPI, so we FROM
+# the release image (digest-pinned) and only add what the sglang plugin CI
+# needs: sglang 0.5.11 (stock PyPI wheel, --no-deps so the GCU torch stack is
+# never touched), its pure-python runtime deps, FlagGems v5.3.0 (repo
+# baseline alignment), the ShareGPT dataset bake, and pytest/dev tooling.
+#
+# Verified stack inside the base image (inspected 2026-08-19):
+#   ubuntu:24.04 · python 3.12.8 · torch 2.11.0+cpu · torch_gcu 2.11.0+3.8.20260713
+#   · vllm 0.20.2 · flag_gems 5.4.0.dev589+ga96298230 · triton 3.6.0
+#   · transformers 5.8.1 · vllm_fl at /root/sources/vllm-plugin-FL
+# NOTE: the base image is vLLM-oriented (its plugin0.2.0 = vllm-plugin-FL).
+# The stale vllm_fl source tree registers only vllm.* entry points, so it is
+# inert for sglang; it is kept because removing it buys nothing.
+# NOTE: torch.cuda.is NOT available on GCU (torch 2.11.0+cpu + torch_gcu);
+# the device module is torch.gcu. FlagGems DeviceDetector reports
+# vendor=enflame / device=gcu / dispatch_key=PrivateUse1.
+#
+# GCU device access: no enflame container runtime exists; the char devices
+# (/dev/gcuctl + /dev/gcu7vid0..N) are passed via --device in
+# .github/configs/enflame.yml, and the TORCH_GCU_* env vars are set there.
+#
+# Build (the host needs to reach github.com + pypi.org + huggingface.co):
+#   docker build -t harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-enflame-ci \
+#     --build-arg http_proxy=$http_proxy --build-arg https_proxy=$https_proxy \
+#     -f docker/enflame/containerfile .
+#
+# Push target: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-enflame-ci
+
+# Digest-pinned (tag 202607221058 is timestamped; the digest is immutable).
+ARG BASE_IMAGE=harbor.baai.ac.cn/plugin/enflame001-gems5.4.0-treenone-triton3.6.0-cxnone-plugin0.2.0-vllm0.20.2-cp312-pt211-x64-1.9.29@sha256:adc69cc22545518759b1dc762a19204adfaa27311d5caa3d3074bb9ee443d970
+
+FROM ${BASE_IMAGE}
+
+# Proxy is passed at build time only (--build-arg); declared as ARG so the
+# sglang/FlagGems/ShareGPT steps can reach the public internet, but it is NOT
+# persisted into the final image.
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
+
+# sglang version (repo baseline; matches docker/cuda/containerfile).
+ARG SGLANG_VERSION=0.5.11
+# FlagGems version for repo-baseline alignment. The base image ships a
+# 5.4.0.dev build curated by flagrelease for GCU; the CI image rebuilds the
+# pinned tag instead (v5.3.0 == the ascend baseline) so all plugin platforms
+# run the same FlagGems. Set FLAGGEMS_VERSION="" to keep the image's build.
+ARG FLAGGEMS_VERSION=v5.3.0
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    HF_ENDPOINT=https://huggingface.co
+
+# ---------------------------------------------------------------------------
+# SGLang (stock wheel, dependency-free install)
+# ---------------------------------------------------------------------------
+# sglang[runtime]'s dep set would pull the CUDA torch/flashinfer/sgl-kernel
+# stack and destroy the GCU environment, so sglang itself is installed
+# --no-deps and only the pure-python subset it imports at runtime is added
+# explicitly. torch/triton/transformers/numpy already come from the base.
+RUN pip install --no-cache-dir --no-deps "sglang==${SGLANG_VERSION}" && \
+    pip install --no-cache-dir \
+        aiohttp \
+        anthropic \
+        blobfile==3.0.0 \
+        compressed-tensors \
+        datasets \
+        easydict \
+        einops \
+        fastapi \
+        gguf \
+        interegular \
+        IPython \
+        llguidance>=0.7.11,<0.8.0 \
+        modelscope \
+        msgspec \
+        ninja \
+        nvidia-ml-py \
+        openai==2.6.1 \
+        openai-harmony==0.0.4 \
+        orjson \
+        outlines==0.1.11 \
+        packaging \
+        partial_json_parser \
+        pillow \
+        prometheus-client>=0.20.0 \
+        psutil \
+        py-spy \
+        pybase64 \
+        pydantic \
+        python-multipart \
+        pyzmq>=25.1.2 \
+        requests \
+        scipy \
+        tornado \
+        tqdm \
+        uvicorn \
+        xgrammar \
+        zstandard
+
+# ---------------------------------------------------------------------------
+# FlagGems repo-baseline alignment (v5.3.0)
+# ---------------------------------------------------------------------------
+# v5.3.0 builds with scikit-build-core (unlike the setuptools-based v5.3.1),
+# so cmake/ninja/pybind11 are staged first. FLAGGEMS_BACKEND is
+# runtime-detected, and the triton 3.6.0 GCU build from the base image
+# compiles the kernels. SETUPTOOLS_SCM_PRETEND_VERSION avoids setuptools-scm
+# git-describe issues in the --depth 1 clone.
+RUN if [ -n "${FLAGGEMS_VERSION}" ]; then \
+        pip install --no-cache-dir -U "setuptools<77" "setuptools-scm>=8,<10" \
+            scikit-build-core pybind11 ninja cmake wheel && \
+        git clone --branch ${FLAGGEMS_VERSION} --depth 1 \
+            https://github.com/flagos-ai/FlagGems /tmp/FlagGems && \
+        SETUPTOOLS_SCM_PRETEND_VERSION=${FLAGGEMS_VERSION#v} \
+        pip install --no-build-isolation --no-deps /tmp/FlagGems && \
+        rm -rf /tmp/FlagGems; \
+    fi
+
+# ---------------------------------------------------------------------------
+# Test & dev tools (mirrors docker/cuda/containerfile)
+# ---------------------------------------------------------------------------
+RUN pip install --no-cache-dir \
+        pytest \
+        pytest-cov \
+        pytest-timeout \
+        pytest-json-report \
+        pytest-metadata \
+        numpy \
+        requests \
+        ruff \
+        pyyaml
+
+# ---------------------------------------------------------------------------
+# Offline benchmark dataset bake (same pattern as docker/cuda/containerfile)
+# ---------------------------------------------------------------------------
+# sglang's benchmark (bench_offline_throughput / bench_serving) fetches the
+# 642 MB ShareGPT dataset from HF even under --dataset-name random. Bake it
+# at BUILD time into a pinned HF cache, and run offline so the benchmark
+# reads it locally with zero runtime network. HF_HOME is pinned because the
+# runner overrides HOME=/github/home at runtime.
+ENV HF_HOME=/opt/hf-cache
+RUN HF_HUB_OFFLINE=0 python -c "from huggingface_hub import hf_hub_download as d; \
+    print(d('anon8231489123/ShareGPT_Vicuna_unfiltered', \
+    'ShareGPT_V3_unfiltered_cleaned_split.json', repo_type='dataset'))"
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
+
+WORKDIR /workspace

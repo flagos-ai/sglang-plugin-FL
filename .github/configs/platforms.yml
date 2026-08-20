@@ -12,3 +12,7 @@ platforms:
     enabled: true
   musa:
     enabled: true
+  enflame:
+    # Self-hosted runner pool: label enflame-s60 (8x S60 GCU).
+    # CI image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-enflame-ci.
+    enabled: true
