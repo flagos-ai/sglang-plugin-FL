@@ -35,6 +35,10 @@
 # Digest-pinned (tag 202607221058 is timestamped; the digest is immutable).
 ARG BASE_IMAGE=harbor.baai.ac.cn/plugin/enflame001-gems5.4.0-treenone-triton3.6.0-cxnone-plugin0.2.0-vllm0.20.2-cp312-pt211-x64-1.9.29@sha256:adc69cc22545518759b1dc762a19204adfaa27311d5caa3d3074bb9ee443d970
 
+# Pre-baked ShareGPT HF cache (see the "Offline benchmark dataset bake"
+# section at the bottom for why this is copied instead of downloaded).
+FROM harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-cuda-ci AS hf-cache
+
 FROM ${BASE_IMAGE}
 
 # Proxy is passed at build time only (--build-arg); declared as ARG so the
@@ -54,6 +58,9 @@ ARG SGLANG_VERSION=0.5.11
 # needs an upstream FlagGems fix first. Set FLAGGEMS_VERSION to a tag to
 # override (build-time experiment knob).
 ARG FLAGGEMS_VERSION=
+# Optional HTTP proxy for the git clone below ONLY (pip must stay direct —
+# the CI proxy does not carry pypi.org). Passed via --build-arg GIT_PROXY=...
+ARG GIT_PROXY=
 
 ENV DEBIAN_FRONTEND=noninteractive \
     HF_ENDPOINT=https://huggingface.co \
@@ -156,7 +163,7 @@ RUN pip install --no-cache-dir /tmp/sgl_kernel_stub && rm -rf /tmp/sgl_kernel_st
 RUN if [ -n "${FLAGGEMS_VERSION}" ]; then \
         pip install --no-cache-dir -U "setuptools<77" "setuptools-scm>=8,<10" \
             scikit-build-core pybind11 ninja cmake wheel && \
-        git clone --branch ${FLAGGEMS_VERSION} --depth 1 \
+        git -c http.proxy=${GIT_PROXY} clone --branch ${FLAGGEMS_VERSION} --depth 1 \
             https://github.com/flagos-ai/FlagGems /tmp/FlagGems && \
         SETUPTOOLS_SCM_PRETEND_VERSION=${FLAGGEMS_VERSION#v} \
         pip install --no-build-isolation --no-deps /tmp/FlagGems && \
@@ -178,17 +185,17 @@ RUN pip install --no-cache-dir \
         pyyaml
 
 # ---------------------------------------------------------------------------
-# Offline benchmark dataset bake (same pattern as docker/cuda/containerfile)
+# Offline benchmark dataset bake
 # ---------------------------------------------------------------------------
 # sglang's benchmark (bench_offline_throughput / bench_serving) fetches the
-# 642 MB ShareGPT dataset from HF even under --dataset-name random. Bake it
-# at BUILD time into a pinned HF cache, and run offline so the benchmark
-# reads it locally with zero runtime network. HF_HOME is pinned because the
-# runner overrides HOME=/github/home at runtime.
+# 642 MB ShareGPT dataset from HF even under --dataset-name random. The build
+# sandbox cannot reach huggingface.co (and hf-mirror.com 302s break
+# huggingface_hub metadata), so the pinned HF cache is copied from the CUDA
+# CI image on harbor (which baked it at build time; see
+# docker/cuda/containerfile). HF_HOME is pinned because the runner overrides
+# HOME=/github/home at runtime.
+COPY --from=hf-cache /opt/hf-cache /opt/hf-cache
 ENV HF_HOME=/opt/hf-cache
-RUN HF_HUB_OFFLINE=0 python -c "from huggingface_hub import hf_hub_download as d; \
-    print(d('anon8231489123/ShareGPT_Vicuna_unfiltered', \
-    'ShareGPT_V3_unfiltered_cleaned_split.json', repo_type='dataset'))"
 ENV HF_HUB_OFFLINE=1
 ENV TRANSFORMERS_OFFLINE=1
 
