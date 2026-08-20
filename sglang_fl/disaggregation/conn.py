@@ -881,9 +881,7 @@ class FlagcxKVManager(CommonKVManager):
         prefill_aux_index: int,
         dst_aux_ptrs: list[int],
     ):
-        if (
-            self.enable_custom_mem_pool and self.custom_mem_pool_type == "NVLINK"
-        ):
+        if os.environ.get("SGLANG_SEND_AUX_TCP") == "1":
             return self.send_aux_tcp(req, prefill_aux_index, dst_aux_ptrs)
 
         transfer_blocks = []
