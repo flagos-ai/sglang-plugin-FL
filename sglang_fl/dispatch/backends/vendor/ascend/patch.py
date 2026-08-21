@@ -1,5 +1,9 @@
 """Vendor monkey-patches on sglang internals for Ascend / NPU — entrypoint.
 
+Runtime (T2) patches, applied from ``load_plugin()`` after sglang core is
+imported. For load-time (T1) patches that must install before any sglang
+import (e.g. srt_empty stub finder), see ``patch_early.py``.
+
 These replace direct edits to sglang source that were previously required on
 Huawei NPU:
   - scheduler_pp: PP send/recv ordering + stream syncs (HCCL deadlock fix)

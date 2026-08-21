@@ -152,7 +152,7 @@ class AscendBackend(Backend):
         head_first=False,
         use_qk_l2norm_in_kernel=False,
     ):
-        from .impl.fla import chunk_gated_delta_rule_ascend
+        from .impl.fla.chunk import chunk_gated_delta_rule_ascend
 
         return chunk_gated_delta_rule_ascend(
             q,
