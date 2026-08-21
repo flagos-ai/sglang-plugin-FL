@@ -31,9 +31,21 @@ def mock_device_detector(monkeypatch):
     The stub goes into ``sys.modules`` so the production ``from
     flag_gems.runtime.backend.device import DeviceDetector`` hits it without
     needing flag_gems installed.
+
+    Also clears the process-wide ``get_device_info`` lru_cache so each test's
+    mock takes effect (otherwise a previous test's cached DeviceInfo would
+    win).
     """
 
     def _make(vendor_name=None, raise_exc=None):
+        # Invalidate the DeviceInfo singleton so the new mock is honoured.
+        try:
+            from sglang_fl.utils import get_device_info
+
+            get_device_info.cache_clear()
+        except Exception:
+            pass
+
         fake_mod = types.ModuleType("flag_gems.runtime.backend.device")
         if raise_exc is not None:
             def _detector_fail(*args, **kwargs):
