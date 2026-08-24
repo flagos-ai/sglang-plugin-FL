@@ -47,11 +47,6 @@ def gemma_rms_norm_hcu(
 			out, residual_out=gemma_fused_add_rmsnorm_dcu(
                         x, residual, w, obj.variance_epsilon
                     )
-            #return out, residual_out #out = torch.empty_like(x)
-			#residual_out = torch.empty_like(x)
-			#fused_add_rms_norm(x, residual, w, obj.variance_epsilon
-				#out, x, residual_out, residual, w, obj.variance_epsilon
-			#)
 			return out, residual_out
 		out = torch.empty_like(x)
 		rms_norm(out, x, w, obj.variance_epsilon)
