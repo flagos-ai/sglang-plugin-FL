@@ -37,6 +37,7 @@ from sglang.srt.disaggregation.utils import (
     DisaggregationMode,
     filter_kv_indices_for_cp_rank,
 )
+from sglang_fl.disaggregation import stats as flagcx_stats
 from sglang_fl.disaggregation.transfer_engine import (
     get_flagcx_transfer_engine,
     init_flagcx_transfer_engine,
@@ -193,6 +194,14 @@ class FlagcxKVManager(CommonKVManager):
         is_mla_backend: Optional[bool] = False,
     ):
         super().__init__(args, disaggregation_mode, server_args, is_mla_backend)
+        self._metric_labels = {
+            "model_name": server_args.served_model_name,
+            "engine_type": DisaggregationMode.to_engine_type(
+                server_args.disaggregation_mode
+            ),
+            "tp_rank": str(self.attn_tp_rank),
+            "pp_rank": str(self.pp_rank),
+        }
         self.init_engine()
         self.register_buffer_to_engine()
         self.enable_staging = envs.SGLANG_DISAGG_STAGING_BUFFER.get()
@@ -602,9 +611,18 @@ class FlagcxKVManager(CommonKVManager):
             return 0
 
         src_addrs, dst_addrs, lengths = zip(*transfer_blocks)
-        return self.engine.batch_transfer_sync(
+        start = time.perf_counter()
+        ret = self.engine.batch_transfer_sync(
             flagcx_session_id, list(src_addrs), list(dst_addrs), list(lengths)
         )
+        if ret == 0:
+            flagcx_stats.record_transfer(
+                time.perf_counter() - start,
+                sum(lengths),
+                len(lengths),
+                self._metric_labels,
+            )
+        return ret
 
     def _send_kvcache_generic(
         self,
@@ -1318,6 +1336,7 @@ class FlagcxKVManager(CommonKVManager):
                                 executor,
                             )
                         if ret != 0:
+                            flagcx_stats.record_failed_transfer(self._metric_labels)
                             with self.session_lock:
                                 self.session_failures[req.flagcx_session_id] += 1
                                 # Failures should never happen if the session is not dead, if the session fails once, mark it as failed
@@ -1512,6 +1531,7 @@ class FlagcxKVManager(CommonKVManager):
                                 self._chunk_writer_counts.pop(bootstrap_room, None)
                             self.update_status(bootstrap_room, KVPoll.Success)
                 elif status == KVPoll.Failed:
+                    flagcx_stats.record_failed_recv(self._metric_labels)
                     self.record_failure(
                         bootstrap_room,
                         "Failed to get kvcache from prefill instance, it might be dead",
@@ -1730,6 +1750,7 @@ class FlagcxKVSender(CommonKVSender):
                             "which means prefill instances fail to receive the KV indices from the decode instance of this request. "
                             "If a greater mean TTFT is acceptable, you can 'export SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT=600' (10 minutes) to relax the timeout condition. "
                         )
+                        flagcx_stats.record_kv_expired_req(self.kv_mgr._metric_labels)
                         self.kv_mgr.record_failure(
                             self.bootstrap_room,
                             f"Request {self.bootstrap_room} timed out after {elapsed:.1f}s in KVPoll.Bootstrapping",
@@ -1892,6 +1913,7 @@ class FlagcxKVReceiver(CommonKVReceiver):
                             "Some requests fail to receive KV Cache transfer done signal after bootstrapping. "
                             "If a greater mean TTFT is acceptable, you can 'export SGLANG_DISAGGREGATION_WAITING_TIMEOUT=600' (10 minutes) to relax the timeout condition. "
                         )
+                        flagcx_stats.record_kv_expired_req(self.kv_mgr._metric_labels)
                         self.kv_mgr.record_failure(
                             self.bootstrap_room,
                             f"Request {self.bootstrap_room} timed out after {elapsed:.1f}s in KVPoll.WaitingForInput",
