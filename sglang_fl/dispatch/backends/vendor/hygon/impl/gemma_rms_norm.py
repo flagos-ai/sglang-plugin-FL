@@ -38,7 +38,6 @@ def gemma_rms_norm_hcu(
 			return output, residual_out
 		return rms_norm(x, w, obj.variance_epsilon)
 	else:
-		# todo : to be varify
 		from vllm._custom_ops import rms_norm
 		from lightop import gemma_fused_add_rmsnorm as gemma_fused_add_rmsnorm_dcu
 		if not x.is_contiguous():
