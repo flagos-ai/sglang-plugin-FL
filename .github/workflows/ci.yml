@@ -110,3 +110,14 @@ jobs:
     with:
       platform: musa
     secrets: inherit
+
+  # ============================================================
+  # Job 6c: T-Head PPU platform testing
+  # ============================================================
+  test-thead:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'thead')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: thead
+    secrets: inherit

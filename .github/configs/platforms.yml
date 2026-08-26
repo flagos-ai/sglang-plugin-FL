@@ -12,3 +12,7 @@ platforms:
     enabled: true
   musa:
     enabled: true
+  thead:
+    # Self-hosted runner pool: label flagcicd-810e (4 runners, online).
+    # CI image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-thead-ci.
+    enabled: true
