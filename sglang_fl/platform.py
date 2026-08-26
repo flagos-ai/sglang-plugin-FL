@@ -66,6 +66,10 @@ _ATTN_BACKEND_MAP = {
     "hygon": "hcu",
 }
 
+_MTHREADS_PROFILER_MODULE = (
+    "sglang_fl.dispatch.backends.vendor.mthreads.patches.profiler"
+)
+
 
 def _get_device_detector():
     """Lazy import DeviceDetector to avoid import errors when flag_gems not installed."""
@@ -344,6 +348,11 @@ class PlatformFL(SRTPlatform):
             status = "loaded"
         except ImportError:
             status = "absent"
+
+        if self._vendor_name == "mthreads":
+            profiler_module = importlib.import_module(_MTHREADS_PROFILER_MODULE)
+            profiler_module.apply_musa_profiler_patches()
+
         logger.info(
             "PlatformFL init_backend: vendor=%s, device=%s, vendor_module=%s",
             self._vendor_name,

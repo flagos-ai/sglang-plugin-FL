@@ -524,7 +524,62 @@ The plugin scans `dispatch/backends/vendor/*/register_ops.py` at startup. If `is
 |--------|-----------|-------------------|
 | NVIDIA CUDA | `vendor/cuda/` | `sgl_kernel` importable |
 | Huawei Ascend | `vendor/ascend/` | `torch_npu` importable |
+| Moore Threads MUSA | `vendor/mthreads/` | `torch.musa` available |
 | Template | `vendor/template/` | Always False (reference only) |
+
+### Moore Threads (MUSA)
+
+#### Performance profiling with msys
+
+The MThreads backend lets SGLang v0.5.11 own the profiler lifecycle and
+redirects its two CUDA-oriented leaves on MUSA workers:
+
+| SGLang activity | MUSA behavior | Purpose |
+|---|---|---|
+| `GPU` | `torch.profiler.ProfilerActivity.PrivateUse1` (`MUSA`) | PyTorch/MUSA Chrome traces |
+| `CUDA_PROFILER` | `musaProfilerStart/Stop` | msys capture-range control |
+
+This integration targets SGLang v0.5.11 exactly. The MThreads branch of
+`PlatformFL.init_backend` follows SGLang's existing `torch_npu` pattern by
+redirecting the Torch activity and runtime marker APIs instead of replacing
+SGLang's legacy or profile-v2 implementations. A small, version-locked
+compatibility shim adds transactional cleanup to v0.5.11's profiler failure
+paths.
+
+Launch the server under msys, then use SGLang's existing endpoints to delimit
+the steady-state capture:
+
+```bash
+SGLANG_PROFILE_V2=0 /data/tools/bin/msys profile \
+  --trace=musa \
+  --capture-range=musaProfilerApi \
+  --capture-range-end=stop-shutdown \
+  -o sglang.msys-rep \
+  python -m sglang.launch_server \
+    --model-path /path/to/model \
+    --port 30000 \
+    --disable-piecewise-cuda-graph
+
+curl -X POST http://127.0.0.1:30000/start_profile \
+  -H 'Content-Type: application/json' \
+  -d '{"activities":["CUDA_PROFILER"]}'
+
+# Send the warmed-up representative request(s).
+
+curl -X POST http://127.0.0.1:30000/stop_profile
+```
+
+SGLang v0.5.11 requires `SGLANG_PROFILE_V2=0` for manual start/stop; V2 only
+supports stage-based triggering. MUSA 4.3 may return error 801 from the
+profiler API even when msys accepts the marker. The plugin clears that sticky
+runtime error and treats only error 801 as the observed msys compatibility
+case; every other non-zero result raises an error after cleanup. On the first
+`CUDA_PROFILER` marker, the plugin verifies the required symbols in the active
+`libmusart.so`; marker-error diagnostics include the runtime version when that
+API is available. This path was validated with MUSA Runtime 4.3.x,
+Torch/TorchMUSA 2.9.0, and Moore Perf System 1.8.0. Treat
+the generated `.msys-rep` as the source of truth; Moore Perf System 1.8.0 was
+observed to finalize the report after the wrapped server exits.
 
 ## Project Structure
 

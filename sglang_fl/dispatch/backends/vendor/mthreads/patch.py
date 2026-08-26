@@ -104,6 +104,7 @@ def _patch_pp_launch_batch_add_sync() -> None:
     SchedulerPPMixin._pp_launch_batch = pp_launch_batch_with_forward_stream_sync
     logger.info("MUSA PP launch forward_stream sync patch applied")
 
+
 def apply_musa_patches() -> None:
     global _patches_applied
     if _patches_applied:
@@ -111,8 +112,9 @@ def apply_musa_patches() -> None:
 
     _patch_pp_send_recv_order()
     _patch_pp_launch_batch_add_sync()
+
     _patches_applied = True
-    logger.info("All MUSA PP patches applied successfully")
+    logger.info("All MUSA runtime patches applied successfully")
 
 
 apply_musa_patches()
