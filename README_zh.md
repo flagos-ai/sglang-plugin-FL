@@ -299,6 +299,18 @@ SGLANG_FL_* 环境变量 > YAML 配置 (SGLANG_FL_CONFIG) > 平台自动检测 Y
 | `SGLANG_FL_DIST_BACKEND` | `nccl` | 通信后端：`nccl` / `hccl` / `flagcx` |
 | `FLAGCX_PATH` | — | FlagCX 安装路径（设置后默认使用 `flagcx` 后端） |
 
+#### 厂商 Kernel Launch 策略
+
+摩尔线程后端通过插件侧 monkeypatch 应用已验证的 launch metadata，不修改已安装的
+SGLang 源码。在 MTT S5000 上，SGLang packed GDN decode kernel 默认使用
+`num_warps=8`；其他 MUSA 卡型保持 SGLang 原始策略。
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `SGLANG_FL_MUSA_GDN_PACKED_DECODE_NUM_WARPS` | `auto` | MUSA packed GDN decode launch 策略：`auto`、`off` 或 `1/2/4/8/16`。`auto` 仅在 S5000 上选择 `8`。 |
+
+兼容旧变量 `SGLANG_MUSA_GDN_PACKED_DECODE_NUM_WARPS`；同时设置时，插件前缀变量优先。
+
 #### 系统 / 调试
 
 | 变量 | 默认值 | 说明 |

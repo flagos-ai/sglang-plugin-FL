@@ -121,6 +121,20 @@ def test_all_reduce_uses_flagcx_and_copies_back(monkeypatch) -> None:
     comm_mod.dist.all_reduce.assert_not_called()
 
 
+def test_all_reduce_skips_copy_when_flagcx_updates_in_place(monkeypatch) -> None:
+    from sglang_fl.distributed import communicator as comm_mod
+
+    monkeypatch.setattr(comm_mod.dist, "all_reduce", Mock())
+    tensor = Mock(spec=torch.Tensor)
+    flagcx = _FakeFlagCX()
+    flagcx.all_reduce = Mock(return_value=tensor)
+    comm = _make_comm(flagcx=flagcx)
+
+    assert comm.all_reduce(tensor) is tensor
+    tensor.copy_.assert_not_called()
+    comm_mod.dist.all_reduce.assert_not_called()
+
+
 def test_all_reduce_without_flagcx_uses_dist(monkeypatch) -> None:
     from sglang_fl.distributed import communicator as comm_mod
 

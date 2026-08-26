@@ -111,8 +111,11 @@ class CommunicatorFL:
         if self._flagcx_comm and not self._flagcx_comm.disabled:
             out = self._flagcx_comm.all_reduce(input_)
             if out is not None:
-                # FlagCX all_reduce returns a new tensor; copy back for in-place semantics
-                input_.copy_(out)
+                # Device communicators may either return a new result or update
+                # ``input_`` in place.  FlagCX currently does the latter; avoid
+                # launching a redundant device-to-device self-copy in that case.
+                if out is not input_:
+                    input_.copy_(out)
                 return input_
         # Fallback: torch.distributed
         dist.all_reduce(input_, group=self.device_group)

@@ -280,6 +280,20 @@ SGLANG_FL_* env vars > YAML config (SGLANG_FL_CONFIG) > Platform auto-detect YAM
 | `SGLANG_FL_DIST_BACKEND` | `nccl` | Backend: `nccl` / `hccl` / `flagcx` |
 | `FLAGCX_PATH` | — | FlagCX installation path (if set, defaults to `flagcx` backend) |
 
+#### Vendor Kernel Launch Policies
+
+The MThreads backend applies validated launch metadata through a plugin-side
+monkeypatch; the installed SGLang source is not modified. On MTT S5000,
+SGLang's packed GDN decode kernel defaults to `num_warps=8`. Other MUSA devices
+keep SGLang's original launch policy.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SGLANG_FL_MUSA_GDN_PACKED_DECODE_NUM_WARPS` | `auto` | MUSA packed GDN decode launch policy: `auto`, `off`, or `1/2/4/8/16`. `auto` selects `8` only on S5000. |
+
+`SGLANG_MUSA_GDN_PACKED_DECODE_NUM_WARPS` is accepted as a compatibility alias.
+The plugin-prefixed variable takes precedence when both are set.
+
 #### System / Debug
 
 | Variable | Default | Description |

@@ -37,6 +37,16 @@ include = ["sglang_fl*"]
 
 [tool.setuptools.package-data]
 "sglang_fl.dispatch.config" = ["*.yaml"]
+"sglang_fl.dispatch.backends.vendor.mthreads.jit_custom_ar" = [
+    "README.md",
+    "csrc/*.h",
+    "csrc/distributed/*.mu",
+    "csrc/distributed/*.cpp",
+    "csrc/norm/*.mu",
+]
+"sglang_fl.dispatch.backends.vendor.mthreads.eventfd_completion" = [
+    "csrc/*.cpp",
+]
 
 [tool.ruff]
 # Folders excluded from lint + format. These hold pre-existing issues that are
