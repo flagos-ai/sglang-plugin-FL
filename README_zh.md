@@ -97,7 +97,9 @@ export FLAGCX_PATH="$PWD"
 > **前置条件**：需要 SGLang 支持 `srt_empty`，参见上游 [PR #31300](https://github.com/sgl-project/sglang/pull/31300)。
 
 ```bash
-# Step 1: 安装厂商自有 PyTorch（因芯片而异）
+# Step 1: 安装厂商运行栈（因芯片而异）
+# 保留厂商 PyTorch，以及当前 vendor backend 所需的算子包；
+# SGLang empty 安装不会代为安装这些组件。
 pip install torch torch_npu       # 华为 Ascend
 # pip install torch torch_musa    # 摩尔线程 MUSA
 # pip install torch               # NVIDIA（标准版）
@@ -123,13 +125,12 @@ export FLAGCX_PATH="$PWD"
 
 #### Empty 模式下的运行方式
 
-由于 empty 模式不包含 `flashinfer` 和 `sgl_kernel`，运行时**必须**指定 attention backend 并禁用 vendor.cuda 路径：
+Empty 模式不负责选择或安装平台的 attention、融合算子和通信组件。应将这些组件作为厂商运行栈的一部分提前准备，并选择已经在目标平台验证过的 attention backend。在 FlagOS 尚未覆盖全部必要算子时，应保留平台 vendor backend 作为功能回退：
 
 ```bash
-export SGLANG_PLUGIN=sglang_fl
-export SGLANG_FL_DENY_VENDORS=cuda              # 跳过 sgl_kernel 路径，使用 FlagGems/reference
+export SGLANG_PLUGINS=sglang_fl
 export SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero  # FlagGems bug 规避
-export ATTENTION_BACKEND=triton                  # 使用 SGLang 自带 Triton attention（替代 flashinfer）
+export ATTENTION_BACKEND=triton                  # NVIDIA 或已验证的 Triton 兼容平台
 
 python -m sglang.launch_server \
     --model-path Qwen/Qwen2.5-0.5B-Instruct \
@@ -138,9 +139,11 @@ python -m sglang.launch_server \
 ```
 
 > **`ATTENTION_BACKEND` 说明**：
-> - `triton` — SGLang 自带的 Triton attention kernel，适用于**所有有 Triton 的平台**（NVIDIA、Ascend、MUSA 等）
+> - `triton` — SGLang 自带的 Triton attention 路径；仅应在目标平台的 Triton 兼容编译器及完整下游调用链通过验证后使用
 > - `ascend` — 华为 Ascend 专属优化 attention（在 NPU 上使用）
 > - 如果不设置，CUDA 类设备默认选 `flashinfer` — 在 empty 环境下**没有 flashinfer 会报错**
+
+`SGLANG_FL_DENY_VENDORS` 是自研覆盖审计开关，不是 Empty 模式的默认配置。例如设置 `SGLANG_FL_DENY_VENDORS=cuda` 会主动移除 `vendor.cuda`；尚未由 FlagOS 或真正的 torch reference 覆盖的算子，此时应明确报告 `No available implementation`。当前 FLA 和 Fused MoE 在 FlagOS 实现完成并通过验收之前，继续使用相应的平台 vendor backend。
 
 ### 下载模型
 

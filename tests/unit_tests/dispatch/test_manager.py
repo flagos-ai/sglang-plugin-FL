@@ -1,24 +1,21 @@
 # Tests for OpManager: resolution, caching, fallback, fork safety.
 
 import os
-import threading
-from unittest.mock import MagicMock, patch
 
 import pytest
 
 from sglang_fl.dispatch.types import BackendImplKind, BackendPriority, OpImpl
 from sglang_fl.dispatch.registry import OpRegistry
-from sglang_fl.dispatch.manager import OpManager, get_default_manager, reset_default_manager
+from sglang_fl.dispatch.manager import (
+    OpManager,
+    get_default_manager,
+    reset_default_manager,
+)
 from sglang_fl.dispatch.policy import (
-    SelectionPolicy,
-    get_policy,
-    policy_context,
     reset_global_policy,
-    set_global_policy,
     with_denied_vendors,
     with_preference,
     with_strict_mode,
-    PREFER_DEFAULT,
     PREFER_VENDOR,
     PREFER_REFERENCE,
 )
@@ -44,30 +41,32 @@ def populated_manager():
     def cuda_silu(*a, **kw):
         return "cuda_silu"
 
-    registry.register_many([
-        OpImpl(
-            op_name="silu_and_mul",
-            impl_id="default.flagos",
-            kind=BackendImplKind.DEFAULT,
-            fn=flagos_silu,
-            priority=BackendPriority.DEFAULT,
-        ),
-        OpImpl(
-            op_name="silu_and_mul",
-            impl_id="reference.pytorch",
-            kind=BackendImplKind.REFERENCE,
-            fn=ref_silu,
-            priority=BackendPriority.REFERENCE,
-        ),
-        OpImpl(
-            op_name="silu_and_mul",
-            impl_id="vendor.cuda",
-            kind=BackendImplKind.VENDOR,
-            fn=cuda_silu,
-            vendor="cuda",
-            priority=BackendPriority.VENDOR,
-        ),
-    ])
+    registry.register_many(
+        [
+            OpImpl(
+                op_name="silu_and_mul",
+                impl_id="default.flagos",
+                kind=BackendImplKind.DEFAULT,
+                fn=flagos_silu,
+                priority=BackendPriority.DEFAULT,
+            ),
+            OpImpl(
+                op_name="silu_and_mul",
+                impl_id="reference.pytorch",
+                kind=BackendImplKind.REFERENCE,
+                fn=ref_silu,
+                priority=BackendPriority.REFERENCE,
+            ),
+            OpImpl(
+                op_name="silu_and_mul",
+                impl_id="vendor.cuda",
+                kind=BackendImplKind.VENDOR,
+                fn=cuda_silu,
+                vendor="cuda",
+                priority=BackendPriority.VENDOR,
+            ),
+        ]
+    )
     return manager
 
 
@@ -97,6 +96,27 @@ class TestOpManagerResolve:
                 fn = populated_manager.resolve("silu_and_mul")
                 # cuda denied, should fall through to flagos (next in order)
                 assert fn() != "cuda_silu"
+
+    def test_deny_only_vendor_exposes_coverage_gap(self):
+        """Denying a required vendor must fail instead of selecting a relabeled copy."""
+        registry = OpRegistry()
+        manager = OpManager(registry=registry)
+        manager._state.initialized = True
+        manager._state.init_pid = os.getpid()
+        registry.register_impl(
+            OpImpl(
+                op_name="fused_moe",
+                impl_id="vendor.cuda",
+                kind=BackendImplKind.VENDOR,
+                fn=lambda *args, **kwargs: "cuda_fused_moe",
+                vendor="cuda",
+                priority=BackendPriority.VENDOR,
+            )
+        )
+
+        with with_denied_vendors("cuda"):
+            with pytest.raises(RuntimeError, match="No available implementation"):
+                manager.resolve("fused_moe")
 
 
 class TestOpManagerCache:
@@ -148,22 +168,24 @@ class TestOpManagerCall:
             call_count["fallback"] += 1
             return "fallback_result"
 
-        registry.register_many([
-            OpImpl(
-                op_name="test_op",
-                impl_id="default.flagos",
-                kind=BackendImplKind.DEFAULT,
-                fn=failing_fn,
-                priority=BackendPriority.DEFAULT,
-            ),
-            OpImpl(
-                op_name="test_op",
-                impl_id="reference.pytorch",
-                kind=BackendImplKind.REFERENCE,
-                fn=fallback_fn,
-                priority=BackendPriority.REFERENCE,
-            ),
-        ])
+        registry.register_many(
+            [
+                OpImpl(
+                    op_name="test_op",
+                    impl_id="default.flagos",
+                    kind=BackendImplKind.DEFAULT,
+                    fn=failing_fn,
+                    priority=BackendPriority.DEFAULT,
+                ),
+                OpImpl(
+                    op_name="test_op",
+                    impl_id="reference.pytorch",
+                    kind=BackendImplKind.REFERENCE,
+                    fn=fallback_fn,
+                    priority=BackendPriority.REFERENCE,
+                ),
+            ]
+        )
 
         with with_strict_mode():
             result = manager.call("test_op")
@@ -177,13 +199,15 @@ class TestOpManagerCall:
         manager._state.initialized = True
         manager._state.init_pid = os.getpid()
 
-        registry.register_impl(OpImpl(
-            op_name="bad_op",
-            impl_id="default.flagos",
-            kind=BackendImplKind.DEFAULT,
-            fn=lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("fail")),
-            priority=BackendPriority.DEFAULT,
-        ))
+        registry.register_impl(
+            OpImpl(
+                op_name="bad_op",
+                impl_id="default.flagos",
+                kind=BackendImplKind.DEFAULT,
+                fn=lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("fail")),
+                priority=BackendPriority.DEFAULT,
+            )
+        )
 
         with with_strict_mode():
             with pytest.raises(RuntimeError, match="All implementations failed"):
