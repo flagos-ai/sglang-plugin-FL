@@ -1,0 +1,123 @@
+# Hygon DCU Platform Configuration (BW1000 / DTK 26.04, HIP-based).
+# Flexible test selection mechanism for Hygon DCU environments.
+#
+# DCU is HIP-based: torch.cuda.is_available() is True and FlagGems
+# DeviceDetector reports vendor=hygon / device=cuda, so the plugin routes
+# through the cuda-compatible paths with the hygon dispatch config
+# (sglang_fl/dispatch/config/hygon.yaml, selected via SGLANG_FL_PLATFORM).
+# The e2e/functional/unit/benchmark case sets are intentionally IDENTICAL to
+# cuda.yaml / thead.yaml / ascend.yaml.
+#
+# Users can modify:
+# - e2e: Add/remove model cases in inference and serving support lists
+# - benchmark: Enable/disable throughput, latency, and serve smoke tests
+# - unit: Add/remove paths in include and exclude lists
+# - functional: Adjust include/exclude patterns for component (ops/compilation/distributed) tests
+# - tolerance: Adjust numerical comparison tolerance for result validation
+# - unsupported_features: Exclude test cases matching specific feature tags
+# - env_defaults: Set CUDA/HIP/SGLang environment defaults before tests start
+#
+# ---- Platform-level settings ------------------------------------------------
+platform: hygon
+vendor: hygon
+
+device_types:
+  bw1000:
+    compute_capability: "8.0"
+    memory_gb: 64
+    tags: [dcu, hip, bf16, fp16, fp32]
+
+# Default numerical tolerance for result comparison.
+tolerance:
+  inference:
+    default: {exact: true}
+
+# Device-level overrides for specific devices or categories.
+device_overrides: {}
+
+# hcu attention (#35, the hygon default) only starts under its controlled
+# server config. The shared case yamls already set disable_piecewise_cuda_graph;
+# disable_radix_cache and page_size=64 diverge from sglang defaults, so they
+# are injected per model/case instead of the platform-neutral shared files
+# (tests/models/**). Benchmark smokes (qwen3/06b_tp1) are covered.
+engine_overrides:
+  qwen3:
+    06b_tp1: {disable_radix_cache: true, page_size: 64}
+    4b_tp2: {disable_radix_cache: true, page_size: 64}
+  qwen3_6:
+    27b_tp4_nograph: {disable_radix_cache: true, page_size: 64}
+    35b_a3b_tp4_nograph: {disable_radix_cache: true, page_size: 64}
+
+# Features not supported on this platform.
+# Test cases whose model name contains any of these strings will be skipped.
+# Example: ["flaggems"] would skip "qwen3_flaggems" cases.
+unsupported_features: []
+
+# Default environment variables for this platform.
+# tests/run.py applies these before invoking pytest.
+#
+# SGLANG_FL_FLAGOS_BLACKLIST: the env blacklist outranks any yaml, so it is
+# set explicitly — belt-and-suspenders on top of hygon.yaml's own list (which
+# auto-loads when the plugin detects vendor=hygon via FlagGems DeviceDetector;
+# DTK torch's __hcu_version__/device-name mapping handles that without envs).
+# Keep in sync with sglang_fl/dispatch/config/hygon.yaml (flagos_blacklist).
+# The list mirrors the validated vLLM-on-DCU recipe: the pow family produces
+# wrong numerics on DCU and cat hits a FlagGems triton issue.
+# cumsum/cumsum_out: FlagGems' cumsum wrapper computes K = numel // M // N and
+# ZeroDivisionErrors on the EMPTY extend_seq_lens[:-1] slice a single-request
+# prefill produces (serving smoke sends one request at a time; observed on DCU
+# 2026-08-20, e2e serving qwen3/4b_tp2). torch.cumsum is fine on DCU — the CI
+# image already casts the lens tensors to int64 where the HIP kernel needs it.
+# Same entry enflame.yaml / thead blacklist carry.
+# scaled_dot_product_attention / flash_attention_forward: FlagGems' _hygon
+# flash_api autotunes a triton config per shape; the server-warmup prefill
+# shape hits a DTK triton make_ttgir PassManager::run failure (compile abort,
+# observed 2026-08-24 in e2e serving qwen3/4b_tp2 warmup). On torch 2.10
+# sglang's torch_native attention dispatches through the aten-level
+# flash_attention_forward patch, so BOTH names must be excluded for the
+# fallback to aten SDPA (HIP) to take effect.
+# count_nonzero: FlagGems' dim_compress permutes with a mismatched dim order
+# on the 3-D tensor sglang's eplb expert_location._init_raw feeds it (qwen3_6
+# 35b_a3b init, observed 2026-08-24); torch.count_nonzero handles it fine.
+# Same entry enflame.yaml carries.
+# NOTE: SGLANG_FL_PLATFORM is intentionally NOT set. tests/run.py applies
+# env_defaults to the unit scope too, and a preset SGLANG_FL_PLATFORM forces
+# the dispatch manager to load the hygon platform config, breaking the
+# env-policy unit tests (ascend.yaml keeps its env_defaults empty for the
+# same reason). GEMS_VENDOR pins FlagGems' vendor detection (unit-safe).
+env_defaults:
+  SGLANG_FL_FLAGOS_BLACKLIST: "pow_scalar,pow_tensor_scalar,pow_tensor_tensor,pow_tensor_scalar_,pow_tensor_tensor_,cat,cumsum,cumsum_out,scaled_dot_product_attention,flash_attention_forward,count_nonzero"
+  GEMS_VENDOR: "hygon"
+  CUDA_DEVICE_MAX_CONNECTIONS: "1"
+
+# ---- Device-specific test configurations ------------------------------------
+bw1000:
+  name: "bw1000"
+  tests:
+    e2e:
+      # Add or remove test cases per model.
+      # Each case points to tests/models/<model>/<case>.yaml.
+      concurrent:
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      inference:
+        qwen3: ["4b_tp2", "06b_tp1"]
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      serving:
+        qwen3: ["4b_tp2"]
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+
+    # Functional tests (ops correctness, graph capture, collective ops).
+    # Consumed by tests/run.py --scope functional; include/exclude work like unit.
+    functional:
+      include: "*"
+      exclude: []
+
+    unit:
+      # Include patterns: "*" for all, or list specific paths.
+      include: "*"
+      # Exclude patterns: empty list or list paths to exclude.
+      exclude: []
+
+    benchmark:
+      enabled: true
+      smoke: ["throughput", "latency", "serve"]

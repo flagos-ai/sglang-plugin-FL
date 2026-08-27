@@ -16,3 +16,7 @@ platforms:
     # Self-hosted runner pool: label flagcicd-810e (4 runners, online).
     # CI image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-thead-ci.
     enabled: true
+  hygon:
+    # Self-hosted runner pool: label ci-sglang-plugin-fl-hygon (8x BW1000 DCU).
+    # CI image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-hygon-ci.
+    enabled: true
