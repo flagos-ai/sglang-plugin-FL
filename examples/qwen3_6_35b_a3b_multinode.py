@@ -67,6 +67,7 @@ from pathlib import Path
 # ─── Configuration ───────────────────────────────────────────────────────────
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-35B-A3B")
+ATTENTION_BACKEND = os.environ.get("ATTENTION_BACKEND", "").strip()
 
 _HERE = Path(__file__).resolve().parent
 IMG_DIR = Path(os.environ.get("IMAGE_DIR", _HERE / "test_images"))
@@ -355,6 +356,8 @@ def run_master(args):
         "--disable-piecewise-cuda-graph",
         "--trust-remote-code",
     ]
+    if ATTENTION_BACKEND:
+        cmd.extend(["--attention-backend", ATTENTION_BACKEND])
 
     print("Launching server...")
     server_proc = subprocess.Popen(cmd)
@@ -439,6 +442,8 @@ def run_worker(args):
         "--disable-piecewise-cuda-graph",
         "--trust-remote-code",
     ]
+    if ATTENTION_BACKEND:
+        cmd.extend(["--attention-backend", ATTENTION_BACKEND])
 
     print("Starting worker node... (will block until master shuts down)\n")
     try:
