@@ -12,21 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# SGLang-FL Dispatch Configuration for MUSA (Moore Threads) platform
-prefer: flagos
+# Reference implementation for fused MoE
 
-# FlagGems tag:    v5.3.0
-# FlagGems commit: 98fae44cdf2898f39c7f24f080d7c88b83d7c593
-flagos_blacklist:
-  - count_nonzero
-  - cumsum
-  - mm
-  - unique
-  - _unique2
-  - unique_dim
-  - unique_consecutive
-  - index
-  - to_copy
-  - copy_
-  - mul
-  - sort
+from __future__ import annotations
+
+import torch
+
+
+def fused_moe_torch(obj, layer: torch.nn.Module, dispatch_output):
+    """Fused MoE via sglang's native per-expert PyTorch loop."""
+    return obj.forward_cpu(layer, dispatch_output)
