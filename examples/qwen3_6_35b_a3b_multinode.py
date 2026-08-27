@@ -39,6 +39,7 @@ Full tested command (2 nodes × 2 GPUs each, TP=2 PP=2):
 
 Environment variables:
   MODEL_PATH       Model path (default: /models/Qwen3.6-35B-A3B)
+  ATTENTION_BACKEND     Optional SGLang attention backend (e.g. triton)
   CUDA_VISIBLE_DEVICES  GPU selection (e.g. 0,1)
   GLOO_SOCKET_IFNAME    Network interface for Gloo (default: eth0)
   NCCL_SOCKET_IFNAME    Network interface for NCCL (default: eth0)
