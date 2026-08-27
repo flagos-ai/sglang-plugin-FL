@@ -1,0 +1,111 @@
+# Copyright 2026 BAAI. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# SGLang-FL Dispatch Configuration for Hygon DCU (DTK / HIP).
+# Loaded when SGLANG_FL_PLATFORM=hygon (DCU torch reports torch.cuda as
+# available, so auto-detection would otherwise pick the nvidia config; the
+# CI image / tests/platforms/hygon.yaml env_defaults set the override).
+
+prefer: flagos
+
+strict: false
+
+# Per-operator backend execution order (Optional).
+# FlagGems (triton via DTK triton 3.6) first, Hygon vendor backend second,
+# torch reference last (mirrors vllm_fl/dispatch/config/hygon.yaml).
+# Vendor tokens are "hcu": the selector matches the impl vendor field
+# (#35 registered the Hygon backend as vendor="hcu"), not the platform name.
+op_backends:
+  attention_backend:
+    - flagos
+    - vendor:hcu
+    - reference
+  rms_norm:
+    - flagos
+    - vendor:hcu
+    - reference
+  silu_and_mul:
+    - flagos
+    - vendor:hcu
+    - reference
+  gelu_and_mul:
+    - flagos
+    - vendor:hcu
+    - reference
+  rotary_embedding:
+    - flagos
+    - vendor:hcu
+    - reference
+  moe_align_block_size:
+    - flagos
+    - vendor:hcu
+    - reference
+  moe_sum:
+    - flagos
+    - vendor:hcu
+    - reference
+  topk_softmax:
+    - flagos
+    - vendor:hcu
+    - reference
+  invoke_fused_moe_triton_kernel:
+    - flagos
+    - vendor:hcu
+    - reference
+  grouped_topk:
+    - flagos
+    - vendor:hcu
+    - reference
+  # FLA (gated delta rule) ops serve qwen3-next's hybrid linear attention;
+  # #35's vendor.hcu impls are the DCU path (token matches the impl vendor
+  # field "hcu"). Full qwen3_6 e2e matrix green on this route.
+  chunk_gated_delta_rule:
+    - vendor:hcu
+    - reference
+  fused_recurrent_gated_delta_rule:
+    - vendor:hcu
+    - reference
+  fused_recurrent_gated_delta_rule_packed_decode:
+    - vendor:hcu
+    - reference
+
+# FlagOS operator blacklist.
+# Same list the validated vLLM-on-DCU recipe pins via
+# VLLM_FL_FLAGOS_BLACKLIST (vllm-plugin-FL tests/platforms/hygon.yaml):
+# the pow family produces wrong numerics on DCU and cat (torch.cat) hits a
+# FlagGems triton issue; blacklisting falls back to torch native.
+# cumsum/cumsum_out: FlagGems' cumsum wrapper ZeroDivisionErrors on the empty
+# extend_seq_lens[:-1] slice of a single-request prefill (serving smoke, DCU
+# 2026-08-20); torch.cumsum works (CI image casts lens tensors to int64).
+# scaled_dot_product_attention / flash_attention_forward: FlagGems' _hygon
+# flash_api autotune hits a DTK triton make_ttgir PassManager::run failure on
+# the server-warmup prefill shape (compile abort, 2026-08-24). On torch 2.10
+# sglang's torch_native attention dispatches through the aten-level
+# flash_attention_forward patch, so BOTH names must be excluded for the aten
+# SDPA (HIP) fallback to take effect.
+# count_nonzero: dim_compress permute dim-mismatch on the 3-D eplb
+# expert_location init tensor (qwen3_6 35b_a3b, 2026-08-24); torch native is
+# fine.
+flagos_blacklist:
+  - pow_scalar
+  - pow_tensor_scalar
+  - pow_tensor_tensor
+  - pow_tensor_scalar_
+  - pow_tensor_tensor_
+  - cat
+  - cumsum
+  - cumsum_out
+  - scaled_dot_product_attention
+  - flash_attention_forward
+  - count_nonzero

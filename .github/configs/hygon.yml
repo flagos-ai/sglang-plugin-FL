@@ -1,0 +1,44 @@
+# Hygon DCU (BW1000) Hardware Configuration
+# This file defines CI/CD settings for Hygon DCU testing.
+
+platform: hygon
+
+# Docker image for this hardware
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-hygon-ci
+
+# Runner labels for this hardware
+runner_labels:
+  - ci-sglang-plugin-fl-hygon
+
+# Container volumes (hardware-specific paths).
+# The CI image ships only the DTK userspace; the DCU driver userspace lives on
+# the host under /opt/hyhal (+/usr/local/hyhal) and MUST be bind-mounted, or
+# torch fails to load librocm_smi64.so.2 (same convention as vllm-plugin-FL's
+# hygon.yml). Models live under /data/models/Qwen and the test configs
+# reference that path in-container, so /data is mounted at the same path.
+container_volumes:
+  - /opt/hyhal:/opt/hyhal
+  - /usr/local/hyhal:/usr/local/hyhal
+  - /data:/data
+
+# Container options.
+# DCU device access: the host docker daemon has no hygon container runtime;
+# the DCU is exposed via the KFD/DRM char devices (/dev/kfd compute, /dev/mkfd
+# new-format compute, /dev/dri render nodes), passed with --device, plus
+# --group-add video for /dev/dri permissions. This matches the validated
+# vLLM-on-DCU recipe (vllm-plugin-FL .github/configs/hygon.yml).
+# --user root is required: the setup.sh step pip-installs the plugin into
+# /usr/local. --init: tini as PID 1 reaps orphaned sglang TP workers.
+container_options: >-
+  --hostname sglang-plugin-fl
+  --ipc=host
+  --shm-size=64g
+  --ulimit memlock=-1
+  --ulimit stack=67108864
+  --user root
+  --init
+  --device /dev/kfd
+  --device /dev/mkfd
+  --device /dev/dri
+  --group-add video
+  -e GEMS_VENDOR=hygon

@@ -1,0 +1,249 @@
+# CI image for sglang-plugin-FL on Hygon DCU (BW1000 / DTK 26.04, HIP-based).
+#
+# Thin layer on top of the FlagOS DCU release image (flagrelease-built): the
+# vendor stack — DTK 26.04 userspace, torch 2.10.0+das.opt1.dtk2604 (HIP
+# 6.3.26113), triton 3.6.0 (DTK backend), sgl_kernel 0.4.2.post2, flag_gems
+# 5.4.0dev, transformers 5.6.0 — is proprietary to Hygon/DTK and NOT
+# installable from public PyPI, so we FROM the release image (digest-pinned)
+# and only add what the sglang plugin CI needs: sglang 0.5.11 (stock PyPI
+# wheel, --no-deps so the DTK torch stack is never touched), its pure-python
+# runtime deps, FlagGems v5.3.0 (repo baseline alignment), FlagCX v0.13.0
+# (AMD adaptor, so CommunicatorFL exercises the flagcx path), the ShareGPT
+# dataset bake, and pytest/dev tooling.
+#
+# Verified stack inside the base image (inspected 2026-08-19):
+#   ubuntu:22.04 · python 3.10.12 · torch 2.10.0+das.opt1.dtk2604
+#   · triton 3.6.0 · sgl_kernel 0.4.2.post2 · flag_gems 5.4.0dev
+#   · transformers 5.6.0 · sglang present only as a BROKEN editable stub
+#     (uninstalled and reinstalled from the stock wheel below)
+# NOTE: torch.cuda IS available on DCU (HIP); device name reports "BW".
+# The image's /opt/hyhal is a partial copy — the full driver userspace
+# (librocm_smi64, hyhal libs) is bind-mounted from the host at runtime
+# (.github/configs/hygon.yml -> container_volumes /opt/hyhal + /usr/local/hyhal,
+# same convention as vllm-plugin-FL's hygon.yml).
+#
+# Build (the host needs to reach github.com + pypi.org + huggingface.co —
+# build on an internet-connected machine, then push to harbor; the DCU hosts
+# pull from harbor.baai.ac.cn directly):
+#   docker build -t harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-hygon-ci \
+#     --build-arg http_proxy=$http_proxy --build-arg https_proxy=$https_proxy \
+#     -f docker/hygon/containerfile .
+#
+# Push target: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-hygon-ci
+
+# Digest-pinned (tag 20260704 is timestamped; the digest is immutable).
+ARG BASE_IMAGE=harbor.baai.ac.cn/flagos-dev/flagos-triton3.6-dtk2604-sglangplugin@sha256:8b37ca002e35e6edd20db4e67a49b528cf56d66819d07ac0831476036c58e7ce
+
+# Pre-baked ShareGPT HF cache (see the "Offline benchmark dataset bake"
+# section at the bottom for why this is copied instead of downloaded).
+FROM harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-cuda-ci AS hf-cache
+
+FROM ${BASE_IMAGE}
+
+# Proxy is passed at build time only (--build-arg); declared as ARG so the
+# sglang/FlagGems/ShareGPT steps can reach the public internet, but it is NOT
+# persisted into the final image.
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
+
+# sglang version (repo baseline; matches docker/cuda/containerfile). The base
+# image ships torch 2.10 (T-Head PPU's sglang 0.5.12 runs on torch 2.10 as
+# well, and the musa platform builds sglang v0.5.12 on even older torch, so
+# 0.5.11-on-2.10 is within the tested envelope).
+ARG SGLANG_VERSION=0.5.11
+# FlagGems version for repo-baseline alignment. The base image ships a
+# 5.4.0dev build curated by flagrelease for DTK; the CI image rebuilds the
+# pinned tag instead (v5.3.0 == the ascend baseline) so all plugin platforms
+# run the same FlagGems. Set FLAGGEMS_VERSION="" to keep the image's build.
+ARG FLAGGEMS_VERSION=v5.3.0
+# Optional HTTP proxy for the git clone below ONLY (pip must stay direct —
+# the CI proxy does not carry pypi.org). Passed via --build-arg GIT_PROXY=...
+ARG GIT_PROXY=
+# Optional pip index override for the pip steps (e.g. a fast CN mirror on
+# slow pypi.org routes): --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+# Empty (default) = pypi.org direct.
+ARG PIP_INDEX_URL=
+
+# NOTE: no SGLANG_FL_* envs are baked. Plugin envs live in
+# tests/platforms/hygon.yaml env_defaults (applied per-scope by tests/run.py);
+# SGLANG_FL_PLATFORM in particular must NOT be exported globally — it forces
+# the dispatch manager to load the hygon platform config and breaks the
+# env-policy unit tests (same reason ascend.yaml keeps env_defaults empty).
+# DCU auto-detection works anyway: FlagGems DeviceDetector reports
+# vendor=hygon through torch.cuda, so hygon.yaml loads without any env.
+ENV DEBIAN_FRONTEND=noninteractive \
+    HF_ENDPOINT=https://huggingface.co \
+    GEMS_VENDOR=hygon
+
+# ---------------------------------------------------------------------------
+# SGLang (stock wheel, dependency-free install)
+# ---------------------------------------------------------------------------
+# sglang[runtime]'s dep set would pull the CUDA torch/flashinfer stack and
+# destroy the DTK environment, so sglang itself is installed --no-deps and
+# only the pure-python subset it imports at runtime is added explicitly.
+# torch/triton/transformers/numpy already come from the base. The base image
+# already ships a DCU-compatible sgl_kernel 0.4.2.post2, so no stub is needed
+# (unlike the enflame image).
+# The base image ships a BROKEN editable sglang install (dist-info present,
+# finder points at the flagrelease build machine's /root/codes/... path that
+# does not exist here) — pip would consider 0.5.11 "already satisfied" and
+# silently skip the wheel install, leaving `import sglang` broken. Uninstall
+# the stub first (own layer; failure-tolerant) so the wheel really lands.
+RUN pip uninstall -y sglang 2>/dev/null || true
+RUN PIP_CI="$( [ -n "${PIP_INDEX_URL}" ] && echo "-i ${PIP_INDEX_URL}" )" && \
+    pip install ${PIP_CI} --no-cache-dir --no-deps "sglang==${SGLANG_VERSION}" && \
+    pip install ${PIP_CI} --no-cache-dir \
+        aiohttp \
+        anthropic \
+        "blobfile==3.0.0" \
+        compressed-tensors \
+        datasets \
+        easydict \
+        einops \
+        fastapi \
+        gguf \
+        interegular \
+        IPython \
+        "llguidance>=0.7.11,<0.8.0" \
+        modelscope \
+        msgspec \
+        ninja \
+        nvidia-ml-py \
+        "openai==2.6.1" \
+        "openai-harmony==0.0.4" \
+        orjson \
+        "outlines==0.1.11" \
+        packaging \
+        partial_json_parser \
+        pillow \
+        "prometheus-client>=0.20.0" \
+        psutil \
+        py-spy \
+        pybase64 \
+        pydantic \
+        python-multipart \
+        "pyzmq>=25.1.2" \
+        requests \
+        scipy \
+        tqdm \
+        uvicorn \
+        zstandard
+
+# xgrammar declares an unversioned `triton` dependency; on the DCU image the
+# DTK triton's version string does not satisfy it, so pip would "upgrade" to
+# the vanilla CUDA triton and DESTROY the DTK toolchain. xgrammar only uses
+# triton for its GPU fallback path — install it dependency-free.
+RUN PIP_CI="$( [ -n "${PIP_INDEX_URL}" ] && echo "-i ${PIP_INDEX_URL}" )" && \
+    pip install ${PIP_CI} --no-cache-dir --no-deps xgrammar
+
+# ---------------------------------------------------------------------------
+# DTK aiter API shim
+# ---------------------------------------------------------------------------
+# sglang 0.5.11's HIP branches import the NEW aiter layout (aiter.ops.triton.*)
+# unguarded (quantization/fp8_utils.py and quark/schemes/quark_w4a4_mxfp4.py,
+# both under `if _is_hip:` — true on DCU). The base image's DTK aiter
+# (0.1.3+das) has an older module layout without ops/triton, so any deep
+# sglang.srt import (model_config -> QUANTIZATION_METHODS) dies with
+# ModuleNotFoundError. Uninstalling aiter is NOT an option (the base's
+# vllm_hcu import hook requires it), so the missing submodules are shimmed:
+# importable, but raising loudly if ever called — they are AMD fp8/mxfp4
+# quant kernels, never exercised by the bf16 qwen3 test cases.
+RUN T="/usr/local/lib/python3.10/dist-packages/aiter/ops/triton" && \
+    mkdir -p "${T}/gemm/fused" && \
+    touch "${T}/__init__.py" "${T}/gemm/__init__.py" "${T}/gemm/fused/__init__.py" && \
+    printf 'def gemm_a8w8_blockscale(*args, **kwargs):\n    raise RuntimeError("DTK-aiter shim: gemm_a8w8_blockscale not in the DTK aiter build")\n\n' > "${T}/gemm_a8w8_blockscale.py" && \
+    printf 'def gemm_afp4wfp4(*args, **kwargs):\n    raise RuntimeError("DTK-aiter shim: gemm_afp4wfp4 not in the DTK aiter build")\n\n' > "${T}/gemm_afp4wfp4.py" && \
+    printf 'def gemm_afp4wfp4_pre_quant(*args, **kwargs):\n    raise RuntimeError("DTK-aiter shim: gemm_afp4wfp4_pre_quant not in the DTK aiter build")\n\n' > "${T}/gemm_afp4wfp4_pre_quant_atomic.py" && \
+    printf 'def dynamic_mxfp4_quant(*args, **kwargs):\n    raise RuntimeError("DTK-aiter shim: dynamic_mxfp4_quant not in the DTK aiter build")\n\n' > "${T}/quant.py" && \
+    printf 'def fused_gemm_afp4wfp4_split_cat(*args, **kwargs):\n    raise RuntimeError("DTK-aiter shim: fused_gemm_afp4wfp4_split_cat not in the DTK aiter build")\n\n' > "${T}/gemm/fused/fused_gemm_afp4wfp4_split_cat.py" && \
+    grep -q 'def gemm_a8w8_blockscale' "${T}/gemm_a8w8_blockscale.py" && \
+    grep -q 'def dynamic_mxfp4_quant' "${T}/quant.py"
+
+# ---------------------------------------------------------------------------
+# FlagGems repo-baseline alignment (v5.3.0)
+# ---------------------------------------------------------------------------
+# v5.3.0 builds with scikit-build-core, so cmake/ninja/pybind11 are staged
+# first. The triton 3.6.0 DTK build from the base image compiles the kernels.
+# SETUPTOOLS_SCM_PRETEND_VERSION avoids setuptools-scm git-describe issues in
+# the --depth 1 clone. GEMS_VENDOR=hygon pins the vendor detection.
+RUN PIP_CI="$( [ -n "${PIP_INDEX_URL}" ] && echo "-i ${PIP_INDEX_URL}" )" && \
+    if [ -n "${FLAGGEMS_VERSION}" ]; then \
+        pip install ${PIP_CI} --no-cache-dir -U "setuptools<77" "setuptools-scm>=8,<10" \
+            scikit-build-core pybind11 ninja cmake wheel && \
+        git -c http.proxy=${GIT_PROXY} clone --branch ${FLAGGEMS_VERSION} --depth 1 \
+            https://github.com/flagos-ai/FlagGems /tmp/FlagGems && \
+        SETUPTOOLS_SCM_PRETEND_VERSION=${FLAGGEMS_VERSION#v} \
+        pip install ${PIP_CI} --no-build-isolation --no-deps /tmp/FlagGems && \
+        rm -rf /tmp/FlagGems; \
+    fi
+
+# ---------------------------------------------------------------------------
+# FlagCX v0.13.0 (AMD/ROCm adaptor — DCU is HIP lineage)
+# ---------------------------------------------------------------------------
+# CommunicatorFL routes collectives through FlagCX when FLAGCX_PATH is set
+# (PlatformFL._resolve_dist_backend prefers "flagcx" over the vendor-map
+# fallback), mirroring docker/ascend & docker/mthreads — without this the
+# DCU pipeline silently stays on the torch.distributed fallback and FlagCX
+# never gets exercised. DTK has no dedicated adaptor, but the AMD one fits:
+# -DUSE_AMD_ADAPTOR -D__HIP_PLATFORM_AMD__, links -lrccl against the rccl
+# headers at $CCL_HOME/include/rccl. The DTK base image ships all of it
+# under /opt/dtk (librccl.so, include/rccl/, libhiprtc.so). Host-API only
+# (COMPILE_KERNEL=0, the Makefile default) so no device compilation.
+# Auto-detect the toolkit root so a relocated DTK fails here with a pointer,
+# not a mid-link error (same pattern as docker/mthreads' MUSA_CCL_HOME).
+ARG FLAGCX_VERSION=v0.13.0
+RUN DTK_HOME="" && \
+    for p in /opt/dtk /opt/rocm; do \
+        if [ -f "$p/lib/librccl.so" ] && [ -d "$p/include/rccl" ]; then DTK_HOME="$p"; break; fi; \
+    done && \
+    test -n "$DTK_HOME" || { \
+        echo "ERROR: librccl.so + include/rccl not found under /opt/dtk or /opt/rocm" >&2; \
+        echo "  librccl* present on image:" >&2; \
+        find / -name 'librccl.so*' 2>/dev/null | head >&2; \
+        exit 1; \
+    } && \
+    git -c http.proxy=${GIT_PROXY} clone --branch ${FLAGCX_VERSION} --depth 1 \
+        https://github.com/flagos-ai/FlagCX /opt/FlagCX && \
+    cd /opt/FlagCX && \
+    git -c http.proxy=${GIT_PROXY} submodule update --init --recursive --depth 1 && \
+    make USE_AMD=1 DEVICE_HOME="${DTK_HOME}" CCL_HOME="${DTK_HOME}" -j"$(nproc)" && \
+    test -f build/lib/libflagcx.so && \
+    test -f plugin/interservice/flagcx_wrapper.py && \
+    rm -rf .git
+# NOTE: no torch-dependent import check after the make — the DTK torch needs
+# librocm_smi64.so.2 from the host driver userspace (/opt/hyhal), bind-mounted
+# at RUNTIME only (see .github/configs/hygon.yml container_volumes); importing
+# torch at build time can never succeed. CI exercises the wrapper instead.
+ENV FLAGCX_PATH=/opt/FlagCX
+
+# ---------------------------------------------------------------------------
+# Test & dev tools (mirrors docker/cuda/containerfile)
+# ---------------------------------------------------------------------------
+RUN PIP_CI="$( [ -n "${PIP_INDEX_URL}" ] && echo "-i ${PIP_INDEX_URL}" )" && \
+    pip install ${PIP_CI} --no-cache-dir \
+        pytest \
+        pytest-cov \
+        pytest-timeout \
+        pytest-json-report \
+        pytest-metadata \
+        numpy \
+        requests \
+        ruff \
+        pyyaml
+
+# ---------------------------------------------------------------------------
+# Offline benchmark dataset bake
+# ---------------------------------------------------------------------------
+# sglang's benchmark (bench_offline_throughput / bench_serving) fetches the
+# 642 MB ShareGPT dataset from HF even under --dataset-name random. The build
+# sandbox cannot reach huggingface.co, so the pinned HF cache is copied from
+# the CUDA CI image on harbor (see docker/cuda/containerfile). DCU CI runners
+# have no external internet, so the offline envs below are load-bearing.
+# HF_HOME is pinned because the runner overrides HOME=/github/home at runtime.
+COPY --from=hf-cache /opt/hf-cache /opt/hf-cache
+ENV HF_HOME=/opt/hf-cache
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
+
+WORKDIR /workspace
