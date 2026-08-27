@@ -14,7 +14,7 @@ def _create_hcu_attention_backend(runner):
         "Cross attention is not supported in the HCU attention backend."
     )
 
-    from sglang_fl.dispatch.backends.vendor.hcu.impl.attention_backend import (
+    from sglang_fl.dispatch.backends.vendor.hygon.impl.attention_backend import (
         HCUAttnBackend,
     )
 
