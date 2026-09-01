@@ -12,8 +12,7 @@ runner_labels:
 
 # Container volumes (hardware-specific paths)
 container_volumes:
-  # - /mnt/airs-business/cicd/models:/data/models/Qwen
-  - /data:/data
+  - /mnt/airs-business/cicd/models:/data/models/Qwen
 
 # Container options (no --privileged; GPU access via NVIDIA_VISIBLE_DEVICES env var
 # which triggers nvidia-container-toolkit hook on the host docker daemon)
