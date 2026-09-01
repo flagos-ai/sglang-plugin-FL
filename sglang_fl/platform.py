@@ -61,6 +61,7 @@ _ATTN_BACKEND_MAP = {
     "ascend": "ascend",
     "mthreads": "fa3",
     "enflame": "fa3",
+    "thead": "fa3",
     "kunlunxin": "kunlunxin",
     "iluvatar": "triton",
     "hygon": "hcu",
