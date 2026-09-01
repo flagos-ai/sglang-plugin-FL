@@ -6,22 +6,19 @@
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-# Ascend FLA (Flash Linear Attention) operator implementations.
+# Ascend adapter for `chunk_gated_delta_rule`.
 #
-# chunk_gated_delta_rule: sgl_kernel_npu.fla.chunk.chunk_gated_delta_rule_npu
-# fused_recurrent_* : never called on NPU — AscendGDNAttnBackend routes around them.
+# This file mirrors the upstream module path `sgl_kernel_npu.fla.chunk` and
+# thin-wraps its `chunk_gated_delta_rule_npu`. In srt_empty mode (no
+# sgl_kernel_npu installed), the import below resolves through the stub
+# finder to a None-attribute module; the resulting TypeError at call time is
+# caught by the plugin dispatch fallback and forwarded to flagos / reference.
 
-from __future__ import annotations
-
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
+
+from sgl_kernel_npu.fla.chunk import chunk_gated_delta_rule_npu
 
 
 def chunk_gated_delta_rule_ascend(
@@ -30,28 +27,30 @@ def chunk_gated_delta_rule_ascend(
     v: torch.Tensor,
     g: torch.Tensor,
     beta: torch.Tensor,
-    scale: float,
+    scale: Optional[float] = None,
     initial_state: Optional[torch.Tensor] = None,
     initial_state_indices: Optional[torch.Tensor] = None,
     cu_seqlens: Optional[torch.LongTensor] = None,
     head_first: bool = False,
     use_qk_l2norm_in_kernel: bool = False,
 ):
-    from sgl_kernel_npu.fla.chunk import chunk_gated_delta_rule_npu
-
-    # chunk_gated_delta_rule_npu does not accept initial_state_indices; pre-index here as sglang does.
+    # Bridges sglang mainline signature (which carries initial_state_indices for
+    # per-request state-pool addressing) to the upstream kernel, which only
+    # accepts a per-batch initial_state tensor.
     if initial_state is not None and initial_state_indices is not None:
         initial_state = initial_state[initial_state_indices]
 
-    return chunk_gated_delta_rule_npu(
-        q=q,
-        k=k,
-        v=v,
-        g=g,
-        beta=beta,
+    o, final_state, h = chunk_gated_delta_rule_npu(
+        q,
+        k,
+        v,
+        g,
+        beta,
         scale=scale,
         initial_state=initial_state,
+        output_final_state=True,
         cu_seqlens=cu_seqlens,
         head_first=head_first,
         use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
     )
+    return o, final_state, h

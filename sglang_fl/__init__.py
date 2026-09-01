@@ -68,6 +68,49 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
 
 
+# ─── Vendor early (T1) patches — install at plugin-import time ───────────────
+#
+# Must run before ANY sglang module loads on this Python process. sglang's
+# module chain has unguarded top-level `from sgl_kernel_npu.X import Y`
+# imports outside `Engine.__init__`.
+
+
+def _apply_vendor_early_patches() -> None:
+    """Discover the runtime vendor and import its ``patch_early`` module.
+
+    Symmetric to ``_apply_vendor_patches()`` but runs at plugin-import time,
+    before any sglang module is loaded. Vendors that need import-time hooks
+    (Ascend's sgl_kernel_npu stub finder for srt_empty; potentially MUSA)
+    ship a ``patch_early.py`` beside their existing ``patch.py``. Vendors
+    without one are silently skipped.
+    """
+    import importlib
+
+    try:
+        from sglang_fl.utils import get_device_info
+
+        info = get_device_info()
+    except Exception:
+        return  # utils / flag_gems broken — nothing to patch
+
+    if info is None:
+        return
+
+    module = f"sglang_fl.dispatch.backends.vendor.{info.vendor_name}.patch_early"
+    try:
+        importlib.import_module(module)
+        logger.info("vendor early patch loaded: %s", module)
+    except ImportError:
+        logger.debug("vendor early patch absent: %s", module)
+    except Exception as e:
+        # Defensive at module-load time: don't let a broken vendor patch_early
+        # break the entire plugin import.
+        logger.warning("vendor early patch failed to load (%s): %s", module, e)
+
+
+_apply_vendor_early_patches()
+
+
 def _is_rank0() -> bool:
     """Return True if this is the main process (rank 0) — safe to call at any stage."""
     # During load_plugin(): dist not initialized yet, use multiprocessing parent check
@@ -444,20 +487,14 @@ def _apply_vendor_patches() -> None:
     """
     import importlib
 
-    try:
-        try:
-            # FlagGems<=5.0.2: DeviceDetector lives in device.
-            from flag_gems.runtime.backend.device import DeviceDetector
-        except ImportError:
-            # FlagGems>5.0.2: DeviceDetector lives in device_finder.
-            from flag_gems.runtime.backend.device_finder import DeviceDetector
+    from sglang_fl.utils import get_device_info
 
-        vendor = DeviceDetector().vendor_name
-    except Exception as e:
-        logger.warning("vendor patch skipped: DeviceDetector failed (%s)", e)
+    info = get_device_info()
+    if info is None:
+        logger.warning("vendor patch skipped: DeviceDetector unavailable")
         return
 
-    module = f"sglang_fl.dispatch.backends.vendor.{vendor}.patch"
+    module = f"sglang_fl.dispatch.backends.vendor.{info.vendor_name}.patch"
     try:
         importlib.import_module(module)
         logger.info("vendor patch loaded: %s", module)
@@ -714,24 +751,18 @@ def activate_platform() -> str | None:
     Returns the fully-qualified class path of PlatformFL if hardware is detected,
     or None if FlagGems DeviceDetector fails (no supported hardware).
     """
-    try:
-        try:
-            # FlagGems<=5.0.2: DeviceDetector lives in device.
-            from flag_gems.runtime.backend.device import DeviceDetector
-        except ImportError:
-            # FlagGems>5.0.2: DeviceDetector lives in device_finder.
-            from flag_gems.runtime.backend.device_finder import DeviceDetector
+    from sglang_fl.utils import get_device_info
 
-        detector = DeviceDetector()
-        logger.info(
-            "sglang_fl platform activating: vendor=%s, device=%s",
-            detector.vendor_name,
-            detector.name,
-        )
-        return "sglang_fl.platform:PlatformFL"
-    except Exception as e:
-        logger.warning("sglang_fl platform activation failed: %s", e)
+    info = get_device_info()
+    if info is None:
+        logger.warning("sglang_fl platform activation failed: DeviceDetector unavailable")
         return None
+    logger.info(
+        "sglang_fl platform activating: vendor=%s, device=%s",
+        info.vendor_name,
+        info.device_type,
+    )
+    return "sglang_fl.platform:PlatformFL"
 
 
 # ─── General Plugin entry point ──────────────────────────────────────────────
@@ -767,16 +798,16 @@ def load_plugin():
 
     from sglang.srt.plugins.hook_registry import HookRegistry, HookType
 
-    # 0. Build unified config (YAML + env vars)
+    # 1. Build unified config (YAML + env vars) — pure plugin-local, no sglang touch
     config = _build_config()
 
-    # 1. FlagGems ATen ops
+    # 2. FlagGems ATen ops
     _setup_flaggems(config)
 
-    # 2. Initialize dispatch system (OpManager + backends + policy)
+    # 3. Initialize dispatch system (OpManager + backends + policy)
     _init_dispatch(config)
 
-    # 3. Install dispatch AROUND hook (bridge layer → dispatch.call_op)
+    # 4. Install dispatch AROUND hook (bridge layer → dispatch.call_op)
     oot_enabled = _parse_bool(
         os.environ.get("SGLANG_FL_OOT_ENABLED", "1"), default=True
     )
@@ -799,13 +830,13 @@ def load_plugin():
     else:
         logger.info("Layer 2 (Fused Ops) disabled (SGLANG_FL_OOT_ENABLED=0)")
 
-    # 4. Communicator hooks (CommunicatorFL with FlagCX/torch.distributed)
+    # 5. Communicator hooks (CommunicatorFL with FlagCX/torch.distributed)
     _setup_communicator_hooks()
 
-    # 5. Vendor-specific patches — final overlay on top of all sglang_fl layers
+    # 6. Vendor runtime (T2) patches — final overlay on top of all sglang_fl layers
     _apply_vendor_patches()
 
-    # 6. Summary banner — confirm plugin is active (rank 0 only)
+    # 7. Summary banner — confirm plugin is active (rank 0 only)
     if _is_rank0():
         use_fg = _parse_bool(os.environ.get("USE_FLAGGEMS", "1"), default=True)
         aten_status = "OFF" if not use_fg else "ON"
