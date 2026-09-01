@@ -1,3 +1,17 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """SGLang OOT Plugin — FlagGems-based multi-chip adaptation.
 
 Two entry_points are registered:
@@ -27,7 +41,7 @@ Environment variables:
   SGLANG_FL_OOT_ENABLED=1|0           Master switch for Layer 2 (default: 1)
   SGLANG_FL_PREFER=flagos|vendor|reference  Global backend priority
   SGLANG_FL_PER_OP=op=kind|kind;...         Per-op backend override
-  SGLANG_FL_STRICT=1|0                Fallback on error (default: 1=enabled)
+  SGLANG_FL_STRICT=1|0                Strict mode: 1=no fallback, 0=fallback (default: 0)
   SGLANG_FL_OOT_WHITELIST=op1,op2     Only dispatch listed ops through OOT
   SGLANG_FL_OOT_BLACKLIST=op1,op2     Skip listed ops from OOT dispatch
   SGLANG_FL_DENY_VENDORS=v1,v2       Deny specific vendor backends
@@ -140,12 +154,12 @@ def _build_config() -> dict:
     else:
         flagos_blacklist = yaml_cfg.get("flagos_blacklist", []) or []
 
-    # strict: SGLANG_FL_STRICT > yaml.strict > True (default: fallback enabled)
+    # strict: SGLANG_FL_STRICT > yaml.strict > False (default: fallback enabled)
     strict_str = os.environ.get("SGLANG_FL_STRICT", "").strip()
     if strict_str:
         strict = strict_str == "1"
     else:
-        strict = yaml_cfg.get("strict", True)
+        strict = yaml_cfg.get("strict", False)
 
     # deny_vendors: SGLANG_FL_DENY_VENDORS > yaml.deny_vendors > []
     deny_str = os.environ.get("SGLANG_FL_DENY_VENDORS", "").strip()
@@ -222,7 +236,7 @@ def _init_dispatch(config: dict) -> None:
 
     policy = SelectionPolicy.from_dict(
         prefer=prefer,
-        strict=config.get("strict", True),
+        strict=config.get("strict", False),
         per_op_order=per_op_order if per_op_order else None,
         deny_vendors=config.get("deny_vendors"),
         allow_vendors=config.get("allow_vendors"),
@@ -417,6 +431,40 @@ def _setup_flaggems(config: dict = None):
                 h.addFilter(_AtenOnlyFilter())
 
 
+# ─── Vendor-specific sglang patches ───────────────────────────────────────────
+
+
+def _apply_vendor_patches() -> None:
+    """Import vendor/<vendor_name>/patch.py to apply vendor monkey-patches
+    on sglang internals. Called last in load_plugin(), after every sglang_fl
+    layer (FlagGems ATen, dispatch system, AROUND hooks, communicator).
+    Resolves vendor_name via FlagGems' DeviceDetector — no PlatformFL needed,
+    so this still runs before sglang's model_runner is imported. Silently
+    skips when the vendor module is absent or hardware is unrecognised.
+    """
+    import importlib
+
+    try:
+        try:
+            # FlagGems<=5.0.2: DeviceDetector lives in device.
+            from flag_gems.runtime.backend.device import DeviceDetector
+        except ImportError:
+            # FlagGems>5.0.2: DeviceDetector lives in device_finder.
+            from flag_gems.runtime.backend.device_finder import DeviceDetector
+
+        vendor = DeviceDetector().vendor_name
+    except Exception as e:
+        logger.warning("vendor patch skipped: DeviceDetector failed (%s)", e)
+        return
+
+    module = f"sglang_fl.dispatch.backends.vendor.{vendor}.patch"
+    try:
+        importlib.import_module(module)
+        logger.info("vendor patch loaded: %s", module)
+    except ImportError:
+        logger.info("vendor patch absent: %s", module)
+
+
 # ─── Communicator AROUND hooks ────────────────────────────────────────────────
 
 
@@ -426,10 +474,12 @@ def _setup_communicator_hooks():
     Auto-activates when the Platform Plugin is OOT. The CommunicatorFL
     transparently routes through FlagCX (if available) or torch.distributed.
 
-    Hooks:
-      - __init__: inject self.fl_communicator after original init
-      - all_reduce, reduce_scatter_tensor, all_gather_into_tensor,
-        reduce_scatterv, all_gatherv, send, recv: delegate to fl_communicator
+    Hooks (12 total):
+      - __init__: inject self.fl_communicator, suppress PyNccl when FlagCX active
+      - all_reduce, _reduce_scatter_tensor, _all_gather_into_tensor,
+        reduce_scatterv, all_gatherv, send, recv, broadcast: delegate to fl_communicator
+      - broadcast_tensor_dict, send_tensor_dict, recv_tensor_dict:
+        full method intercept for FlagCX coverage on composite operations
     """
     from sglang.srt.plugins.hook_registry import HookRegistry, HookType
 
@@ -453,6 +503,14 @@ def _setup_communicator_hooks():
                     rank_in_group=self.rank_in_group,
                     ranks=self.ranks,
                 )
+                # Suppress PyNccl when FlagCX is active to avoid conflicts
+                if (
+                    self.fl_communicator
+                    and self.fl_communicator._flagcx_comm
+                    and hasattr(self, "pynccl_comm")
+                    and self.pynccl_comm is not None
+                ):
+                    self.pynccl_comm.disabled = True
             except Exception as e:
                 logger.warning(f"CommunicatorFL creation failed: {e}")
                 self.fl_communicator = None
@@ -524,6 +582,88 @@ def _setup_communicator_hooks():
             return tensor
         return original_fn(self, size, dtype, src=src)
 
+    # ── broadcast hook ──
+
+    def _broadcast_hook(original_fn, self, input_, src=0):
+        comm = getattr(self, "fl_communicator", None)
+        if comm is not None and not comm.disabled:
+            return comm.broadcast(input_, src)
+        return original_fn(self, input_, src)
+
+    # ── broadcast_tensor_dict hook ──
+
+    def _broadcast_tensor_dict_hook(
+        original_fn, self, tensor_dict=None, src=0, group=None, metadata_group=None
+    ):
+        comm = getattr(self, "fl_communicator", None)
+        if comm is not None and not comm.disabled:
+            if not torch.distributed.is_initialized() or self.world_size == 1:
+                return tensor_dict
+            return comm.broadcast_tensor_dict(
+                tensor_dict=tensor_dict,
+                src=src,
+                rank_in_group=self.rank_in_group,
+                broadcast_object_fn=self.broadcast_object,
+            )
+        return original_fn(
+            self,
+            tensor_dict=tensor_dict,
+            src=src,
+            group=group,
+            metadata_group=metadata_group,
+        )
+
+    # ── send_tensor_dict hook ──
+
+    def _send_tensor_dict_hook(
+        original_fn,
+        self,
+        tensor_dict,
+        dst=None,
+        all_gather_group=None,
+        async_send=False,
+    ):
+        comm = getattr(self, "fl_communicator", None)
+        if comm is not None and not comm.disabled:
+            if self.world_size == 1:
+                return tensor_dict
+            if dst is None:
+                dst = (self.rank_in_group + 1) % self.world_size
+            return comm.send_tensor_dict(
+                tensor_dict=tensor_dict,
+                dst=dst,
+                send_object_fn=self.send_object,
+                all_gather_group=all_gather_group,
+            )
+        return original_fn(
+            self,
+            tensor_dict,
+            dst=dst,
+            all_gather_group=all_gather_group,
+            async_send=async_send,
+        )
+
+    # ── recv_tensor_dict hook ──
+
+    def _recv_tensor_dict_hook(
+        original_fn,
+        self,
+        src=None,
+        all_gather_group=None,
+    ):
+        comm = getattr(self, "fl_communicator", None)
+        if comm is not None and not comm.disabled:
+            if not torch.distributed.is_initialized() or self.world_size == 1:
+                return None
+            if src is None:
+                src = (self.rank_in_group - 1) % self.world_size
+            return comm.recv_tensor_dict(
+                src=src,
+                recv_object_fn=self.recv_object,
+                all_gather_group=all_gather_group,
+            )
+        return original_fn(self, src=src, all_gather_group=all_gather_group)
+
     # ── Register all hooks ──
 
     HookRegistry.register(f"{_GC_TARGET}.__init__", _init_hook, HookType.AROUND)
@@ -546,8 +686,23 @@ def _setup_communicator_hooks():
     )
     HookRegistry.register(f"{_GC_TARGET}.send", _send_hook, HookType.AROUND)
     HookRegistry.register(f"{_GC_TARGET}.recv", _recv_hook, HookType.AROUND)
+    HookRegistry.register(f"{_GC_TARGET}.broadcast", _broadcast_hook, HookType.AROUND)
+    HookRegistry.register(
+        f"{_GC_TARGET}.broadcast_tensor_dict",
+        _broadcast_tensor_dict_hook,
+        HookType.AROUND,
+    )
+    HookRegistry.register(
+        f"{_GC_TARGET}.send_tensor_dict", _send_tensor_dict_hook, HookType.AROUND
+    )
+    HookRegistry.register(
+        f"{_GC_TARGET}.recv_tensor_dict", _recv_tensor_dict_hook, HookType.AROUND
+    )
 
-    logger.info("CommunicatorFL AROUND hooks registered on GroupCoordinator")
+    logger.info(
+        "CommunicatorFL AROUND hooks registered on GroupCoordinator "
+        "(12 hooks: init + 8 collectives + broadcast_tensor_dict + send/recv_tensor_dict)"
+    )
 
 
 # ─── Platform Plugin entry point ─────────────────────────────────────────────
@@ -560,7 +715,12 @@ def activate_platform() -> str | None:
     or None if FlagGems DeviceDetector fails (no supported hardware).
     """
     try:
-        from flag_gems.runtime.backend.device import DeviceDetector
+        try:
+            # FlagGems<=5.0.2: DeviceDetector lives in device.
+            from flag_gems.runtime.backend.device import DeviceDetector
+        except ImportError:
+            # FlagGems>5.0.2: DeviceDetector lives in device_finder.
+            from flag_gems.runtime.backend.device_finder import DeviceDetector
 
         detector = DeviceDetector()
         logger.info(
@@ -577,6 +737,16 @@ def activate_platform() -> str | None:
 # ─── General Plugin entry point ──────────────────────────────────────────────
 
 _plugin_loaded = False
+_plugin_active = False
+
+
+def is_plugin_loaded() -> bool:
+    """Return whether SGLang invoked the general plugin entry point."""
+    return _plugin_loaded
+
+def is_plugin_active() -> bool:
+    """Return whether the general plugin completed its initialization."""
+    return _plugin_active
 
 
 def load_plugin():
@@ -584,10 +754,12 @@ def load_plugin():
 
     Idempotent: safe to call multiple times.
     """
-    global _plugin_loaded
+    global _plugin_active, _plugin_loaded
     if _plugin_loaded:
         return
     _plugin_loaded = True
+    if _is_rank0():
+        logger.info("sglang_fl plugin loading")
 
     # Suppress info logs on non-rank-0 processes to avoid duplicate output
     if not _is_rank0():
@@ -630,7 +802,10 @@ def load_plugin():
     # 4. Communicator hooks (CommunicatorFL with FlagCX/torch.distributed)
     _setup_communicator_hooks()
 
-    # 5. Summary banner — confirm plugin is active (rank 0 only)
+    # 5. Vendor-specific patches — final overlay on top of all sglang_fl layers
+    _apply_vendor_patches()
+
+    # 6. Summary banner — confirm plugin is active (rank 0 only)
     if _is_rank0():
         use_fg = _parse_bool(os.environ.get("USE_FLAGGEMS", "1"), default=True)
         aten_status = "OFF" if not use_fg else "ON"
@@ -651,3 +826,5 @@ def load_plugin():
             "+" + "=" * 58 + "+"
         )
         logger.info(banner)
+
+    _plugin_active = True

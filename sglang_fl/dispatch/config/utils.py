@@ -1,3 +1,17 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Hardware-specific operator configuration loader utilities.
 #
 # This module provides automatic loading of operator configurations based on
@@ -36,15 +50,20 @@ def get_platform_name() -> str:
     Detect the current hardware platform.
 
     Returns:
-        Platform name string: 'ascend', 'musa', 'nvidia', or 'unknown'
+        Platform name string: 'ascend', 'musa', 'iluvatar', 'nvidia', or 'unknown'
     """
     try:
         import torch
-
+        if hasattr(torch, "txda") and torch.txda.is_available():
+            return "tsingmicro"
         if hasattr(torch, "npu") and torch.npu.is_available():
             return "ascend"
         if hasattr(torch, "musa") and torch.musa.is_available():
             return "musa"
+        if hasattr(torch, "gcu") and torch.gcu.is_available():
+            return "gcu"
+        if hasattr(torch, "corex") and torch.cuda.is_available():
+            return "iluvatar"
         if torch.cuda.is_available():
             return "nvidia"
     except ImportError:

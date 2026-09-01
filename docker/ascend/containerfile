@@ -1,0 +1,222 @@
+# CI image for sglang-plugin-FL on Huawei Ascend NPU (910C / CANN 8.5.0).
+# Base: official SGLang v0.5.11 Ascend image (A3, Python 3.11), which already
+# provides CANN, torch/torch_npu, SGLang, and baseline Triton/NPU kernels. The
+# Triton and sgl-kernel-npu packages are upgraded below to the requested builds.
+#
+# Single-stage-publish image: the offline benchmark dataset is baked in (see the
+# "CI publish layer" at the bottom). The NPU driver userspace is NOT baked -- in
+# DooD mode the runner bind-mounts it from the host (.github/configs/ascend.yml
+# -> container_volumes: /usr/local/Ascend/driver:/usr/local/Ascend/driver), so
+# torch_npu resolves libascend_hal.so at runtime. The image therefore has no
+# host-specific or proprietary dependency and builds with no extra artifacts.
+#
+# Build:
+#   docker build --platform linux/arm64 \
+#     -f docker/ascend/containerfile \
+#     -t harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-ascend-ci \
+#     docker/ascend/
+#
+# Push (CI pulls this tag):
+#   docker push harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-ascend-ci
+
+FROM swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang:v0.5.11-cann8.5.0-a3 AS base
+
+ARG FLAGGEMS_VERSION=v5.3.0
+ARG TRITON_ASCEND_VERSION=3.2.1
+ARG TRITON_ASCEND_SHA256=1467b81425dc239f495a460b5c3d6ff1b035c117185791ec41c0bf3d7bb1fd7a
+ARG TRITON_ASCEND_WHEEL=triton_ascend-3.2.1-cp311-cp311-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl
+ARG SGL_KERNEL_NPU_RELEASE=2026.05.01.post2
+ARG SGL_KERNEL_NPU_VERSION=2026.5.1
+ARG SGL_KERNEL_NPU_SHA256=1c446e04b23497b97089591713637d512ed16135d0d97d71b6cf5c7db6787fc5
+ARG SGL_KERNEL_NPU_ARCHIVE=sgl-kernel-npu-2026.05.01.post2-torch2.8.0-py311-cann8.5.0-a3-aarch64.zip
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ENV PIP_TRUSTED_HOST=mirrors.aliyun.com
+
+# The base already contains the compiler toolchain and common CLI utilities.
+# Keep only the libraries used by distributed communication and jemalloc.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libibverbs-dev \
+        numactl \
+        libjemalloc2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Replace the base image's triton-ascend 3.2.0 with the official 3.2.1 CPython
+# 3.11 ARM64 wheel. Release 3.2.1 includes fixes for cast/pow handling, which is
+# required by FlagGems during Qwen rotary-cache initialization. The release's
+# published compatibility matrix targets CANN 9.0, so CANN 8.5 compatibility is
+# validated by the downstream NPU e2e pipeline.
+RUN curl --fail --location --retry 5 --retry-delay 5 \
+        "https://gitcode.com/Ascend/triton-ascend/releases/download/v${TRITON_ASCEND_VERSION}/${TRITON_ASCEND_WHEEL}" \
+        --output "/tmp/${TRITON_ASCEND_WHEEL}" && \
+    echo "${TRITON_ASCEND_SHA256}  /tmp/${TRITON_ASCEND_WHEEL}" | sha256sum --check - && \
+    pip install --no-cache-dir --force-reinstall "/tmp/${TRITON_ASCEND_WHEEL}" && \
+    rm -f "/tmp/${TRITON_ASCEND_WHEEL}"
+
+# Replace the base image's sgl-kernel-npu 2026.3.1 and install its matching
+# attention/memory-saver wheels. This release archive is built for the exact
+# base stack: torch 2.8.0, Python 3.11, CANN 8.5.0, A3, ARM64.
+RUN curl --fail --location --retry 5 --retry-delay 5 \
+        "https://github.com/sgl-project/sgl-kernel-npu/releases/download/${SGL_KERNEL_NPU_RELEASE}/${SGL_KERNEL_NPU_ARCHIVE}" \
+        --output "/tmp/${SGL_KERNEL_NPU_ARCHIVE}" && \
+    echo "${SGL_KERNEL_NPU_SHA256}  /tmp/${SGL_KERNEL_NPU_ARCHIVE}" | sha256sum --check - && \
+    mkdir -p /tmp/sgl-kernel-npu-wheels && \
+    unzip -j "/tmp/${SGL_KERNEL_NPU_ARCHIVE}" '*.whl' -d /tmp/sgl-kernel-npu-wheels && \
+    test -f /tmp/sgl-kernel-npu-wheels/attentions-0.2-cp311-cp311-linux_aarch64.whl && \
+    test -f /tmp/sgl-kernel-npu-wheels/torch_memory_saver-0.0.8-cp311-cp311-linux_aarch64.whl && \
+    test -f "/tmp/sgl-kernel-npu-wheels/sgl_kernel_npu-${SGL_KERNEL_NPU_VERSION}-cp311-cp311-linux_aarch64.whl" && \
+    pip install --no-cache-dir --no-deps --force-reinstall \
+        /tmp/sgl-kernel-npu-wheels/attentions-0.2-cp311-cp311-linux_aarch64.whl \
+        /tmp/sgl-kernel-npu-wheels/torch_memory_saver-0.0.8-cp311-cp311-linux_aarch64.whl \
+        "/tmp/sgl-kernel-npu-wheels/sgl_kernel_npu-${SGL_KERNEL_NPU_VERSION}-cp311-cp311-linux_aarch64.whl" && \
+    rm -rf "/tmp/${SGL_KERNEL_NPU_ARCHIVE}" /tmp/sgl-kernel-npu-wheels
+
+# triton-ascend 3.2.1 moved insert_slice out of triton.language into the CANN
+# extension namespace. sgl-kernel-npu 2026.5.1 already uses al.insert_slice in
+# most solve_tril kernels, but its 64x64 merge kernel has six stale
+# tl.insert_slice calls. Patch only that known migration gap and fail the build
+# if the upstream wheel changes unexpectedly.
+RUN SOLVE_TRIL=$(python -c "import importlib.metadata as m; print(m.distribution('sgl-kernel-npu').locate_file('sgl_kernel_npu/fla/solve_tril.py'))") && \
+    test -f "${SOLVE_TRIL}" && \
+    python -c "import pathlib; p=pathlib.Path('${SOLVE_TRIL}'); s=p.read_text(); old='tl.insert_slice('; new='al.insert_slice('; count=s.count(old); assert count == 6, f'expected 6 stale insert_slice calls, found {count}'; patched=s.replace(old, new); assert old not in patched; p.write_text(patched); print(f'patched {count} stale tl.insert_slice calls in {p}')" && \
+    TORCH_DEVICE_BACKEND_AUTOLOAD=0 python -c "import triton.language.extra.cann.extension as al; assert hasattr(al, 'insert_slice'); print('CANN insert_slice extension OK')"
+
+# jemalloc preload for better memory allocation
+RUN echo "export LD_PRELOAD=/usr/lib/$(uname -m)-linux-gnu/libjemalloc.so.2:\${LD_PRELOAD}" >> ~/.bashrc
+
+WORKDIR /workspace
+
+# ---------- ci stage ----------
+FROM base AS ci
+
+ARG FLAGGEMS_VERSION=v5.3.0
+
+# Build the project-specific components missing from the SGLang base image:
+# FlagGems v5.3.0 and FlagCX v0.13.0.
+#  - FlagGems v5.3.0 still uses scikit-build-core. Its Python/Triton NPU backend
+#    is selected at runtime from torch_npu + the upgraded triton-ascend; the
+#    required PEP 517 build tools are installed explicitly for --no-build-isolation.
+#    The known Ascend argmax regression is avoided by the plugin's default op
+#    blacklist.
+#  - FlagCX v0.13.0: host-API only (COMPILE_KERNEL=0, no device code), built
+#    USE_ASCEND=1 against HCCL from the CANN toolkit at $ASCEND_TOOLKIT_HOME.
+#    sglang_fl's
+#    flagcx.py loads $FLAGCX_PATH/build/lib/libflagcx.so + the wrapper at
+#    $FLAGCX_PATH/plugin/interservice/flagcx_wrapper.py (source-tree layout from
+#    `make`, not the PyPI wheel layout).
+ARG FLAGCX_VERSION=v0.13.0
+RUN pip install --no-cache-dir -U \
+        "setuptools>=64,<80" \
+        "scikit-build-core==0.12.2" \
+        "pybind11==3.0.3" \
+        "cmake>=3.20,<4.0" \
+        "ninja==1.13.0" \
+        wheel && \
+    git clone --branch ${FLAGGEMS_VERSION} --depth 1 \
+        https://github.com/flagos-ai/FlagGems /tmp/FlagGems && \
+    pip install --no-build-isolation /tmp/FlagGems && \
+    rm -rf /tmp/FlagGems && \
+    git clone --branch ${FLAGCX_VERSION} --depth 1 \
+        https://github.com/flagos-ai/FlagCX /opt/FlagCX && \
+    cd /opt/FlagCX && \
+    git submodule update --init --recursive --depth 1 && \
+    make USE_ASCEND=1 CCL_HOME="${ASCEND_TOOLKIT_HOME}" -j"$(nproc)" && \
+    test -f build/lib/libflagcx.so && \
+    test -f plugin/interservice/flagcx_wrapper.py && \
+    TORCH_DEVICE_BACKEND_AUTOLOAD=0 PYTHONPATH=/opt/FlagCX \
+        python -c "from plugin.interservice.flagcx_wrapper import FLAGCXLibrary; print('flagcx wrapper import OK')" && \
+    rm -rf .git
+ENV FLAGCX_PATH=/opt/FlagCX
+
+# FlagGems v5.3.0 contains the required v5.0.0->v5.3.0 fixes, so none of the old source
+# patches are needed:
+#  - cann.libdevice: the CANN 8.5 backend supports the base image's
+#    triton-ascend 3.2.1 and falls back to the generic libdevice shim when needed.
+#  - fill_ empty-tensor: ships the `if N == 0: return self` guard (fix #4105).
+#  - exponential_ philox_seed int32->int64 compile bug: fixed in 373951815 (since v5.3.0).
+#  - argmax remains excluded through sglang_fl/dispatch/config/ascend.yaml because
+#    v5.3.0 contains the duplicate @libentry() regression fixed in v5.3.1 (#4467).
+
+# Patch sglang's KV cache allocator: torch_npu's arange kernel coreDim is capped at
+# 65535, so `torch.arange(num_pages)` crashes when num_pages > 65535 (a 64GB NPU with
+# mem_fraction 0.7 -> ~1M pages). Create free_pages in chunks of 65535 so each arange
+# stays under the coreDim limit. CUDA's arange uses a 3D grid and has no such limit, so
+# this only affects the NPU path. Result is identical ([1..num_pages]).
+RUN SGLANG_SRC=$(python -m pip show sglang | sed -n 's/^Editable project location: //p') && \
+    test -n "${SGLANG_SRC}" && \
+    ALLOC="${SGLANG_SRC}/sglang/srt/mem_cache/allocator.py" && \
+    test -f "${ALLOC}" && \
+    python -c "import pathlib; p=pathlib.Path('$ALLOC'); s=p.read_text(); old='        self.free_pages = torch.arange(\n            1, self.num_pages + 1, dtype=torch.int64, device=self.device\n        )'; new='        _np = self.num_pages\n        if _np <= 65535:\n            self.free_pages = torch.arange(1, _np + 1, dtype=torch.int64, device=self.device)\n        else:\n            self.free_pages = torch.cat([torch.arange(s, min(s + 65535, _np + 1), dtype=torch.int64, device=self.device) for s in range(1, _np + 1, 65535)])'; assert old in s, 'allocator anchor not found'; p.write_text(s.replace(old, new)); print('allocator arange chunked for torch_npu coreDim limit')"
+
+# Build-time self-check. A full `import torch_npu` cannot run here: it loads
+# libascend_hal.so from the NPU *driver*, which is only mounted at runtime (the
+# build host has no Ascend hardware). So we verify the installable parts --
+# the expected base-image package versions, torch 2.8.0 imports cleanly with
+# backend auto-load disabled (so torch does not pull in the npu backend here),
+# and sglang.srt.platforms (the API sglang_fl.platform imports) is importable
+# -- this is the API sglang 0.4.7 lacked. A full `import torch_npu` validation
+# still runs on the offline host with the driver mounted.
+RUN python -c "import importlib.metadata as m; expected={'sglang':'0.5.11','torch':'2.8.0','torch-npu':'2.8.0','triton':'3.5.0','triton-ascend':'3.2.1','sgl-kernel-npu':'2026.5.1','attentions':'0.2','torch-memory-saver':'0.0.8','flag-gems':'5.3.0'}; actual={k:m.version(k) for k in expected}; assert all(actual[k].startswith(v) for k,v in expected.items()), actual; print(actual)" && \
+    KERNEL_ROOT=$(python -c "import importlib.metadata as m; print(m.distribution('sgl-kernel-npu').locate_file(''))") && \
+    test -f "${KERNEL_ROOT}/sgl_kernel_npu/norm/add_rmsnorm_bias.py" && \
+    test -f "${KERNEL_ROOT}/sgl_kernel_npu/activation/swiglu_oai.py" && \
+    test -f "${KERNEL_ROOT}/sgl_kernel_npu/fla/chunk.py" && \
+    TORCH_DEVICE_BACKEND_AUTOLOAD=0 python -c "import torch; assert torch.__version__.startswith('2.8.0'), torch.__version__; from sglang.srt.platforms.device_mixin import DeviceCapability, PlatformEnum; print('torch', torch.__version__, '| sglang.srt.platforms OK')"
+
+# Test and dev tools
+RUN pip install --no-cache-dir \
+        pytest==8.3.2 \
+        pytest-xdist==3.6.1 \
+        pytest-cov \
+        pytest-timeout \
+        pytest-json-report \
+        pytest-metadata \
+        ruff
+
+WORKDIR /workspace
+
+# ---------- CI publish layer ----------
+# The offline benchmark dataset, baked at the very end so the build-time
+# self-check above still runs in a driver-less env (it cannot import torch_npu
+# without NPU hardware). The NPU driver userspace is NOT baked here: in DooD mode
+# the runner bind-mounts the host driver into the container (.github/configs/
+# ascend.yml -> container_volumes: /usr/local/Ascend/driver:/usr/local/Ascend/driver),
+# and LD_LIBRARY_PATH (set in the base stage) already covers its lib64 paths, so
+# torch_npu resolves libascend_hal.so at runtime. The host driver version must be
+# compatible with CANN 8.5.0 (a driver/CANN skew surfaces as "Op X does not has
+# any binary" / errno 561000).
+# npu-smi etc. on PATH -- resolves from the host-mounted driver tools at runtime.
+ENV PATH=/usr/local/Ascend/driver/tools:${PATH}
+
+# HuggingFace config for runtime model/dataset resolution. The CI egress proxy
+# can't tunnel huggingface.co; hf-mirror.com is reachable and mirrors the full HF
+# store. download_models.sh with SOURCE=huggingface picks this up automatically;
+# ModelScope (the default source) is unaffected.
+ENV HF_ENDPOINT=https://hf-mirror.com
+
+# Bake the ShareGPT dataset (642M) for sglang's bench: bench_offline_throughput /
+# bench_serving fetch it from HF even under --dataset-name random, and hf-mirror
+# only 302-redirects to HF's US CDN, which the proxy can't pull (ReadTimeout).
+# HF_HOME is pinned to an absolute path because the runner overrides HOME to
+# /github/home at runtime (a build-time cache under /root would be invisible).
+# Global HF_HUB_OFFLINE=1 is safe here: every unit/e2e load uses a local model
+# path (/data/models/...), and weight download defaults to ModelScope -- only the
+# benchmark needs an HF fetch, and it now reads this baked cache.
+ENV HF_HOME=/opt/hf-cache
+ARG SHAREGPT_REVISION=192ab2185289094fc556ec8ce5ce1e8e587154ca
+ARG SHAREGPT_SHA256=35f0e213ce091ed9b9af2a1f0755e9d39f9ccec34ab281cd4ca60d70f6479ba4
+RUN CACHE_DIR="${HF_HOME}/hub/datasets--anon8231489123--ShareGPT_Vicuna_unfiltered" && \
+    SNAPSHOT_DIR="${CACHE_DIR}/snapshots/${SHAREGPT_REVISION}" && \
+    BLOB="${CACHE_DIR}/blobs/${SHAREGPT_SHA256}" && \
+    mkdir -p "${CACHE_DIR}/blobs" "${CACHE_DIR}/refs" "${SNAPSHOT_DIR}" && \
+    curl --fail --location --retry 5 --retry-delay 5 \
+        "${HF_ENDPOINT}/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/${SHAREGPT_REVISION}/ShareGPT_V3_unfiltered_cleaned_split.json" \
+        --output "${BLOB}" && \
+    echo "${SHAREGPT_SHA256}  ${BLOB}" | sha256sum --check - && \
+    printf '%s' "${SHAREGPT_REVISION}" > "${CACHE_DIR}/refs/main" && \
+    ln -s "../../blobs/${SHAREGPT_SHA256}" \
+        "${SNAPSHOT_DIR}/ShareGPT_V3_unfiltered_cleaned_split.json" && \
+    HF_HUB_OFFLINE=1 python -c "from huggingface_hub import hf_hub_download as d; print(d('anon8231489123/ShareGPT_Vicuna_unfiltered', 'ShareGPT_V3_unfiltered_cleaned_split.json', repo_type='dataset'))"
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1

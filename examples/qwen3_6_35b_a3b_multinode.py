@@ -4,7 +4,10 @@
 
 Validates that sglang-plugin-FL correctly handles multi-node tensor parallelism
 by launching a distributed SGLang server across 2 nodes and running text,
-concurrent, and multimodal (VL) inference tests.
+concurrent, multimodal (VL), and high-concurrency inference tests.
+
+Supports CUDA, MUSA, Ascend NPU, Hygon HCU, and Iluvatar CoreX; platform-specific server
+flags and env vars are applied automatically at runtime.
 
 ============================================================================
 Usage:
@@ -23,28 +26,38 @@ Full tested command (2 nodes × 2 GPUs each, TP=2 PP=2):
 
   [Node 0 / Master / 192.168.0.66]
     CUDA_VISIBLE_DEVICES=0,1 \
-    SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero,index_put_,_index_put_impl,_index_put_impl_ \
+    SGLANG_FL_DIST_BACKEND=flagcx \
+    FLAGCX_PATH=/mine/FlagCX_v0.13.0 \
+    SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero \
     SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK=0 \
     GLOO_SOCKET_IFNAME=eth0 NCCL_SOCKET_IFNAME=eth0 \
         python examples/qwen3_6_35b_a3b_multinode.py --role master --master-addr 192.168.0.66 --tp 2 --pp 2
 
   [Node 1 / Worker / 192.168.0.65]
     CUDA_VISIBLE_DEVICES=0,1 \
-    SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero,index_put_,_index_put_impl,_index_put_impl_ \
+    SGLANG_FL_DIST_BACKEND=flagcx \
+    FLAGCX_PATH=/mine/FlagCX_v0.13.0 \
+    SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero \
     SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK=0 \
     GLOO_SOCKET_IFNAME=eth0 NCCL_SOCKET_IFNAME=eth0 \
         python examples/qwen3_6_35b_a3b_multinode.py --role worker --master-addr 192.168.0.66 --tp 2 --pp 2
 
   Total GPUs: TP × PP = 2 × 2 = 4 (2 per node)
 
+  On MUSA, swap CUDA_VISIBLE_DEVICES → MUSA_VISIBLE_DEVICES; on Ascend NPU,
+  use ASCEND_RT_VISIBLE_DEVICES. SGLANG_FL_DIST_BACKEND=flagcx is recommended
+  on both non-CUDA platforms.
+
 Environment variables:
   MODEL_PATH       Model path (default: /models/Qwen3.6-35B-A3B)
   ATTENTION_BACKEND     Optional SGLang attention backend (e.g. triton)
-  CUDA_VISIBLE_DEVICES  GPU selection (e.g. 0,1)
+  CUDA_VISIBLE_DEVICES  GPU selection on CUDA (e.g. 0,1)
+  MUSA_VISIBLE_DEVICES  Device selection on MUSA
+  ASCEND_RT_VISIBLE_DEVICES  Device selection on Ascend NPU
   GLOO_SOCKET_IFNAME    Network interface for Gloo (default: eth0)
   NCCL_SOCKET_IFNAME    Network interface for NCCL (default: eth0)
-  NCCL_IB_DISABLE       Set to 1 to disable InfiniBand
-  NCCL_NET              Set to "Socket" to force TCP transport
+  SGLANG_FL_DIST_BACKEND  Communication backend (flagcx / nccl)
+  FLAGCX_PATH           Path to FlagCX installation
   SGLANG_FL_FLAGOS_BLACKLIST         Ops to exclude from FlagGems
   SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK  Set to 0 to skip memory check
 
@@ -57,6 +70,7 @@ import base64
 import concurrent.futures
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -64,6 +78,54 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
+import torch
+
+# ─── Platform detection ──────────────────────────────────────────────────────
+
+_is_txda = hasattr(torch, "txda") and torch.txda.is_available()
+_is_musa = hasattr(torch, "musa") and torch.musa.is_available()
+_is_npu = hasattr(torch, "npu") and torch.npu.is_available()
+_is_corex = hasattr(torch, "corex") and torch.cuda.is_available()
+_is_hcu = hasattr(torch, "__hcu_version__") and torch.cuda.is_available()
+
+if _is_txda:
+    os.environ.setdefault("SGLANG_FL_TIMER_ENABLE", "1")
+    os.environ.setdefault("SGLANG_REQ_WAITING_TIMEOUT", "-1")
+    os.environ.setdefault("SGLANG_REQ_RUNNING_TIMEOUT", "-1")
+if _is_npu:
+    os.environ.setdefault("SGLANG_ENABLE_OVERLAP_PLAN_STREAM", "0")
+    os.environ.setdefault("SGLANG_ENABLE_SPEC_V2", "1")
+    os.environ.setdefault("HCCL_BUFFSIZE", "2400")
+    os.environ.setdefault("SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK", "128")
+elif _is_musa:
+    os.environ.setdefault("MCCL_IB_DISABLE", "1")
+    
+# Extra launch_server flags per platform.
+# - MUSA: page_size=1 works around a sglang platform bug.
+# - Ascend NPU: requires ascend attention backend, bfloat16, radix cache off.
+if _is_musa:
+    _PLATFORM_SERVER_ARGS: list = ["--page-size", "1"]
+elif _is_npu:
+    _PLATFORM_SERVER_ARGS = [
+        "--attention-backend", "ascend",
+        "--device", "npu",
+        "--dtype", "bfloat16",
+        "--disable-radix-cache",
+    ]
+elif _is_corex:
+    _PLATFORM_SERVER_ARGS = [
+        "--attention-backend", "triton",
+        "--watchdog-timeout", "3600",
+        "--cuda-graph-max-bs", "16",
+        "--sleep-on-idle",
+    ]
+elif _is_hcu:
+    _PLATFORM_SERVER_ARGS = [
+        "--disable-radix-cache",
+        "--page-size", "64",
+    ]
+else:
+    _PLATFORM_SERVER_ARGS = []
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -112,6 +174,24 @@ def parse_args():
         default=600,
         help="Max seconds to wait for server ready (master only)",
     )
+    parser.add_argument(
+        "--text-concurrency",
+        type=int,
+        default=32,
+        help="Number of concurrent text requests for high-concurrency test",
+    )
+    parser.add_argument(
+        "--vl-concurrency",
+        type=int,
+        default=8,
+        help="Number of concurrent VL requests for high-concurrency test",
+    )
+    parser.add_argument(
+        "--request-timeout",
+        type=int,
+        default=300,
+        help="HTTP request and result timeout in seconds (default: 300)",
+    )
     return parser.parse_args()
 
 
@@ -136,7 +216,9 @@ def wait_for_server(port: int, timeout: int) -> bool:
     return False
 
 
-def chat_request(port: int, prompt: str, max_tokens: int = 32) -> str:
+def chat_request(
+    port: int, prompt: str, max_tokens: int = 32, timeout: int = 300
+) -> str:
     """Send a text chat completion request."""
     url = f"http://localhost:{port}/v1/chat/completions"
     payload = {
@@ -151,14 +233,16 @@ def chat_request(port: int, prompt: str, max_tokens: int = 32) -> str:
         req = urllib.request.Request(
             url, data=data, headers={"Content-Type": "application/json"}
         )
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             result = json.loads(resp.read())
             return result["choices"][0]["message"]["content"]
     except Exception as e:
         return f"ERROR: {e}"
 
 
-def vl_request(port: int, img_path: Path, question: str, max_tokens: int = 16) -> str:
+def vl_request(
+    port: int, img_path: Path, question: str, max_tokens: int = 16, timeout: int = 300
+) -> str:
     """Send a vision-language chat request with a base64-encoded image."""
     url = f"http://localhost:{port}/v1/chat/completions"
     mime = "image/png" if img_path.suffix == ".png" else "image/jpeg"
@@ -186,7 +270,7 @@ def vl_request(port: int, img_path: Path, question: str, max_tokens: int = 16) -
         req = urllib.request.Request(
             url, data=data, headers={"Content-Type": "application/json"}
         )
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             result = json.loads(resp.read())
             return result["choices"][0]["message"]["content"]
     except Exception as e:
@@ -225,69 +309,127 @@ class TestRunner:
         return self.failed == 0
 
 
-def run_tests(port: int, tp_size: int, nnodes: int) -> bool:
+def run_tests(
+    port: int,
+    tp_size: int,
+    nnodes: int,
+    text_concurrency: int = 32,
+    vl_concurrency: int = 8,
+    request_timeout: int = 300,
+) -> bool:
     """Run all verification tests. Returns True if all passed."""
     t = TestRunner()
 
-    # Test 1: Text Inference
-    print("\n=== Test 1: Text Inference ===")
+    # Test 1: Text Inference (Sequential)
+    print("\n=== Test 1: Text Inference (Sequential) ===")
     r = chat_request(
         port,
         "How many states are there in the United States? Answer with just the number.",
         10,
+        timeout=request_timeout,
     )
     print(f"  Q: How many states?  A: {r}")
     t.check("US states = 50", "50", r)
 
-    r = chat_request(port, "What is the capital of France? Answer with one word.", 10)
+    r = chat_request(port, "What is the capital of France? Answer with one word.", 10, timeout=request_timeout)
     print(f"  Q: Capital of France?  A: {r}")
     t.check("Capital of France = Paris", "Paris", r)
 
-    r = chat_request(port, "What is 2+3? Answer with just the number.", 10)
+    r = chat_request(port, "What is 2+3? Answer with just the number.", 10, timeout=request_timeout)
     print(f"  Q: 2+3?  A: {r}")
     t.check("2+3 = 5", "5", r)
 
     # Test 2: Longer Generation
     print("\n=== Test 2: Longer Generation ===")
-    r = chat_request(port, "List the first 5 prime numbers, separated by commas.", 64)
+    r = chat_request(port, "List the first 5 prime numbers, separated by commas.", 64, timeout=request_timeout)
     print(f"  Q: First 5 primes  A: {r}")
-    t.check("Contains '2'", "2", r)
-    t.check("Contains '7'", "7", r)
+    expected_pattern = (
+        r"(?<!\d)2\s*,\s*3\s*,\s*5\s*,\s*7\s*,\s*11(?!\d)"
+    )
 
-    # Test 3: Concurrent Requests
-    print("\n=== Test 3: Concurrent Requests ===")
+    t.total += 1
+    if re.search(expected_pattern, r):
+        print("  PASS: First 5 primes = 2, 3, 5, 7, 11")
+        t.passed += 1
+    else:
+        print("  FAIL: Expected first 5 primes = 2, 3, 5, 7, 11")
+        print(f"        Actual response: {r}")
+        t.failed += 1
+
+    # Test 3: Concurrent Text x4
+    print("\n=== Test 3: Concurrent Text x4 ===")
+    t0 = time.time()
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         futures = {}
         for i in range(1, 5):
             f = executor.submit(
-                chat_request, port, f"What is {i}+{i}? Answer with just the number.", 10
+                chat_request, port, f"What is {i}+{i}? Answer with just the number.", 10, request_timeout
             )
             futures[i] = f
 
         all_ok = True
         for i in range(1, 5):
-            r = futures[i].result()
+            r = futures[i].result(timeout=request_timeout)
             expected = str(i + i)
-            if expected not in r:
+            ok = expected in r
+            print(f"  {'PASS' if ok else 'FAIL'}: {i}+{i}={expected} -> {r}")
+            if not ok:
                 all_ok = False
-                print(f"  FAIL: {i}+{i} expected {expected}, got: {r}")
 
     t.total += 1
     if all_ok:
-        print("  PASS: All 4 concurrent requests correct")
         t.passed += 1
     else:
-        print("  FAIL: Some concurrent requests failed")
         t.failed += 1
+    print(f"  Time: {time.time() - t0:.1f}s")
 
-    # Test 4: Multimodal (VL)
-    print("\n=== Test 4: Multimodal (Vision-Language) ===")
+    # Test 4: High-Concurrency Text
+    print(f"\n=== Test 4: High-Concurrency Text x{text_concurrency} ===")
+    t0 = time.time()
+    ok_count = 0
+    fail_count = 0
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=text_concurrency
+    ) as executor:
+        futures = {}
+        for i in range(text_concurrency):
+            a, b = i + 1, i + 2
+            f = executor.submit(
+                chat_request, port, f"What is {a}+{b}? Answer with just the number.", 10, request_timeout
+            )
+            futures[i] = (a, b, f)
+
+        for i, (a, b, f) in futures.items():
+            try:
+                r = f.result(timeout=request_timeout)
+                expected = str(a + b)
+                if expected in r:
+                    ok_count += 1
+                else:
+                    fail_count += 1
+                    print(f"  FAIL: {a}+{b}={expected} -> {r}")
+            except Exception as e:
+                fail_count += 1
+                print(f"  FAIL: {a}+{b} -> ERROR: {e}")
+
+    t.total += 1
+    if fail_count == 0:
+        print(f"  PASS: {ok_count}/{text_concurrency} correct")
+        t.passed += 1
+    else:
+        print(f"  FAIL: {ok_count}/{text_concurrency} correct, {fail_count} failed")
+        t.failed += 1
+    print(f"  Time: {time.time() - t0:.1f}s")
+
+    # Test 5: Multimodal (VL) Sequential
+    print("\n=== Test 5: Multimodal (VL) Sequential ===")
     if IMG_DIR.is_dir():
         r = vl_request(
             port,
             IMG_DIR / "red_square.jpg",
             "What color is shown in this image? Answer with one word.",
             10,
+            timeout=request_timeout,
         )
         print(f"  Q: Color of square?  A: {r}")
         t.check("VL: red square = red", "red", r)
@@ -297,6 +439,7 @@ def run_tests(port: int, tp_size: int, nnodes: int) -> bool:
             IMG_DIR / "cat.jpg",
             "What animal is in this image? Answer with one word.",
             10,
+            timeout=request_timeout,
         )
         print(f"  Q: Animal in image?  A: {r}")
         t.check("VL: cat image = cat", "cat", r)
@@ -306,11 +449,59 @@ def run_tests(port: int, tp_size: int, nnodes: int) -> bool:
             IMG_DIR / "digit_seven.png",
             "What digit is shown in this image? Answer with one digit.",
             10,
+            timeout=request_timeout,
         )
         print(f"  Q: Digit in image?  A: {r}")
         t.check("VL: digit = 7", "7", r)
     else:
         print(f"  SKIP: test_images directory not found at {IMG_DIR}")
+
+    # Test 6: High-Concurrency VL
+    if IMG_DIR.is_dir() and vl_concurrency > 1:
+        print(f"\n=== Test 6: High-Concurrency VL x{vl_concurrency} ===")
+        vl_cases = [
+            (IMG_DIR / "red_square.jpg", "What color is this? One word.", "red"),
+            (IMG_DIR / "cat.jpg", "What animal? One word.", "cat"),
+            (IMG_DIR / "digit_seven.png", "What digit? Just the number.", "7"),
+            (IMG_DIR / "stop_sign.png", "What does this sign say? One word.", "stop"),
+        ]
+        # Cycle through images
+        all_cases = (vl_cases * ((vl_concurrency // len(vl_cases)) + 1))[
+            :vl_concurrency
+        ]
+        t0 = time.time()
+        ok_count = 0
+        fail_count = 0
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=vl_concurrency
+        ) as executor:
+            futures = {}
+            for i, (img, q, exp) in enumerate(all_cases):
+                futures[i] = (
+                    img.name,
+                    exp,
+                    executor.submit(vl_request, port, img, q, 10, request_timeout),
+                )
+            for i, (name, expected, f) in futures.items():
+                try:
+                    r = f.result(timeout=request_timeout)
+                    if expected.lower() in r.lower():
+                        ok_count += 1
+                    else:
+                        fail_count += 1
+                        print(f"  FAIL: {name} -> {r}")
+                except Exception as e:
+                    fail_count += 1
+                    print(f"  FAIL: {name} -> ERROR: {e}")
+
+        t.total += 1
+        if fail_count == 0:
+            print(f"  PASS: {ok_count}/{vl_concurrency} correct")
+            t.passed += 1
+        else:
+            print(f"  FAIL: {ok_count}/{vl_concurrency} correct, {fail_count} failed")
+            t.failed += 1
+        print(f"  Time: {time.time() - t0:.1f}s")
 
     return t.summary(tp_size, nnodes)
 
@@ -329,6 +520,9 @@ def run_master(args):
     print(f"  TP:     {args.tp}    PP: {args.pp}    Nodes: {args.nnodes}")
     print(f"  Master: {args.master_addr}  dist={args.dist_port}  nccl={args.nccl_port}")
     print(f"  API:    http://localhost:{args.port}")
+    print(
+        f"  Text concurrency: {args.text_concurrency}  VL concurrency: {args.vl_concurrency}  Request timeout: {args.request_timeout}s"
+    )
     print("=" * 56)
 
     cmd = [
@@ -356,9 +550,24 @@ def run_master(args):
         "--disable-cuda-graph",
         "--disable-piecewise-cuda-graph",
         "--trust-remote-code",
+        *_PLATFORM_SERVER_ARGS,
     ]
     if ATTENTION_BACKEND:
         cmd.extend(["--attention-backend", ATTENTION_BACKEND])
+    if _is_txda:
+        insert_pos = cmd.index("--mem-fraction-static")
+        cmd[insert_pos + 1] = "0.6"
+        for flag in reversed([
+            "--device", "txda",
+            "--dtype", "bfloat16",
+            "--disable-radix-cache",
+            "--watchdog-timeout", "3600",
+            "--mm-attention-backend", "triton_attn",
+            "--disable-fast-image-processor",
+            "--context-length", "8192",
+            "--chunked-prefill-size", "256",
+        ]):
+            cmd.insert(insert_pos, flag)
 
     print("Launching server...")
     server_proc = subprocess.Popen(cmd)
@@ -383,7 +592,14 @@ def run_master(args):
             sys.exit(1)
         print("\nServer ready!")
 
-        success = run_tests(args.port, args.tp, args.nnodes)
+        success = run_tests(
+            args.port,
+            args.tp,
+            args.nnodes,
+            text_concurrency=args.text_concurrency,
+            vl_concurrency=args.vl_concurrency,
+            request_timeout=args.request_timeout,
+        )
         cleanup()
         sys.exit(0 if success else 1)
 
@@ -442,9 +658,24 @@ def run_worker(args):
         "--disable-cuda-graph",
         "--disable-piecewise-cuda-graph",
         "--trust-remote-code",
+        *_PLATFORM_SERVER_ARGS,
     ]
     if ATTENTION_BACKEND:
         cmd.extend(["--attention-backend", ATTENTION_BACKEND])
+    if _is_txda:
+        insert_pos = cmd.index("--mem-fraction-static")
+        cmd[insert_pos + 1] = "0.6"
+        for flag in reversed([
+            "--device", "txda",
+            "--dtype", "bfloat16",
+            "--disable-radix-cache",
+            "--watchdog-timeout", "3600",
+            "--mm-attention-backend", "triton_attn",
+            "--disable-fast-image-processor",
+            "--context-length", "8192",
+            "--chunked-prefill-size", "256",
+        ]):
+            cmd.insert(insert_pos, flag)
 
     print("Starting worker node... (will block until master shuts down)\n")
     try:

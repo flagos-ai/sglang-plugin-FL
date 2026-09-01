@@ -1,0 +1,247 @@
+# CI image for sglang-plugin-FL on Moore Threads MUSA (MTT S5000).
+#
+# Base: registry.mthreads.com/mcconline/inference/vllm -- the official Moore Threads
+# inference image. It ships the proven MUSA stack (verified on the S5000 CI host):
+#   torch 2.7.1 + torch_musa 2.7.1 + MUSA 4.3.5 + torchada + flash_attn_3 0.1.4
+#   + mate + mthreads-ml-py + deep-gemm + triton 3.2.0, Python 3.10, Ubuntu 22.04.
+# It also ships an older sglang 0.5.2 + sgl-kernel 0.3.9 + vllm-musa, which we remove.
+#
+# Why this differs from docker/cuda & docker/ascend:
+#   cuda/ascend use the sglang 0.5.11 PyPI wheel on torch 2.11.0. MUSA cannot do that --
+#   torch_musa maxes out at torch 2.9 (latest torch_musa v2.9.1 is torch 2.9.0), and the
+#   only validated MUSA+sglang stack is torch 2.7.1 (matching sglang's own s5000 MUSA CI,
+#   .github/workflows/pr-test-musa.yml). We pin sglang v0.5.12 (NOT v0.5.16): v0.5.12 is the
+#   first release whose sgl-kernel checkout ships the compiled MUSA kernels
+#   (sgl-kernel/csrc/musa + setup_musa.py musa sources), so sgl-kernel musa builds from its
+#   own checkout (v0.5.11 has the srt_musa extra + is_musa but LACKS csrc/musa). v0.5.12's
+#   plugin platform API matches 0.5.11 exactly -- NO drift -- so sglang_fl/platform.py needs
+#   no version shims (the get_dsa_kv_pool_cls rename + is_pin_memory_available(device) arg are
+#   v0.5.16-only). Crucially, v0.5.16 introduced a circular-import REGRESSION (its
+#   sglang/srt/platforms/__init__.py eagerly imports CpuSRTPlatform/CudaSRTPlatform/
+#   RocmSRTPlatform, triggering current_platform resolution while sglang_fl.platform is still
+#   a partial module) that aborts ALL unit tests at collection; v0.5.11/v0.5.12 keep __init__.py
+#   lightweight and never trigger it. The MUSA attention decode assert (mate
+#   `assert page_table.stride(-1)==1`) is NOT a version issue -- same root cause on v0.5.12 and
+#   v0.5.16 -- and is fixed by the plugin's mthreads/patch.py (reshape page_table to canonical
+#   row-major strides). sglang + sgl-kernel musa build from the same v0.5.12 checkout.
+#
+# FlagGems v5.3.1 ships a native _mthreads backend (built from source, replacing the
+# base image's flag_gems 5.0.0). FlagCX v0.13.0 is built with the MUSA adaptor
+# (USE_MUSA=1, which links -lmccl -lmusa), mirroring cuda/ascend: FLAGCX_PATH is set so
+# the plugin's CommunicatorFL routes collectives through FlagCX (driving the same mccl
+# the torch.distributed path uses) instead of torch.distributed/mccl.
+#
+# Build (the host needs an HTTP proxy to reach github; pass it via build-args so
+# credentials are never baked into the image -- ARGs are not persisted in the final layer).
+# no_proxy MUST include both the pip mirror AND the cargo mirror:
+#   - pypi.tuna.tsinghua.edu.cn : the base image's pip.conf points at tuna, so without
+#     no_proxy pip tunnels to tuna through the proxy (500); with it, pip reaches tuna
+#     directly while git still uses the proxy for github (sglang/FlagGems clones, plus
+#     setup_musa.py's internal flashinfer/mutlass fetches).
+#   - rsproxy.cn : only needed if SGLANG_VERSION>=v0.5.16 (their MUSA pyproject builds a
+#     Rust ext via setuptools-rust -> cargo, which uses the rsproxy.cn crates mirror).
+#     The base image's ~/.cargo/config.toml replaces crates.io with the rsproxy.cn mirror,
+#     so cargo must reach rsproxy.cn directly (a China mirror, direct-reachable from the
+#     build host); routing it through the proxy returns 500 on the CONNECT tunnel.
+#   docker build -t sglang-plugin-fl:latest-musa-ci \
+#     --build-arg http_proxy=$http_proxy --build-arg https_proxy=$https_proxy \
+#     --build-arg no_proxy=pypi.tuna.tsinghua.edu.cn,rsproxy.cn,*.rsproxy.cn \
+#     -f docker/mthreads/containerfile .
+#
+# Push target: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-musa-ci
+
+ARG BASE_IMAGE=registry.mthreads.com/mcconline/inference/vllm:v0.20.2-ph1-4.3.5-torch2.7.1-v1.1.0
+# v0.5.12 (not v0.5.16): v0.5.16's sglang/srt/platforms/__init__.py eagerly imports
+# CpuSRTPlatform/CudaSRTPlatform/RocmSRTPlatform at module load, which drags in
+# common.py's `current_platform` access and triggers a circular import when sglang_fl.platform
+# is imported first (e.g. at pytest collection) -> blocks ALL unit tests. v0.5.11/v0.5.12 keep
+# __init__.py lightweight (no eager concrete-platform imports), so the cycle never fires.
+# v0.5.12 (unlike v0.5.11) also ships sgl-kernel/csrc/musa + setup_musa.py musa sources.
+ARG SGLANG_VERSION=v0.5.12
+ARG FLAGGEMS_VERSION=v5.3.1
+
+# ---------- base stage ----------
+FROM ${BASE_IMAGE} AS base
+
+# Proxy is passed at build time only (--build-arg); declared as ARG so RUN steps that
+# hit github/PyPI inherit it, but it is NOT persisted into the final image (no ENV).
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
+# Re-declare global build args: ARGs declared before the first FROM are NOT visible to
+# RUN inside a stage unless re-declared here.
+ARG SGLANG_VERSION
+ARG FLAGGEMS_VERSION
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Remove the base image's older stack so our source builds are authoritative:
+#   - sglang 0.5.2 (editable, /sgl-workspace/sglang)  -> rebuilt as v0.5.12
+#   - sgl-kernel 0.3.9.post2 (CUDA build)              -> rebuilt as musa build (v0.5.12)
+#   - vllm / vllm-musa / vllm-plugin-fl                -> not needed for sglang
+#   - flag_gems 5.0.0 (/opt/mthread/FlagGems)          -> rebuilt as v5.3.1 (has _mthreads)
+RUN pip uninstall -y sglang sgl-kernel vllm vllm-musa vllm-plugin-fl flag_gems 2>/dev/null || true && \
+    rm -rf /sgl-workspace /opt/mthread/vllm-plugin-FL /opt/mthread/FlagGems && \
+    pip cache purge
+
+# torchada: sglang srt_musa requires torchada>=0.1.68; the base ships 0.1.54.
+RUN pip install --no-cache-dir --upgrade "torchada>=0.1.68"
+
+# Build sglang v0.5.12 from source with the MUSA (srt_musa) extra.
+#   - pyproject_other.toml IS the MUSA pyproject (the default pyproject.toml targets
+#     CUDA/ROCm); sglang's own MUSA CI renames it into place before installing
+#     (scripts/ci/musa/musa_install_dependency.sh).
+#   - srt_musa pulls torch/torch_musa/torchada/flash_attn_3/mate/mthreads-ml-py/deep-gemm
+#     -- all already satisfied by the base image, so pip will not upgrade torch past 2.7.1
+#     (sglang's s5000 CI installs the same way on the same stack).
+#   - Non-editable install so the /tmp checkout can be removed afterwards.
+#   - A constraints file pins torch==2.7.1 as a belt-and-suspenders guard against any
+#     transitive dep trying to pull a newer torch (which would break torch_musa).
+#   - NOTE: the Rust ext (rust/sglang-mm via setuptools-rust -> cargo) is declared only in
+#     v0.5.16+'s pyproject_other.toml; v0.5.12's MUSA build does NOT invoke cargo, so the
+#     no_proxy=rsproxy.cn below is a harmless forward-compat guard (kept in case of a bump).
+RUN export no_proxy="pypi.tuna.tsinghua.edu.cn,rsproxy.cn,*.rsproxy.cn" && \
+    echo "torch==2.7.1" > /tmp/musa.constraints && \
+    git clone --branch ${SGLANG_VERSION} --depth 1 https://github.com/sgl-project/sglang /tmp/sglang && \
+    cd /tmp/sglang && \
+    rm -f python/pyproject.toml && \
+    mv python/pyproject_other.toml python/pyproject.toml && \
+    pip install --no-cache-dir -c /tmp/musa.constraints "./python[srt_musa]" && \
+    rm -rf /tmp/musa.constraints
+
+# Build & install sgl-kernel (MUSA build) from the same sglang checkout.
+#   - pyproject_musa.toml + setup_musa.py are the MUSA build entry points
+#     (setup_musa.py compiles the MUSA kernels via torchada's CUDA->MUSA path and
+#     fetches flashinfer + MooreThreads/mutlass as build deps).
+#   - MTGPU_TARGET=mp_31 targets the S5000 arch (matches sglang's s5000 runners).
+#   - SGLANG_MUSA_THIRD_PARTY_DIR keeps the cloned flashinfer/mutlass under /tmp so it
+#     is removed with the checkout. Build is device-free (compiles only).
+#   - Invoke setup_musa.py directly (not `pip install .`): pyproject_musa.toml's
+#     build-system is setuptools.build_meta but the setup script is setup_musa.py (not
+#     setup.py), so pip would not discover it. This mirrors sglang's own MUSA CI
+#     (scripts/ci/musa/musa_install_dependency.sh: `python3 setup_musa.py install`).
+RUN cd /tmp/sglang/sgl-kernel && \
+    rm -f pyproject.toml && \
+    mv pyproject_musa.toml pyproject.toml && \
+    # WORKAROUND: top_k_top_p_sampling.mu #includes <flashinfer/sampling.muh>, but upstream
+    # flashinfer (pinned at bc29697) ships only sampling.cuh; MUSA's mcc does not fall back
+    # .muh->.cuh. Point this one include at sampling.cuh (same C++ header; sampling.cuh has
+    # no .muh include chain). This is the only flashinfer .muh reference in the musa sources.
+    # Guarded so a flashinfer pin bump surfaces as a loud build error here, not a silent sed
+    # no-op that only fails later as a confusing "sampling.muh: No such file" compile error.
+    if ! grep -q '#include <flashinfer/sampling\.muh>' csrc/musa/top_k_top_p_sampling.mu; then \
+        echo 'ERROR: flashinfer sampling.muh include not found in top_k_top_p_sampling.mu -- flashinfer pin changed?' >&2; exit 1; \
+    fi && \
+    sed -i 's|#include <flashinfer/sampling\.muh>|#include <flashinfer/sampling.cuh>|' \
+        csrc/musa/top_k_top_p_sampling.mu && \
+    if grep -q '#include <flashinfer/sampling\.muh>' csrc/musa/top_k_top_p_sampling.mu; then \
+        echo 'ERROR: sed failed to rewrite flashinfer sampling.muh -> sampling.cuh' >&2; exit 1; \
+    fi && \
+    MTGPU_TARGET=mp_31 SGLANG_MUSA_THIRD_PARTY_DIR=/tmp/sgl-kernel-musa-deps \
+    python3 setup_musa.py install && \
+    rm -rf /tmp/sgl-kernel-musa-deps
+
+# Build FlagGems v5.3.1 from source (mirrors docker/cuda & docker/ascend). v5.3.1 ships a
+# native _mthreads backend (auto-detected at runtime from torch_musa), which the plugin's
+# flagos dispatch backend (sglang_fl/dispatch/config/musa.yaml: prefer: flagos) relies on.
+# Build backend is setuptools.build_meta (needs setuptools<77 + setuptools-scm<10); the
+# sgl-kernel musa build above requires setuptools>=75, so pin the intersection >=75,<77.
+ARG FLAGGEMS_VERSION=v5.3.1
+RUN pip install --no-cache-dir -U "setuptools>=75,<77" "setuptools-scm>=8,<10" wheel && \
+    git clone --branch ${FLAGGEMS_VERSION} --depth 1 \
+        https://github.com/flagos-ai/FlagGems /tmp/FlagGems && \
+    SETUPTOOLS_SCM_PRETEND_VERSION=${FLAGGEMS_VERSION#v} \
+    pip install --no-build-isolation /tmp/FlagGems && \
+    rm -rf /tmp/FlagGems
+
+# Build FlagCX v0.13.0 with the MUSA adaptor (USE_MUSA=1 -> -DUSE_MUSA_ADAPTOR,
+# CCL_LINK -lmccl -lmusa), mirroring docker/cuda & docker/ascend. CommunicatorFL then
+# routes collectives through FlagCX (driving the same mccl the torch.distributed path
+# uses) instead of torch.distributed/mccl. FlagCX's MUSA build defaults CCL_HOME to
+# /usr/local/musa (MUSA SDK ships libmccl + libmusa there); auto-detect so a relocated
+# SDK is handled and a missing one fails here with a pointer, not a mid-link error.
+ARG FLAGCX_VERSION=v0.13.0
+RUN TORCH_MUSA_DIR=$(python -c "import torch_musa,os;print(os.path.dirname(torch_musa.__file__))" 2>/dev/null || true) && \
+    MUSA_CCL_HOME="" && \
+    for p in ${MUSA_HOME:-/usr/local/musa} /usr/local/musa /opt/mthreads/musa /opt/mthreads $TORCH_MUSA_DIR; do \
+        if [ -f "$p/lib/libmccl.so" ]; then MUSA_CCL_HOME="$p"; break; fi; \
+    done && \
+    test -n "$MUSA_CCL_HOME" || { \
+        echo "ERROR: libmccl.so not found under any MUSA SDK candidate path" >&2; \
+        echo "  (${MUSA_HOME:-/usr/local/musa} /usr/local/musa /opt/mthreads/musa /opt/mthreads $TORCH_MUSA_DIR)" >&2; \
+        echo "  libmccl* present on image:" >&2; \
+        find / -name 'libmccl.so*' 2>/dev/null | head >&2; \
+        exit 1; \
+    } && \
+    git clone --branch ${FLAGCX_VERSION} --depth 1 \
+        https://github.com/flagos-ai/FlagCX /opt/FlagCX && \
+    cd /opt/FlagCX && \
+    git submodule update --init --recursive --depth 1 && \
+    make USE_MUSA=1 CCL_HOME="${MUSA_CCL_HOME}" -j"$(nproc)" && \
+    test -f build/lib/libflagcx.so && \
+    test -f plugin/interservice/flagcx_wrapper.py && \
+    PYTHONPATH=/opt/FlagCX python -c "from plugin.interservice.flagcx_wrapper import FLAGCXLibrary; print('flagcx wrapper import OK')" && \
+    rm -rf .git
+ENV FLAGCX_PATH=/opt/FlagCX
+
+# ---------- ci stage ----------
+FROM base AS ci
+
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
+
+# MUSA runtime env (mirrors vllm-plugin-FL musa image + sglang MUSA CI):
+#   MTHREADS_VISIBLE_DEVICES=all : pass all GPUs (mthreads-container-toolkit hook)
+#   SGLANG_USE_MUSA_FUSED_KERNEL=1 : use sglang's MUSA fused kernels (sgl-kernel musa)
+#   TORCH_COMPILE_DISABLE=1 : torch_musa's inductor backend is incompatible with torch
+#     2.7.1 (make_fallback assertion); MUSA runs enforce_eager, so inductor is unneeded.
+#   FLAGCX_PATH is inherited from the base stage (FlagCX USE_MUSA=1 build) -> the
+#   plugin's CommunicatorFL selects the flagcx backend (which drives mccl).
+ENV MTHREADS_VISIBLE_DEVICES=all \
+    SGLANG_USE_MUSA_FUSED_KERNEL=1 \
+    TORCH_COMPILE_DISABLE=1
+
+# Test & dev tools (mirrors docker/ascend/containerfile).
+RUN pip install --no-cache-dir \
+        pytest \
+        pytest-cov \
+        pytest-timeout \
+        pytest-json-report \
+        pytest-metadata \
+        numpy \
+        requests \
+        ruff \
+        pyyaml
+
+# sglang's benchmark (bench_offline_throughput / bench_serving) fetches the 642 MB
+# ShareGPT dataset from HF even under --dataset-name random; hf-mirror.com only
+# 302-redirects to HF's US CDN, which the CI runtime proxy can't pull (ReadTimeout).
+# Bake it at BUILD time into a pinned HF cache, and run offline so the benchmark
+# reads it locally with zero runtime network. HF_HOME is pinned because the runner
+# overrides HOME=/github/home at runtime (a cache under /root would be invisible).
+ENV HF_HOME=/opt/hf-cache
+RUN HF_HUB_OFFLINE=0 python -c "from huggingface_hub import hf_hub_download as d; \
+    print(d('anon8231489123/ShareGPT_Vicuna_unfiltered', \
+    'ShareGPT_V3_unfiltered_cleaned_split.json', repo_type='dataset'))"
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
+
+WORKDIR /workspace
+
+# Build-time self-check. A full `import torch_musa` + device probe cannot run here: it
+# needs the MUSA *driver* (kernel module), which is only mounted at runtime via the
+# mthreads container runtime (the build host has no MUSA device exposed to build steps).
+# So verify the installable parts: torch/torch_musa/sglang/sgl-kernel/flag_gems versions
+# and that sglang + the plugin's platform API import cleanly with backend auto-load off.
+RUN python -c "import importlib.metadata as m; \
+        print('torch', m.version('torch')); \
+        print('torch_musa', m.version('torch_musa')); \
+        print('torchada', m.version('torchada')); \
+        print('sglang', m.version('sglang')); \
+        print('sglang-kernel', m.version('sglang-kernel')); \
+        print('flag_gems', m.version('flag_gems'))" && \
+    TORCH_DEVICE_BACKEND_AUTOLOAD=0 python -c "import torch; assert torch.__version__.startswith('2.7.1'), torch.__version__; \
+        from sglang.srt.platforms.device_mixin import DeviceCapability, PlatformEnum; \
+        from sglang.srt.platforms.interface import SRTPlatform; \
+        print('sglang', __import__('sglang').__version__, '| platforms API OK')"

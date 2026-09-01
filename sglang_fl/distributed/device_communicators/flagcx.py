@@ -1,3 +1,17 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """FlagCX-based OOT communicator for SGLang plugin.
 
 Replaces torch.distributed collective ops with FlagCX API calls,
@@ -16,6 +30,7 @@ Usage:
       python -m sglang.launch_server --tp 2 ...
 """
 
+import contextlib
 import ctypes
 import logging
 import os
@@ -77,6 +92,8 @@ class FlagCXCommunicator:
 
         self.available = False
 
+        self._stream_cache = {}
+
         # Import FlagCX wrapper
         try:
             (
@@ -114,7 +131,7 @@ class FlagCXCommunicator:
 
         # Initialize FlagCX unique ID (rank 0 generates, then broadcast)
         if self.rank == 0:
-            self.unique_id = self.flagcx.flagcxGetUniqueId().contents
+            self.unique_id = self.flagcx.flagcxGetUniqueId()
         else:
             self.unique_id = flagcxUniqueId()
 
@@ -132,15 +149,21 @@ class FlagCXCommunicator:
         self.device = device
 
         # Initialize FlagCX communicator
-        device_ctx = torch.cuda.device(self.device)
+        device_str = str(self.device)
+        if "musa" in device_str:
+            device_ctx = torch.musa.device(self.device)
+        elif "npu" in device_str:
+            device_ctx = contextlib.nullcontext()
+        else:
+            device_ctx = torch.cuda.device(self.device)
         with device_ctx:
             self.comm = self.flagcx.flagcxCommInitRank(
-                self.world_size, ctypes.byref(self.unique_id), self.rank
+                self.world_size, self.unique_id, self.rank
             )
             # Warmup: small all_reduce to ensure comm is ready
             warmup_data = torch.zeros(1, device=self.device)
             self._flagcx_all_reduce(warmup_data)
-            torch.cuda.current_stream().synchronize()
+            self._sync_current_stream()
             del warmup_data
 
         self.available = True
@@ -150,15 +173,49 @@ class FlagCXCommunicator:
             f"world_size={self.world_size}, device={self.device}"
         )
 
-    def _get_stream(self):
-        """Get current CUDA stream wrapped for FlagCX."""
-        stream = torch.cuda.current_stream()
-        flagcx_stream = self.flagcx.adaptor_stream_copy(stream)
-        return flagcx_stream
+    def _get_raw_stream_handle(self):
+        """Return the vendor-specific raw stream pointer (an int) for FlagCX streamCopy."""
+        device_str = str(self.device)
+        if "npu" in device_str:
+            return torch.npu.current_stream().npu_stream
+        if "musa" in device_str:
+            return torch.musa.current_stream().musa_stream
+        return torch.cuda.current_stream().cuda_stream
 
-    def _free_stream(self, flagcx_stream):
-        """Free a FlagCX stream wrapper."""
-        self.flagcx.adaptor_stream_free(flagcx_stream)
+    def _sync_current_stream(self):
+        """Synchronize the vendor-specific current stream for this device.
+        """
+        device_str = str(self.device)
+        if "npu" in device_str:
+            stream = torch.npu.current_stream()
+        elif "musa" in device_str:
+            stream = torch.musa.current_stream()
+        else:
+            stream = torch.cuda.current_stream()
+        try:
+            stream.synchronize()
+        except RuntimeError as e:
+            logger.error(
+                "stream.synchronize() failed on %s: %s", device_str, e
+            )
+            raise
+
+    def _get_stream(self):
+        """Bind a FlagCX stream onto the current vendor stream, with per-handle cache."""
+        handle = self._get_raw_stream_handle()
+        cached = self._stream_cache.get(handle)
+        if cached is not None:
+            return cached
+        from plugin.interservice.flagcx_wrapper import flagcxStream_t
+        new_stream = flagcxStream_t()
+        self.flagcx.FLAGCX_CHECK(
+            self.flagcx.devHandle.contents.streamCopy(
+                ctypes.byref(new_stream),
+                ctypes.c_void_p(handle),
+            )
+        )
+        self._stream_cache[handle] = new_stream
+        return new_stream
 
     def _flagcx_all_reduce(self, tensor: torch.Tensor) -> torch.Tensor:
         """Internal all_reduce using FlagCX API."""
@@ -173,13 +230,12 @@ class FlagCXCommunicator:
             self.comm,
             flagcx_stream,
         )
-        self._free_stream(flagcx_stream)
         return out_tensor
 
     def all_reduce(self, input_: torch.Tensor) -> torch.Tensor:
         """All-reduce using FlagCX. Falls back to torch.distributed if disabled."""
         if self.disabled:
-            return super().all_reduce(input_)
+            return
 
         assert input_.device == self.device, (
             f"FlagCX communicator on {self.device}, but tensor on {input_.device}"
@@ -192,7 +248,7 @@ class FlagCXCommunicator:
     def reduce_scatter(self, output: torch.Tensor, input_: torch.Tensor):
         """Reduce-scatter using FlagCX."""
         if self.disabled:
-            return super().reduce_scatter(output, input_)
+            return
 
         assert input_.device == self.device, (
             f"FlagCX communicator on {self.device}, but tensor on {input_.device}"
@@ -207,12 +263,11 @@ class FlagCXCommunicator:
             self.comm,
             flagcx_stream,
         )
-        self._free_stream(flagcx_stream)
 
     def all_gather(self, output: torch.Tensor, input_: torch.Tensor):
         """All-gather using FlagCX."""
         if self.disabled:
-            return super().all_gather(output, input_)
+            return
 
         assert input_.device == self.device, (
             f"FlagCX communicator on {self.device}, but tensor on {input_.device}"
@@ -226,7 +281,6 @@ class FlagCXCommunicator:
             self.comm,
             flagcx_stream,
         )
-        self._free_stream(flagcx_stream)
 
     def reduce_scatterv(
         self,
@@ -243,7 +297,7 @@ class FlagCXCommunicator:
             f"FlagCX communicator on {self.device}, but tensor on {input_.device}"
         )
         flagcx_stream = self._get_stream()
-        self.flagcx.flagcxGroupStart()
+        self.flagcx.flagcxGroupStart(self.comm)
         split_offset = 0
         for root, split_size in enumerate(sizes):
             chunk = input_[split_offset : split_offset + split_size, ...]
@@ -258,8 +312,7 @@ class FlagCXCommunicator:
                 flagcx_stream,
             )
             split_offset += split_size
-        self.flagcx.flagcxGroupEnd()
-        self._free_stream(flagcx_stream)
+        self.flagcx.flagcxGroupEnd(self.comm)
 
     def all_gatherv(
         self,
@@ -276,7 +329,7 @@ class FlagCXCommunicator:
         )
         assert output.shape[0] == sum(sizes)
         flagcx_stream = self._get_stream()
-        self.flagcx.flagcxGroupStart()
+        self.flagcx.flagcxGroupStart(self.comm)
         split_offset = 0
         for root, split_size in enumerate(sizes):
             dst_slice = output[split_offset : split_offset + split_size]
@@ -290,8 +343,7 @@ class FlagCXCommunicator:
                 flagcx_stream,
             )
             split_offset += split_size
-        self.flagcx.flagcxGroupEnd()
-        self._free_stream(flagcx_stream)
+        self.flagcx.flagcxGroupEnd(self.comm)
 
     def broadcast(self, tensor: torch.Tensor, src: int):
         """Broadcast tensor from src rank."""
@@ -317,15 +369,72 @@ class FlagCXCommunicator:
             self.comm,
             flagcx_stream,
         )
-        self._free_stream(flagcx_stream)
+
+    def send(self, tensor: torch.Tensor, dst: int):
+        """Send tensor to destination rank using FlagCX."""
+        if self.disabled:
+            return
+
+        assert tensor.device == self.device, (
+            f"FlagCX communicator on {self.device}, but tensor on {tensor.device}"
+        )
+        flagcx_stream = self._get_stream()
+        self.flagcx.flagcxSend(
+            self._buffer_type(tensor.data_ptr()),
+            tensor.numel(),
+            self._dtype_enum.from_torch(tensor.dtype),
+            dst,
+            self.comm,
+            flagcx_stream,
+        )
+
+    def recv(self, tensor: torch.Tensor, src: int):
+        """Receive tensor from source rank using FlagCX."""
+        if self.disabled:
+            return
+
+        assert tensor.device == self.device, (
+            f"FlagCX communicator on {self.device}, but tensor on {tensor.device}"
+        )
+        flagcx_stream = self._get_stream()
+        self.flagcx.flagcxRecv(
+            self._buffer_type(tensor.data_ptr()),
+            tensor.numel(),
+            self._dtype_enum.from_torch(tensor.dtype),
+            src,
+            self.comm,
+            flagcx_stream,
+        )
 
     def group_start(self):
         """Start a group of collective operations."""
-        self.flagcx.flagcxGroupStart()
+        self.flagcx.flagcxGroupStart(self.comm)
 
     def group_end(self):
         """End a group of collective operations."""
-        self.flagcx.flagcxGroupEnd()
+        self.flagcx.flagcxGroupEnd(self.comm)
+
+    def __del__(self):
+        """Free cached streams and destroy the FlagCX comm on GC / interpreter shutdown."""
+        # self.flagcx may be missing (early-disabled path) or unusable (shutdown).
+        flagcx = getattr(self, "flagcx", None)
+        if flagcx is None:
+            return
+        cache = getattr(self, "_stream_cache", None)
+        if cache:
+            for cached_stream in cache.values():
+                try:
+                    flagcx.adaptor_stream_free(cached_stream)
+                except Exception:
+                    pass
+            cache.clear()
+        comm = getattr(self, "comm", None)
+        if comm is not None:
+            try:
+                flagcx.flagcxCommDestroy(comm)
+            except Exception:
+                pass
+            self.comm = None
 
 
 def create_flagcx_communicator(group, device) -> FlagCXCommunicator:

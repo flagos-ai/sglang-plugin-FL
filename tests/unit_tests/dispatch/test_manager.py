@@ -1,3 +1,17 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Tests for OpManager: resolution, caching, fallback, fork safety.
 
 import os
@@ -147,12 +161,15 @@ class TestOpManagerCache:
 
 class TestOpManagerCall:
     def test_call_direct_mode(self, populated_manager):
-        reset_global_policy()
-        result = populated_manager.call("silu_and_mul")
+        policy = SelectionPolicy.from_dict(strict=True)
+
+        with policy_context(policy):
+            result = populated_manager.call("silu_and_mul")
+
         assert result == "flagos_silu"
 
     def test_call_with_fallback(self, populated_manager):
-        """When strict=True and primary fails, falls back to next."""
+        """When strict=False and primary fails, falls back to next."""
         registry = OpRegistry()
         manager = OpManager(registry=registry)
         manager._state.initialized = True
@@ -187,13 +204,61 @@ class TestOpManagerCall:
             ]
         )
 
-        with with_strict_mode():
+        policy = SelectionPolicy.from_dict(strict=False)
+
+        with policy_context(policy):
             result = manager.call("test_op")
             assert result == "fallback_result"
             assert call_count["primary"] == 1
             assert call_count["fallback"] == 1
 
+    def test_call_strict_mode_raises_original_error(self):
+        """When strict=True, raise the primary error without trying fallback."""
+        registry = OpRegistry()
+        manager = OpManager(registry=registry)
+        manager._state.initialized = True
+        manager._state.init_pid = os.getpid()
+
+        call_count = {"primary": 0, "fallback": 0}
+
+        def failing_fn(*args, **kwargs):
+            call_count["primary"] += 1
+            raise RuntimeError("primary failed")
+
+        def fallback_fn(*args, **kwargs):
+            call_count["fallback"] += 1
+            return "fallback_result"
+
+        registry.register_many(
+            [
+                OpImpl(
+                    op_name="test_op",
+                    impl_id="default.flagos",
+                    kind=BackendImplKind.DEFAULT,
+                    fn=failing_fn,
+                    priority=BackendPriority.DEFAULT,
+                ),
+                OpImpl(
+                    op_name="test_op",
+                    impl_id="reference.pytorch",
+                    kind=BackendImplKind.REFERENCE,
+                    fn=fallback_fn,
+                    priority=BackendPriority.REFERENCE,
+                ),
+            ]
+        )
+
+        policy = SelectionPolicy.from_dict(strict=True)
+
+        with policy_context(policy):
+            with pytest.raises(RuntimeError, match="primary failed"):
+                manager.call("test_op")
+
+        assert call_count["primary"] == 1
+        assert call_count["fallback"] == 0
+
     def test_call_all_fail_raises(self, populated_manager):
+        """When strict=False and all candidates fail, raise a summary error."""
         registry = OpRegistry()
         manager = OpManager(registry=registry)
         manager._state.initialized = True
@@ -209,7 +274,9 @@ class TestOpManagerCall:
             )
         )
 
-        with with_strict_mode():
+        policy = SelectionPolicy.from_dict(strict=False)
+
+        with policy_context(policy):
             with pytest.raises(RuntimeError, match="All implementations failed"):
                 manager.call("bad_op")
 

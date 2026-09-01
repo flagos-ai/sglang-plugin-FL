@@ -1,3 +1,17 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """SGLang Platform Plugin — FlagGems-based multi-chip platform.
 
 Registers as an SRTPlatform subclass via the `sglang.srt.platforms` entry_point.
@@ -14,6 +28,7 @@ Environment variables:
   FLAGCX_PATH=<path>                         If set, default to flagcx backend
 """
 
+import importlib
 import logging
 import os
 from typing import Optional
@@ -33,12 +48,33 @@ _DIST_BACKEND_MAP = {
     "metax": "nccl",
     "cambricon": "cncl",
     "mthreads": "mccl",
+    "thead": "nccl",
+    "enflame": "eccl",
+    "tsingmicro": "tccl",
+    "hygon": "nccl",
+}
+
+# Attention backend mapping: vendor_name -> default backend
+# The value must match a name registered in sglang.srt.layers.attention.attention_registry.
+_ATTN_BACKEND_MAP = {
+    "nvidia": "flashinfer",
+    "ascend": "ascend",
+    "mthreads": "fa3",
+    "enflame": "fa3",
+    "kunlunxin": "kunlunxin",
+    "iluvatar": "triton",
+    "hygon": "hcu",
 }
 
 
 def _get_device_detector():
     """Lazy import DeviceDetector to avoid import errors when flag_gems not installed."""
-    from flag_gems.runtime.backend.device import DeviceDetector
+    try:
+        # FlagGems<=5.0.2: DeviceDetector lives in device.
+        from flag_gems.runtime.backend.device import DeviceDetector
+    except ImportError:
+        # FlagGems>5.0.2: DeviceDetector lives in device_finder.
+        from flag_gems.runtime.backend.device_finder import DeviceDetector
 
     return DeviceDetector()
 
@@ -78,12 +114,12 @@ class PlatformFL(SRTPlatform):
             backend.set_torch_backend_device_fn(self._vendor_name)
         except Exception:
             pass
-
         logger.info(
-            "PlatformFL initialized: vendor=%s, device=%s, dist_backend=%s",
+            "PlatformFL initialized: vendor=%s, device=%s, dist_backend=%s, count=%d",
             self._vendor_name,
             self._device_type,
             self._dist_backend,
+            self._device_count,
         )
 
     def _resolve_dist_backend(self) -> str:
@@ -118,6 +154,16 @@ class PlatformFL(SRTPlatform):
 
     def is_out_of_tree(self) -> bool:
         return True
+
+    def get_compile_backend(self, mode: str | None = None) -> str:
+        """Return the compilation backend for this platform.
+
+        On txda and other non-CUDA platforms, triton's inductor backend
+        has no active driver, so we return "eager" to disable torch.compile.
+        """
+        if self._device_type == "txda":
+            return "eager"
+        return "inductor"
 
     # ------------------------------------------------------------------
     # Active methods (called by SGLang core)
@@ -188,19 +234,20 @@ class PlatformFL(SRTPlatform):
     # ------------------------------------------------------------------
 
     def get_default_attention_backend(self) -> str:
-        """Return attention backend name.
+        """Return attention backend name from the per-vendor map.
 
-        CUDA with FlashAttention available -> "flashinfer" (SGLang default)
-        Non-CUDA -> "torch_native" (PyTorch SDPA, registered in attention registry)
+        Falls back to "torch_native" (PyTorch SDPA) for vendors not in the map.
         """
-        if self._device_type == "cuda":
-            return "flashinfer"
-        # Non-CUDA: torch_native uses F.scaled_dot_product_attention
-        return "torch_native"
+        return _ATTN_BACKEND_MAP.get(self._vendor_name, "torch_native")
 
     def get_graph_runner_cls(self) -> type:
         """Return graph runner class for this platform."""
-        # Import SGLang's default CUDA graph runner
+        if self._device_type == "npu":
+            from sglang.srt.hardware_backend.npu.graph_runner.npu_graph_runner import (
+                NPUGraphRunner,
+            )
+
+            return NPUGraphRunner
         from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
 
         return CudaGraphRunner
@@ -255,14 +302,21 @@ class PlatformFL(SRTPlatform):
     # ------------------------------------------------------------------
 
     def support_cuda_graph(self) -> bool:
-        """CUDA and NPU support graph capture."""
-        return self._device_type in ("cuda", "npu")
+        """Whether this device exposes a graph-capture API.
+
+        - cuda: native torch.cuda.CUDAGraph
+        - npu:  torch.npu.NPUGraph (via NPUGraphRunner override)
+        - musa: torch_musa proxies torch.cuda.CUDAGraph, so the default
+                CudaGraphRunner works unchanged
+        - gcu:  CudaGraphRunner overrides _capture_graph
+        """
+        return self._device_type in ("cuda", "npu", "musa", "gcu")
 
     def support_piecewise_cuda_graph(self) -> bool:
         return self._device_type == "cuda"
 
     def is_pin_memory_available(self) -> bool:
-        return self._device_type in ("cuda", "npu", "xpu", "musa")
+        return self._device_type in ("cuda", "npu", "xpu", "musa", "tsingmicro")
 
     def supports_fp8(self) -> bool:
         if self._device_type == "cuda":
@@ -275,11 +329,26 @@ class PlatformFL(SRTPlatform):
     # ------------------------------------------------------------------
 
     def init_backend(self) -> None:
-        """One-time backend initialization in each worker."""
+        """One-time backend initialization in each worker.
+
+        Auto-imports ``vendor/<vendor_name>/register_platform.py`` if present —
+        that module is where vendor-specific ``@register_attention_backend``
+        decorators live, which inject OOT backends into sglang's
+        ``ATTENTION_BACKENDS`` dict. See ``vendor/template/`` for a skeleton.
+        """
+        vendor_module = (
+            f"sglang_fl.dispatch.backends.vendor.{self._vendor_name}.register_platform"
+        )
+        try:
+            importlib.import_module(vendor_module)
+            status = "loaded"
+        except ImportError:
+            status = "absent"
         logger.info(
-            "PlatformFL init_backend: vendor=%s, device=%s",
+            "PlatformFL init_backend: vendor=%s, device=%s, vendor_module=%s",
             self._vendor_name,
             self._device_type,
+            status,
         )
 
     # ------------------------------------------------------------------
@@ -299,11 +368,26 @@ class PlatformFL(SRTPlatform):
     # ------------------------------------------------------------------
 
     def apply_server_args_defaults(self, server_args) -> None:
-        """Apply platform-specific defaults to server arguments."""
-        # Non-CUDA platforms may need attention backend override
-        if self._device_type != "cuda":
-            if (
-                not hasattr(server_args, "attention_backend")
-                or server_args.attention_backend is None
-            ):
-                server_args.attention_backend = "torch_native"
+        """Apply platform-specific defaults to server arguments.
+
+        NVIDIA is skipped — sglang's own defaulting handles it. For other vendors,
+        if the user didn't pick an attention backend, fill from _ATTN_BACKEND_MAP.
+        """
+        if self._vendor_name == "kunlunxin":
+            server_args.mm_attention_backend = "sdpa"
+            server_args.disable_cuda_graph = False
+        if self._vendor_name == "nvidia":
+            return
+        if self._device_type == "gcu":
+            server_args.device = "gcu"
+            server_args.attention_backend = "fa3"
+            server_args.mm_attention_backend = "fa3"
+            server_args.page_size = 64
+            server_args.watchdog_timeout = 100000
+            server_args.disable_radix_cache = True
+            return
+        if (
+            not hasattr(server_args, "attention_backend")
+            or server_args.attention_backend is None
+        ):
+            server_args.attention_backend = self.get_default_attention_backend()

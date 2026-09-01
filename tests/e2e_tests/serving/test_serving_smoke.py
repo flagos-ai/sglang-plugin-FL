@@ -1,0 +1,289 @@
+# Copyright (c) 2026 BAAI. All rights reserved.
+
+"""
+Unified SGLang serving smoke test driven by model YAML configs.
+
+Driven by environment variables set by ``tests/run.py``:
+
+- ``FL_TEST_MODEL``: Model family (e.g. ``qwen3``, ``qwen3_6``)
+- ``FL_TEST_CASE``:  Case name within the family (e.g. ``06b_tp1``,
+  ``35b_a3b_tp2_nograph``)
+
+Loads ``tests/models/<model>/<case>.yaml``, starts an SGLang server with the
+engine config, verifies sglang_fl activation and OOT bridge activity, and validates configured endpoints (completion, chat, embedding).
+
+Supports both non-streaming (raw requests) and streaming (OpenAI SDK) modes,
+controlled by the ``serve.stream`` flag in the model YAML.
+"""
+
+from pathlib import Path
+
+import pytest
+import requests
+
+from tests.e2e_tests.plugin_utils import (
+    build_text_prompt,
+    get_tokenizer,
+    load_e2e_model_config,
+)
+from tests.e2e_tests.serving.server_helper import _NO_PROXY, SGLangServer
+
+# ---------------------------------------------------------------------------
+# Load config from environment (injected by run.py)
+# ---------------------------------------------------------------------------
+
+_MODEL, _CASE, _CFG = load_e2e_model_config()
+
+
+# ---------------------------------------------------------------------------
+# Server fixture
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def plugin_dispatch_log(tmp_path_factory) -> Path:
+    return tmp_path_factory.mktemp("sglang_plugin") / "dispatch.log"
+
+
+@pytest.fixture(scope="module")
+def server(plugin_dispatch_log):
+    """Start SGLang server with model config and optional serve overrides."""
+    serve = _CFG.serve
+
+    # Build extra_args from engine config + serve-specific overrides.
+    extra_args = _CFG.serve_args(**serve.extra_engine)
+
+    with SGLangServer(
+        model_path=_CFG.model,
+        tp_size=int(_CFG.engine.get("tp_size", _CFG.engine.get("tensor_parallel_size", 1))),
+        api_key=serve.api_key,
+        served_model_name=serve.served_model_name,
+        max_retries=serve.startup_retries,
+        extra_args=extra_args,
+        extra_env={"SGLANG_FL_DISPATCH_LOG": str(plugin_dispatch_log)},
+    ) as srv:
+        yield srv
+
+
+@pytest.fixture
+def base_url(server):
+    return server.base_url
+
+
+@pytest.fixture
+def headers():
+    serve = _CFG.serve
+    h: dict[str, str] = {"Content-Type": "application/json"}
+    if serve.api_key:
+        h["Authorization"] = f"Bearer {serve.api_key}"
+    return h
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+_REQUEST_MODEL = _CFG.serve.request_model(_CFG.model)
+
+
+@pytest.mark.e2e
+def test_plugin_loaded(server):
+    """The server must invoke the sglang_fl general plugin entry point."""
+    logs = server.read_logs()
+    assert "sglang_fl plugin loading" in logs, (
+        "SGLang became ready without the sglang_fl plugin-load marker. "
+        f"Server log tail:\n{logs[-4000:]}"
+    )
+
+
+@pytest.mark.e2e
+def test_plugin_activated(server):
+    """The server must finish sglang_fl plugin initialization."""
+    logs = server.read_logs()
+    assert "sglang_fl activated" in logs, (
+        "SGLang became ready without the sglang_fl activation marker. "
+        f"Server log tail:\n{logs[-4000:]}"
+    )
+
+@pytest.mark.e2e
+def test_model_list(base_url, headers):
+    """Service must expose the loaded model in /v1/models."""
+    response = requests.get(f"{base_url}/models", headers=headers, proxies=_NO_PROXY)
+    assert response.status_code == 200
+    models = response.json()["data"]
+    assert any(m["id"] == _REQUEST_MODEL for m in models)
+
+
+# ---------------------------------------------------------------------------
+# Endpoint runners
+# ---------------------------------------------------------------------------
+
+
+def _completion_prompt(question: str) -> str:
+    """Render a completion prompt with the model's native chat template."""
+    return build_text_prompt(get_tokenizer(_CFG.model), question)
+
+
+def _run_completion(base_url: str, headers: dict[str, str]) -> None:
+    """Validate /v1/completions endpoint."""
+    serve = _CFG.serve
+    payload = {
+        "model": _REQUEST_MODEL,
+        "prompt": _completion_prompt(serve.completion_prompt),
+        "max_tokens": serve.max_tokens,
+        **serve.sampling,
+    }
+
+    response = requests.post(
+        f"{base_url}/completions",
+        headers=headers,
+        json=payload,
+        proxies=_NO_PROXY,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert "choices" in data
+    assert len(data["choices"]) > 0
+
+    generated_text = data["choices"][0]["text"]
+    assert len(generated_text.strip()) > 0, "Generated text is empty"
+    print(f"\nGenerated text: {generated_text}")
+
+
+def _run_chat(base_url: str, headers: dict[str, str]) -> None:
+    """Validate /v1/chat/completions endpoint.
+
+    When ``serve.stream`` is True, uses the OpenAI SDK for streaming.
+    Otherwise, uses a plain requests POST.
+    """
+    serve = _CFG.serve
+    messages = serve.chat_messages or [{"role": "user", "content": "Hello"}]
+
+    if serve.stream:
+        _run_chat_streaming(base_url, serve, messages)
+    else:
+        _run_chat_non_streaming(base_url, headers, serve, messages)
+
+
+def _run_chat_non_streaming(
+    base_url: str,
+    headers: dict[str, str],
+    serve,
+    messages: list[dict],
+) -> None:
+    """Non-streaming chat completions via raw requests."""
+    payload: dict = {
+        "model": _REQUEST_MODEL,
+        "messages": messages,
+        "max_tokens": serve.max_tokens,
+        **serve.sampling,
+    }
+    if serve.extra_body:
+        payload.update(serve.extra_body)
+
+    response = requests.post(
+        f"{base_url}/chat/completions",
+        headers=headers,
+        json=payload,
+        proxies=_NO_PROXY,
+    )
+    assert response.status_code == 200, response.text
+
+    data = response.json()
+    assert "choices" in data
+    assert len(data["choices"]) > 0
+
+    content = data["choices"][0]["message"]["content"]
+    assert len(content.strip()) > 0, "Assistant message is empty"
+    print(f"\nResponse: {content}")
+
+
+def _run_chat_streaming(
+    base_url: str,
+    serve,
+    messages: list[dict],
+) -> None:
+    """Streaming chat completions via OpenAI SDK."""
+    import httpx
+    from openai import OpenAI
+
+    client = OpenAI(
+        api_key=serve.api_key or "EMPTY",
+        base_url=base_url,
+        http_client=httpx.Client(trust_env=False),
+    )
+
+    create_kwargs: dict = {
+        "model": _REQUEST_MODEL,
+        "messages": messages,
+        "max_tokens": serve.max_tokens,
+        "stream": True,
+        **serve.sampling,
+    }
+    if serve.extra_body:
+        create_kwargs["extra_body"] = serve.extra_body
+
+    response = client.chat.completions.create(**create_kwargs)
+
+    text = ""
+    for chunk in response:
+        if chunk.choices and chunk.choices[0].delta.content:
+            text += chunk.choices[0].delta.content
+
+    assert len(text.strip()) > 0, "Streaming response is empty"
+    print(f"\nStreaming response: {text}")
+
+
+def _run_embedding(base_url: str, headers: dict[str, str]) -> None:
+    """Validate /v1/embeddings endpoint."""
+    serve = _CFG.serve
+    payload = {
+        "model": _REQUEST_MODEL,
+        "input": serve.embedding_input or "Hello world",
+    }
+
+    response = requests.post(
+        f"{base_url}/embeddings",
+        headers=headers,
+        json=payload,
+        proxies=_NO_PROXY,
+    )
+    assert response.status_code == 200, response.text
+
+    data = response.json()
+    assert "data" in data
+    assert len(data["data"]) > 0
+    assert len(data["data"][0]["embedding"]) > 0
+    print(f"\nEmbedding dimension: {len(data['data'][0]['embedding'])}")
+
+
+_ENDPOINT_RUNNERS = {
+    "completion": _run_completion,
+    "chat": _run_chat,
+    "embedding": _run_embedding,
+}
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize("endpoint", _CFG.serve.endpoints, ids=_CFG.serve.endpoints)
+def test_endpoint(endpoint: str, base_url, headers):
+    """Validate a serving endpoint configured in the model YAML."""
+    runner = _ENDPOINT_RUNNERS.get(endpoint)
+    assert runner is not None, f"Unknown endpoint type: {endpoint}"
+    runner(base_url, headers)
+
+@pytest.mark.e2e
+def test_plugin_dispatch_activity(server, base_url, headers, plugin_dispatch_log):
+    """A serving request must pass through at least one FL OOT bridge."""
+    endpoint = _CFG.serve.endpoints[0]
+    runner = _ENDPOINT_RUNNERS.get(endpoint)
+    assert runner is not None, f"Unknown endpoint type: {endpoint}"
+    runner(base_url, headers)
+
+    assert plugin_dispatch_log.exists(), "sglang_fl did not create its dispatch log"
+    logs = plugin_dispatch_log.read_text(encoding="utf-8", errors="replace")
+    assert "[OOT-DISPATCH]" in logs, (
+        "Serving requests completed without entering an sglang_fl OOT bridge. "
+        f"Dispatch log:\n{logs}"
+    )

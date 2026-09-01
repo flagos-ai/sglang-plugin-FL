@@ -1,3 +1,17 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Core operator dispatch manager.
 
 from __future__ import annotations
@@ -36,7 +50,7 @@ class OpManager:
     - Multi-process safety (PID detection + at_fork)
     - Policy-based operator selection
     - Dispatch caching with invalidation
-    - Ordered fallback when strict mode is enabled
+    - Ordered fallback when strict mode is disabled
     """
 
     def __init__(self, registry: Optional[OpRegistry] = None) -> None:
@@ -243,11 +257,11 @@ class OpManager:
         """
         Resolve and call an operator implementation with optional fallback.
 
-        When strict=True in the policy (default), tries alternative implementations
-        if primary fails. When strict=False, uses direct resolve only.
+        When strict=False, try alternative implementations on failure.
+        When strict=True, fail immediately without fallback.
         """
         policy = get_policy()
-        enable_fallback = policy.strict
+        enable_fallback = not policy.strict
 
         if not enable_fallback:
             fn = self.resolve(op_name)
