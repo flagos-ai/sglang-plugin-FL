@@ -26,6 +26,8 @@ from sglang_fl.dispatch.manager import (
     reset_default_manager,
 )
 from sglang_fl.dispatch.policy import (
+    SelectionPolicy,
+    policy_context,
     reset_global_policy,
     with_denied_vendors,
     with_preference,
