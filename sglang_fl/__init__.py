@@ -41,7 +41,7 @@ Environment variables:
   SGLANG_FL_OOT_ENABLED=1|0           Master switch for Layer 2 (default: 1)
   SGLANG_FL_PREFER=flagos|vendor|reference  Global backend priority
   SGLANG_FL_PER_OP=op=kind|kind;...         Per-op backend override
-  SGLANG_FL_STRICT=1|0                Fallback on error (default: 1=enabled)
+  SGLANG_FL_STRICT=1|0                Strict mode: 1=no fallback, 0=fallback (default: 0)
   SGLANG_FL_OOT_WHITELIST=op1,op2     Only dispatch listed ops through OOT
   SGLANG_FL_OOT_BLACKLIST=op1,op2     Skip listed ops from OOT dispatch
   SGLANG_FL_DENY_VENDORS=v1,v2       Deny specific vendor backends
@@ -154,12 +154,12 @@ def _build_config() -> dict:
     else:
         flagos_blacklist = yaml_cfg.get("flagos_blacklist", []) or []
 
-    # strict: SGLANG_FL_STRICT > yaml.strict > True (default: fallback enabled)
+    # strict: SGLANG_FL_STRICT > yaml.strict > False (default: fallback enabled)
     strict_str = os.environ.get("SGLANG_FL_STRICT", "").strip()
     if strict_str:
         strict = strict_str == "1"
     else:
-        strict = yaml_cfg.get("strict", True)
+        strict = yaml_cfg.get("strict", False)
 
     # deny_vendors: SGLANG_FL_DENY_VENDORS > yaml.deny_vendors > []
     deny_str = os.environ.get("SGLANG_FL_DENY_VENDORS", "").strip()
@@ -236,7 +236,7 @@ def _init_dispatch(config: dict) -> None:
 
     policy = SelectionPolicy.from_dict(
         prefer=prefer,
-        strict=config.get("strict", True),
+        strict=config.get("strict", False),
         per_op_order=per_op_order if per_op_order else None,
         deny_vendors=config.get("deny_vendors"),
         allow_vendors=config.get("allow_vendors"),
