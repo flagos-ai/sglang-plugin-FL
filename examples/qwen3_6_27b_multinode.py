@@ -72,6 +72,7 @@ import base64
 import concurrent.futures
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -342,8 +343,18 @@ def run_tests(
     print("\n=== Test 2: Longer Generation ===")
     r = chat_request(port, "List the first 5 prime numbers, separated by commas.", 64, timeout=request_timeout)
     print(f"  Q: First 5 primes  A: {r}")
-    t.check("Contains '2'", "2", r)
-    t.check("Contains '7'", "7", r)
+    expected_pattern = (
+        r"(?<!\d)2\s*,\s*3\s*,\s*5\s*,\s*7\s*,\s*11(?!\d)"
+    )
+
+    t.total += 1
+    if re.search(expected_pattern, r):
+        print("  PASS: First 5 primes = 2, 3, 5, 7, 11")
+        t.passed += 1
+    else:
+        print("  FAIL: Expected first 5 primes = 2, 3, 5, 7, 11")
+        print(f"        Actual response: {r}")
+        t.failed += 1
 
     # Test 3: Concurrent Text x4
     print("\n=== Test 3: Concurrent Text x4 ===")
