@@ -31,11 +31,18 @@ def patch_attn_backend_wrapper() -> None:
         Wrapper for special models like hybrid GDN, so we don't
         need to change the code of the original attention backend.
         """
+        # hybrid_gdn_config was added in a newer sglang than 0.5.18; getattr
+        # keeps 0.5.18 (which lacks the attribute) working, where it is always
+        # None so the assert below short-circuits as before.
         assert not (
-            runner.hybrid_gdn_config is not None and runner.use_mla_backend
+            getattr(runner, "hybrid_gdn_config", None) is not None
+            and runner.use_mla_backend
         ), "hybrid_gdn can only be used with non-MLA models."
 
-        if cfg := runner.mambaish_config:
+        # Same version guard as above: 0.5.18 has no runner.mambaish_config
+        # (upstream reads configs via hybrid_arch functions), so None skips the
+        # whole linear-attention block, matching upstream for non-mamba models.
+        if cfg := getattr(runner, "mambaish_config", None):
             from sglang.srt.configs.linear_attn_model_registry import (
                 get_linear_attn_config,
                 import_backend_class,
@@ -73,7 +80,7 @@ def patch_attn_backend_wrapper() -> None:
 
             check_environments()
             initialize_linear_attn_config(runner.server_args)
-            if runner.hybrid_gdn_config is not None:
+            if getattr(runner, "hybrid_gdn_config", None) is not None:
                 if is_blackwell():
                     assert (
                         runner.server_args.attention_backend == "triton"
