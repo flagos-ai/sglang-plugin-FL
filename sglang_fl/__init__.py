@@ -446,20 +446,14 @@ def _apply_vendor_patches() -> None:
     """
     import importlib
 
-    try:
-        try:
-            # FlagGems<=5.0.2: DeviceDetector lives in device.
-            from flag_gems.runtime.backend.device import DeviceDetector
-        except ImportError:
-            # FlagGems>5.0.2: DeviceDetector lives in device_finder.
-            from flag_gems.runtime.backend.device_finder import DeviceDetector
+    from sglang_fl.utils import get_device_info
 
-        vendor = DeviceDetector().vendor_name
-    except Exception as e:
-        logger.warning("vendor patch skipped: DeviceDetector failed (%s)", e)
+    info = get_device_info()
+    if info is None:
+        logger.warning("vendor patch skipped: DeviceDetector unavailable")
         return
 
-    module = f"sglang_fl.dispatch.backends.vendor.{vendor}.patch"
+    module = f"sglang_fl.dispatch.backends.vendor.{info.vendor_name}.patch"
     try:
         importlib.import_module(module)
         logger.info("vendor patch loaded: %s", module)
@@ -716,24 +710,18 @@ def activate_platform() -> str | None:
     Returns the fully-qualified class path of PlatformFL if hardware is detected,
     or None if FlagGems DeviceDetector fails (no supported hardware).
     """
-    try:
-        try:
-            # FlagGems<=5.0.2: DeviceDetector lives in device.
-            from flag_gems.runtime.backend.device import DeviceDetector
-        except ImportError:
-            # FlagGems>5.0.2: DeviceDetector lives in device_finder.
-            from flag_gems.runtime.backend.device_finder import DeviceDetector
+    from sglang_fl.utils import get_device_info
 
-        detector = DeviceDetector()
-        logger.info(
-            "sglang_fl platform activating: vendor=%s, device=%s",
-            detector.vendor_name,
-            detector.name,
-        )
-        return "sglang_fl.platform:PlatformFL"
-    except Exception as e:
-        logger.warning("sglang_fl platform activation failed: %s", e)
+    info = get_device_info()
+    if info is None:
+        logger.warning("sglang_fl platform activation failed: DeviceDetector unavailable")
         return None
+    logger.info(
+        "sglang_fl platform activating: vendor=%s, device=%s",
+        info.vendor_name,
+        info.device_type,
+    )
+    return "sglang_fl.platform:PlatformFL"
 
 
 # ─── General Plugin entry point ──────────────────────────────────────────────

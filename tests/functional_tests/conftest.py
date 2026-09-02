@@ -10,11 +10,11 @@ import torch
 
 def _detected_device_type() -> Optional[str]:
     try:
-        from sglang_fl.platform import _get_device_detector
+        from sglang_fl.utils import get_device_info
 
-        detected_name = _get_device_detector().name
-        if detected_name:
-            return str(detected_name).strip().lower()
+        info = get_device_info()
+        if info is not None and info.device_type:
+            return str(info.device_type).strip().lower()
     except Exception:
         pass
 
