@@ -300,7 +300,7 @@ class PlatformFL(SRTPlatform):
     def support_piecewise_cuda_graph(self) -> bool:
         return self._device_type == "cuda"
 
-    def is_pin_memory_available(self) -> bool:
+    def is_pin_memory_available(self, device=None) -> bool:
         return self._device_type in ("cuda", "npu", "xpu", "musa", "tsingmicro")
 
     def supports_fp8(self) -> bool:
