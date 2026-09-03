@@ -24,7 +24,6 @@ from sglang.srt.disaggregation.common.conn import (
 from sglang.srt.disaggregation.common.staging_handler import (
     DecodeStagingContext,
     PrefillStagingContext,
-    StagingRegisterInfo,
     StagingTransferInfo,
 )
 from sglang.srt.disaggregation.common.utils import (
@@ -46,6 +45,38 @@ from sglang.srt.environ import envs
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils.network import NetworkAddress, get_local_ip_auto
 from sglang.srt.utils import is_npu
+
+try:
+    from sglang.srt.disaggregation.common.staging_handler import StagingRegisterInfo
+except ImportError:
+    # SGLang 0.5.18 already sends these two staging frames, but keeps them as
+    # fields on each backend's KVArgsRegisterInfo instead of exposing the
+    # shared wrapper introduced later. Keep our internal representation stable
+    # while consuming the unchanged 0.5.18 wire format.
+    @dataclasses.dataclass
+    class StagingRegisterInfo:
+        base_ptr: int = 0
+        total_size: int = 0
+
+        @classmethod
+        def from_zmq_fields(
+            cls, msg: List[bytes], msg_start_offset: int
+        ) -> Optional[StagingRegisterInfo]:
+            i = msg_start_offset
+            base_ptr = (
+                struct.unpack("Q", msg[i])[0]
+                if len(msg) > i and len(msg[i]) == 8
+                else 0
+            )
+            total_size = (
+                int(msg[i + 1].decode("ascii"))
+                if len(msg) > i + 1 and len(msg[i + 1]) > 0
+                else 0
+            )
+            if base_ptr == 0 and total_size == 0:
+                return None
+            return cls(base_ptr=base_ptr, total_size=total_size)
+
 
 logger = logging.getLogger(__name__)
 

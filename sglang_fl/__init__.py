@@ -18,8 +18,8 @@ Two entry_points are registered:
   1. Platform Plugin (sglang.srt.platforms): activate_platform()
      Provides PlatformFL — device identity, memory, dist backend, graph capture.
   2. General Plugin (sglang.srt.plugins): load_plugin()
-     Registers ATen ops (FlagGems), fused kernel dispatch (AROUND hook),
-     and communicator hooks.
+     Registers ATen ops (FlagGems), fused kernel dispatch, and communicator
+     hooks.
 
 Loading:
   Plugin is auto-discovered via setuptools entry_points after `pip install`.
@@ -27,8 +27,8 @@ Loading:
 
 This plugin registers:
   Layer 1: FlagGems ATen operator replacement (flag_gems.enable)
-  Layer 2: SGLang fused kernels via MultiPlatformOp.register_oot_forward +
-           HookRegistry AROUND hook on dispatch_forward
+  Layer 2: SGLang fused kernels via BaseFusedOp.register_oot_forward
+           (legacy SGLang falls back to a dispatch_forward AROUND hook)
   Layer 3: FlagCX communicator (via Platform Plugin get_communicator_class)
   Layer 4: FlagCX PD-disaggregation KV transfer backend (opt-out via env)
 
@@ -249,7 +249,160 @@ def _init_dispatch(config: dict) -> None:
     get_default_manager().ensure_initialized()
 
 
-# ─── Dispatch AROUND hook ────────────────────────────────────────────────────
+# ─── Fused-op bridge registration ────────────────────────────────────────────
+
+
+def _get_bridge_map():
+    """Return the SGLang fused-op class to FL bridge mapping."""
+    from sglang.srt.layers.activation import SiluAndMul
+    from sglang.srt.layers.layernorm import GemmaRMSNorm, RMSNorm
+    from sglang.srt.layers.moe.topk import TopK
+    from sglang.srt.layers.quantization.unquant import UnquantizedFusedMoEMethod
+    from sglang.srt.layers.rotary_embedding import RotaryEmbedding
+    from sglang.srt.layers.rotary_embedding.mrope import MRotaryEmbedding
+    from sglang_fl.dispatch.bridge import (
+        fused_moe_bridge,
+        gemma_rms_norm_bridge,
+        mrotary_embedding_bridge,
+        rms_norm_bridge,
+        rotary_embedding_bridge,
+        silu_and_mul_bridge,
+        topk_bridge,
+    )
+
+    return {
+        SiluAndMul: silu_and_mul_bridge,
+        RMSNorm: rms_norm_bridge,
+        GemmaRMSNorm: gemma_rms_norm_bridge,
+        RotaryEmbedding: rotary_embedding_bridge,
+        MRotaryEmbedding: mrotary_embedding_bridge,
+        TopK: topk_bridge,
+        UnquantizedFusedMoEMethod: fused_moe_bridge,
+    }
+
+
+def _get_oot_filters(config: dict = None):
+    if config is None:
+        dispatch_log_path = os.environ.get("SGLANG_FL_DISPATCH_LOG", "").strip()
+        whitelist = _parse_list(os.environ.get("SGLANG_FL_OOT_WHITELIST", ""))
+        blacklist = _parse_list(os.environ.get("SGLANG_FL_OOT_BLACKLIST", ""))
+    else:
+        dispatch_log_path = config.get("dispatch_log", "")
+        whitelist = config.get("oot_whitelist", [])
+        blacklist = config.get("oot_blacklist", [])
+
+    if whitelist and blacklist:
+        raise ValueError(
+            "Cannot set both SGLANG_FL_OOT_WHITELIST and SGLANG_FL_OOT_BLACKLIST. "
+            "Use one or the other."
+        )
+    if whitelist:
+        logger.info("OOT dispatch whitelist: %s", whitelist)
+    if blacklist:
+        logger.info("OOT dispatch blacklist: %s", blacklist)
+    return dispatch_log_path, whitelist, blacklist
+
+
+def _oot_enabled_for(op_name: str, whitelist: list, blacklist: list) -> bool:
+    return not (whitelist and op_name not in whitelist) and op_name not in blacklist
+
+
+def _iter_loaded_subclasses(cls):
+    """Yield an op class and subclasses imported during plugin setup."""
+    yield cls
+    for subclass in cls.__subclasses__():
+        yield from _iter_loaded_subclasses(subclass)
+
+
+def _register_base_fused_op_forwards(config: dict = None) -> bool:
+    """Register bridges for SGLang's unified BaseFusedOp dispatcher.
+
+    Returns ``False`` on pre-BaseFusedOp SGLang so the caller can install the
+    legacy ``dispatch_forward`` hook instead.
+    """
+    try:
+        from sglang.kernels.fused_op import BaseFusedOp
+    except ImportError:
+        return False
+
+    if not hasattr(BaseFusedOp, "_resolve_forward_method"):
+        return False
+
+    from sglang.srt.platforms import current_platform
+
+    dispatch_log_path, whitelist, blacklist = _get_oot_filters(config)
+    bridge_map = _get_bridge_map()
+    platform_key = current_platform.get_dispatch_key_name()
+    op_classes = {
+        op_cls
+        for base_cls in bridge_map
+        for op_cls in _iter_loaded_subclasses(base_cls)
+    }
+    registered = set()
+
+    for op_cls in op_classes:
+        if not _oot_enabled_for(op_cls.__name__, whitelist, blacklist):
+            continue
+        # Match the legacy hook's MRO lookup so an MRotaryEmbedding subclass,
+        # for example, selects the more specific mrotary bridge instead of the
+        # RotaryEmbedding bridge discovered first.
+        bridge_fn = next(
+            bridge_map[parent] for parent in op_cls.__mro__ if parent in bridge_map
+        )
+        BaseFusedOp.register_oot_forward(op_cls, bridge_fn, platform_key)
+        registered.add(op_cls)
+
+    if dispatch_log_path:
+        with open(dispatch_log_path, "a") as log_file:
+            names = ",".join(sorted(cls.__name__ for cls in registered))
+            log_file.write(f"[OOT-REGISTER] platform={platform_key} ops={names}\n")
+
+    logger.info(
+        "Registered %d BaseFusedOp bridge(s) for platform key %s",
+        len(registered),
+        platform_key,
+    )
+    return True
+
+
+def _make_base_fused_resolve_hook(config: dict = None):
+    """Build an MRO-aware resolver hook for late-imported fused-op subclasses.
+
+    ``BaseFusedOp`` intentionally keeps its OOT registry keyed by exact class.
+    SGLang loads plugins before every model module is imported, so model-local
+    subclasses created after plugin setup cannot be present in that registry.
+    Resolve those subclasses through the same MRO lookup as the legacy hook.
+    """
+    dispatch_log_path, whitelist, blacklist = _get_oot_filters(config)
+    bridge_map = _get_bridge_map()
+    logged_classes = set()
+
+    def _resolve(original_fn, self):
+        op_cls = type(self)
+        if _oot_enabled_for(op_cls.__name__, whitelist, blacklist):
+            bridge_fn = next(
+                (
+                    bridge_map[parent]
+                    for parent in op_cls.__mro__
+                    if parent in bridge_map
+                ),
+                None,
+            )
+            if bridge_fn is not None:
+                if dispatch_log_path and op_cls not in logged_classes:
+                    with open(dispatch_log_path, "a") as log_file:
+                        log_file.write(
+                            f"[OOT-RESOLVE] op={op_cls.__name__} "
+                            f"bridge={bridge_fn.__name__}\n"
+                        )
+                    logged_classes.add(op_cls)
+                return bridge_fn.__get__(self, op_cls)
+        return original_fn(self)
+
+    return _resolve
+
+
+# ─── Legacy dispatch AROUND hook ─────────────────────────────────────────────
 
 
 def _make_dispatch_hook(config: dict = None):
@@ -265,52 +418,12 @@ def _make_dispatch_hook(config: dict = None):
       - Cannot set both simultaneously.
       - Empty (default): all registered ops use OOT dispatch.
     """
-    from sglang.srt.layers.activation import SiluAndMul
-    from sglang.srt.layers.layernorm import RMSNorm, GemmaRMSNorm
-    from sglang.srt.layers.rotary_embedding import RotaryEmbedding
-    from sglang.srt.layers.rotary_embedding.mrope import MRotaryEmbedding
-    from sglang.srt.layers.moe.topk import TopK
-    from sglang.srt.layers.quantization.unquant import UnquantizedFusedMoEMethod
-    from sglang_fl.dispatch.bridge import (
-        silu_and_mul_bridge,
-        rms_norm_bridge,
-        gemma_rms_norm_bridge,
-        rotary_embedding_bridge,
-        mrotary_embedding_bridge,
-        topk_bridge,
-        fused_moe_bridge,
-    )
-
-    if config is None:
-        dispatch_log_path = os.environ.get("SGLANG_FL_DISPATCH_LOG", "").strip()
-        whitelist = _parse_list(os.environ.get("SGLANG_FL_OOT_WHITELIST", ""))
-        blacklist = _parse_list(os.environ.get("SGLANG_FL_OOT_BLACKLIST", ""))
-    else:
-        dispatch_log_path = config.get("dispatch_log", "")
-        whitelist = config.get("oot_whitelist", [])
-        blacklist = config.get("oot_blacklist", [])
+    dispatch_log_path, whitelist, blacklist = _get_oot_filters(config)
 
     _log_file = open(dispatch_log_path, "a") if dispatch_log_path else None
-    if whitelist and blacklist:
-        raise ValueError(
-            "Cannot set both SGLANG_FL_OOT_WHITELIST and SGLANG_FL_OOT_BLACKLIST. "
-            "Use one or the other."
-        )
-    if whitelist:
-        logger.info(f"OOT dispatch whitelist: {whitelist}")
-    if blacklist:
-        logger.info(f"OOT dispatch blacklist: {blacklist}")
 
     # Map SGLang op classes to their bridge functions (via MRO inheritance)
-    _BRIDGE_MAP = {
-        SiluAndMul: silu_and_mul_bridge,
-        RMSNorm: rms_norm_bridge,
-        GemmaRMSNorm: gemma_rms_norm_bridge,
-        RotaryEmbedding: rotary_embedding_bridge,
-        MRotaryEmbedding: mrotary_embedding_bridge,
-        TopK: topk_bridge,
-        UnquantizedFusedMoEMethod: fused_moe_bridge,
-    }
+    _BRIDGE_MAP = _get_bridge_map()
 
     def _find_bridge(cls):
         """Walk MRO to find a bridge function for the given class."""
@@ -329,9 +442,7 @@ def _make_dispatch_hook(config: dict = None):
         op_name = op_cls.__name__
 
         # P1: Whitelist/blacklist gate
-        if whitelist and op_name not in whitelist:
-            return original_fn(self)
-        if blacklist and op_name in blacklist:
+        if not _oot_enabled_for(op_name, whitelist, blacklist):
             return original_fn(self)
 
         # Find bridge function for this op (supports subclasses via MRO)
@@ -714,7 +825,9 @@ def activate_platform() -> str | None:
 
     info = get_device_info()
     if info is None:
-        logger.warning("sglang_fl platform activation failed: DeviceDetector unavailable")
+        logger.warning(
+            "sglang_fl platform activation failed: DeviceDetector unavailable"
+        )
         return None
     logger.info(
         "sglang_fl platform activating: vendor=%s, device=%s",
@@ -733,6 +846,7 @@ _plugin_active = False
 def is_plugin_loaded() -> bool:
     """Return whether SGLang invoked the general plugin entry point."""
     return _plugin_loaded
+
 
 def is_plugin_active() -> bool:
     """Return whether the general plugin completed its initialization."""
@@ -766,26 +880,35 @@ def load_plugin():
     # 2. Initialize dispatch system (OpManager + backends + policy)
     _init_dispatch(config)
 
-    # 3. Install dispatch AROUND hook (bridge layer → dispatch.call_op)
+    # 3. Install fused-op bridges (bridge layer → dispatch.call_op)
     oot_enabled = _parse_bool(
         os.environ.get("SGLANG_FL_OOT_ENABLED", "1"), default=True
     )
     if oot_enabled:
-        HookRegistry.register(
-            "sglang.srt.layers.utils.multi_platform.MultiPlatformOp.dispatch_forward",
-            _make_dispatch_hook(config),
-            HookType.AROUND,
-        )
+        legacy_fused_op_dispatch = not _register_base_fused_op_forwards(config)
+        if legacy_fused_op_dispatch:
+            HookRegistry.register(
+                "sglang.srt.layers.utils.multi_platform.MultiPlatformOp.dispatch_forward",
+                _make_dispatch_hook(config),
+                HookType.AROUND,
+            )
+        else:
+            HookRegistry.register(
+                "sglang.kernels.fused_op.BaseFusedOp._resolve_forward_method",
+                _make_base_fused_resolve_hook(config),
+                HookType.AROUND,
+            )
         # Patch FLA functions to use dispatch mechanism
         from sglang_fl.dispatch.fla_patch import patch_fla_functions
 
         patch_fla_functions()
 
-        # Patch RotaryEmbedding.__init__ to restore bridge after MUSA _forward_method stomp
-        # Must be called after the AROUND hook on dispatch_forward is registered (above).
-        from sglang_fl.dispatch.rotary_patch import patch_rotary_embedding_init
+        if legacy_fused_op_dispatch:
+            # MUSA's pinned SGLang rewrites RotaryEmbedding._forward_method after
+            # the legacy hook resolves it, so restore the bridge after __init__.
+            from sglang_fl.dispatch.rotary_patch import patch_rotary_embedding_init
 
-        patch_rotary_embedding_init()
+            patch_rotary_embedding_init()
     else:
         logger.info("Layer 2 (Fused Ops) disabled (SGLANG_FL_OOT_ENABLED=0)")
 

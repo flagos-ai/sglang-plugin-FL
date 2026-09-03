@@ -87,8 +87,8 @@ class PlatformFL(SRTPlatform):
                 "(flag_gems missing or hardware unrecognised)"
             )
         self._info = info
-        self._vendor_name: str = info.vendor_name    # "nvidia", "ascend", ...
-        self._device_type: str = info.device_type    # "cuda", "npu", ...
+        self._vendor_name: str = info.vendor_name  # "nvidia", "ascend", ...
+        self._device_type: str = info.device_type  # "cuda", "npu", ...
         self._dispatch_key: str = info.dispatch_key  # "CUDA", "NPU", ...
         self._device_count: int = info.device_count
 
@@ -233,9 +233,17 @@ class PlatformFL(SRTPlatform):
             )
 
             return NPUGraphRunner
-        from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
+        try:
+            # SGLang >= 0.5.14 split the graph runner by execution phase.
+            from sglang.srt.model_executor.runner import DecodeCudaGraphRunner
 
-        return CudaGraphRunner
+            return DecodeCudaGraphRunner
+        except ImportError:
+            # SGLang <= 0.5.13 compatibility (MUSA/Ascend remain pinned there
+            # while the CUDA environment is upgraded first).
+            from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
+
+            return CudaGraphRunner
 
     def get_mha_kv_pool_cls(self) -> type:
         if self._device_type == "npu":
@@ -259,16 +267,26 @@ class PlatformFL(SRTPlatform):
 
         return MLATokenToKVPool
 
-    def get_nsa_kv_pool_cls(self) -> type:
+    def get_dsa_kv_pool_cls(self) -> type:
+        """Return the DSA KV pool (named NSA before SGLang 0.5.13)."""
         if self._device_type == "npu":
             from sglang.srt.hardware_backend.npu.memory_pool_npu import (
                 NPUMLATokenToKVPool,
             )
 
             return NPUMLATokenToKVPool
-        from sglang.srt.mem_cache.memory_pool import NSATokenToKVPool
+        try:
+            from sglang.srt.mem_cache.memory_pool import DSATokenToKVPool
 
-        return NSATokenToKVPool
+            return DSATokenToKVPool
+        except ImportError:
+            from sglang.srt.mem_cache.memory_pool import NSATokenToKVPool
+
+            return NSATokenToKVPool
+
+    # Compatibility entry point used by SGLang <= 0.5.12.
+    def get_nsa_kv_pool_cls(self) -> type:
+        return self.get_dsa_kv_pool_cls()
 
     def get_paged_allocator_cls(self) -> type:
         if self._device_type == "npu":
@@ -300,7 +318,9 @@ class PlatformFL(SRTPlatform):
     def support_piecewise_cuda_graph(self) -> bool:
         return self._device_type == "cuda"
 
-    def is_pin_memory_available(self) -> bool:
+    def is_pin_memory_available(self, device=None) -> bool:
+        if device is not None and str(device) == "cpu":
+            return False
         return self._device_type in ("cuda", "npu", "xpu", "musa", "tsingmicro")
 
     def supports_fp8(self) -> bool:
@@ -337,16 +357,21 @@ class PlatformFL(SRTPlatform):
         )
 
     # ------------------------------------------------------------------
-    # MultiPlatformOp integration
+    # BaseFusedOp / MultiPlatformOp integration
     # ------------------------------------------------------------------
 
     def get_dispatch_key_name(self) -> str:
-        """Return dispatch key for MultiPlatformOp OOT lookup.
+        """Return the platform fallback key used by SGLang fused operators.
 
-        Returns "oot" — our AROUND hook on dispatch_forward() intercepts
-        before upstream's single-key lookup and does multi-backend resolution.
+        SGLang 0.5.18 resolves BaseFusedOp without calling the legacy
+        ``dispatch_forward`` hook.  NVIDIA therefore uses ``cuda`` so ops not
+        overridden by sglang-plugin-FL retain their native CUDA implementation;
+        registered FL bridges still take precedence in the OOT registry.
+
+        Other vendors keep the legacy ``oot`` key until their individual
+        SGLang upgrades are completed.
         """
-        return "oot"
+        return "cuda" if self._vendor_name == "nvidia" else "oot"
 
     # ------------------------------------------------------------------
     # Configuration lifecycle

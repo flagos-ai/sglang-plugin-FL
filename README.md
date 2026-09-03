@@ -9,7 +9,7 @@ SGLang's inference engine relies on NVIDIA-specific components: flashinfer for a
 This plugin provides a non-intrusive adaptation layer through three levels of replacement:
 
 - **Layer 1 — ATen Operators**: Replaces PyTorch's low-level ops (matmul, softmax, embedding, etc.) with FlagGems Triton kernels via PyTorch's dispatch mechanism
-- **Layer 2 — SGLang Fused Kernels**: Intercepts SGLang's custom fused ops (SiluAndMul, RMSNorm, RotaryEmbedding) via HookRegistry AROUND hooks, routing through a standardized dispatch system (aligned with vllm-plugin-FL) to FlagGems, vendor-native, or PyTorch reference implementations
+- **Layer 2 — SGLang Fused Kernels**: Registers SGLang custom fused ops (SiluAndMul, RMSNorm, RotaryEmbedding) through the BaseFusedOp OOT registry, routing through a standardized dispatch system (aligned with vllm-plugin-FL) to FlagGems, vendor-native, or PyTorch reference implementations
 - **Layer 3 — Distributed Communication**: Replaces NCCL-based collectives with CommunicatorFL (backed by FlagCX or torch.distributed), enabling multi-card inference on any hardware
 
 ```
@@ -20,7 +20,7 @@ This plugin provides a non-intrusive adaptation layer through three levels of re
 │    torch.mm / torch.add / torch.softmax / ...                │
 │      → FlagGems Triton kernels                               │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 2: SGLang Fused Ops (AROUND hook on dispatch_forward) │
+│  Layer 2: SGLang Fused Ops (BaseFusedOp OOT registry)        │
 │    SiluAndMul / RMSNorm / RotaryEmbedding                    │
 │      → flagos (FlagGems Triton) | vendor (chip-native) | ref │
 ├──────────────────────────────────────────────────────────────┤
@@ -38,48 +38,61 @@ Chip vendors only need to implement a backend class + `register_ops.py`. The dis
 
 | Package | Version |
 |---------|---------|
-| SGLang | 0.5.11 |
-| sglang-kernel | 0.4.2 |
-| PyTorch | 2.11.0+cu130 |
-| Triton | 3.6.0 |
-| FlagGems | 4.2.1rc0 |
-| flashinfer | 0.6.8.post1 |
+| SGLang | 0.5.18 |
+| sglang-kernel | 0.4.6.post1 |
+| PyTorch | 2.13.0+cu130 |
+| FlagTree | 0.6.2a1 (Triton 3.6 module) |
+| Triton package | Not installed; provided by FlagTree |
+| FlagGems | master @ `8ea592557659491930ebf24c24392f958b29ac21` |
+| flashinfer | 0.6.17 |
 | Python | 3.12 |
-| CUDA | 13.0 |
+| CUDA runtime | 13.0 |
 
-## Verified Models
+This table is the current **NVIDIA CUDA** target. The MUSA and Ascend images
+remain pinned to SGLang v0.5.12 and v0.5.11 respectively until their dedicated
+upgrade passes are completed.
+
+The CUDA container removes the Triton package installed with PyTorch and uses
+FlagTree 0.6.2a1 as its Triton 3.6-compatible compiler. The verified FlagGems
+master snapshot handles `to_copy` on H100. The build only adds the missing DSA
+package marker when producing the FlagGems wheel; see
+[`docs/sglang-0.5.11-to-0.5.18-upgrade.md`](docs/sglang-0.5.11-to-0.5.18-upgrade.md)
+for the compatibility details.
+
+## Model Validation Status
 
 | Model | TP | Status |
 |-------|-----|--------|
-| Qwen3.6-27B (Hybrid Attention + FLA + MoE) | tp=1 | Verified |
-| Qwen3.6-35B-A3B (MoE, 256 experts) | tp=1 | Verified |
-| Qwen2.5-14B-Instruct | tp=8 | Verified |
+| Qwen3.6-27B (Hybrid Attention + FLA + MoE) | tp=1 | v0.5.18 rerun pending |
+| Qwen3.6-35B-A3B (MoE, 256 experts) | tp=1 | v0.5.18 rerun pending |
+| Qwen2.5-14B-Instruct | tp=8 | v0.5.18 rerun pending |
+
+The H100 operator and CUDA Graph smokes have passed. Model-serving and TP
+validation still require idle GPUs and suitable model weights.
 
 ## Quick Start
 
 ### Option A: Standard Install (NVIDIA CUDA)
 
-1. Install SGLang v0.5.11:
+1. Build the validated NVIDIA CUDA dependency environment. This layers
+   FlagTree 0.6.2a1 and the verified FlagGems master snapshot on the official
+   SGLang v0.5.18 runtime; NVIDIA communication continues to use NCCL:
 
 ```bash
-pip install "sglang[all]==0.5.11"
+docker build --target runtime -f docker/cuda/containerfile \
+  -t sglang-fl:v0.5.18-cuda .
 ```
 
-2. Install [FlagGems](https://github.com/flagos-ai/FlagGems):
-
-```bash
-git clone https://github.com/flagos-ai/FlagGems
-cd FlagGems && pip install .
-```
-
-3. Install this plugin:
+2. For source development inside an environment that already contains the
+   compatible dependencies, install only the plugin itself:
 
 ```bash
 git clone https://github.com/flagos-ai/sglang-plugin-FL
-cd sglang-plugin-FL && pip install .
+cd sglang-plugin-FL && pip install --no-deps -e .
 ```
 
-4. (Optional) Install [FlagCX](https://github.com/flagos-ai/FlagCX) for multi-chip distributed communication:
+3. (Optional) install [FlagCX](https://github.com/flagos-ai/FlagCX) only when
+   FlagCX collectives or PD-disaggregation transfer are required:
 
 ```bash
 git clone https://github.com/flagos-ai/FlagCX.git
@@ -647,16 +660,19 @@ sglang_fl = "sglang_fl:activate_platform"
 
 SGLang discovers and loads the plugin automatically at startup via setuptools entry_points.
 
-### Dispatch Hook
+### Fused-op Dispatch
 
-The core mechanism uses an AROUND hook on `MultiPlatformOp.dispatch_forward()` combined with a standardized dispatch system:
+On SGLang v0.5.18, the core mechanism registers bridges with
+`BaseFusedOp.register_oot_forward()` and combines them with the standardized
+dispatch system. Older SGLang versions use the legacy
+`MultiPlatformOp.dispatch_forward()` AROUND hook.
 
 ```
-dispatch_forward() called for an op (e.g. RMSNorm)
-  → AROUND hook intercepts
-    → Check OOT_WHITELIST/OOT_BLACKLIST
-    → Find bridge function via MRO (RMSNorm → rms_norm_bridge)
-    → Return bridge function as the forward method
+Plugin startup
+  → Check OOT_WHITELIST/OOT_BLACKLIST
+  → Register RMSNorm → rms_norm_bridge for the active platform key
+BaseFusedOp.forward() called
+  → OOT registry selects rms_norm_bridge
   → SGLang calls the bridge function with framework args:
       rms_norm_bridge(self, x, residual, post_residual_addition)
     → Bridge handles SGLang-specific params (post_residual_addition → merge into residual)
@@ -671,7 +687,7 @@ The bridge layer decouples framework-specific parameters from the standardized o
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  SGLang AROUND Hook        │  vLLM forward_oot override     │
+│  SGLang BaseFusedOp OOT    │  vLLM forward_oot override     │
 │  (bridge/rms_norm.py)      │  (vllm_fl/ops/layernorm.py)    │
 └────────────┬───────────────┴────────────────┬───────────────┘
              │                                │

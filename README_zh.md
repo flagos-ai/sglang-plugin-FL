@@ -25,7 +25,7 @@ SGLang 的推理引擎依赖 NVIDIA 专有组件：flashinfer 用于 attention�
 本插件通过三层替换提供无侵入的适配层：
 
 - **Layer 1 — ATen 算子**：通过 PyTorch dispatch 机制，将 PyTorch 底层算子（matmul、softmax、embedding 等）替换为 FlagGems Triton kernel
-- **Layer 2 — SGLang 融合算子**：通过 HookRegistry AROUND hook 拦截 SGLang 自定义融合算子（SiluAndMul、RMSNorm、RotaryEmbedding），经标准化 dispatch 系统（与 vllm-plugin-FL 对齐）路由到 FlagGems、厂商原生或 PyTorch 参考实现
+- **Layer 2 — SGLang 融合算子**：通过 BaseFusedOp OOT registry 注册 SGLang 自定义融合算子（SiluAndMul、RMSNorm、RotaryEmbedding），经标准化 dispatch 系统（与 vllm-plugin-FL 对齐）路由到 FlagGems、厂商原生或 PyTorch 参考实现
 - **Layer 3 — 分布式通信**：将基于 NCCL 的集合通信替换为 CommunicatorFL（底层使用 FlagCX 或 torch.distributed），支持任意硬件的多卡推理
 
 ```
@@ -36,7 +36,7 @@ SGLang 的推理引擎依赖 NVIDIA 专有组件：flashinfer 用于 attention�
 │    torch.mm / torch.add / torch.softmax / ...                │
 │      → FlagGems Triton kernels                               │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 2: SGLang Fused Ops (AROUND hook on dispatch_forward) │
+│  Layer 2: SGLang Fused Ops (BaseFusedOp OOT registry)        │
 │    SiluAndMul / RMSNorm / RotaryEmbedding                    │
 │      → flagos (FlagGems Triton) | vendor (chip-native) | ref │
 ├──────────────────────────────────────────────────────────────┤
@@ -54,51 +54,60 @@ SGLang 的推理引擎依赖 NVIDIA 专有组件：flashinfer 用于 attention�
 
 | 组件 | 版本 |
 |------|------|
-| SGLang | 0.5.11 |
-| sglang-kernel | 0.4.2 |
-| PyTorch | 2.11.0+cu130 |
-| Triton | 3.6.0 |
-| FlagGems | 4.2.1rc0 |
-| flashinfer | 0.6.8.post1 |
+| SGLang | 0.5.18 |
+| sglang-kernel | 0.4.6.post1 |
+| PyTorch | 2.13.0+cu130 |
+| FlagTree | 0.6.2a1（提供 Triton 3.6 模块） |
+| Triton 包 | 不安装；由 FlagTree 提供 |
+| FlagGems | master @ `8ea592557659491930ebf24c24392f958b29ac21` |
+| flashinfer | 0.6.17 |
 | Python | 3.12 |
-| CUDA | 13.0 |
+| CUDA runtime | 13.0 |
 
-## 已验证模型
+上表是当前 **NVIDIA CUDA** 目标环境。MUSA 与 Ascend 镜像暂时分别固定在
+SGLang v0.5.12 和 v0.5.11，等待各自的专项升级。
+
+CUDA 容器会卸载随 PyTorch 安装的 Triton 包，改用 FlagTree 0.6.2a1 提供
+Triton 3.6 兼容编译器；已验证的 FlagGems master 快照可以在 H100 上接管
+`to_copy`。构建 FlagGems wheel 时只补充缺失的 DSA package marker；兼容细节见
+[`docs/sglang-0.5.11-to-0.5.18-upgrade.md`](docs/sglang-0.5.11-to-0.5.18-upgrade.md)。
+
+## 模型验证状态
 
 理论上 sglang-plugin-FL 可以支持 SGLang 中所有模型，只要不涉及未支持的算子。
 
 | 模型 | TP | 状态 |
 |------|-----|------|
-| Qwen2.5-0.5B-Instruct | tp=1 | 已验证 |
-| Qwen2.5-14B-Instruct | tp=8 | 已验证 |
-| Qwen3.6-27B | tp=1 | 已验证 |
-| Qwen3.6-35B-A3B | tp=1 | 已验证 |
+| Qwen2.5-0.5B-Instruct | tp=1 | 等待 v0.5.18 复测 |
+| Qwen2.5-14B-Instruct | tp=8 | 等待 v0.5.18 复测 |
+| Qwen3.6-27B | tp=1 | 等待 v0.5.18 复测 |
+| Qwen3.6-35B-A3B | tp=1 | 等待 v0.5.18 复测 |
+
+H100 算子与 CUDA Graph 冒烟已经通过；模型服务和 TP 验证仍需等待空闲 GPU
+及合适的模型权重。
 
 ## 快速开始
 
 ### 方式 A：标准安装（NVIDIA CUDA）
 
-1. 安装 SGLang v0.5.11：
+1. 构建已验证的 NVIDIA CUDA 依赖环境：在官方 SGLang v0.5.18 runtime 上
+   叠加 FlagTree 0.6.2a1 与已验证的 FlagGems master 快照；NVIDIA 通信继续
+   使用 NCCL：
 
 ```bash
-pip install "sglang[all]==0.5.11"
+docker build --target runtime -f docker/cuda/containerfile \
+  -t sglang-fl:v0.5.18-cuda .
 ```
 
-2. 安装 [FlagGems](https://github.com/flagos-ai/FlagGems)：
-
-```bash
-git clone https://github.com/flagos-ai/FlagGems
-cd FlagGems && pip install .
-```
-
-3. 安装本插件：
+2. 如果开发环境已经包含兼容依赖，仅以源码方式安装本插件：
 
 ```bash
 git clone https://github.com/flagos-ai/sglang-plugin-FL
-cd sglang-plugin-FL && pip install .
+cd sglang-plugin-FL && pip install --no-deps -e .
 ```
 
-4. （可选）安装 [FlagCX](https://github.com/flagos-ai/FlagCX) 用于多芯分布式通信：
+3. （可选）仅在需要 FlagCX 集合通信或 PD 分离传输时安装
+   [FlagCX](https://github.com/flagos-ai/FlagCX)：
 
 ```bash
 git clone https://github.com/flagos-ai/FlagCX.git
@@ -664,16 +673,18 @@ sglang_fl = "sglang_fl:activate_platform"
 
 SGLang 启动时通过 setuptools entry_points 自动发现并加载插件。
 
-### Dispatch Hook
+### 融合算子 Dispatch
 
-核心机制使用 `MultiPlatformOp.dispatch_forward()` 上的 AROUND hook 结合标准化 dispatch 系统：
+在 SGLang v0.5.18 中，核心机制通过
+`BaseFusedOp.register_oot_forward()` 注册 bridge，并结合标准化 dispatch
+系统。旧版 SGLang 继续使用 `MultiPlatformOp.dispatch_forward()` AROUND hook。
 
 ```
-dispatch_forward() 被调用（如 RMSNorm）
-  → AROUND hook 拦截
-    → 检查 OOT_WHITELIST/OOT_BLACKLIST
-    → 通过 MRO 查找 bridge 函数（RMSNorm → rms_norm_bridge）
-    → 返回 bridge 函数作为 forward 方法
+插件启动
+  → 检查 OOT_WHITELIST/OOT_BLACKLIST
+  → 为当前 platform key 注册 RMSNorm → rms_norm_bridge
+BaseFusedOp.forward() 被调用
+  → OOT registry 选择 rms_norm_bridge
   → SGLang 使用框架参数调用 bridge 函数：
       rms_norm_bridge(self, x, residual, post_residual_addition)
     → Bridge 处理 SGLang 特有参数（post_residual_addition → 合并到 residual）
@@ -688,7 +699,7 @@ Bridge 层将框架特有参数与标准化算子签名解耦。厂商后端只�
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  SGLang AROUND Hook        │  vLLM forward_oot override     │
+│  SGLang BaseFusedOp OOT    │  vLLM forward_oot override     │
 │  (bridge/rms_norm.py)      │  (vllm_fl/ops/layernorm.py)    │
 └────────────┬───────────────┴────────────────┬───────────────┘
              │                                │
