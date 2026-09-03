@@ -50,6 +50,7 @@ Full tested command (2 nodes × 2 GPUs each, TP=2 PP=2):
 
 Environment variables:
   MODEL_PATH       Model path (default: /models/Qwen3.6-35B-A3B)
+  ATTENTION_BACKEND     Optional SGLang attention backend (e.g. triton)
   CUDA_VISIBLE_DEVICES  GPU selection on CUDA (e.g. 0,1)
   MUSA_VISIBLE_DEVICES  Device selection on MUSA
   ASCEND_RT_VISIBLE_DEVICES  Device selection on Ascend NPU
@@ -129,6 +130,7 @@ else:
 # ─── Configuration ───────────────────────────────────────────────────────────
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-35B-A3B")
+ATTENTION_BACKEND = os.environ.get("ATTENTION_BACKEND", "").strip()
 
 _HERE = Path(__file__).resolve().parent
 IMG_DIR = Path(os.environ.get("IMAGE_DIR", _HERE / "test_images"))
@@ -550,6 +552,8 @@ def run_master(args):
         "--trust-remote-code",
         *_PLATFORM_SERVER_ARGS,
     ]
+    if ATTENTION_BACKEND:
+        cmd.extend(["--attention-backend", ATTENTION_BACKEND])
     if _is_txda:
         insert_pos = cmd.index("--mem-fraction-static")
         cmd[insert_pos + 1] = "0.6"
@@ -656,6 +660,8 @@ def run_worker(args):
         "--trust-remote-code",
         *_PLATFORM_SERVER_ARGS,
     ]
+    if ATTENTION_BACKEND:
+        cmd.extend(["--attention-backend", ATTENTION_BACKEND])
     if _is_txda:
         insert_pos = cmd.index("--mem-fraction-static")
         cmd[insert_pos + 1] = "0.6"

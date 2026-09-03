@@ -57,7 +57,7 @@ Chip vendors only need to implement a backend class + `register_ops.py`. The dis
 
 ## Quick Start
 
-### Setup
+### Option A: Standard Install (NVIDIA CUDA)
 
 1. Install SGLang v0.5.11:
 
@@ -86,6 +86,63 @@ git clone https://github.com/flagos-ai/FlagCX.git
 cd FlagCX && make USE_NVIDIA=1
 export FLAGCX_PATH="$PWD"
 ```
+
+### Option B: Empty Install (Multi-Chip / Non-CUDA)
+
+For running on non-NVIDIA hardware (Ascend, MUSA, etc.), use SGLang's **empty install** mode. This installs SGLang's pure Python code without pulling in CUDA-specific dependencies (torch, torchao, flashinfer, etc.), avoiding conflicts with vendor-specific PyTorch builds.
+
+> **Requires**: [sglang-FL](https://github.com/flagos-ai/sglang-FL) with `srt_empty` support, or upstream SGLang once the [empty PR](https://github.com/sgl-project/sglang/pull/31300) is merged.
+
+```bash
+# Step 1: Install the vendor runtime stack (varies by chip)
+# Keep the vendor's PyTorch and any operator packages required by the current
+# vendor backend; the SGLang empty install will not install them for you.
+pip install torch torch_npu       # Ascend
+# pip install torch torch_musa    # MUSA
+# pip install torch               # NVIDIA (standard)
+
+# Step 2: Install SGLang (empty mode — no torch dependency conflicts)
+git clone https://github.com/sgl-project/sglang.git
+cd sglang/python
+cp pyproject_other.toml pyproject.toml
+pip install -e ".[srt_empty]"
+
+# Step 3: Install this plugin
+git clone https://github.com/flagos-ai/sglang-plugin-FL
+cd sglang-plugin-FL && pip install -e .
+
+# Step 4: Install FlagGems
+pip install flag-gems
+
+# Step 5: (Optional) Install FlagCX for distributed communication
+git clone https://github.com/flagos-ai/FlagCX.git
+cd FlagCX && make USE_NVIDIA=1  # or USE_ASCEND=1, USE_MUSA=1
+export FLAGCX_PATH="$PWD"
+```
+
+#### Running with Empty Install
+
+Empty mode does not choose or install a platform's attention, fused-op, or communication packages. Prepare those packages as part of the vendor runtime stack and select an attention backend that has been verified on the target platform. Until FlagOS covers every required operator, keep the platform vendor backend enabled as the functional fallback:
+
+```bash
+export SGLANG_PLUGINS=sglang_fl
+export SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero  # FlagGems bug workaround
+export ATTENTION_BACKEND=triton                  # NVIDIA or another verified Triton-compatible platform
+
+python -m sglang.launch_server \
+    --model-path Qwen/Qwen2.5-0.5B-Instruct \
+    --port 30000 \
+    --disable-piecewise-cuda-graph
+```
+
+> **Note on `ATTENTION_BACKEND`**:
+> - `triton` — SGLang's built-in Triton attention path; use it only after verifying the target platform's Triton-compatible compiler and the complete downstream call path
+> - `ascend` — Huawei Ascend optimized attention (use on NPU hardware)
+> - If not set, defaults to `flashinfer` on CUDA-like devices — **will fail** in empty environments without flashinfer installed
+
+`SGLANG_FL_DENY_VENDORS` is a coverage-audit switch, not a default Empty-mode setting. For example, `SGLANG_FL_DENY_VENDORS=cuda` intentionally removes `vendor.cuda`. Operators that are not yet implemented by FlagOS or a genuine torch reference are then expected to report `No available implementation`. FLA and Fused MoE currently use the platform vendor backend until their FlagOS implementations are available and validated.
+
+**Why empty install?** In short, SGLang's default `pyproject.toml` hard-pins `torch==2.11.0`, `torchao`, `flashinfer`, etc., which conflicts with vendor-specific PyTorch. Empty install strips these out, letting each vendor bring their own torch.
 
 ### Download Models
 

@@ -15,13 +15,13 @@
 # Tests for call_op / resolve_op high-level API and builtin_ops registration.
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from sglang_fl.dispatch.types import BackendImplKind, BackendPriority, OpImpl
 from sglang_fl.dispatch.registry import OpRegistry
-from sglang_fl.dispatch.manager import OpManager, get_default_manager, reset_default_manager
+from sglang_fl.dispatch.manager import get_default_manager, reset_default_manager
 from sglang_fl.dispatch import call_op, resolve_op
 from sglang_fl.dispatch.policy import (
     reset_global_policy,
@@ -52,13 +52,15 @@ class TestCallOp:
         def test_fn(*a, **kw):
             return "test_result"
 
-        registry.register_impl(OpImpl(
-            op_name="test_op",
-            impl_id="default.flagos",
-            kind=BackendImplKind.DEFAULT,
-            fn=test_fn,
-            priority=BackendPriority.DEFAULT,
-        ))
+        registry.register_impl(
+            OpImpl(
+                op_name="test_op",
+                impl_id="default.flagos",
+                kind=BackendImplKind.DEFAULT,
+                fn=test_fn,
+                priority=BackendPriority.DEFAULT,
+            )
+        )
 
         result = call_op("test_op")
         assert result == "test_result"
@@ -74,13 +76,15 @@ class TestCallOp:
         def test_fn(*a, **kw):
             return "resolved"
 
-        registry.register_impl(OpImpl(
-            op_name="test_op",
-            impl_id="default.flagos",
-            kind=BackendImplKind.DEFAULT,
-            fn=test_fn,
-            priority=BackendPriority.DEFAULT,
-        ))
+        registry.register_impl(
+            OpImpl(
+                op_name="test_op",
+                impl_id="default.flagos",
+                kind=BackendImplKind.DEFAULT,
+                fn=test_fn,
+                priority=BackendPriority.DEFAULT,
+            )
+        )
 
         fn = resolve_op("test_op")
         assert callable(fn)
@@ -113,6 +117,53 @@ class TestBuiltinOpsRegistration:
         silu_impls = registry.get_implementations("silu_and_mul")
         ref_impls = [i for i in silu_impls if i.kind == BackendImplKind.REFERENCE]
         assert len(ref_impls) >= 1
+
+    def test_reference_backend_only_registers_torch_fallbacks(self):
+        """Upstream Triton adapters must not masquerade as generic references."""
+        from sglang_fl.dispatch.backends.reference.register_ops import (
+            register_builtins as register_reference,
+        )
+
+        registry = OpRegistry()
+        register_reference(registry)
+
+        implementations = [
+            impl
+            for op_name in registry.list_operators()
+            for impl in registry.get_implementations(op_name)
+        ]
+        assert implementations
+        assert {impl.impl_id for impl in implementations} == {"reference.torch"}
+
+        unsupported_reference_ops = {
+            "chunk_gated_delta_rule",
+            "fused_recurrent_gated_delta_rule",
+            "fused_recurrent_gated_delta_rule_packed_decode",
+            "fused_moe",
+        }
+        assert unsupported_reference_ops.isdisjoint(registry.list_operators())
+
+    def test_cuda_backend_owns_upstream_triton_adapters(self):
+        """FLA and MoE use the explicit CUDA vendor path until FlagOS covers them."""
+        from sglang_fl.dispatch.backends.vendor.cuda.register_ops import (
+            register_builtins as register_cuda,
+        )
+
+        registry = OpRegistry()
+        register_cuda(registry)
+
+        transitional_ops = {
+            "chunk_gated_delta_rule",
+            "fused_recurrent_gated_delta_rule",
+            "fused_recurrent_gated_delta_rule_packed_decode",
+            "fused_moe",
+        }
+        for op_name in transitional_ops:
+            implementations = registry.get_implementations(op_name)
+            assert len(implementations) == 1
+            assert implementations[0].impl_id == "vendor.cuda"
+            assert implementations[0].kind == BackendImplKind.VENDOR
+            assert implementations[0].vendor == "cuda"
 
     def test_vendor_discovery_skips_template(self):
         """The 'template' vendor directory should be skipped."""
@@ -167,23 +218,25 @@ class TestFullPipeline:
             results.append("vendor")
             return "vendor"
 
-        registry.register_many([
-            OpImpl(
-                op_name="pipeline_op",
-                impl_id="default.flagos",
-                kind=BackendImplKind.DEFAULT,
-                fn=flagos_fn,
-                priority=BackendPriority.DEFAULT,
-            ),
-            OpImpl(
-                op_name="pipeline_op",
-                impl_id="vendor.cuda",
-                kind=BackendImplKind.VENDOR,
-                fn=vendor_fn,
-                vendor="cuda",
-                priority=BackendPriority.VENDOR,
-            ),
-        ])
+        registry.register_many(
+            [
+                OpImpl(
+                    op_name="pipeline_op",
+                    impl_id="default.flagos",
+                    kind=BackendImplKind.DEFAULT,
+                    fn=flagos_fn,
+                    priority=BackendPriority.DEFAULT,
+                ),
+                OpImpl(
+                    op_name="pipeline_op",
+                    impl_id="vendor.cuda",
+                    kind=BackendImplKind.VENDOR,
+                    fn=vendor_fn,
+                    vendor="cuda",
+                    priority=BackendPriority.VENDOR,
+                ),
+            ]
+        )
 
         # Default preference → flagos
         result = call_op("pipeline_op")
