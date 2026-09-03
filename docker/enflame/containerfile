@@ -1,0 +1,50 @@
+# CI image for sglang-plugin-FL on Enflame GCU (S60).
+#
+# Thin layer on top of the flagrelease-validated GCU stack (tag pinned below):
+#   torch_gcu 2.11.0+3.8.20260713 · tops 3.8.20260714 · driver 1.9.10 ·
+#   FlagGems 5.4.0.dev0 · sglang 0.5.11 + sglang_plugin 0.1.0 · FlagCX 0.13.0 ·
+#   python 3.12.8 — plus ~1 GB of precompiled GCU Triton kernels under
+#   /root/.triton/cache (what makes CI warmup fast; reused at runtime via
+#   TRITON_CACHE_DIR in tests/platforms/enflame.yaml).
+# The vendor stack is proprietary to Enflame and not installable from public
+# repos, so this file only adds the two things the base lacks:
+#
+# 1) efsmi — vendor SMI CLI required by the device-availability gate
+#    (.github/scripts/enflame/check.sh). The release base ships no SMI tool and
+#    the deb is on no reachable repo, so the binary is copied from the previous
+#    0.2.0-enflame-ci, pinned by DIGEST — that binary (sha256
+#    14c8fbc5a082643585eb570c343be1877bf80027da243f59cb2fc1b2caeb9ecb, from the
+#    s60 runner host, driver-1.9.10-era topsruntime) is the exact one every
+#    green CI run so far has gated devices with. Pin the digest, not the tag:
+#    this build overwrites the tag.
+#
+# 2) /opt/hf-cache + offline env — sglang's benchmark reads the 642 MB ShareGPT
+#    dataset from HF even under --dataset-name random; the CI runtime proxy
+#    cannot pull it (bench stalls 30 min -> job timeout). The cache is copied
+#    from the CUDA CI image, which bakes it at build time
+#    (docker/cuda/containerfile). Same fix 9354ca6 applied for CUDA/MUSA.
+#    HF_HOME is pinned because the runner overrides HOME at runtime.
+#    Do NOT set these envs without the cache present: offline mode then turns
+#    every HF access into LocalEntryNotFoundError.
+#
+# Build & push target (same tag, overwritten):
+#   harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-enflame-ci
+
+ARG BASE_IMAGE=harbor.baai.ac.cn/flagos-inner-models-release/flagrelease-qwen3.6-enflame-gems_5.4.0.dev0-sglang_0.5.11-sglang_plugin_0.1.0-cx_0.13.0-python_3.12.8-torch_gcu_2.11.0_3.8.20260713-pcp_tops3.8.20260714-gpu_s60-arc_amd64-driver_1.9.10:202608141853
+
+ARG EFSMI_IMAGE=harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-enflame-ci@sha256:5a383cd249087ff66cafa79705e07519b033c9e08fee5028e2f66d048f80b5e4
+
+FROM harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-cuda-ci@sha256:fe93a277612f5c0f5e7ac3de555202a5b0bdf71538a6861757d9e1b25cb0346f AS hf-cache
+
+FROM ${EFSMI_IMAGE} AS efsmi-src
+
+FROM ${BASE_IMAGE}
+
+COPY --from=efsmi-src /usr/bin/efsmi /usr/bin/efsmi
+
+COPY --from=hf-cache /opt/hf-cache /opt/hf-cache
+ENV HF_HOME=/opt/hf-cache
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
+
+WORKDIR /workspace
