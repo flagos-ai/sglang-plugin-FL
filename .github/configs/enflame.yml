@@ -1,0 +1,55 @@
+# Enflame GCU (S60) Hardware Configuration
+# This file defines CI/CD settings for Enflame GCU testing.
+
+platform: enflame
+
+# Docker image for this hardware
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-enflame-ci
+
+# Runner labels for this hardware
+runner_labels:
+  - ci-sglang-plugin-fl-enflame
+
+# The ARC runner pods share the host's /dev/gcu7vid0..7 devices. Running the
+# inference, serving, and concurrent matrices together overcommits the same
+# physical GCU memory even though GitHub reports distinct runner pod names.
+e2e_max_parallel: 1
+
+# Container volumes (hardware-specific paths)
+# Model files live under the runner's persistent /data store; the test model
+# configs reference /data/models/Qwen/<model> in-container, so the store is
+# mounted at the same path (same convention as vllm-plugin-FL's enflame.yml).
+container_volumes:
+  - /data:/data
+
+# Container options.
+# GCU device access: the host docker daemon has no enflame container runtime,
+# so the GCU char devices are passed explicitly with --device (/dev/gcuctl is
+# the control node, /dev/gcu7vid0..7 the per-card nodes on an 8-card S60).
+# --privileged is kept from the validated vLLM-on-GCU recipe
+# (vllm-plugin-FL .github/configs/enflame.yml); relax only after re-validating.
+# TORCH_GCU_* env vars mirror Enflame's recommended runtime settings.
+# --user root is required: the setup.sh step pip-installs the plugin into
+# /usr/local. --init: tini as PID 1 reaps orphaned sglang TP workers.
+container_options: >-
+  --hostname sglang-plugin-fl
+  --ipc=host
+  --shm-size=64g
+  --ulimit memlock=-1
+  --ulimit stack=67108864
+  --user root
+  --init
+  --privileged
+  --device /dev/gcuctl
+  --device /dev/gcu7vid0
+  --device /dev/gcu7vid1
+  --device /dev/gcu7vid2
+  --device /dev/gcu7vid3
+  --device /dev/gcu7vid4
+  --device /dev/gcu7vid5
+  --device /dev/gcu7vid6
+  --device /dev/gcu7vid7
+  -e TOPS_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+  -e TORCH_GCU_ENABLE_INT64_AND_UINT64=1
+  -e ENABLE_I64_CHECK=0
+  -e TORCHDYNAMO_DISABLE=1

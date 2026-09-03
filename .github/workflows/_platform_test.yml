@@ -104,6 +104,7 @@ jobs:
     if: needs.setup.outputs.e2e_matrix != '[]'
     strategy:
       fail-fast: false
+      max-parallel: ${{ fromJson(needs.setup.outputs.config).e2e_max_parallel || 256 }}
       matrix:
         test: ${{ fromJson(needs.setup.outputs.e2e_matrix) }}
     uses: ./.github/workflows/_e2e_test.yml
