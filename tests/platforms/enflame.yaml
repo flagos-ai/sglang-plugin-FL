@@ -1,0 +1,134 @@
+# Enflame GCU Platform Configuration (S60 / torch_gcu).
+# Flexible test selection mechanism for Enflame GCU environments.
+#
+# The GCU is exposed through Enflame's torch_gcu (device "gcu", vendor
+# "enflame" via FlagGems DeviceDetector); torch.cuda is NOT available, so the
+# plugin's PlatformFL provides the OOT platform (device identity, ECCL dist
+# backend, torch_native attention). The e2e/functional/unit/benchmark case
+# sets follow cuda.yaml / thead.yaml / ascend.yaml where the runner's shared
+# model volume contains the same checkpoints. E2E omits Qwen3-4B because that
+# checkpoint is not present on the Enflame runners' shared model volume.
+#
+# Users can modify:
+# - e2e: Add/remove model cases in inference and serving support lists
+# - benchmark: Enable/disable throughput, latency, and serve smoke tests
+# - unit: Add/remove paths in include and exclude lists
+# - functional: Adjust include/exclude patterns for component (ops/compilation/distributed) tests
+# - tolerance: Adjust numerical comparison tolerance for result validation
+# - unsupported_features: Exclude test cases matching specific feature tags
+# - env_defaults: Set TORCH_GCU/SGLang environment defaults before tests start
+#
+# ---- Platform-level settings ------------------------------------------------
+platform: enflame
+vendor: gcu
+
+device_types:
+  s60:
+    memory_gb: 42
+    tags: [enflame, gcu, bf16, fp16, fp32]
+
+# Default numerical tolerance for result comparison.
+tolerance:
+  inference:
+    default: {exact: true}
+
+# Device-level overrides for specific devices or categories.
+device_overrides: {}
+
+# Features not supported on this platform.
+# Test cases whose model name contains any of these strings will be skipped.
+# Example: ["flaggems"] would skip "qwen3_flaggems" cases.
+unsupported_features: []
+
+# Platform-specific engine parameters that supplement the common model config
+# (merged via tests/utils/platform_config.py get_engine_overrides). The GCU
+# device string is NOT in sglang's auto-detection (get_device() knows
+# cpu/cuda/xpu/npu/...), so every case passes device="gcu" explicitly — same
+# mechanism ascend.yaml uses for device="npu".
+engine_overrides:
+  qwen3:
+    4b_tp2:
+      device: "gcu"
+    06b_tp1:
+      device: "gcu"
+  qwen3_6:
+    35b_a3b_tp4_nograph:
+      device: "gcu"
+    27b_tp4_nograph:
+      device: "gcu"
+
+# Default environment variables for this platform.
+# tests/run.py applies these before invoking pytest.
+#
+# Match the platform team's validated environment. Keep ``_unique2`` out of
+# FlagGems, but leave ``isin`` enabled there: torch_gcu's native
+# ``isin(Long, Long)`` aborts in TOPS ATen, while the FlagGems implementation
+# completes the Qwen3.6 multimodal mask on this image.
+# TORCH_GCU_ENABLE_INT64_AND_UINT64 / ENABLE_I64_CHECK: torch_gcu disables
+# int64/uint64 kernels by default; sglang schedules int64 tensors, so enable
+# them (Enflame's own vLLM recipe uses the same pair, see vllm-plugin-FL
+# .github/configs/enflame.yml).
+# TORCHDYNAMO_DISABLE: the validated multi-TP recipe disables TorchDynamo;
+# torch_gcu's compiled int64 paths corrupt TP vocab masks on this stack.
+# SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE: Qwen3.6-27B's GDN warmup leaves
+# four page-size-64 full-cache pages reserved before the first request. The
+# SGLang 0.5.11 idle checker treats those fixed 256 tokens as a leak and kills
+# every TP rank; warning mode preserves the diagnostic while allowing the
+# engine to run. A full text + four-image inference pass completes correctly
+# with no growth-related failure.
+env_defaults:
+  SGLANG_FL_FLAGOS_BLACKLIST: "_unique2"
+  FLAGCX_PATH: "/sgl-workspace/FlagCX"
+  SGLANG_FL_DIST_BACKEND: "flagcx"
+  # Keep the large Qwen3.6 E2E cases as smoke tests. GCU's first eager request
+  # compiles kernels, so the cross-platform defaults (256 generated tokens and
+  # 16-way text+VL+mixed concurrency) exceed the 60-minute job budget.
+  FL_SERVING_MAX_TOKENS: "16"
+  FL_CONCURRENT_MODES: "mixed"
+  FL_CONCURRENT_N: "4"
+  FL_CONCURRENT_MAX_TOKENS: "16"
+  FL_CONCURRENT_VL_MAX_TOKENS: "16"
+  SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE: "0"
+  TORCH_GCU_ENABLE_INT64_AND_UINT64: "1"
+  ENABLE_I64_CHECK: "0"
+  TORCHDYNAMO_DISABLE: "1"
+
+# ---- Device-specific test configurations ------------------------------------
+s60:
+  name: "s60"
+  tests:
+    e2e:
+      # Add or remove test cases per model.
+      # Each case points to tests/models/<model>/<case>.yaml.
+      concurrent:
+        # 35B concurrent generation is currently inaccurate on GCU (the
+        # single-request inference and serving lanes still cover this model).
+        qwen3_6: ["27b_tp4_nograph"]
+      inference:
+        qwen3: ["06b_tp1"]
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      serving:
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+
+    # Functional tests (ops correctness, graph capture, collective ops).
+    # Consumed by tests/run.py --scope functional; include/exclude work like unit.
+    functional:
+      include: "*"
+      exclude: []
+
+    unit:
+      # Include patterns: "*" for all, or list specific paths.
+      include: "*"
+      # GCU's upstream dispatch config intentionally defaults to
+      # ``prefer: vendor``. These generic policy tests assume the built-in
+      # ``flagos`` default and therefore do not apply when platform
+      # auto-detection loads gcu.yaml.
+      exclude:
+        - dispatch/test_call_op.py
+        - dispatch/test_env_policy.py
+        - dispatch/test_manager.py
+        - dispatch/test_policy.py
+
+    benchmark:
+      enabled: true
+      smoke: ["throughput", "latency", "serve"]
