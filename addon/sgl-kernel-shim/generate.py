@@ -21,6 +21,14 @@ flagos path (ops go through flag_gems). The 0.4.x `sglang_kernel` stub wheels
 satisfy only the pip distribution `sglang-kernel`, NOT the `sgl_kernel` module
 0.5.18 imports; this package closes that gap.
 
+Also generates the `sgl_kernel_npu` import-face shim (Ascend). sglang 0.5.18
+imports sgl_kernel_npu on the NPU branch across many processes — including
+spawn scheduler workers at module-import time, before any plugin loads — so
+the name must be importable as a real on-disk package, not aliased at
+runtime. This wheel ships the same stub tree as the ascend E2E (authoritative
+tree: 48 modules across 9 subpackages). Only ascend imports it; on every
+other platform the is_npu branch never runs and the package is inert.
+
 Run once before `pip wheel .`:
 
     python3 generate.py && pip wheel . --no-deps -w out
@@ -30,6 +38,7 @@ import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PKG = os.path.join(HERE, "sgl_kernel")
+NPU_PKG = os.path.join(HERE, "sgl_kernel_npu")
 
 # Submodules 0.5.18 imports (from `grep "from sgl_kernel\.[a-z_]* import"`).
 SUBMODULES = [
@@ -122,6 +131,103 @@ def __getattr__(name):
 '''
 
 
+def _write_tree(path, pkgname, version, subpkgs, modules, prefix=""):
+    """Write a stub package: init (docstring + __version__ + _Dummy +
+    module-level __getattr__), a version submodule, empty subpackage inits and
+    leaf modules that re-export the parent's module-level __getattr__."""
+    os.makedirs(path, exist_ok=True)
+
+    init = (
+        f'"""FlagOS zero-{pkgname} shim for sglang 0.5.18 (import face only)."""\n'
+        "\n"
+        f'__version__ = "{version}"\n'
+        "\n"
+        + DUMMY.replace("sgl_kernel-stub", pkgname + "-stub")
+        + "\n"
+    )
+    with open(os.path.join(path, "__init__.py"), "w") as f:
+        f.write(init)
+
+    with open(os.path.join(path, "version.py"), "w") as f:
+        f.write(
+            '"""Version submodule (import-face stub)."""\n'
+            "\n"
+            f'__version__ = "{version}"\n'
+        )
+
+    def reexport(dotted):
+        # Re-export the __getattr__ of the enclosing package — for a nested
+        # module that is sgl_kernel_npu.<subpkg>.<leaf>: the subpackage
+        # sgl_kernel_npu.<subpkg> (importing it loads its __init__ which
+        # re-exports the top-level __getattr__). For a bare module
+        # (sgl_kernel_npu.kvcacheio): the top-level package.
+        if "." in dotted:
+            parent = pkgname + "." + dotted.rsplit(".", 1)[0]
+        else:
+            parent = pkgname
+        return (
+            f'"""Stub submodule `{dotted}` (zero-{pkgname} route)."""\n'
+            "\n"
+            f"from {parent} import __getattr__  # noqa: F401\n"
+        )
+
+    # Subpackage inits re-export the top-level __getattr__, so a bare
+    # `import sgl_kernel_npu.norm` resolves to the real submodule and any
+    # attribute access falls through to a _Dummy.
+    for sub in subpkgs:
+        d = os.path.join(path, *sub.split("."))
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "__init__.py"), "w") as f:
+            f.write(
+                f'"""Stub package `{pkgname}.{sub}` (zero-{pkgname} route)."""\n'
+                "\n"
+                f"from {pkgname} import __getattr__  # noqa: F401\n"
+            )
+
+    # Leaf modules: the sglang sites bind symbols via
+    # `from sgl_kernel_npu.norm.split_qkv_rmsnorm_rope import <sym>`, so each
+    # leaf must be a real importable module. Its only content re-exports the
+    # parent __getattr__, exactly like the E2E-validated tree.
+    for mod in modules:
+        base, _, leaf = mod.rpartition(".")
+        d = os.path.join(path, *base.split(".")) if base else path
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, leaf + ".py"), "w") as f:
+            f.write(reexport(mod))
+
+    print(
+        f"generated {pkgname} shim package: {len(subpkgs)} subpackages, "
+        f"{len(modules)} modules in {path}"
+    )
+
+
+# sgl_kernel_npu module layout from the ascend E2E-validated stub tree
+# (48 leaf modules under 9 subpackages). Parent __init__s are implicit.
+NPU_SUBPKGS = [
+    "activation", "attention", "fla", "indexer", "kimi_k3",
+    "mamba", "mem_cache", "norm", "sample",
+]
+NPU_MODULES = [
+    "activation.situ", "activation.swiglu_oai", "activation.swiglu_oai_quant",
+    "activation.swiglu_quant", "attention.fia_blockq_attention",
+    "attention.gqa_share_sparse_attention", "attention.sinks_attention",
+    "fla.chunk", "fla.fused_gdn_gating", "fla.fused_sigmoid_gating_recurrent",
+    "fla.kda_chunk_delta_h", "fla.kda_gate", "fla.kda_prefill",
+    "fla.kda_target_verify", "fla.layernorm_gated", "fla.solve_tril",
+    "fla.utils", "indexer.flash_block_score_decode",
+    "indexer.flash_block_score_prefill", "kimi_k3.attn_residual",
+    "kvcacheio", "mamba.causal_conv1d", "mamba.causal_conv1d_verify",
+    "mamba.mamba_state_update_triton", "mamba.speculative_state_scatter",
+    "mem_cache.allocator", "mem_cache.kv_cache_store",
+    "norm.add_rmsnorm_bias", "norm.fused_rope_qk_mqa",
+    "norm.fused_split_qk_norm", "norm.l1_norm", "norm.rmsnorm_split",
+    "norm.rmsnorm_without_weight", "norm.scale_shift",
+    "norm.split_qkv_rmsnorm_rope",
+    "norm.split_qkv_rmsnorm_rope_pos_cache_half_npu",
+    "norm.split_qkv_tp_rmsnorm_rope", "sample.verify_tree_greedy",
+]
+
+
 def main() -> None:
     os.makedirs(PKG, exist_ok=True)
 
@@ -157,6 +263,11 @@ def main() -> None:
             f.write(body)
 
     print(f"generated sgl_kernel shim package: {len(SUBMODULES)} submodules in {PKG}")
+
+    _write_tree(
+        NPU_PKG, "sgl_kernel_npu", "0.5.18",
+        NPU_SUBPKGS, NPU_MODULES,
+    )
 
 
 if __name__ == "__main__":
