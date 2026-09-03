@@ -42,12 +42,15 @@ def _preload_plugin(command: list[str]) -> list[str]:
     """Run `python -m sglang.bench_one_batch` with the sglang_fl plugin loaded.
 
     bench_one_batch constructs ModelRunner directly and never triggers SGLang's
-    plugin discovery (unlike launch_server), so vendor support registered by
-    the plugin is missing in that interpreter — on Enflame GCU it dies with
-    "Not supported device type: gcu" (DeviceConfig SUPPORTED_DEVICES). Loading
-    the plugin in the same interpreter mirrors server-side behavior; on
-    platforms whose vendor ships no patch module it changes nothing, and a
-    preload failure degrades to the plain invocation instead of failing.
+    plugin discovery (unlike launch_server), so vendor support from the plugin
+    is missing in that interpreter — on Enflame GCU it dies at DeviceConfig
+    ("Not supported device type: gcu") and at the FlashAttention backend
+    (the vendor REPLACE hooks stay registered-but-unapplied because only
+    sglang.srt.plugins.load_plugins() calls HookRegistry.apply_hooks()).
+    Preload via the official load_plugins() entry — the exact flow launch_server
+    performs — so hooks are applied too; on platforms whose vendor ships no
+    patch module it changes nothing, and a preload failure degrades to the
+    plain invocation instead of failing.
     """
     if command[1:3] != ["-m", "sglang.bench_one_batch"]:
         return command
@@ -58,8 +61,8 @@ def _preload_plugin(command: list[str]) -> list[str]:
     wrapper = (
         "import sys, runpy\n"
         "try:\n"
-        "    import sglang_fl\n"
-        "    sglang_fl.load_plugin()\n"
+        "    from sglang.srt.plugins import load_plugins\n"
+        "    load_plugins()\n"
         "except Exception as exc:\n"
         "    print(f'sglang_fl preload skipped: {exc!r}', file=sys.stderr)\n"
         "runpy.run_module(sys.argv.pop(1), run_name='__main__')"
