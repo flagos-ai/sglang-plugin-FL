@@ -38,7 +38,37 @@ def to_cli_args(params: dict[str, Any], skip: set[str] | None = None) -> list[st
     return args
 
 
+def _preload_plugin(command: list[str]) -> list[str]:
+    """Run `python -m sglang.bench_one_batch` with the sglang_fl plugin loaded.
+
+    bench_one_batch constructs ModelRunner directly and never triggers SGLang's
+    plugin discovery (unlike launch_server), so vendor support registered by
+    the plugin is missing in that interpreter — on Enflame GCU it dies with
+    "Not supported device type: gcu" (DeviceConfig SUPPORTED_DEVICES). Loading
+    the plugin in the same interpreter mirrors server-side behavior; on
+    platforms whose vendor ships no patch module it changes nothing, and a
+    preload failure degrades to the plain invocation instead of failing.
+    """
+    if command[1:3] != ["-m", "sglang.bench_one_batch"]:
+        return command
+    try:
+        import sglang_fl  # noqa: F401
+    except ImportError:
+        return command
+    wrapper = (
+        "import sys, runpy\n"
+        "try:\n"
+        "    import sglang_fl\n"
+        "    sglang_fl.load_plugin()\n"
+        "except Exception as exc:\n"
+        "    print(f'sglang_fl preload skipped: {exc!r}', file=sys.stderr)\n"
+        "runpy.run_module(sys.argv.pop(1), run_name='__main__')"
+    )
+    return [command[0], "-c", wrapper] + command[2:]
+
+
 def run_command(command: list[str], timeout: int | None = None) -> subprocess.CompletedProcess[str]:
+    command = _preload_plugin(command)
     print("[benchmark] Command:", " ".join(command))
     
     env = os.environ.copy()
