@@ -88,6 +88,14 @@ def register_builtins(registry) -> None:
             vendor=None,
             priority=BackendPriority.REFERENCE,
         ),
+        OpImpl(
+            op_name="fused_moe",
+            impl_id="reference.torch",
+            kind=BackendImplKind.REFERENCE,
+            fn=_bind_is_available(backend.fused_moe, is_avail),
+            vendor=None,
+            priority=BackendPriority.REFERENCE,
+        ),
     ]
 
     registry.register_many(impls)
