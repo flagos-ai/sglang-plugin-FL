@@ -78,6 +78,10 @@ engine_overrides:
 # with no growth-related failure.
 env_defaults:
   SGLANG_FL_FLAGOS_BLACKLIST: "_unique2"
+  # GitHub container jobs override HOME with an empty /github/home, while the
+  # validated image's precompiled Triton cache is under /root. Reuse it so
+  # large-model warmup does not cold-compile every GCU kernel.
+  TRITON_CACHE_DIR: "/root/.triton/cache"
   FLAGCX_PATH: "/sgl-workspace/FlagCX"
   SGLANG_FL_DIST_BACKEND: "flagcx"
   # Keep the large Qwen3.6 E2E cases as smoke tests. GCU's first eager request
