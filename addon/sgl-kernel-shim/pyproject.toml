@@ -3,9 +3,9 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "sgl_kernel"
-version = "0.5.18+flagos-shim"
-description = "FlagOS zero-sgl-kernel shim for sglang 0.5.18 (import face only, no native ops)"
+name = "sgl-kernel-shim"
+version = "0.5.18"
+description = "FlagOS zero-sgl-kernel import-face shim for sglang 0.5.18 (stub only, no native ops)"
 requires-python = ">=3.10"
 
 [tool.setuptools]

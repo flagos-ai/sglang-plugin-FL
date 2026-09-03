@@ -14,6 +14,11 @@
 # limitations under the License.
 
 # Build the sgl_kernel import-face shim wheel (py3-none-any, zero deps).
+# Distribution name is sgl-kernel-shim — the -shim suffix signals it is the
+# import-face stub, not the upstream sgl-kernel (whose pip name it would
+# otherwise shadow); the module it ships stays sgl_kernel, the name sglang
+# imports. Version = the sglang version it stubs (0.5.18), clean of any
+# +local label.
 # Usage: build.sh [OUTDIR]   (default: ./dist under the shim source dir)
 #
 # generate.py stamps the sgl_kernel/ package next to itself, so the build
@@ -39,9 +44,9 @@ echo ">>> building pure-Python wheel"
 mkdir -p "${out}"
 "${py}" -m pip wheel "${work}/src" --no-deps -w "${out}"
 
-wheel="$(ls -t "${out}"/sgl_kernel-*.whl 2>/dev/null | head -1)"
+wheel="$(ls -t "${out}"/sgl_kernel_shim-*.whl 2>/dev/null | head -1)"
 if [ -z "$wheel" ]; then
-  echo "ERROR: no sgl_kernel wheel produced" >&2
+  echo "ERROR: no sgl_kernel_shim wheel produced" >&2
   exit 1
 fi
 case "$wheel" in

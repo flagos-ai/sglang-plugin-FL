@@ -128,7 +128,7 @@ def main() -> None:
     init = (
         '"""FlagOS zero-sgl-kernel shim for sglang 0.5.18 (import face only)."""\n'
         "\n"
-        '__version__ = "0.5.18+flagos-shim"\n'
+        '__version__ = "0.5.18"\n'
         "\n"
         + DUMMY
         + "\n"
@@ -140,7 +140,7 @@ def main() -> None:
         '"""Version submodule — `sglang/kernels/aot/python/sgl_kernel/__init__.py`\n'
         'does `from sgl_kernel.version import __version__`.\n'
         '"""\n'
-        '\n__version__ = "0.5.18+flagos-shim"\n'
+        '\n__version__ = "0.5.18"\n'
     )
     with open(os.path.join(PKG, "version.py"), "w") as f:
         f.write(version_py)
