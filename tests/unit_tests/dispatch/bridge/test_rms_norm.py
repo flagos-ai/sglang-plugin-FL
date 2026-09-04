@@ -67,3 +67,22 @@ def test_rms_norm_bridge_uses_post_residual_when_residual_is_none(monkeypatch) -
 
     assert result is post
     assert calls == [(("rms_norm", obj, x, post), {})]
+
+
+def test_rms_norm_bridge_accepts_quant_linear_hint(monkeypatch) -> None:
+    obj = SimpleNamespace()
+    quant_linear = SimpleNamespace()
+    x = torch.randn(2, 4)
+    expected = torch.randn(2, 4)
+    calls = []
+
+    def fake_call_op(*args, **kwargs):
+        calls.append((args, kwargs))
+        return expected
+
+    monkeypatch.setattr(bridge, "call_op", fake_call_op)
+
+    result = bridge.rms_norm_bridge(obj, x, quant_linear=quant_linear)
+
+    assert result is expected
+    assert calls == [(("rms_norm", obj, x, None), {})]

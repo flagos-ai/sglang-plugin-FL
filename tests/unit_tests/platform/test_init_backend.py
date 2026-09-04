@@ -19,6 +19,11 @@ import logging
 
 import pytest
 
+# Platform classes are loaded by SGLang after its platform package is ready.
+# Preserve that production import order and skip this integration-facing test
+# module in lightweight environments where SGLang is not installed.
+pytest.importorskip("sglang")
+
 from sglang_fl.platform import PlatformFL
 
 

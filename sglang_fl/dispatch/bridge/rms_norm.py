@@ -15,7 +15,9 @@
 # Bridge: RMSNorm
 #
 # SGLang signature:
-#   forward_cuda(self, x, residual=None, post_residual_addition=None)
+#   forward_cuda(
+#       self, x, residual=None, post_residual_addition=None, quant_linear=None
+#   )
 #     -> Tensor | tuple[Tensor, Tensor]
 #
 # Dispatch signature:
@@ -38,11 +40,19 @@ def rms_norm_bridge(
     x: torch.Tensor,
     residual: Optional[torch.Tensor] = None,
     post_residual_addition: Optional[torch.Tensor] = None,
+    quant_linear: Optional[torch.nn.Module] = None,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """SGLang RMSNorm forward → dispatch call_op("rms_norm", ...).
 
     Handles SGLang-specific parameters before delegating to dispatch.
+
+    ``quant_linear`` was added to SGLang's RMSNorm call contract in 0.5.18.
+    It is an optional CUDA-only FP8 fusion hint. The FL implementations keep
+    RMSNorm and activation quantization as separate operations, so accepting
+    (but not forwarding) the hint preserves the unfused fallback contract.
     """
+    del quant_linear
+
     # Handle post_residual_addition: merge into residual
     if post_residual_addition is not None and residual is not None:
         residual = residual + post_residual_addition
