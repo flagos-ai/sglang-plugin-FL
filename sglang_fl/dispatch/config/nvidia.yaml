@@ -14,3 +14,13 @@
 
 # SGLang-FL Dispatch Configuration for NVIDIA GPU
 prefer: flagos
+
+# FlagGems master currently does not match the PyTorch/SGLang 0.5.18
+# contracts for these operators:
+#   - slice: weight loading passes an explicit start/end without step.
+#   - masked_scatter_: Qwen3.5/3.6 text-only requests use an empty
+#     multimodal placeholder that must remain a valid no-op.
+# Keep the rest of the ATen replacement layer enabled.
+flagos_blacklist:
+  - slice
+  - masked_scatter_
