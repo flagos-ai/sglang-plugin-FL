@@ -80,11 +80,14 @@ Triton 3.6 兼容编译器；已验证的 FlagGems master 快照可以在 H100 �
 |------|-----|------|
 | Qwen2.5-0.5B-Instruct | tp=1 | 等待 v0.5.18 复测 |
 | Qwen2.5-14B-Instruct | tp=8 | 等待 v0.5.18 复测 |
-| Qwen3.6-27B | tp=1 | 等待 v0.5.18 复测 |
-| Qwen3.6-35B-A3B | tp=1 | 等待 v0.5.18 复测 |
+| Qwen3.6-27B | tp=2 | 已在 H100 + v0.5.18 验证 |
+| Qwen3.6-35B-A3B | tp=2 | 已在 H100 + v0.5.18 验证 |
 
-H100 算子与 CUDA Graph 冒烟已经通过；模型服务和 TP 验证仍需等待空闲 GPU
-及合适的模型权重。
+v0.5.18 H100 验证保持 FlagGems ATen 替换和融合算子 dispatch 同时开启。
+Qwen3.6-27B 已通过普通/流式对话、强制 128-token decode 和四并发请求；
+Qwen3.6-35B-A3B 已通过普通对话、强制 128-token decode 和四并发请求。
+两次 TP=2 测试均启用了 decode CUDA Graph。Qwen2.5 权重未存放在共享模型目录，
+因此仍等待复测。
 
 ## 快速开始
 

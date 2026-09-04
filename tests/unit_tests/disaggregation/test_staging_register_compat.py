@@ -1,5 +1,9 @@
 import struct
 
+import pytest
+
+pytest.importorskip("sglang")
+
 from sglang_fl.disaggregation.conn import KVArgsRegisterInfo
 
 

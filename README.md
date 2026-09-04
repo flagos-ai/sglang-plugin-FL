@@ -63,12 +63,16 @@ for the compatibility details.
 
 | Model | TP | Status |
 |-------|-----|--------|
-| Qwen3.6-27B (Hybrid Attention + FLA + MoE) | tp=1 | v0.5.18 rerun pending |
-| Qwen3.6-35B-A3B (MoE, 256 experts) | tp=1 | v0.5.18 rerun pending |
+| Qwen3.6-27B (Hybrid Attention + FLA) | tp=2 | Verified on H100 with v0.5.18 |
+| Qwen3.6-35B-A3B (MoE, 256 experts) | tp=2 | Verified on H100 with v0.5.18 |
 | Qwen2.5-14B-Instruct | tp=8 | v0.5.18 rerun pending |
 
-The H100 operator and CUDA Graph smokes have passed. Model-serving and TP
-validation still require idle GPUs and suitable model weights.
+The v0.5.18 H100 validation kept both FlagGems ATen replacement and fused-op
+dispatch enabled. Qwen3.6-27B passed normal and streaming chat, forced 128-token
+decode, and four concurrent requests. Qwen3.6-35B-A3B passed normal chat,
+forced 128-token decode, and four concurrent requests. Decode CUDA Graph was
+enabled in both TP=2 runs. The Qwen2.5 rerun remains pending because its weights
+were not available in the shared model directory.
 
 ## Quick Start
 

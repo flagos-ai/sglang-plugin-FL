@@ -108,6 +108,24 @@ NVIDIA CUDA → Moore Threads MUSA → Huawei Ascend；三套环境不会同时�
   参考实现 `allclose=True`，该次冒烟最大绝对误差为 0。
 - Layer 4：补齐 v0.5.18 staging 类型兼容后，FlagCX PD backend 注册成功；尚未
   运行真实双实例 KV 传输。
-- 尚未运行单卡服务、TP 多卡和 FlagCX 真实传输：8 张 GPU 当时均已有约 62–66GB 显存
-  占用，共享目录也没有可在剩余显存内安全加载的小模型；应在获得空闲卡或小模型
-  权重后继续。
+- 该阶段尚未运行单卡服务、TP 多卡和 FlagCX 真实传输：8 张 GPU 当时均已有约
+  62–66GB 显存占用，共享目录也没有可在剩余显存内安全加载的小模型。
+
+## H100 模型推理复测（2026-09-04）
+
+- 最终测试使用插件默认 NVIDIA 配置，Layer 1 FlagGems 与 Layer 2 融合算子
+  dispatch 均开启；未通过环境变量关闭功能。仅对 FlagGems `slice` 和
+  `masked_scatter_` 使用 NVIDIA 配置中的定向原生回退。
+- `Qwen3.6-27B` TP=2：NCCL、权重/KV/Mamba cache、两 rank decode CUDA Graph
+  均初始化成功；普通对话、SSE 流式对话、强制 128-token decode 和四并发请求
+  全部通过。128-token 功能测试中观测到约 38.6 token/s。
+- `Qwen3.6-35B-A3B` TP=2：MoE 权重和两 rank decode CUDA Graph 初始化成功；
+  普通对话、强制 128-token decode 和四并发请求全部通过。128-token 功能测试中
+  观测到约 142.3 token/s。
+- 实测命中 `gemma_rms_norm`、`chunk_gated_delta_rule`、packed decode FLA、
+  `silu_and_mul` 和 `fused_moe` 路径。FlagGems `topk` 在当前 MoE shape 上不兼容，
+  非 strict 调度按设计回退到 `vendor.cuda`，不影响正确性。
+- Triton 3.6 尚无该 H100 MoE shape 的调优配置，SGLang 使用默认 kernel 配置；
+  上述吞吐仅为共享机器上的功能性观测，不作为正式性能基准。
+- Qwen2.5 权重只存在于旧容器可写层，没有复制到共享模型目录，因此本轮未复测。
+  FlagCX 真实双实例 KV 传输仍需单独验证。

@@ -1,4 +1,4 @@
-ARG SGLANG_BASE_IMAGE=swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/lmsysorg/sglang:v0.5.18-runtime
+ARG SGLANG_BASE_IMAGE=lmsysorg/sglang:v0.5.18-runtime
 FROM ${SGLANG_BASE_IMAGE} AS runtime
 
 ARG FLAGTREE_VERSION=0.6.2a1
