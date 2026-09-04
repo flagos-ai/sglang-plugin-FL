@@ -52,12 +52,10 @@ This table is the current **NVIDIA CUDA** target. The MUSA and Ascend images
 remain pinned to SGLang v0.5.12 and v0.5.11 respectively until their dedicated
 upgrade passes are completed.
 
-The CUDA container removes the Triton package installed with PyTorch and uses
-FlagTree 0.6.2a1 as its Triton 3.6-compatible compiler. The verified FlagGems
-master snapshot handles `to_copy` on H100. The build only adds the missing DSA
-package marker when producing the FlagGems wheel; see
-[`docs/sglang-0.5.11-to-0.5.18-upgrade.md`](docs/sglang-0.5.11-to-0.5.18-upgrade.md)
-for the compatibility details.
+The validated H100 environment removes the Triton package installed with
+PyTorch and uses FlagTree 0.6.2a1 as its Triton 3.6-compatible compiler. The
+verified FlagGems master snapshot handles `to_copy` on H100. CUDA container
+integration for this dependency stack is intentionally deferred.
 
 ## Model Validation Status
 
@@ -78,17 +76,12 @@ were not available in the shared model directory.
 
 ### Option A: Standard Install (NVIDIA CUDA)
 
-1. Build the validated NVIDIA CUDA dependency environment. This layers
-   FlagTree 0.6.2a1 and the verified FlagGems master snapshot on the official
-   SGLang v0.5.18 runtime; NVIDIA communication continues to use NCCL:
+1. Prepare an SGLang v0.5.18 NVIDIA environment with the dependency versions
+   listed above. The official `lmsysorg/sglang:v0.5.18-runtime` image is a
+   suitable starting point; NVIDIA communication continues to use NCCL. The
+   repository's CUDA containerfile has not yet been upgraded to this stack.
 
-```bash
-docker build --target runtime -f docker/cuda/containerfile \
-  -t sglang-fl:v0.5.18-cuda .
-```
-
-2. For source development inside an environment that already contains the
-   compatible dependencies, install only the plugin itself:
+2. Install the plugin itself without replacing the validated dependencies:
 
 ```bash
 git clone https://github.com/flagos-ai/sglang-plugin-FL

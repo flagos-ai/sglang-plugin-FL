@@ -67,10 +67,9 @@ SGLang 的推理引擎依赖 NVIDIA 专有组件：flashinfer 用于 attention�
 上表是当前 **NVIDIA CUDA** 目标环境。MUSA 与 Ascend 镜像暂时分别固定在
 SGLang v0.5.12 和 v0.5.11，等待各自的专项升级。
 
-CUDA 容器会卸载随 PyTorch 安装的 Triton 包，改用 FlagTree 0.6.2a1 提供
-Triton 3.6 兼容编译器；已验证的 FlagGems master 快照可以在 H100 上接管
-`to_copy`。构建 FlagGems wheel 时只补充缺失的 DSA package marker；兼容细节见
-[`docs/sglang-0.5.11-to-0.5.18-upgrade.md`](docs/sglang-0.5.11-to-0.5.18-upgrade.md)。
+已验证的 H100 环境会卸载随 PyTorch 安装的 Triton 包，改用 FlagTree 0.6.2a1
+提供 Triton 3.6 兼容编译器；已验证的 FlagGems master 快照可以在 H100 上接管
+`to_copy`。该依赖栈的 CUDA 容器集成暂缓处理。
 
 ## 模型验证状态
 
@@ -93,16 +92,11 @@ Qwen3.6-35B-A3B 已通过普通对话、强制 128-token decode 和四并发请�
 
 ### 方式 A：标准安装（NVIDIA CUDA）
 
-1. 构建已验证的 NVIDIA CUDA 依赖环境：在官方 SGLang v0.5.18 runtime 上
-   叠加 FlagTree 0.6.2a1 与已验证的 FlagGems master 快照；NVIDIA 通信继续
-   使用 NCCL：
+1. 按上表准备 SGLang v0.5.18 NVIDIA 环境，可从官方
+   `lmsysorg/sglang:v0.5.18-runtime` 镜像开始配置；NVIDIA 通信继续使用 NCCL。
+   仓库中的 CUDA containerfile 尚未升级到该依赖栈。
 
-```bash
-docker build --target runtime -f docker/cuda/containerfile \
-  -t sglang-fl:v0.5.18-cuda .
-```
-
-2. 如果开发环境已经包含兼容依赖，仅以源码方式安装本插件：
+2. 安装本插件，并保留已验证的依赖版本：
 
 ```bash
 git clone https://github.com/flagos-ai/sglang-plugin-FL
