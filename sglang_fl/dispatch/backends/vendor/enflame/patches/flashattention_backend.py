@@ -54,19 +54,19 @@ def __init__(
     self.decode_cuda_graph_metadata = {}
     self.target_verify_metadata = {}
     self.req_to_token = model_runner.req_to_token_pool.req_to_token
+    self.req_to_token_pool = model_runner.req_to_token_pool
     self.kv_cache_dtype = model_runner.kv_cache_dtype
     self.kv_cache_dtype_str = model_runner.server_args.kv_cache_dtype
     self.page_size = model_runner.page_size
     self.use_mla = model_runner.model_config.attention_arch == AttentionArch.MLA
     self.skip_prefill = skip_prefill
-    self.attn_cp_size = model_runner.attn_cp_size
+    self.attn_cp_size = getattr(model_runner, "attn_cp_size", 1)
 
+    self.token_to_kv_pool = model_runner.token_to_kv_pool
     self.use_sliding_window_kv_pool = (
         isinstance(model_runner.token_to_kv_pool, SWAKVPool)
         and model_runner.token_to_kv_pool.swa_layer_nums > 0
     )
-    if self.use_sliding_window_kv_pool:
-        self.token_to_kv_pool = model_runner.token_to_kv_pool
 
     self.topk = model_runner.server_args.speculative_eagle_topk or 0
     self.speculative_num_steps = speculative_num_steps
@@ -118,10 +118,10 @@ def __init__(
     self.head_dim = model_runner.model_config.head_dim
     self.num_attention_heads = (
         model_runner.model_config.hf_text_config.num_attention_heads
-        // model_runner.tp_size
+        // model_runner.server_args.tp_size
     )
     self.num_kv_heads = model_runner.model_config.get_num_kv_heads(
-        model_runner.tp_size
+        model_runner.server_args.tp_size
     )
     _softcapping = getattr(
         model_runner.model_config.hf_text_config, "attn_logit_softcapping", None
@@ -146,6 +146,27 @@ def __init__(
     # skip KV cache write and use flash_attn_varlen_func with raw K/V
     # instead of flash_attn_with_kvcache, bypassing paged KV cache entirely.
     server_args = model_runner.server_args
+    # 0.5.18 stock-class contract: the metadata/forward methods that this
+    # rewrite does NOT replace (init_forward_metadata etc.) read these attrs.
+    # This tree was ported from a newer sglang whose __init__ dropped them.
+    self.is_prefill_aware_swa = False
+    self._unified_dense = False
+    self._unified_hooks = None
+    self._verify_mask = None
+    self._decode_uses_static_max_seqlen_k = False
+    self._disable_scheduler_metadata_precompute = False
+    self._get_fa_runtime_policy = None
+    self.decode_num_splits = 0
+    self.full_cg_prefill_metadata = None
+    self.is_draft_runner = False
+    self.max_num_pages = 0
+    self._pa_swa_prefill_lens = None
+    self._pa_swa_max_prefill_len = None
+    self.strided_indices = None
+    self.needs_cpu_seq_lens = False
+    self._sched_meta_buf = None
+    self.model_runner = model_runner
+
     self.fa_skip_kv_cache = (
         server_args.is_embedding
         and server_args.chunked_prefill_size == -1
@@ -208,11 +229,11 @@ def forward_extend(
                 else forward_batch.encoder_out_cache_loc
             )
             if not self.use_mla:
-                forward_batch.token_to_kv_pool.set_kv_buffer(
+                self.token_to_kv_pool.set_kv_buffer(
                     layer, cache_loc, k, v, layer.k_scale, layer.v_scale
                 )
             else:
-                forward_batch.token_to_kv_pool.set_mla_kv_buffer(
+                self.token_to_kv_pool.set_mla_kv_buffer(
                     layer,
                     cache_loc,
                     k,
@@ -313,7 +334,7 @@ def forward_extend(
     # Use Flash Attention for prefill
     if not self.use_mla:
         # Do multi-head attention
-        key_cache, value_cache = forward_batch.token_to_kv_pool.get_kv_buffer(
+        key_cache, value_cache = self.token_to_kv_pool.get_kv_buffer(
             layer.layer_id
         )
 
@@ -551,7 +572,7 @@ def forward_extend(
         else:
             assert self.fa_impl_ver == 3, "Only FA3 support here"
             # Do absorbed multi-latent attention
-            kv_cache = forward_batch.token_to_kv_pool.get_key_buffer(
+            kv_cache = self.token_to_kv_pool.get_key_buffer(
                 layer.layer_id
             ).to(q.dtype)
             k_rope = kv_cache[:, :, layer.v_head_dim :]
@@ -651,11 +672,11 @@ def forward_decode(
                 else forward_batch.encoder_out_cache_loc
             )
             if not self.use_mla:
-                forward_batch.token_to_kv_pool.set_kv_buffer(
+                self.token_to_kv_pool.set_kv_buffer(
                     layer, cache_loc, k, v, layer.k_scale, layer.v_scale
                 )
             else:
-                forward_batch.token_to_kv_pool.set_mla_kv_buffer(
+                self.token_to_kv_pool.set_mla_kv_buffer(
                     layer,
                     cache_loc,
                     k,
@@ -714,7 +735,7 @@ def forward_decode(
     if not self.use_mla:
         # Do multi-head attention
 
-        key_cache, value_cache = forward_batch.token_to_kv_pool.get_kv_buffer(
+        key_cache, value_cache = self.token_to_kv_pool.get_kv_buffer(
             layer.layer_id
         )
         key_cache = key_cache.view(
@@ -875,7 +896,7 @@ def forward_decode(
                 o = result
     else:
         # Do absorbed multi-latent attention
-        kv_cache = forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id).to(
+        kv_cache = self.token_to_kv_pool.get_key_buffer(layer.layer_id).to(
             q.dtype
         )
         k_rope = kv_cache[:, :, layer.v_head_dim :]
