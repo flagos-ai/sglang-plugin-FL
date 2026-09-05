@@ -243,11 +243,70 @@ def _patch_fp32_tp_all_reduce() -> None:
     logger.info("MUSA FP32 TP all-reduce patches applied")
 
 
+def _patch_device_support() -> None:
+    """Teach sglang.srt.utils.common to recognise torch_musa (no torchada)."""
+    try:
+        from sglang_fl.dispatch.backends.vendor.mthreads.patches import (
+            patch_device_support,
+        )
+
+        patch_device_support()
+    except Exception as e:
+        logger.warning("MUSA device-support patch skipped: %s", e)
+
+
+def _patch_flash_attn_interface() -> None:
+    """Let MUSA-gated flash_attn_interface import sites survive when the
+    package is absent (vision.py / musa fa3 backend)."""
+    try:
+        from sglang_fl.dispatch.backends.vendor.mthreads.patches import (
+            patch_flash_attn_interface,
+        )
+
+        patch_flash_attn_interface()
+    except Exception as e:
+        logger.warning("MUSA flash_attn_interface guard skipped: %s", e)
+
+
+def _patch_attention_backend_default() -> None:
+    """Default mthreads attention backend to torch_native, not fa3.
+
+    PlatformFL's shared ``_ATTN_BACKEND_MAP`` routes mthreads to ``fa3``, but
+    the flagos mthreads runtime ships no Moore Threads flash-attention-v3
+    interface wheel, so the fa3 backend calls the stub's
+    ``flash_attn_varlen_func`` and raises NotImplementedError on the first
+    forward.  Cambricon (also PrivateUse1, no flash-attn wheel) is absent from
+    the map and falls through to torch_native (PyTorch SDPA) — mthreads should
+    behave the same.  The shared map stays untouched so an explicit
+    ``--attention-backend fa3`` (a deliberate user choice) still resolves to
+    fa3; only the value filled when the user did not pick a backend is
+    rewritten.
+    """
+    try:
+        from sglang_fl.platform import PlatformFL
+
+        orig = PlatformFL.get_default_attention_backend
+
+        @wraps(orig)
+        def get_default_attention_backend_musa(self):
+            backend = orig(self)
+            if getattr(self, "_vendor_name", None) == "mthreads" and backend == "fa3":
+                return "torch_native"
+            return backend
+
+        PlatformFL.get_default_attention_backend = get_default_attention_backend_musa
+    except Exception as e:
+        logger.warning("MUSA attention-backend default patch skipped: %s", e)
+
+
 def apply_musa_patches() -> None:
     global _patches_applied
     if _patches_applied:
         return
 
+    _patch_flash_attn_interface()
+    _patch_attention_backend_default()
+    _patch_device_support()
     _patch_pp_send_recv_order()
     _patch_pp_launch_batch_add_sync()
     _patch_multimodal_mask()
