@@ -74,6 +74,22 @@ def _patch_cuda_capability_facade() -> None:
     torch.cuda.get_device_capability = _mlu_device_capability
 
 
+def _gqa_repeat_kv_heads(x, rep):
+    # Repeat each KV head rep times consecutively ([..., nkv, S, D] ->
+    # [..., nkv*rep, S, D]). Only view ops plus one contiguous copy, so it
+    # never depends on input shape. repeat_interleave would route through
+    # flag_gems, whose per-shape triton kernel recompiles on every decode step
+    # as the KV length grows (measured on neuware4.4.3: 0.04 tok/s).
+    if rep == 1:
+        return x
+    head = x.dim() - 3
+    return (
+        x.unsqueeze(head + 1)
+        .expand(*x.shape[: head + 1], rep, *x.shape[head + 1 :])
+        .reshape(*x.shape[:head], x.shape[head] * rep, *x.shape[head + 1 :])
+    )
+
+
 def _patch_sdpa_gqa_fallback() -> None:
     import torch
     import torch.nn.functional as _F
@@ -87,8 +103,8 @@ def _patch_sdpa_gqa_fallback() -> None:
                 nkv = key.shape[-3]
                 if nkv != nq:
                     rep = nq // nkv
-                    key = key.repeat_interleave(rep, -3)
-                    value = value.repeat_interleave(rep, -3)
+                    key = _gqa_repeat_kv_heads(key, rep)
+                    value = _gqa_repeat_kv_heads(value, rep)
                 kwargs["enable_gqa"] = False
         return _orig(query, key, value, *args, **kwargs)
 
