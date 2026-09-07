@@ -223,7 +223,6 @@ def _make_engine():
         tp_size=TP_SIZE,
         mem_fraction_static=0.6 if _is_txda else 0.85,
         disable_cuda_graph=True,
-        disable_piecewise_cuda_graph=True,
         **_extra_engine_kwargs,
     )
 

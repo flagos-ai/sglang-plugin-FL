@@ -20,7 +20,12 @@ prefer: flagos
 #   - slice: weight loading passes an explicit start/end without step.
 #   - masked_scatter_: Qwen3.5/3.6 text-only requests use an empty
 #     multimodal placeholder that must remain a valid no-op.
+#   - index_put_/_index_put_impl_: SGLang clears Mamba cache slots with
+#     scalar indexed assignment; FlagGems materializes a multi-GiB broadcast
+#     tensor and can OOM under concurrent hybrid-model inference.
 # Keep the rest of the ATen replacement layer enabled.
 flagos_blacklist:
   - slice
   - masked_scatter_
+  - index_put_
+  - _index_put_impl_

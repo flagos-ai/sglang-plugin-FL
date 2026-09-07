@@ -575,16 +575,59 @@ def _apply_vendor_patches() -> None:
 # ─── Communicator AROUND hooks ────────────────────────────────────────────────
 
 
+def _fl_communicator_is_active(comm, input_=None) -> bool:
+    """Return whether a GroupCoordinator hook should use ``comm``.
+
+    CommunicatorFL exposes ``is_active`` so its torch.distributed fallback does
+    not bypass SGLang's native collective selection.  Communicators supplied by
+    existing vendor patches may not expose that marker; keep their historical
+    enabled/disabled behavior.  Active CommunicatorFL instances only handle
+    tensors on their accelerator device; CPU and cross-device inputs must stay
+    on SGLang's native c10d/SHM path.
+    """
+    if comm is None or getattr(comm, "disabled", False):
+        return False
+
+    is_active = getattr(comm, "is_active", None)
+    if is_active is None:
+        return True
+    if callable(is_active):
+        is_active = is_active()
+    if not is_active or input_ is None:
+        return bool(is_active)
+
+    comm_device = getattr(comm, "device", None)
+    if comm_device is None:
+        return False
+    comm_device = torch.device(comm_device)
+    tensors = input_ if isinstance(input_, (list, tuple)) else (input_,)
+    if not tensors:
+        return False
+
+    for tensor in tensors:
+        tensor_device = getattr(tensor, "device", None)
+        if tensor_device is None:
+            return False
+        tensor_device = torch.device(tensor_device)
+        if tensor_device.type != comm_device.type:
+            return False
+        if comm_device.index is not None and tensor_device.index != comm_device.index:
+            return False
+    return True
+
+
 def _setup_communicator_hooks():
     """Register AROUND hooks on GroupCoordinator to inject CommunicatorFL.
 
-    Auto-activates when the Platform Plugin is OOT. The CommunicatorFL
-    transparently routes through FlagCX (if available) or torch.distributed.
+    Auto-activates when the Platform Plugin is OOT. An active FlagCX backend
+    routes through CommunicatorFL; otherwise hooks preserve SGLang's native
+    collective selection.
 
     Hooks (12 total):
       - __init__: inject self.fl_communicator, suppress PyNccl when FlagCX active
       - all_reduce, _reduce_scatter_tensor, _all_gather_into_tensor,
-        reduce_scatterv, all_gatherv, send, recv, broadcast: delegate to fl_communicator
+        reduce_scatterv, all_gatherv, send, recv, broadcast: delegate to an active
+        fl_communicator
       - broadcast_tensor_dict, send_tensor_dict, recv_tensor_dict:
         full method intercept for FlagCX coverage on composite operations
     """
@@ -628,7 +671,7 @@ def _setup_communicator_hooks():
 
     def _all_reduce_hook(original_fn, self, input_):
         comm = getattr(self, "fl_communicator", None)
-        if comm is not None and not comm.disabled:
+        if _fl_communicator_is_active(comm, input_):
             return comm.all_reduce(input_)
         return original_fn(self, input_)
 
@@ -636,7 +679,7 @@ def _setup_communicator_hooks():
 
     def _reduce_scatter_tensor_hook(original_fn, self, output, input_):
         comm = getattr(self, "fl_communicator", None)
-        if comm is not None and not comm.disabled:
+        if _fl_communicator_is_active(comm, input_):
             comm.reduce_scatter(output, input_)
             return
         return original_fn(self, output, input_)
@@ -645,7 +688,7 @@ def _setup_communicator_hooks():
 
     def _all_gather_into_tensor_hook(original_fn, self, output, input_):
         comm = getattr(self, "fl_communicator", None)
-        if comm is not None and not comm.disabled:
+        if _fl_communicator_is_active(comm, input_):
             comm.all_gather(output, input_)
             return
         return original_fn(self, output, input_)
@@ -654,23 +697,25 @@ def _setup_communicator_hooks():
 
     def _reduce_scatterv_hook(original_fn, self, input_, output=None, sizes=None):
         comm = getattr(self, "fl_communicator", None)
-        if comm is not None and not comm.disabled:
+        if _fl_communicator_is_active(comm, input_):
             return comm.reduce_scatterv(input_, output=output, sizes=sizes)
         return original_fn(self, input_, output=output, sizes=sizes)
 
     # ── all_gatherv hook ──
 
-    def _all_gatherv_hook(original_fn, self, input_, sizes=None):
+    def _all_gatherv_hook(original_fn, self, input_, sizes=None, output=None):
         comm = getattr(self, "fl_communicator", None)
-        if comm is not None and not comm.disabled:
+        if _fl_communicator_is_active(comm, input_) and output is None:
             return comm.all_gatherv(input_, sizes=sizes)
+        if output is not None:
+            return original_fn(self, input_, sizes=sizes, output=output)
         return original_fn(self, input_, sizes=sizes)
 
     # ── send hook ──
 
     def _send_hook(original_fn, self, tensor, dst=None):
         comm = getattr(self, "fl_communicator", None)
-        if comm is not None and not comm.disabled:
+        if _fl_communicator_is_active(comm, tensor):
             if dst is None:
                 dst = (self.rank_in_group + 1) % self.world_size
             comm.send(tensor, dst)
@@ -681,7 +726,7 @@ def _setup_communicator_hooks():
 
     def _recv_hook(original_fn, self, size, dtype, src=None):
         comm = getattr(self, "fl_communicator", None)
-        if comm is not None and not comm.disabled:
+        if _fl_communicator_is_active(comm):
             if src is None:
                 src = (self.rank_in_group - 1) % self.world_size
             tensor = torch.empty(size, dtype=dtype, device=self.device)
@@ -693,7 +738,7 @@ def _setup_communicator_hooks():
 
     def _broadcast_hook(original_fn, self, input_, src=0):
         comm = getattr(self, "fl_communicator", None)
-        if comm is not None and not comm.disabled:
+        if _fl_communicator_is_active(comm, input_):
             return comm.broadcast(input_, src)
         return original_fn(self, input_, src)
 
@@ -703,7 +748,7 @@ def _setup_communicator_hooks():
         original_fn, self, tensor_dict=None, src=0, group=None, metadata_group=None
     ):
         comm = getattr(self, "fl_communicator", None)
-        if comm is not None and not comm.disabled:
+        if _fl_communicator_is_active(comm):
             if not torch.distributed.is_initialized() or self.world_size == 1:
                 return tensor_dict
             return comm.broadcast_tensor_dict(
@@ -731,7 +776,7 @@ def _setup_communicator_hooks():
         async_send=False,
     ):
         comm = getattr(self, "fl_communicator", None)
-        if comm is not None and not comm.disabled:
+        if _fl_communicator_is_active(comm):
             if self.world_size == 1:
                 return tensor_dict
             if dst is None:
@@ -759,7 +804,7 @@ def _setup_communicator_hooks():
         all_gather_group=None,
     ):
         comm = getattr(self, "fl_communicator", None)
-        if comm is not None and not comm.disabled:
+        if _fl_communicator_is_active(comm):
             if not torch.distributed.is_initialized() or self.world_size == 1:
                 return None
             if src is None:

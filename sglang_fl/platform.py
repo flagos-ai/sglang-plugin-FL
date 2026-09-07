@@ -150,6 +150,16 @@ class PlatformFL(SRTPlatform):
             return "eager"
         return "inductor"
 
+    def get_piecewise_backend_cls(self) -> type:
+        """Return SGLang's CUDA piecewise compiler for NVIDIA only."""
+        if self._vendor_name == "nvidia" and self._device_type == "cuda":
+            from sglang.srt.compilation.cuda_piecewise_backend import (
+                CUDAPiecewiseBackend,
+            )
+
+            return CUDAPiecewiseBackend
+        return super().get_piecewise_backend_cls()
+
     # ------------------------------------------------------------------
     # Active methods (called by SGLang core)
     # ------------------------------------------------------------------
@@ -204,6 +214,15 @@ class PlatformFL(SRTPlatform):
         return self._info.torch_device_fn.mem_get_info(device_id)
 
     def get_torch_distributed_backend_str(self) -> str:
+        """Return the c10d backend used to bootstrap SGLang process groups.
+
+        FlagCX is injected later through ``CommunicatorFL`` hooks; it is not a
+        torch.distributed backend registered with c10d.  Keep the FlagCX
+        selection in ``_dist_backend`` while bootstrapping with the existing
+        per-vendor native backend.
+        """
+        if self._dist_backend == "flagcx":
+            return _DIST_BACKEND_MAP.get(self._vendor_name, "nccl")
         return self._dist_backend
 
     def get_communicator_class(self) -> type | None:
@@ -316,7 +335,7 @@ class PlatformFL(SRTPlatform):
         return self._device_type in ("cuda", "npu", "musa", "gcu")
 
     def support_piecewise_cuda_graph(self) -> bool:
-        return self._device_type == "cuda"
+        return self._vendor_name == "nvidia" and self._device_type == "cuda"
 
     def is_pin_memory_available(self, device=None) -> bool:
         if device is not None and str(device) == "cpu":
