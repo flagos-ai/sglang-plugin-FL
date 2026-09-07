@@ -28,6 +28,11 @@ prefer: flagos
 # conv1d was already in main's list (it stays); it is needed because the flag_gems
 # triton conv1d/conv2d autotuner crashes (aicore exception) on Qwen3.6-35B-A3B
 # causal_conv1d shapes.
+# pow_scalar: flag_gems 5.3.5 ascend pow.py guards the fp32/fp16/bf16 branches
+# with chained `or` constexprs; the flagtree 0.6.0+ascend3.2 frontend rejects
+# that AST, so serve dies compiling the kernel on the first scalar-exponent
+# pow during Qwen3 weight load (torch.__rpow__). cann8.5.0 only (flagtree 0.6.1
+# upstream fixed it); fallback to torch_npu pow is lossless.
 flagos_blacklist:
   - full_like
   - index_copy_
@@ -44,6 +49,7 @@ flagos_blacklist:
   - floor_divide
   - true_divide_
   - addmm
+  - pow_scalar
 
 # OOT dispatch blacklist (sglang op CLASS names, not ATen op names): none needed.
 # MRotaryEmbedding was listed pre-verification but confirmed UNNECESSARY: with
