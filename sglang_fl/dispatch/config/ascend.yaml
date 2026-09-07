@@ -33,6 +33,17 @@ prefer: flagos
 # that AST, so serve dies compiling the kernel on the first scalar-exponent
 # pow during Qwen3 weight load (torch.__rpow__). cann8.5.0 only (flagtree 0.6.1
 # upstream fixed it); fallback to torch_npu pow is lossless.
+# pow_tensor_scalar / pow_tensor_scalar_ / pow_tensor_tensor / pow_tensor_tensor_:
+# the same chained-`or` fp32/fp16/bf16 jit bodies, surfaced under the other four
+# aten pow dispatch names — forward RMSNorm reaches pow_tensor_scalar via
+# layernorm x_var.pow(2). One flag_gems source, four registrar names; fall back
+# to torch_npu pow (lossless) as a single family.
+# lift_fresh: flag_gems ops/lift_fresh.py dispatches into torch.empty_like, whose
+# flagtree-ascend launch dies as `_copy_kernel` coreDim=0 EE1003 (async — the
+# "current working operator name is _copy_kernel" is this in-flight launch, not
+# the `ones` call that triggered it); blocking serve additionally hits a GIL
+# fatal via torch.get_default_device in rotary_embedding under torch dispatch.
+# Fall back to torch_npu (no-op op).
 flagos_blacklist:
   - full_like
   - index_copy_
@@ -50,6 +61,11 @@ flagos_blacklist:
   - true_divide_
   - addmm
   - pow_scalar
+  - pow_tensor_scalar
+  - pow_tensor_scalar_
+  - pow_tensor_tensor
+  - pow_tensor_tensor_
+  - lift_fresh
 
 # OOT dispatch blacklist (sglang op CLASS names, not ATen op names): none needed.
 # MRotaryEmbedding was listed pre-verification but confirmed UNNECESSARY: with
