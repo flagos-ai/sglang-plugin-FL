@@ -1,0 +1,286 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# SGLang-FL Dispatch Configuration for Cambricon (MLU) platform.
+
+prefer: flagos
+
+# Exclusion semantics: flag_gems.enable(unused=...) drops a registered impl
+# iff the impl fn __name__ is listed (GeneralOpRegistrar.config_filter keeps
+# a config item iff item[1].__name__ is absent). A family is therefore only
+# excluded by naming every registered member (out-of-place, in-place _,
+# *_scalar, *_tensor, *_out ...), and impl fns with a leading underscore are
+# invisible to any family-prefix sweep. The entries below are the empirically
+# converged set for neuware4.4.3 (flag_gems 5.3.5, runtime triton
+# 3.2.0+mlu1.7.2); each is a real registered impl fn in that version. All are
+# correct and healthy via the vendor/stock path once excluded.
+#
+# cumsum: flag_gems' cumsum miscompiles on MLU (empirically wrong results);
+# routed to vendor/stock. Excluded via the plugin config path because the
+# vendor patch module loads at load_plugin step 5, after the flag_gems
+# blacklist is already read (step 1).
+#
+# true_divide, pow_scalar, pow_tensor_scalar, sub, silu, clamp, to_copy,
+# copy_, reciprocal, scalar_tensor, fill_scalar_, mul, cos, sin, add:
+# neuware4.4.3's flag_gems pointwise kernels (cambricon _cambricon and
+# generic alike) launch with task_type="block" or fail to compile under
+# triton 3.2.0+mlu1.7.2 (KeyError / 'aten::copy_' KeyError / scalar-store
+# CompilationError / fill-store CompilationError / mul-store).
+#
+# The extended families below were converged under real decode traffic on
+# neuware4.4.3: pointwise in-place/tensor siblings of the above, compare
+# (gt/ge/lt/le/eq/ne), bitwise, repr/logging triggers (isfinite/isinf/isnan/
+# isneginf/isposinf/logical), index/masked writes (index_put/index_select/
+# masked_fill/masked_scatter), and sampling-chain compounds (sort/gather/
+# multinomial/softmax/topk/argmax/log/where/searchsorted). Their kernels
+# share the same compile-failure class under that triton, or would produce
+# wrong results at decode scale.
+#
+# The two underscore entries are the serve-scale crash fix: flag_gems'
+# index_put kernel sizes its grid to batch*vocab and exceeds the MLU hardware
+# grid limit 65535 at decode scale (Qwen3-4B, vocab 152064) ->
+# "OutOfResources: grid size, Required: ..." from _index_put_impl_ on the
+# sampler's top-k masked setitem (sglang sampler.py:583). Probe-scale passes
+# (4x16) were a false green (grid stayed under the limit); _index_put_impl_
+# and _unsafe_masked_index_put_accumulate lead with underscores, so a
+# family-prefix sweep never matched them. Routed to vendor/stock.
+#
+# neuware4.7.2's runtime triton 3.4.0+mlu accepts task_type and compiles
+# these kernels, so there the exclusions only keep the ops on the vendor path
+# that already yields correct output -- no behavioral difference (verified by
+# the 4.7.2 sampling smoke, 3/3).
+flagos_blacklist:
+  - cumsum
+  - true_divide
+  - pow_scalar
+  - pow_tensor_scalar
+  - sub
+  - silu
+  - clamp
+  - to_copy
+  - copy_
+  - reciprocal
+  - scalar_tensor
+  - fill_scalar_
+  - mul
+  - cos
+  - sin
+  - add
+  - _index_put_impl_
+  - _unsafe_masked_index_put_accumulate
+  - add_
+  - add_rms_norm
+  - addbmm
+  - addbmm_
+  - addcdiv
+  - addcdiv_
+  - addcdiv_out
+  - addcmul
+  - addcmul_
+  - addcmul_out
+  - addmm
+  - addmm_
+  - addmm_dtype
+  - addmm_dtype_out
+  - addmm_out
+  - addmv
+  - addmv_
+  - addmv_out
+  - addr
+  - addr_
+  - argmax
+  - bitwise_and_scalar
+  - bitwise_and_scalar_
+  - bitwise_and_scalar_tensor
+  - bitwise_and_tensor
+  - bitwise_and_tensor_
+  - bitwise_left_shift
+  - bitwise_left_shift_
+  - bitwise_not
+  - bitwise_not_
+  - bitwise_or_scalar
+  - bitwise_or_scalar_
+  - bitwise_or_scalar_tensor
+  - bitwise_or_tensor
+  - bitwise_or_tensor_
+  - bitwise_right_shift
+  - bitwise_right_shift_
+  - bitwise_xor_scalar
+  - bitwise_xor_scalar_
+  - bitwise_xor_scalar_tensor
+  - bitwise_xor_tensor
+  - bitwise_xor_tensor_
+  - clamp_
+  - clamp_max
+  - clamp_max_
+  - clamp_min
+  - clamp_min_
+  - clamp_tensor
+  - clamp_tensor_
+  - copysign
+  - copysign_
+  - copysign_out
+  - cos_
+  - cosh
+  - cosh_
+  - cosh_out
+  - cumsum_
+  - cumsum_out
+  - div_mode
+  - div_mode_
+  - divide
+  - eq
+  - eq_
+  - eq_scalar
+  - eq_scalar_
+  - equal
+  - fill_scalar
+  - fill_scalar_out
+  - gather
+  - gather_backward
+  - gather_block_quantized
+  - ge
+  - ge_scalar
+  - gelu
+  - gelu_
+  - gelu_backward
+  - geometric
+  - geometric_
+  - gt
+  - gt_scalar
+  - gt_scalar_
+  - gt_tensor_
+  - index_put
+  - index_put_
+  - index_select
+  - index_select_backward
+  - isfinite
+  - isinf
+  - isnan
+  - isneginf
+  - isneginf_out
+  - isposinf
+  - le
+  - le_
+  - le_scalar
+  - le_scalar_
+  - leaky_relu
+  - leaky_relu_
+  - leaky_relu_backward
+  - leaky_relu_out
+  - lerp_scalar
+  - lerp_scalar_
+  - lerp_tensor
+  - lerp_tensor_
+  - less_
+  - less_equal
+  - less_equal_
+  - less_equal_scalar
+  - less_equal_scalar_
+  - less_scalar_
+  - log
+  - log_
+  - log_normal_
+  - log_sigmoid
+  - log_sigmoid_backward
+  - log_sigmoid_backward_out
+  - log_sigmoid_forward
+  - log_softmax
+  - log_softmax_backward
+  - log_softmax_backward_out
+  - log_softmax_out
+  - log10
+  - log10_
+  - log10_out
+  - log1p
+  - log1p_
+  - log1p_out
+  - log2
+  - log2_
+  - logaddexp
+  - logaddexp_out
+  - logaddexp2
+  - logaddexp2_out
+  - logcumsumexp
+  - logcumsumexp_out
+  - logical_and
+  - logical_and_
+  - logical_not
+  - logical_not_
+  - logical_or
+  - logical_or_
+  - logical_xor
+  - logical_xor_
+  - logit
+  - logit_
+  - logit_backward
+  - logit_out
+  - logspace
+  - logsumexp
+  - lt
+  - lt_
+  - lt_scalar
+  - lt_scalar_
+  - masked_fill
+  - masked_fill_
+  - masked_scatter
+  - masked_scatter_
+  - masked_scatter_backward
+  - mul_
+  - multinomial
+  - multiply
+  - multiply_
+  - ne
+  - ne_
+  - ne_scalar
+  - ne_scalar_
+  - neg
+  - neg_
+  - negative
+  - negative_
+  - new_full
+  - new_ones
+  - nextafter
+  - nextafter_
+  - pow_tensor_scalar_
+  - pow_tensor_tensor
+  - pow_tensor_tensor_
+  - reciprocal_
+  - searchsorted
+  - searchsorted_out
+  - searchsorted_scalar
+  - searchsorted_scalar_out
+  - silu_
+  - silu_backward
+  - sin_
+  - sinc
+  - sinc_
+  - sinh
+  - sinh_
+  - softmax
+  - softmax_backward
+  - softmax_backward_out
+  - softmax_out
+  - sort
+  - sort_stable
+  - sub_
+  - subtract
+  - subtract_
+  - topk
+  - true_divide_
+  - true_divide_out
+  - true_divide_tensor
+  - true_divide_tensor_
+  - where_self
+  - where_self_out

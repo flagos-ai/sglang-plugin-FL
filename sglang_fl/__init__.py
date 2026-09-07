@@ -436,6 +436,33 @@ def _setup_flaggems(config: dict = None):
 # ─── Vendor-specific sglang patches ───────────────────────────────────────────
 
 
+def _apply_early_vendor_shims() -> None:
+    """Import vendor/<vendor_name>/shim.py to apply earliest-per-process facade
+    repairs (e.g. cambricon torch_mlu CUDA-migration gaps). Unlike patch.py,
+    the shim is reachable from activate_platform() — before sglang imports the
+    quantization → fp8_kernel → deep_gemm_wrapper → pynccl_allocator and
+    dsa/utils → breakable_cuda_graph chains — so the facade is in place before
+    those modules first access torch.cuda.memory / torch.Stream. The shim module
+    applies itself on import (module-body side effect); ImportError means the
+    vendor has no shim and is skipped.
+    """
+    import importlib
+
+    from sglang_fl.utils import get_device_info
+
+    info = get_device_info()
+    if info is None:
+        logger.warning("early vendor shim skipped: DeviceDetector unavailable")
+        return
+
+    module = f"sglang_fl.dispatch.backends.vendor.{info.vendor_name}.shim"
+    try:
+        importlib.import_module(module)
+        logger.info("early vendor shim loaded: %s", module)
+    except ImportError:
+        logger.debug("early vendor shim absent: %s", module)
+
+
 def _apply_vendor_patches() -> None:
     """Import vendor/<vendor_name>/patch.py to apply vendor monkey-patches
     on sglang internals. Called last in load_plugin(), after every sglang_fl
@@ -709,6 +736,12 @@ def activate_platform() -> str | None:
 
     Returns the fully-qualified class path of PlatformFL if hardware is detected,
     or None if FlagGems DeviceDetector fails (no supported hardware).
+
+    For cambricon, applies the early vendor shim here — the earliest per-process
+    hook (main + every spawned child) — before sglang imports the quantization →
+    fp8_kernel → deep_gemm_wrapper → pynccl_allocator and dsa/utils →
+    breakable_cuda_graph chains, so the torch_mlu CUDA-migration facade is
+    repaired before those modules first access torch.cuda.memory / torch.Stream.
     """
     from sglang_fl.utils import get_device_info
 
@@ -721,6 +754,8 @@ def activate_platform() -> str | None:
         info.vendor_name,
         info.device_type,
     )
+    if info.vendor_name == "cambricon":
+        _apply_early_vendor_shims()
     return "sglang_fl.platform:PlatformFL"
 
 
@@ -762,6 +797,9 @@ def load_plugin():
 
     # 1. FlagGems ATen ops
     _setup_flaggems(config)
+
+    # 1.5. Early vendor shim — safety net for the activate_platform hook above
+    _apply_early_vendor_shims()
 
     # 2. Initialize dispatch system (OpManager + backends + policy)
     _init_dispatch(config)
