@@ -50,7 +50,7 @@ def get_platform_name() -> str:
     Detect the current hardware platform.
 
     Returns:
-        Platform name string: 'ascend', 'musa', 'iluvatar', 'nvidia', or 'unknown'
+        Platform name string: 'ascend', 'musa', 'metax', 'iluvatar', 'nvidia', or 'unknown'
     """
     try:
         import torch
@@ -64,6 +64,12 @@ def get_platform_name() -> str:
             return "gcu"
         if hasattr(torch, "corex") and torch.cuda.is_available():
             return "iluvatar"
+        # MetaX torch is a CUDA alias (torch.cuda.is_available() is True and
+        # torch.version.cuda is a fixed "11.6"), so it must be told apart from
+        # NVIDIA by the vendor tag in the wheel local version, e.g.
+        # "2.8.0+metax3.7.2.0", before the generic CUDA fallback.
+        if "metax" in torch.__version__.lower():
+            return "metax"
         if torch.cuda.is_available():
             return "nvidia"
     except ImportError:

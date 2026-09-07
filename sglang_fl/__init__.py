@@ -438,10 +438,12 @@ def _setup_flaggems(config: dict = None):
 
 def _apply_vendor_patches() -> None:
     """Import vendor/<vendor_name>/patch.py to apply vendor monkey-patches
-    on sglang internals. Called last in load_plugin(), after every sglang_fl
-    layer (FlagGems ATen, dispatch system, AROUND hooks, communicator).
-    Resolves vendor_name via FlagGems' DeviceDetector — no PlatformFL needed,
-    so this still runs before sglang's model_runner is imported. Silently
+    on sglang internals. Called first in load_plugin(), before any sglang
+    internal is imported: the AROUND-hook install below pulls in
+    sglang.srt.layers.*, and on a CUDA-alias vendor (metax) that import
+    chain crashes on flashinfer-only symbols unless the guards are already
+    in place. Resolves vendor_name via FlagGems' DeviceDetector — no
+    PlatformFL needed, so it also runs before PlatformFL init. Silently
     skips when the vendor module is absent or hardware is unrecognised.
     """
     import importlib
@@ -760,13 +762,19 @@ def load_plugin():
     # 0. Build unified config (YAML + env vars)
     config = _build_config()
 
-    # 1. FlagGems ATen ops
+    # 1. Vendor-specific patches — must precede any sglang.srt.layers import:
+    #    the dispatch-hook install below imports the quantization chain, which
+    #    on a CUDA-alias vendor (metax) crashes on flashinfer-only symbols
+    #    unless the vendor guards already preset them to None.
+    _apply_vendor_patches()
+
+    # 2. FlagGems ATen ops
     _setup_flaggems(config)
 
-    # 2. Initialize dispatch system (OpManager + backends + policy)
+    # 3. Initialize dispatch system (OpManager + backends + policy)
     _init_dispatch(config)
 
-    # 3. Install dispatch AROUND hook (bridge layer → dispatch.call_op)
+    # 4. Install dispatch AROUND hook (bridge layer → dispatch.call_op)
     oot_enabled = _parse_bool(
         os.environ.get("SGLANG_FL_OOT_ENABLED", "1"), default=True
     )
@@ -789,11 +797,8 @@ def load_plugin():
     else:
         logger.info("Layer 2 (Fused Ops) disabled (SGLANG_FL_OOT_ENABLED=0)")
 
-    # 4. Communicator hooks (CommunicatorFL with FlagCX/torch.distributed)
+    # 5. Communicator hooks (CommunicatorFL with FlagCX/torch.distributed)
     _setup_communicator_hooks()
-
-    # 5. Vendor-specific patches — final overlay on top of all sglang_fl layers
-    _apply_vendor_patches()
 
     # 6. FlagCX PD-disaggregation transfer backend. the FlagCX connector itself is
     #    imported lazily, when the user actually selects this backend.
