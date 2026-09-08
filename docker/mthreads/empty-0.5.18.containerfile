@@ -8,13 +8,29 @@ ENV PATH=/root/.virtualenvs/sglang-0.5.6/bin:${PATH}
 ENV SGLANG_BUILD_RUST_EXTS=none
 ENV TORCH_COMPILE_DISABLE=1
 ENV FLAGCX_PATH=/sgl-workspace/FlagCX
+ENV PYTHONPATH=/opt/FlagGems/src
+
+ARG FLAGTREE_VERSION=0.6.2a3+mthreads3.6
+ARG FLAGGEMS_COMMIT=01433e8304d78ef6c16ce76fe68e51e16c0b4d66
+# The archive has no Git metadata; this is a local snapshot version, not a release.
+ARG FLAGGEMS_SNAPSHOT_VERSION=5.4.0.dev20260908+g01433e830
+RUN python -m pip uninstall -y triton flagtree && \
+    python -m pip install --no-deps "flagtree==${FLAGTREE_VERSION}" \
+        --index-url https://resource.flagos.net/repository/flagos-pypi-hosted/simple && \
+    mkdir -p /opt/FlagGems && \
+    curl -fL "https://codeload.github.com/flagos-ai/FlagGems/tar.gz/${FLAGGEMS_COMMIT}" \
+        -o /tmp/flaggems.tar.gz && \
+    tar -xzf /tmp/flaggems.tar.gz --strip-components=1 -C /opt/FlagGems && \
+    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_FLAG_GEMS=${FLAGGEMS_SNAPSHOT_VERSION} \
+        python -m pip install --no-deps -e /opt/FlagGems && \
+    python -m pip install 'packaging>=26.0' PyYAML==6.0.1 sqlalchemy==2.0.48
 
 ARG SGLANG_VERSION=v0.5.18
 RUN git clone --depth 1 --branch ${SGLANG_VERSION} \
         https://github.com/sgl-project/sglang.git /opt/sglang-0.5.18 && \
     cd /opt/sglang-0.5.18/python && \
     cp pyproject_other.toml pyproject.toml && \
-    printf 'torch==2.9.0\ntorch_musa==2.9.0\ntriton==3.2.0\n' > /tmp/musa-constraints.txt && \
+    printf 'torch==2.9.0\ntorch_musa==2.9.0\n' > /tmp/musa-constraints.txt && \
     python -m pip install -c /tmp/musa-constraints.txt '.[srt_empty]' && \
     python -m pip install --no-deps xgrammar==0.2.1 compressed-tensors==0.15.0
 
