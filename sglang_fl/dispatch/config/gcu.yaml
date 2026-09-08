@@ -1,2 +1,24 @@
 # SGLang-FL Dispatch Configuration for GCU platform
 prefer: vendor
+
+# FlagGems tag: v5.4.0.dev0 (flagrelease base image, tag 202608141853).
+#
+# nonzero + nonzero_numpy (verified 2026-09-08 on s60): the sampler's
+# index_put_ -> flag_gems nonzero -> cumsum chain cold-compiles Triton
+# kernels per vocab shape — minutes of autotune per kernel, 15-20 min for
+# the first sampled request of any new shape (Qwen3-4B TP2). Routing nonzero
+# to the torch_gcu native implementation skips the compile entirely: the
+# full 4b_tp2 serving smoke went from ~15-20 min to a 261 s total pass,
+# assertions included, with 35b/27b serving and concurrent regression green.
+# torch.unique (_unique2) is NOT blacklisted: FlagGems' kernel is broken on
+# GCU (triton_gcu PassManager failure), but no production sglang path calls
+# torch.unique — only debug-mode allocator asserts and a paged free()
+# branch these flows do not exercise (verified 2026-09-09: serving 4b and
+# concurrent 35b/27b all pass without the _unique2 blacklist entry).
+# isin is deliberately NOT blacklisted: torch_gcu's native isin(Long, Long)
+# aborts in TOPS ATen, while the FlagGems implementation completes the
+# Qwen3.6 multimodal mask on this image.
+# Override per-run with env SGLANG_FL_FLAGOS_BLACKLIST if needed.
+flagos_blacklist:
+  - nonzero
+  - nonzero_numpy
