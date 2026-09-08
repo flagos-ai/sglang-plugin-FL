@@ -62,8 +62,11 @@ def test_non_nvidia_piecewise_backend_remains_unsupported(
 
 
 def test_non_cuda_upgrade_targets_keep_legacy_oot_key() -> None:
-    assert _platform("mthreads", "musa").get_dispatch_key_name() == "oot"
     assert _platform("ascend", "npu").get_dispatch_key_name() == "oot"
+
+
+def test_mthreads_uses_musa_fused_op_fallback_key() -> None:
+    assert _platform("mthreads", "musa").get_dispatch_key_name() == "musa"
 
 
 def test_pin_memory_signature_accepts_device() -> None:
