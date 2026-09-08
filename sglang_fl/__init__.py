@@ -69,6 +69,14 @@ if not logger.handlers:
     logger.addHandler(_handler)
     logger.setLevel(logging.INFO)
 
+# Seed sys.modules with inert aiter stand-ins before load_plugin() pulls in
+# sglang's quantization chain: on HIP platforms without an aiter wheel the
+# Quark/compressed-tensors scheme modules import aiter unconditionally at
+# module level and would crash the plugin load (see _aiter_stubs).
+from sglang_fl._aiter_stubs import install_aiter_stubs_if_needed  # noqa: E402
+
+install_aiter_stubs_if_needed()
+
 
 def _is_rank0() -> bool:
     """Return True if this is the main process (rank 0) — safe to call at any stage."""
