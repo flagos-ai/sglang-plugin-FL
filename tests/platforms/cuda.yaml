@@ -51,8 +51,15 @@ unsupported_features: []
 env_defaults:
   CUDA_DEVICE_MAX_CONNECTIONS: "1"
   NCCL_ALGO: "Ring"
-  # flag-gems 5.0.0 count_nonzero bug with 3D tensors (fixed in dev, pending 5.0.1).
-  SGLANG_FL_FLAGOS_BLACKLIST: "count_nonzero,mm"
+  USE_FLAGGEMS: "1"
+  # FlagTree's cost-model mode needs the optional `flagtune` dependency set and
+  # a remotely resolved model package. NVIDIA validation uses FlagGems' default
+  # configs instead, matching the documented multi-node examples and keeping CI
+  # independent of that optional service.
+  USE_FLAGTUNE: "0"
+  # Do not set SGLANG_FL_FLAGOS_BLACKLIST here. The versioned NVIDIA safety
+  # defaults live in sglang_fl/dispatch/config/nvidia.yaml; an environment
+  # override would replace that complete list instead of extending it.
 
 # ---- Device-specific test configurations ------------------------------------
 a100:

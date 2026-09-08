@@ -4,6 +4,7 @@ throughput:
     case: 06b_tp1
     parameters:
       dataset_name: random
+      dataset_path: tests/benchmarks/data/sharegpt_smoke.json
       random_input_len: 32
       random_output_len: 1
       num_prompts: 4
@@ -39,6 +40,7 @@ serve:
       model: smoke-model
       backend: sglang-oai-chat
       dataset_name: random
+      dataset_path: tests/benchmarks/data/sharegpt_smoke.json
       random_input_len: 32
       random_output_len: 4
       num_prompts: 5

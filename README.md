@@ -54,8 +54,10 @@ upgrade passes are completed.
 
 The validated H100 environment removes the Triton package installed with
 PyTorch and uses FlagTree 0.6.2a1 as its Triton 3.6-compatible compiler. The
-verified FlagGems master snapshot handles `to_copy` on H100. CUDA container
-integration for this dependency stack is intentionally deferred.
+verified FlagGems master snapshot handles `to_copy` on H100. The CUDA
+containerfile reproduces this pinned dependency stack from the official SGLang
+v0.5.18 runtime image. FlagCX is not installed in that image because NVIDIA
+uses SGLang's native NCCL path by default.
 
 ## Model Validation Status
 
@@ -76,10 +78,29 @@ were not available in the shared model directory.
 
 ### Option A: Standard Install (NVIDIA CUDA)
 
-1. Prepare an SGLang v0.5.18 NVIDIA environment with the dependency versions
-   listed above. The official `lmsysorg/sglang:v0.5.18-runtime` image is a
-   suitable starting point; NVIDIA communication continues to use NCCL. The
-   repository's CUDA containerfile has not yet been upgraded to this stack.
+1. Build the CUDA image, or prepare an equivalent SGLang v0.5.18 NVIDIA
+   environment with the dependency versions listed above. The base image can
+   be overridden with `--build-arg SGLANG_BASE_IMAGE=<mirror>` when Docker Hub
+   is not reachable:
+
+```bash
+docker buildx build --load \
+    -f docker/cuda/containerfile \
+    -t sglang-plugin-fl:cuda-sglang0.5.18-ci \
+    .
+```
+
+   On build hosts that require a GitHub proxy, pass it as a BuildKit secret
+   rather than recording credentials in an image layer:
+
+```bash
+export GIT_PROXY=http://proxy.example:3128
+docker buildx build --load \
+    --secret id=git_proxy,env=GIT_PROXY \
+    -f docker/cuda/containerfile \
+    -t sglang-plugin-fl:cuda-sglang0.5.18-ci \
+    .
+```
 
 2. Install the plugin itself without replacing the validated dependencies:
 
@@ -152,7 +173,10 @@ python -m sglang.launch_server \
 
 `SGLANG_FL_DENY_VENDORS` is a coverage-audit switch, not a default Empty-mode setting. For example, `SGLANG_FL_DENY_VENDORS=cuda` intentionally removes `vendor.cuda`. Operators that are not yet implemented by FlagOS or a genuine torch reference are then expected to report `No available implementation`. FLA and Fused MoE currently use the platform vendor backend until their FlagOS implementations are available and validated.
 
-**Why empty install?** In short, SGLang's default `pyproject.toml` hard-pins `torch==2.11.0`, `torchao`, `flashinfer`, etc., which conflicts with vendor-specific PyTorch. Empty install strips these out, letting each vendor bring their own torch.
+**Why empty install?** In short, SGLang's default `pyproject.toml` pulls in
+NVIDIA-oriented PyTorch and CUDA dependencies such as FlashInfer, which
+conflict with vendor-specific PyTorch builds. Empty install strips these out,
+letting each vendor bring its own torch runtime.
 
 ### Download Models
 

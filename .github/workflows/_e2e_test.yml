@@ -81,8 +81,8 @@ jobs:
         run: bash .github/scripts/${{ inputs.platform }}/setup.sh
 
       - name: Run E2E tests
-        # SGLANG_FL_FLAGOS_BLACKLIST is set per-platform in tests/platforms/<platform>.yaml (env_defaults),
-        # so e2e/benchmark inherit the right op blacklist per arch (cuda: count_nonzero; ascend: see ascend.yaml).
+        # Operator safety defaults normally come from the plugin's vendor YAML.
+        # A test platform may intentionally replace them through env_defaults.
         run: |
           python tests/run.py \
             --platform ${{ inputs.platform }} \

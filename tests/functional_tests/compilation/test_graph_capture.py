@@ -62,6 +62,11 @@ def _platform_for(device_type: str):
 
     platform = PlatformFL.__new__(PlatformFL)
     platform._device_type = device_type
+    platform._vendor_name = {
+        "cuda": "nvidia",
+        "npu": "ascend",
+        "musa": "mthreads",
+    }.get(device_type, device_type)
     return platform
 
 
