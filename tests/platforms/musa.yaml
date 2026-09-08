@@ -70,8 +70,10 @@ unsupported_features: []
 # all-reduce) hangs; blacklisting it falls back to torch_musa's native sort. TP1 is
 # unaffected (no inter-rank collective), as is greedy/argmax decode (no sort). Add more
 # ops here if other FlagGems ops misbehave on MUSA during bring-up.
+# FlagGems master 01433e830 also mishandles empty-index broadcast_tensors in
+# top-p sampling. Keep this exclusion when overriding the plugin's default list.
 env_defaults:
-  SGLANG_FL_FLAGOS_BLACKLIST: "mul,sort"
+  SGLANG_FL_FLAGOS_BLACKLIST: "mul,sort,broadcast_tensors"
 
 # ---- Device-specific test configurations ------------------------------------
 s5000:

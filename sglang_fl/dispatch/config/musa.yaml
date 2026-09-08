@@ -18,6 +18,9 @@ prefer: flagos
 # FlagGems tag:    v5.3.0
 # FlagGems commit: 98fae44cdf2898f39c7f24f080d7c88b83d7c593
 flagos_blacklist:
+  # FlagGems 01433e830 (2026-09-08) broadcasts empty indices to size 1,
+  # breaking PyTorch top-p sampling when the top-k mask selects no tokens.
+  - broadcast_tensors
   - count_nonzero
   - cumsum
   - mm
