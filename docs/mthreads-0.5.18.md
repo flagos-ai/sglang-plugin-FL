@@ -161,7 +161,8 @@ with FlagGems ATen replacement and FL fused-op dispatch enabled.
 | Qwen3.6-27B | 2 | Passed; also identified the image as `red` |
 | Qwen3.6-35B-A3B | 2 | Passed with vendor MoE; also identified the image as `red` |
 
-All 40 regression tests listed above passed in this updated environment.
+The initial updated-stack regression run passed 40 tests. Later checks for
+the example-driven fixes are reported below.
 Two-rank FlagCX FP32/BF16 all-reduce also passed, with the communicator
 explicitly checked to be active. The vendor MoE library reused its existing
 tuning configuration because a Triton 3.6-specific configuration was absent;
@@ -183,9 +184,11 @@ were present: red square, cat, stop sign and digit seven.
 | `qwen3_6_35b_a3b_offline_inference.py` | Two text prompts, four images | Passed, exit 0 |
 | `qwen3_6_27b_concurrent.py` | `--mode all`, default 16 text requests, VL and mixed modes | Passed, exit 0, after rerunning a container-interrupted attempt |
 | `qwen3_6_35b_a3b_concurrent.py` | `--mode all`, default 16 text requests, VL and mixed modes | Passed, exit 0 |
-| `qwen3_6_27b_mtp_inference.py` | MTP plus baseline comparison, no skipped baseline | Interrupted during graph capture; rerun pending, no MTP pass claimed |
-| `qwen3_6_27b_multinode.py` | TP2/PP2 and TP4/PP1, text/VL and 32/8 concurrency | PP attempt exposed the scheduler rank API change; fixed, hardware rerun still pending after worker container stopped. TP run pending |
-| `qwen3_6_35b_a3b_multinode.py` | TP2/PP2 and TP4/PP1, text/VL and 32/8 concurrency | Pending |
+| `qwen3_6_27b_mtp_inference.py` | TP2, MTP plus baseline comparison, no skipped baseline | Eager and corrected graph run with `--disable-overlap-schedule`: each exit 0, 14 passed, 0 failed, 1 warning (9/12 exact baseline match). Default overlap+graph mode hit a 300-second watchdog timeout |
+| `qwen3_6_27b_multinode.py` | TP2/PP2, text/VL and 32/8 concurrency | Scheduler rank API failure fixed; hardware rerun blocked by worker container stops |
+| `qwen3_6_27b_multinode.py` | TP4/PP1, text/VL and 32/8 concurrency | Not yet run |
+| `qwen3_6_35b_a3b_multinode.py` | TP2/PP2, text/VL and 32/8 concurrency | Not yet run |
+| `qwen3_6_35b_a3b_multinode.py` | TP4/PP1, text/VL and 32/8 concurrency | Not yet run |
 
 The boolean-slice change passed a 42-test regression run and two-rank
 FP32/BF16 FlagCX checks. Four additional PP compatibility tests passed,
@@ -194,6 +197,99 @@ Several completed engine scripts printed multiprocessing resource-tracker
 cleanup warnings after their assertions passed; these are retained in logs.
 Container stops returned 137 with Docker `OOMKilled=false`; interrupted runs
 have no successful script result and are not counted as passes.
+The latest worker retry on `moer_15` was stopped approximately three seconds
+after starting, at 18:05 CST. Its waiting master was then cleaned up by this
+task. Cross-node validation requires a continuous execution window on both
+hosts.
+
+The MTP graph failure occurred after capture completed. Both scheduler ranks
+remained in `process_batch_result_decode` at `result.copy_done.synchronize()`;
+the scheduler logged `watchdog_timeout=300`. This is a failed graph test,
+separate from the container-interrupted attempt. The example now exposes
+`--disable-overlap-schedule` for applying the same scheduling mode to MTP and
+baseline. With this option, all MTP prompts and the long generation completed;
+the subsequent baseline exposed a cache assertion requiring `page_size=1`.
+The MUSA baseline now uses that page size, consistent with the offline
+examples. The full corrected run passed the script's checks with one
+exact-match warning: 14 passed, 0 failed, 1 warning, exit 0. Both MTP and
+baseline captured and replayed decode graphs, completed all 12 prompts and
+generated 512 tokens in their throughput phases. Acceptance was `2.9792`;
+exact outputs matched for 9/12 prompts (75%). Graphs remain enabled by
+default, and the validation thresholds are unchanged. Use
+`--disable-overlap-schedule` for the validated MUSA graph configuration;
+overlap plus MTP graphs remains a known failure on this stack.
+
+The full eager MTP run retained the default 12 prompts, 256-token prompt
+limit, 512-token throughput generation and baseline phase. Acceptance was
+`2.9346`, above the script's `2.0` threshold. Exact greedy outputs matched
+baseline for 9/12 prompts (75%), so the script reported one warning while
+its 14 other checks passed. The mismatches concerned gravity, states of
+matter and the creative prompt; their cause has not been established.
+This run preceded the baseline page-size correction above. Its measured
+throughput is a diagnostic result, not a controlled performance benchmark.
+
+Full logs and the per-attempt manifest are retained under
+`/datapool/codex-musa-0518/examples-all/`; cross-node logs are under
+`/datapool/codex-musa-0518/cross-node/`. Each retry uses a separate log or
+result directory; an old exit-code file is not evidence for a later run.
+The completed MTP logs are `dense-mtp-eager.log` and
+`dense-mtp-graph-fixed.log`; both corresponding `.exit` files contain `0`.
+
+### Reproduce the original examples
+
+Use the inference environment and dispatch configuration above. From the
+plugin checkout, select two free GPUs, set `TP_SIZE=2`, and require all images
+before running either model's offline and concurrent scripts:
+
+```bash
+export MUSA_VISIBLE_DEVICES=0,1
+export MTHREADS_VISIBLE_DEVICES=0,1
+export TP_SIZE=2
+export IMAGE_DIR="$PWD/examples/test_images"
+for image in red_square.jpg cat.jpg digit_seven.png stop_sign.png; do
+  test -f "$IMAGE_DIR/$image" || exit 1
+done
+
+MODEL_PATH=/models/Qwen3.6-27B python examples/qwen3_6_27b_offline_inference.py
+MODEL_PATH=/models/Qwen3.6-27B python examples/qwen3_6_27b_concurrent.py --mode all
+MODEL_PATH=/models/Qwen3.6-35B-A3B python examples/qwen3_6_35b_a3b_offline_inference.py
+MODEL_PATH=/models/Qwen3.6-35B-A3B python examples/qwen3_6_35b_a3b_concurrent.py --mode all
+
+# Default graph configuration: observed watchdog failure, retained for reproduction.
+MODEL_PATH=/models/Qwen3.6-27B python examples/qwen3_6_27b_mtp_inference.py
+# Eager comparison: retains all prompts and baseline.
+MODEL_PATH=/models/Qwen3.6-27B python examples/qwen3_6_27b_mtp_inference.py \
+  --disable-cuda-graph --disable-piecewise-cuda-graph
+# Graph comparison without overlap, including the MUSA baseline page-size fix.
+MODEL_PATH=/models/Qwen3.6-27B python examples/qwen3_6_27b_mtp_inference.py \
+  --disable-overlap-schedule
+```
+
+For each multinode script, run matching commands in `tmux` on both hosts,
+using the same model path, ports and two visible GPUs per host. Set `ROLE`
+to `master` on the first host and `worker` on the second. Set `MASTER_ADDR`
+to the first host's reachable address. Set the Gloo, MCCL and FlagCX socket
+interfaces to the interface connecting the hosts (`bond0` in this setup).
+Run each configuration separately after the previous processes exit:
+
+```bash
+# Repeat with qwen3_6_35b_a3b_multinode.py and its MODEL_PATH.
+export MODEL_PATH=/models/Qwen3.6-27B
+python examples/qwen3_6_27b_multinode.py \
+  --role "$ROLE" --master-addr "$MASTER_ADDR" \
+  --tp 2 --pp 2 --port 31828 --dist-port 32828 --nccl-port 33828 \
+  --max-wait 1200 --request-timeout 600
+
+python examples/qwen3_6_27b_multinode.py \
+  --role "$ROLE" --master-addr "$MASTER_ADDR" \
+  --tp 4 --pp 1 --port 31828 --dist-port 32828 --nccl-port 33828 \
+  --max-wait 1200 --request-timeout 600
+```
+
+Keep the default 16-way single-node concurrency, 32-way cross-node text
+concurrency, 8-way cross-node VL concurrency and MTP baseline comparison.
+Missing images, skipped cases or server-start failures do not establish
+complete example coverage.
 
 ## Initial baseline validation (2026-09-08)
 
