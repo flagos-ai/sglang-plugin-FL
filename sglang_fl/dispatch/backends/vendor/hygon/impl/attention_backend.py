@@ -24,13 +24,13 @@ from typing import TYPE_CHECKING, Optional
 
 import torch
 
-from sglang.srt.compilation.piecewise_context_manager import (
-    is_in_piecewise_cuda_graph,
+from sglang.srt.model_executor.runner_backend_utils.tc_piecewise_cuda_graph.context_manager import (
+    is_in_tc_piecewise_cuda_graph as is_in_piecewise_cuda_graph,
 )
 from sglang.srt.layers.attention.triton_backend import TritonAttnBackend
-from sglang.srt.layers.attention.utils import create_flashmla_kv_indices_triton
+from sglang.kernels.ops.attention.utils import create_flashmla_kv_indices_triton
 from sglang.srt.layers.radix_attention import AttentionType
-from sglang.srt.model_executor.breakable_cuda_graph.context import (
+from sglang.srt.model_executor.runner_backend_utils.breakable_cuda_graph.context import (
     is_in_breakable_cuda_graph,
 )
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
@@ -309,18 +309,42 @@ class HCUAttnBackend(TritonAttnBackend):
         controlled_config_errors = []
         if not getattr(server_args, "disable_radix_cache", False):
             controlled_config_errors.append("disable_radix_cache must be True")
-        if not getattr(server_args, "disable_piecewise_cuda_graph", False):
-            controlled_config_errors.append(
-                "disable_piecewise_cuda_graph must be True"
-            )
-        if getattr(server_args, "enable_breakable_cuda_graph", False):
-            controlled_config_errors.append(
-                "enable_breakable_cuda_graph must be False"
-            )
         if getattr(server_args, "enable_deterministic_inference", False):
             controlled_config_errors.append(
                 "enable_deterministic_inference must be False"
             )
+        # sglang 0.5.18 folds the legacy graph-control booleans into the
+        # per-phase cuda_graph_config (ServerArgs._parse_cuda_graph_config),
+        # so --disable-piecewise-cuda-graph / --enable-breakable-cuda-graph no
+        # longer set the old server_args attributes this check used to read.
+        # Judge the resolved per-phase backends instead. The strict backend
+        # supports eager everywhere plus a plain decode graph; tc_piecewise /
+        # breakable decode and any graph prefill (tc_piecewise / breakable /
+        # full) are unsupported and fail fast. Fall back to the legacy
+        # attribute checks on sglang wheels predating the per-phase config.
+        cuda_graph_config = getattr(server_args, "cuda_graph_config", None)
+        if cuda_graph_config is not None:
+            decode_backend = cuda_graph_config.decode.backend
+            if decode_backend not in ("full", "disabled"):
+                controlled_config_errors.append(
+                    f"decode cuda_graph backend must be 'full' or 'disabled' "
+                    f"(got '{decode_backend}')"
+                )
+            prefill_backend = cuda_graph_config.prefill.backend
+            if prefill_backend != "disabled":
+                controlled_config_errors.append(
+                    f"prefill cuda_graph backend must be 'disabled' "
+                    f"(got '{prefill_backend}')"
+                )
+        else:
+            if not getattr(server_args, "disable_piecewise_cuda_graph", False):
+                controlled_config_errors.append(
+                    "disable_piecewise_cuda_graph must be True"
+                )
+            if getattr(server_args, "enable_breakable_cuda_graph", False):
+                controlled_config_errors.append(
+                    "enable_breakable_cuda_graph must be False"
+                )
         if controlled_config_errors:
             raise RuntimeError(
                 "Strict HCU attention requires the controlled Qwen server "
@@ -945,7 +969,9 @@ class HCUAttnBackend(TritonAttnBackend):
         forward_batch,
         q: torch.Tensor,
     ) -> Optional[str]:
-        token_to_kv_pool = getattr(forward_batch, "token_to_kv_pool", None)
+        # 0.5.18 dropped the pool handle from ForwardBatch; it lives on the
+        # runner and TritonAttnBackend.__init__ captures it as self.token_to_kv_pool.
+        token_to_kv_pool = getattr(self, "token_to_kv_pool", None)
         if token_to_kv_pool is None:
             return "the token-to-KV pool is unavailable"
         try:
@@ -1043,7 +1069,7 @@ class HCUAttnBackend(TritonAttnBackend):
         k_view = None
         v_view = None
         if uses_paged_kv:
-            k_cache, v_cache = forward_batch.token_to_kv_pool.get_kv_buffer(
+            k_cache, v_cache = self.token_to_kv_pool.get_kv_buffer(
                 layer.layer_id
             )
             k_view = k_cache.view(
@@ -1060,7 +1086,7 @@ class HCUAttnBackend(TritonAttnBackend):
             )
 
         if save_kv_cache:
-            forward_batch.token_to_kv_pool.set_kv_buffer(
+            self.token_to_kv_pool.set_kv_buffer(
                 layer,
                 forward_batch.out_cache_loc,
                 k,
@@ -1223,14 +1249,14 @@ class HCUAttnBackend(TritonAttnBackend):
             )
 
         if save_kv_cache:
-            forward_batch.token_to_kv_pool.set_kv_buffer(
+            self.token_to_kv_pool.set_kv_buffer(
                 layer,
                 forward_batch.out_cache_loc,
                 k,
                 v,
             )
 
-        k_cache, v_cache = forward_batch.token_to_kv_pool.get_kv_buffer(
+        k_cache, v_cache = self.token_to_kv_pool.get_kv_buffer(
             layer.layer_id
         )
         if (

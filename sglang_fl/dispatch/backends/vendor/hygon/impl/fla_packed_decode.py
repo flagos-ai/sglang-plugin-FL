@@ -4,7 +4,9 @@
 import torch
 import triton
 
-from sglang.srt.layers.attention.fla.fused_recurrent import fused_recurrent_gated_delta_rule_packed_decode_kernel
+from sglang.kernels.ops.attention.fla.fused_recurrent import (
+    fused_recurrent_gated_delta_rule_packed_decode_kernel,
+)
 
 
 def fused_recurrent_gated_delta_rule_packed_decode_hcu(
