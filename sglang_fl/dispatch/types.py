@@ -69,6 +69,9 @@ class OpImpl:
         priority: Priority for selection (higher = preferred)
         supported_dtypes: Set of supported data types (optional)
         min_arch: Minimum architecture requirement (optional)
+        runtime_source_category: Physical implementation provenance used by
+            operator profiling when kernel namespaces alone are insufficient.
+        runtime_source_library: Library/owner paired with the provenance hint.
     """
 
     op_name: str
@@ -79,11 +82,24 @@ class OpImpl:
     priority: int = 0
     supported_dtypes: Optional[Set[str]] = None
     min_arch: Optional[str] = None
+    runtime_source_category: Optional[str] = None
+    runtime_source_library: Optional[str] = None
 
     def __post_init__(self):
         if self.kind == BackendImplKind.VENDOR and not self.vendor:
             raise ValueError(
                 f"OpImpl with kind=VENDOR must specify vendor name: {self.impl_id}"
+            )
+        valid_sources = {None, "vendor", "third_party"}
+        if self.runtime_source_category not in valid_sources:
+            raise ValueError(
+                "Unsupported runtime_source_category="
+                f"{self.runtime_source_category!r} for {self.impl_id}"
+            )
+        if self.runtime_source_category is not None and not self.runtime_source_library:
+            raise ValueError(
+                "runtime_source_library is required when runtime_source_category "
+                f"is set: {self.impl_id}"
             )
 
     def is_available(self) -> bool:
