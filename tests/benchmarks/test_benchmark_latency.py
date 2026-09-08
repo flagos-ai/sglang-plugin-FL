@@ -15,7 +15,7 @@ def test_benchmark_latency(tmp_path):
     params = dict(case.get("parameters", {}))
 
     result_file = tmp_path / "latency_result.jsonl"
-    command = [sys.executable, "-m", "sglang.bench_one_batch"]
+    command = [sys.executable, "-m", "sglang_fl.bench_one_batch"]
     command.extend(to_cli_args(params))
     command.extend(["--result-filename", str(result_file)])
 
