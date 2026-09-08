@@ -168,13 +168,17 @@ explicitly checked to be active. The vendor MoE library reused its existing
 tuning configuration because a Triton 3.6-specific configuration was absent;
 no performance claim is made. The plugin wheel built successfully.
 
-The additional runs used two available S5000 GPUs on one host. Other jobs
-occupied the remaining devices; an eight-rank scheduler was still present
-on the second host. Cross-node TP/PP has not been validated.
+The additional matrix used two available S5000 GPUs on one host. The
+separate cross-node TP/PP example runs are reported below.
 
-## Original examples coverage (in progress, 2026-09-08)
+## Original examples coverage (2026-09-08)
 
-The independent model matrix above does not substitute for these scripts.
+All seven Python examples have been executed across the nine configurations
+below, including the complete text, image and concurrent sections and the
+MTP baseline. Execution coverage is complete; the MoE cross-node assertions,
+MTP warning/default-overlap failure, and worker shutdown errors below prevent
+an unconditional all-passed result. The independent model matrix above does
+not substitute for these scripts.
 All runs use the updated stack and TP2 unless specified below. Four images
 were present: red square, cat, stop sign and digit seven.
 
@@ -185,10 +189,10 @@ were present: red square, cat, stop sign and digit seven.
 | `qwen3_6_27b_concurrent.py` | `--mode all`, default 16 text requests, VL and mixed modes | Passed, exit 0, after rerunning a container-interrupted attempt |
 | `qwen3_6_35b_a3b_concurrent.py` | `--mode all`, default 16 text requests, VL and mixed modes | Passed, exit 0 |
 | `qwen3_6_27b_mtp_inference.py` | TP2, MTP plus baseline comparison, no skipped baseline | Eager and corrected graph run with `--disable-overlap-schedule`: each exit 0, 14 passed, 0 failed, 1 warning (9/12 exact baseline match). Default overlap+graph mode hit a 300-second watchdog timeout |
-| `qwen3_6_27b_multinode.py` | TP2/PP2, text/VL and 32/8 concurrency | Scheduler rank API failure fixed; hardware rerun blocked by worker container stops |
-| `qwen3_6_27b_multinode.py` | TP4/PP1, text/VL and 32/8 concurrency | Not yet run |
-| `qwen3_6_35b_a3b_multinode.py` | TP2/PP2, text/VL and 32/8 concurrency | Not yet run |
-| `qwen3_6_35b_a3b_multinode.py` | TP4/PP1, text/VL and 32/8 concurrency | Not yet run |
+| `qwen3_6_27b_multinode.py` | TP2/PP2, text/VL and 32/8 concurrency | Passed after rank API fix: 10/10 checks, master exit 0; worker exit 247 after master shutdown |
+| `qwen3_6_27b_multinode.py` | TP4/PP1, text/VL and 32/8 concurrency | 10/10 inference checks passed, master exit 0; worker exit 3 in post-scheduler HTTP startup (see below) |
+| `qwen3_6_35b_a3b_multinode.py` | TP2/PP2, text/VL and 32/8 concurrency | First run 9/10 (`No Parking` for one stop sign), master 1 / worker 247. Full diagnostic rerun 10/10 plus 18/18 additional VL requests, master 0 / worker 247; the first failure remains unresolved |
+| `qwen3_6_35b_a3b_multinode.py` | TP4/PP1, text/VL and 32/8 concurrency | First run and full diagnostic rerun each 9/10, text 32/32, VL 7/8 (`Red` for one stop sign); extra diagnostic VL 17/18; each master 1 / worker 3. Correctness failure reproduced |
 
 The boolean-slice change passed a 42-test regression run and two-rank
 FP32/BF16 FlagCX checks. Four additional PP compatibility tests passed,
@@ -197,10 +201,57 @@ Several completed engine scripts printed multiprocessing resource-tracker
 cleanup warnings after their assertions passed; these are retained in logs.
 Container stops returned 137 with Docker `OOMKilled=false`; interrupted runs
 have no successful script result and are not counted as passes.
-The latest worker retry on `moer_15` was stopped approximately three seconds
-after starting, at 18:05 CST. Its waiting master was then cleaned up by this
-task. Cross-node validation requires a continuous execution window on both
-hosts.
+An earlier worker retry on `moer_15` was stopped approximately three seconds
+after starting, at 18:05 CST. Its waiting master was cleaned up by this task.
+After the other workload released the worker GPUs, the task container
+remained running on restart at 19:29 CST, allowing cross-node validation to
+resume. Dense TP2/PP2 subsequently passed all ten checks, including 32/32
+text requests and 8/8 VL requests across all four images. Its worker reported
+a Gloo peer-disconnect error and exit 247 after the successful master shut
+down; both nodes had no remaining test processes.
+
+Dense TP4/PP1 also passed all ten inference checks, including 32/32 text and
+8/8 VL requests. Its remote schedulers terminated with 0 after master
+shutdown, but upstream's outer worker process then fell through to HTTP
+startup with no tokenizer manager and returned 3 (`NoneType.server_args`).
+This worker-lifecycle error and MCCL process-group cleanup warnings remain
+visible in the logs; the master returned 0 and no test processes remained.
+
+The Dense PP run logged 59 FlagGems autotuning candidate failures per node
+when a temporary 24.68 GiB allocation exceeded the remaining memory at the
+example's default static-memory fraction of 0.85. These were recovered
+autotuning warnings; all requests and assertions completed. They are retained
+in the logs and are distinct from a server crash or a failed assertion.
+
+The first complete MoE TP2/PP2 run executed all six sections but failed the
+concurrent VL aggregate: one of eight requests read `stop_sign.png` as
+`No Parking`, although the image says `STOP`. The other seven VL requests
+and all 32 concurrent text requests passed. This is a real assertion failure
+at temperature 0, not a skipped image or a server-start failure. Recovered
+autotuning OOM warnings numbered 47 on the master and 48 on the worker.
+MoE TP4/PP1 also completed all six sections with 9/10 checks, text 32/32 and
+VL 7/8: one stop-sign response was `Red`. It logged no autotuning OOM
+warnings. Its worker showed the same post-scheduler HTTP startup error as
+Dense TP4/PP1. Neither first MoE cross-node run is counted as a pass.
+
+A diagnostic rerun imported the unchanged MoE example, logged every VL
+answer, and retained all six original test sections, prompts, temperature 0,
+concurrency and predicates. TP2/PP2 then passed 10/10, text 32/32 and VL 8/8.
+Two additional sequential stop-sign requests and two more 8-way VL rounds
+passed 18/18; all stop-sign replies were `Stop`. Master exit was 0 and worker
+exit was 247. The rerun logged 18/17 recovered autotuning OOM warnings.
+No model, dispatch or example fix intervened. The first failure did not
+reproduce in this follow-up; its cause is not established and it is retained
+as an intermittent correctness issue, rather than declared fixed.
+
+The same diagnostic procedure on TP4/PP1 reproduced the original failure:
+9/10 checks, text 32/32, VL 7/8, with a stop-sign reply of `Red` again. The
+two extra sequential stop-sign requests passed; the two extra VL rounds
+returned 7/8 and 8/8, respectively. The additional wrong answer was `.` for
+a stop sign, giving 17/18 diagnostic requests correct overall. Master exit
+was 1; worker exit was 3 with the same HTTP startup error. This rerun logged
+11/12 recovered autotuning OOM warnings. The MoE TP4 correctness failure is
+reproducible and unresolved; these results do not establish its root cause.
 
 The MTP graph failure occurred after capture completed. Both scheduler ranks
 remained in `process_batch_result_decode` at `result.copy_done.synchronize()`;
@@ -234,6 +285,29 @@ Full logs and the per-attempt manifest are retained under
 result directory; an old exit-code file is not evidence for a later run.
 The completed MTP logs are `dense-mtp-eager.log` and
 `dense-mtp-graph-fixed.log`; both corresponding `.exit` files contain `0`.
+
+The completed cross-node attempts below used plugin commit `d761f29`,
+physical GPUs 0 and 1 on each of `moer_14` and `moer_15`, and the updated
+stack above. Times are CST (UTC+8). Each directory contains `master.log`,
+`worker.log`, per-role commands, start/finish times and Docker exit codes.
+
+| Configuration | Result directory under `cross-node/` | Master start/end (CST) | Checks | Master/worker exits |
+| --- | --- | --- | --- | --- |
+| Dense TP2/PP2 | `dense-pp-r4-1930` | 19:31:39–19:37:42 | 10/10 | 0 / 247 |
+| Dense TP4/PP1 | `dense-tp4-r1-1939` | 19:39:59–19:53:52 | 10/10 | 0 / 3 |
+| MoE TP2/PP2 | `moe-pp-r1-1955` | 19:55:58–20:00:53 | 9/10 | 1 / 247 |
+| MoE TP4/PP1 | `moe-tp4-r1-2005` | 20:05:00–20:13:54 | 9/10 | 1 / 3 |
+| MoE TP2/PP2 diagnostic rerun | `moe-pp-diag-r2-2015` | 20:16:19–20:19:23 | Original 10/10; extra VL 18/18 | 0 / 247 |
+| MoE TP4/PP1 diagnostic rerun | `moe-tp4-diag-r2-2020` | 20:21:42–20:31:54 | Original 9/10; extra VL 17/18 | 1 / 3 |
+
+The diagnostic driver is retained at
+`/datapool/codex-musa-0518/cross-vl-diagnostic.py`, alongside its launch
+scripts. Its `VL_TRACE` and `VL_DIAGNOSTIC_RESULTS` records preserve the
+individual answers. The imported MoE script's raw SHA256 was
+`a8a7a81c24e9096918e2c0a366645825a2fc87c609bc4ac7aa7831c616b60b40`,
+matching the local working copy byte-for-byte (CRLF line endings).
+After the final run, both task containers contained only their idle
+`sleep` process; no inference processes remained.
 
 ### Reproduce the original examples
 
@@ -313,7 +387,8 @@ verified `Paris` / `red` in the actual responses, with HTTP 200 and positive
 completion-token counts. The 64-token checks forced continued decoding to
 exercise graph replay beyond the short factual answers.
 
-Cross-node TP/PP was not tested because the second host's GPUs were occupied.
-Prefill graphs, speculative decoding, audio and performance benchmarking are
-outside this validation. The Dockerfile mirrors the manual setup; a complete
-Docker image build was not run.
+This initial older-stack baseline did not cover cross-node TP/PP or
+speculative decoding; the updated-stack example results above cover those
+paths. Prefill graphs, audio and controlled performance benchmarking remain
+outside the completed validation. The Dockerfile mirrors the manual setup;
+a complete Docker image build was not run.
