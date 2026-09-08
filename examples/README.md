@@ -8,10 +8,21 @@ usable in CI pipelines.
 
 ## Available Examples
 
-| Script | Model | Architecture | TP |
+| Script | Model | Coverage | TP |
 |--------|-------|-------------|-----|
-| `qwen3_6_35b_a3b_offline_inference.py` | Qwen3.6-35B-A3B | MoE (256 experts) | 1 |
-| `qwen3_6_27b_offline_inference.py` | Qwen3.6-27B | Dense (hybrid attention) | 1 |
+| `qwen3_6_35b_a3b_offline_inference.py` | Qwen3.6-35B-A3B | Offline text and VL | Configurable |
+| `qwen3_6_27b_offline_inference.py` | Qwen3.6-27B | Offline text and VL | Configurable |
+| `qwen3_6_35b_a3b_concurrent.py` | Qwen3.6-35B-A3B | Text, VL and mixed concurrency (`--mode all`) | Configurable |
+| `qwen3_6_27b_concurrent.py` | Qwen3.6-27B | Text, VL and mixed concurrency (`--mode all`) | Configurable |
+| `qwen3_6_27b_mtp_inference.py` | Qwen3.6-27B | MTP, baseline, acceptance and throughput checks | Configurable |
+| `qwen3_6_35b_a3b_multinode.py` | Qwen3.6-35B-A3B | Cross-node TP/PP, text and VL | Configurable |
+| `qwen3_6_27b_multinode.py` | Qwen3.6-27B | Cross-node TP/PP, text and VL | Configurable |
+
+Complete example coverage includes all seven scripts. Run both concurrency
+scripts with `--mode all`, keep the MTP baseline enabled, and require all four
+images in `test_images`. For MUSA, the nine-configuration checklist, commands
+and current limitations are recorded in
+[the SGLang 0.5.18 validation document](../docs/mthreads-0.5.18.md).
 
 ## Usage
 

@@ -142,7 +142,11 @@ def _piecewise_graph_kwargs(disabled: bool):
     return {"disable_piecewise_cuda_graph": True}
 
 
-def _make_mtp_engine(disable_cuda_graph=False, disable_piecewise_cuda_graph=False):
+def _make_mtp_engine(
+    disable_cuda_graph=False,
+    disable_piecewise_cuda_graph=False,
+    disable_overlap_schedule=False,
+):
     """Create engine with MTP (speculative decoding) enabled."""
     from sglang.srt.entrypoints.engine import Engine
 
@@ -151,6 +155,7 @@ def _make_mtp_engine(disable_cuda_graph=False, disable_piecewise_cuda_graph=Fals
         tp_size=TP_SIZE,
         mem_fraction_static=0.8,
         disable_cuda_graph=disable_cuda_graph,
+        disable_overlap_schedule=disable_overlap_schedule,
         trust_remote_code=True,
         disable_radix_cache=True,
         speculative_algorithm="EAGLE",
@@ -161,16 +166,28 @@ def _make_mtp_engine(disable_cuda_graph=False, disable_piecewise_cuda_graph=Fals
     )
 
 
-def _make_baseline_engine(disable_cuda_graph=False, disable_piecewise_cuda_graph=False):
+def _make_baseline_engine(
+    disable_cuda_graph=False,
+    disable_piecewise_cuda_graph=False,
+    disable_overlap_schedule=False,
+):
     """Create engine without MTP (standard autoregressive)."""
     from sglang.srt.entrypoints.engine import Engine
+
+    # Match the MUSA offline examples. With synchronous scheduling, the
+    # hybrid Mamba cache requires page_size=1 when its extra buffer is off.
+    platform_kwargs = {}
+    if hasattr(torch, "musa") and torch.musa.is_available():
+        platform_kwargs["page_size"] = 1
 
     return Engine(
         model_path=MODEL_PATH,
         tp_size=TP_SIZE,
         mem_fraction_static=0.8,
         disable_cuda_graph=disable_cuda_graph,
+        disable_overlap_schedule=disable_overlap_schedule,
         trust_remote_code=True,
+        **platform_kwargs,
         **_piecewise_graph_kwargs(disable_piecewise_cuda_graph),
     )
 
@@ -182,13 +199,19 @@ def run_inference(engine, prompts, max_tokens):
     """Run inference, return list of (text, meta_info, latency)."""
     sampling_params = {"max_new_tokens": max_tokens, "temperature": 0}
     results = []
-    for p in prompts:
+    for index, p in enumerate(prompts, start=1):
         t0 = time.perf_counter()
         result = engine.generate(
             prompt=_text_prompt(p["prompt"]), sampling_params=sampling_params
         )
         lat = time.perf_counter() - t0
         results.append((result["text"], result.get("meta_info", {}), lat))
+        print(
+            f"  Completed {index}/{len(prompts)} [{p['category']}]: "
+            f"{result.get('meta_info', {}).get('completion_tokens', '?')} tokens "
+            f"in {lat:.2f}s",
+            flush=True,
+        )
     return results
 
 
@@ -225,6 +248,11 @@ def main():
         action="store_true",
         help="Disable piecewise CUDA graph (default: enabled)",
     )
+    parser.add_argument(
+        "--disable-overlap-schedule",
+        action="store_true",
+        help="Use synchronous scheduling for both MTP and baseline",
+    )
     args = parser.parse_args()
 
     if not os.path.exists(MODEL_PATH):
@@ -240,6 +268,7 @@ def main():
     print("=" * 70)
     print(f"  Model: {MODEL_PATH}")
     print(f"  TP: {TP_SIZE} | max_tokens: {max_tokens} | mode: {mode_str}")
+    print(f"  Overlap schedule: {not args.disable_overlap_schedule}")
     print("  MTP: algorithm=EAGLE, num_steps=3, topk=1, draft_tokens=4")
     print(f"  Prompts: {len(PROMPTS)} (factual/math/code/explanation/creative)")
     print()
@@ -250,7 +279,9 @@ def main():
 
     t0 = time.perf_counter()
     mtp_engine = _make_mtp_engine(
-        disable_cuda_graph=disable_cg, disable_piecewise_cuda_graph=disable_pcg
+        disable_cuda_graph=disable_cg,
+        disable_piecewise_cuda_graph=disable_pcg,
+        disable_overlap_schedule=args.disable_overlap_schedule,
     )
     print(f"  Engine loaded in {time.perf_counter() - t0:.1f}s")
 
@@ -302,7 +333,9 @@ def main():
 
         t0 = time.perf_counter()
         baseline_engine = _make_baseline_engine(
-            disable_cuda_graph=disable_cg, disable_piecewise_cuda_graph=disable_pcg
+            disable_cuda_graph=disable_cg,
+            disable_piecewise_cuda_graph=disable_pcg,
+            disable_overlap_schedule=args.disable_overlap_schedule,
         )
         print(f"  Engine loaded in {time.perf_counter() - t0:.1f}s")
 
