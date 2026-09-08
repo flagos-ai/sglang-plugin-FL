@@ -72,8 +72,9 @@ unsupported_features: []
 # ops here if other FlagGems ops misbehave on MUSA during bring-up.
 # FlagGems master 01433e830 also mishandles empty-index broadcast_tensors in
 # top-p sampling. Keep this exclusion when overriding the plugin's default list.
+# Its slice implementation rejects the eager runner's boolean buffers as well.
 env_defaults:
-  SGLANG_FL_FLAGOS_BLACKLIST: "mul,sort,broadcast_tensors"
+  SGLANG_FL_FLAGOS_BLACKLIST: "mul,sort,broadcast_tensors,slice"
 
 # ---- Device-specific test configurations ------------------------------------
 s5000:

@@ -98,10 +98,12 @@ For eager decode, replace the last line with
 - The vision FA3 entry point binds to the installed MUSA varlen implementation.
 - MUSA's default FlagGems blacklist includes `broadcast_tensors`. The tested
   master snapshot mishandles zero-length dimensions, causing top-p sampling
-  to crash when the top-k mask selects no tokens. Only this additional ATen
-  operator falls back to PyTorch; other FlagGems replacements remain enabled.
+  to crash when the top-k mask selects no tokens.
+- Native `slice` handles the boolean buffers filled by SGLang 0.5.18's eager
+  runner and preserves their view aliasing. The tested FlagGems snapshot
+  rejects boolean slicing, which the original offline example exposed.
   If overriding `SGLANG_FL_FLAGOS_BLACKLIST`, include `broadcast_tensors`
-  alongside your other required exclusions.
+  and `slice` alongside your other required exclusions.
 
 Run the targeted regression checks in the inference environment:
 

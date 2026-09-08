@@ -21,6 +21,9 @@ flagos_blacklist:
   # FlagGems 01433e830 (2026-09-08) broadcasts empty indices to size 1,
   # breaking PyTorch top-p sampling when the top-k mask selects no tokens.
   - broadcast_tensors
+  # SGLang 0.5.18's eager buffer registry slices boolean buffers. This
+  # FlagGems snapshot rejects bool; native slice also preserves view aliasing.
+  - slice
   - count_nonzero
   - cumsum
   - mm
