@@ -96,6 +96,9 @@ For eager decode, replace the last line with
   of upstream GDN normalization/convolution kernels. A live PDL call still
   fails compilation with an explicit MUSA error. Existing symbols are preserved.
 - The vision FA3 entry point binds to the installed MUSA varlen implementation.
+- PP ordering reads ranks from the new scheduler `ps` state, with the older
+  direct rank field still supported. It also preserves upstream's skipped
+  output communication for intermediate prefill chunks.
 - MUSA's default FlagGems blacklist includes `broadcast_tensors`. The tested
   master snapshot mishandles zero-length dimensions, causing top-p sampling
   to crash when the top-k mask selects no tokens.
@@ -113,6 +116,7 @@ python -m pytest -q \
   tests/unit_tests/platform/test_musa_gated_layernorm.py \
   tests/unit_tests/platform/test_musa_triton_compat.py \
   tests/unit_tests/platform/test_musa_sampling_mask.py \
+  tests/unit_tests/platform/test_musa_pp_compat.py \
   tests/unit_tests/dispatch/test_base_fused_op_registration.py \
   tests/unit_tests/distributed/test_communicator_hooks.py
 ```
@@ -166,6 +170,30 @@ no performance claim is made. The plugin wheel built successfully.
 The additional runs used two available S5000 GPUs on one host. Other jobs
 occupied the remaining devices; an eight-rank scheduler was still present
 on the second host. Cross-node TP/PP has not been validated.
+
+## Original examples coverage (in progress, 2026-09-08)
+
+The independent model matrix above does not substitute for these scripts.
+All runs use the updated stack and TP2 unless specified below. Four images
+were present: red square, cat, stop sign and digit seven.
+
+| Original script | Required coverage | Observed result |
+| --- | --- | --- |
+| `qwen3_6_27b_offline_inference.py` | Two text prompts, four images | Passed, exit 0, after the boolean-slice fix |
+| `qwen3_6_35b_a3b_offline_inference.py` | Two text prompts, four images | Passed, exit 0 |
+| `qwen3_6_27b_concurrent.py` | `--mode all`, default 16 text requests, VL and mixed modes | Passed, exit 0, after rerunning a container-interrupted attempt |
+| `qwen3_6_35b_a3b_concurrent.py` | `--mode all`, default 16 text requests, VL and mixed modes | Passed, exit 0 |
+| `qwen3_6_27b_mtp_inference.py` | MTP plus baseline comparison, no skipped baseline | Interrupted during graph capture; rerun pending, no MTP pass claimed |
+| `qwen3_6_27b_multinode.py` | TP2/PP2 and TP4/PP1, text/VL and 32/8 concurrency | PP attempt exposed the scheduler rank API change; fixed, hardware rerun still pending after worker container stopped. TP run pending |
+| `qwen3_6_35b_a3b_multinode.py` | TP2/PP2 and TP4/PP1, text/VL and 32/8 concurrency | Pending |
+
+The boolean-slice change passed a 42-test regression run and two-rank
+FP32/BF16 FlagCX checks. Four additional PP compatibility tests passed,
+covering old/new rank layouts, both rank parities, and skipped receives.
+Several completed engine scripts printed multiprocessing resource-tracker
+cleanup warnings after their assertions passed; these are retained in logs.
+Container stops returned 137 with Docker `OOMKilled=false`; interrupted runs
+have no successful script result and are not counted as passes.
 
 ## Initial baseline validation (2026-09-08)
 

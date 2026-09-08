@@ -29,7 +29,7 @@ _MUSA_FP32_TP_ALLREDUCE = os.environ.get(
 
 def _patch_pp_send_recv_order() -> None:
     try:
-        from sglang.srt.managers.scheduler_pp_mixin import SchedulerPPMixin
+        from sglang.srt.managers import scheduler_pp_mixin
         from sglang.srt.model_executor.forward_batch_info import PPProxyTensors
     except Exception as e:
         logger.warning("MUSA PP send/recv order patch skipped: %s", e)
@@ -37,6 +37,8 @@ def _patch_pp_send_recv_order() -> None:
 
     import torch
 
+    SchedulerPPMixin = scheduler_pp_mixin.SchedulerPPMixin
+    can_skip_output_comm = getattr(scheduler_pp_mixin, "_pp_can_skip_output_comm", None)
     orig_fn = SchedulerPPMixin._pp_send_recv_and_preprocess_output_tensors
 
     @wraps(orig_fn)
@@ -64,19 +66,27 @@ def _patch_pp_send_recv_order() -> None:
 
         def _do_recv():
             nonlocal next_pp_outputs, batch_result, d2h_event
-            if mbs[next_mb_id] is None or mbs[next_mb_id].forward_mode.is_prebuilt():
+            target = mbs[next_mb_id]
+            if target is None or target.forward_mode.is_prebuilt():
+                return
+            if can_skip_output_comm is not None and can_skip_output_comm(target):
+                next_pp_outputs, batch_result, d2h_event = (
+                    self._pp_make_skip_output_result(target, mb_metadata[next_mb_id])
+                )
                 return
             with torch.profiler.record_function("recv_res_dict_from_prev_stage"):
                 next_pp_outputs = PPProxyTensors(self._pp_recv_dict_from_prev_stage())
             with self.copy_stream_ctx:
                 self.copy_stream.wait_stream(self.schedule_stream)
                 batch_result = self._pp_prep_batch_result(
-                    mbs[next_mb_id], mb_metadata[next_mb_id], next_pp_outputs
+                    target, mb_metadata[next_mb_id], next_pp_outputs
                 )
                 d2h_event = self.device_module.Event()
                 d2h_event.record(self.device_module.current_stream())
 
-        if (self.pp_rank % 2) == 0:
+        # SGLang 0.5.18 moved scheduler ranks into ParallelState (`ps`).
+        parallel_state = getattr(self, "ps", self)
+        if (parallel_state.pp_rank % 2) == 0:
             send_output_work = _do_send()
             _do_recv()
         else:
