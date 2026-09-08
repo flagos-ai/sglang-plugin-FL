@@ -387,10 +387,10 @@ class PlatformFL(SRTPlatform):
         overridden by sglang-plugin-FL retain their native CUDA implementation;
         registered FL bridges still take precedence in the OOT registry.
 
-        Other vendors keep the legacy ``oot`` key until their individual
-        SGLang upgrades are completed.
+        MUSA likewise retains its native vendor path for operators outside
+        the FL bridge set. Other vendors keep the legacy ``oot`` key.
         """
-        return "cuda" if self._vendor_name == "nvidia" else "oot"
+        return {"nvidia": "cuda", "mthreads": "musa"}.get(self._vendor_name, "oot")
 
     # ------------------------------------------------------------------
     # Configuration lifecycle

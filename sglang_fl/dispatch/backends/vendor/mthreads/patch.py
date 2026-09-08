@@ -243,11 +243,27 @@ def _patch_fp32_tp_all_reduce() -> None:
     logger.info("MUSA FP32 TP all-reduce patches applied")
 
 
+def _patch_vision_flash_attention() -> None:
+    """Bind the varlen entry point used by VisionFlash3Attention on MUSA."""
+    from sglang.srt.layers.attention import vision
+
+    # 0.5.18 changed VisionFlash3Attention to call flash_attn_func, but only
+    # binds that name in the CUDA branch. MUSA still imports the real varlen
+    # implementation, which accepts the same packed Q/K/V and sequence lengths.
+    if not hasattr(vision, "flash_attn_func"):
+        vision.flash_attn_func = vision.flash_attn_varlen_func
+        logger.info("MUSA vision FA3 varlen entry point installed")
+
+
 def apply_musa_patches() -> None:
     global _patches_applied
     if _patches_applied:
         return
 
+    from .triton_compat import patch_triton_pdl_symbols
+
+    patch_triton_pdl_symbols()
+    _patch_vision_flash_attention()
     _patch_pp_send_recv_order()
     _patch_pp_launch_batch_add_sync()
     _patch_multimodal_mask()
