@@ -236,6 +236,21 @@ def test_yaml_flagos_blacklist_is_default_when_env_blacklist_absent(
     ]
 
 
+def test_nvidia_config_has_only_required_flaggems_safety_fallbacks() -> None:
+    from sglang_fl.dispatch.config.utils import load_platform_config
+
+    config = load_platform_config("nvidia")
+
+    assert config is not None
+    assert config.get("flagos_blacklist") == [
+        "slice",
+        "masked_scatter_",
+        "index_put_",
+        "_index_put_impl_",
+        "count_nonzero",
+    ]
+
+
 def test_env_blacklist_overrides_yaml_flagos_blacklist(
     monkeypatch,
     sglang_fl_module,

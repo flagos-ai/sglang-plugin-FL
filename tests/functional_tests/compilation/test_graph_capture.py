@@ -45,9 +45,8 @@ def _graph_api(device: torch.device):
         if not callable(value)
     ]
     if missing:
-        reason = (
-            f"torch.{device.type} does not expose graph capture API: "
-            + ", ".join(missing)
+        reason = f"torch.{device.type} does not expose graph capture API: " + ", ".join(
+            missing
         )
         if _platform_for(device.type).support_cuda_graph():
             pytest.fail(reason)
@@ -57,6 +56,8 @@ def _graph_api(device: torch.device):
 
 
 def _platform_for(device_type: str):
+    # Match the platform entry-point lifecycle before importing its class.
+    pytest.importorskip("sglang")
     from sglang_fl.platform import PlatformFL
 
     platform = PlatformFL.__new__(PlatformFL)
@@ -80,11 +81,18 @@ def test_platform_graph_capability_flags() -> None:
 
 
 def test_cuda_like_platform_uses_sglang_cuda_graph_runner() -> None:
-    """CUDA and MUSA reuse SGLang's native CudaGraphRunner."""
-    from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
+    """CUDA-like platforms reuse the graph runner for the installed SGLang."""
+    try:
+        from sglang.srt.model_executor.runner import DecodeCudaGraphRunner
 
-    assert _platform_for("cuda").get_graph_runner_cls() is CudaGraphRunner
-    assert _platform_for("musa").get_graph_runner_cls() is CudaGraphRunner
+        expected_runner = DecodeCudaGraphRunner
+    except ImportError:
+        from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
+
+        expected_runner = CudaGraphRunner
+
+    assert _platform_for("cuda").get_graph_runner_cls() is expected_runner
+    assert _platform_for("musa").get_graph_runner_cls() is expected_runner
 
 
 def test_npu_platform_uses_sglang_npu_graph_runner() -> None:

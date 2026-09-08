@@ -1,6 +1,7 @@
 # Copyright (c) 2026 BAAI. All rights reserved.
 """Monkey-patch SGLang FLA functions to use dispatch mechanism."""
 
+import importlib
 import logging
 
 logger = logging.getLogger(__name__)
@@ -21,9 +22,22 @@ def patch_fla_functions():
     This allows FLA ops to go through the dispatch system like other fused ops.
     """
     try:
-        # Import SGLang FLA modules
-        import sglang.srt.layers.attention.fla.chunk as chunk_module
-        import sglang.srt.layers.attention.fla.fused_recurrent as fused_recurrent_module
+        # SGLang 0.5.16 moved FLA kernels into the unified kernels namespace.
+        # Keep the old path for the still-pinned non-CUDA environments.
+        try:
+            chunk_module = importlib.import_module(
+                "sglang.kernels.ops.attention.fla.chunk"
+            )
+            fused_recurrent_module = importlib.import_module(
+                "sglang.kernels.ops.attention.fla.fused_recurrent"
+            )
+        except ImportError:
+            chunk_module = importlib.import_module(
+                "sglang.srt.layers.attention.fla.chunk"
+            )
+            fused_recurrent_module = importlib.import_module(
+                "sglang.srt.layers.attention.fla.fused_recurrent"
+            )
 
         # Import our bridge functions
         from sglang_fl.dispatch.bridge.fla_chunk import chunk_gated_delta_rule_bridge
@@ -35,12 +49,16 @@ def patch_fla_functions():
         )
 
         # Save original functions before patching
-        _originals["chunk_gated_delta_rule"] = chunk_module.chunk_gated_delta_rule
-        _originals["fused_recurrent_gated_delta_rule"] = (
-            fused_recurrent_module.fused_recurrent_gated_delta_rule
+        _originals.setdefault(
+            "chunk_gated_delta_rule", chunk_module.chunk_gated_delta_rule
         )
-        _originals["fused_recurrent_gated_delta_rule_packed_decode"] = (
-            fused_recurrent_module.fused_recurrent_gated_delta_rule_packed_decode
+        _originals.setdefault(
+            "fused_recurrent_gated_delta_rule",
+            fused_recurrent_module.fused_recurrent_gated_delta_rule,
+        )
+        _originals.setdefault(
+            "fused_recurrent_gated_delta_rule_packed_decode",
+            fused_recurrent_module.fused_recurrent_gated_delta_rule_packed_decode,
         )
 
         # Replace with bridge functions

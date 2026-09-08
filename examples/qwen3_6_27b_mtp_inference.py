@@ -19,6 +19,7 @@ Environment variables:
 """
 
 import argparse
+import inspect
 import os
 import sys
 import time
@@ -128,6 +129,19 @@ def _text_prompt(question: str) -> str:
 # ─── Engine factories ────────────────────────────────────────────────────────
 
 
+def _piecewise_graph_kwargs(disabled: bool):
+    """Map the prefill graph switch across SGLang's old and new APIs."""
+    if not disabled:
+        return {}
+
+    from sglang.srt.server_args import ServerArgs
+
+    parameters = inspect.signature(ServerArgs).parameters
+    if "disable_prefill_cuda_graph" in parameters:
+        return {"disable_prefill_cuda_graph": True}
+    return {"disable_piecewise_cuda_graph": True}
+
+
 def _make_mtp_engine(disable_cuda_graph=False, disable_piecewise_cuda_graph=False):
     """Create engine with MTP (speculative decoding) enabled."""
     from sglang.srt.entrypoints.engine import Engine
@@ -137,13 +151,13 @@ def _make_mtp_engine(disable_cuda_graph=False, disable_piecewise_cuda_graph=Fals
         tp_size=TP_SIZE,
         mem_fraction_static=0.8,
         disable_cuda_graph=disable_cuda_graph,
-        disable_piecewise_cuda_graph=disable_piecewise_cuda_graph,
         trust_remote_code=True,
         disable_radix_cache=True,
         speculative_algorithm="EAGLE",
         speculative_num_steps=3,
         speculative_eagle_topk=1,
         speculative_num_draft_tokens=4,
+        **_piecewise_graph_kwargs(disable_piecewise_cuda_graph),
     )
 
 
@@ -156,8 +170,8 @@ def _make_baseline_engine(disable_cuda_graph=False, disable_piecewise_cuda_graph
         tp_size=TP_SIZE,
         mem_fraction_static=0.8,
         disable_cuda_graph=disable_cuda_graph,
-        disable_piecewise_cuda_graph=disable_piecewise_cuda_graph,
         trust_remote_code=True,
+        **_piecewise_graph_kwargs(disable_piecewise_cuda_graph),
     )
 
 

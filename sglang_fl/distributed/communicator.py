@@ -104,6 +104,11 @@ class CommunicatorFL:
             f"rank={rank_in_group}, backend={backend_name}"
         )
 
+    @property
+    def is_active(self) -> bool:
+        """Whether hooks should replace SGLang's native collective path."""
+        return self._flagcx_comm is not None and not self._flagcx_comm.disabled
+
     # ─── all_reduce ──────────────────────────────────────────────────────────
 
     def all_reduce(self, input_: torch.Tensor) -> torch.Tensor:
