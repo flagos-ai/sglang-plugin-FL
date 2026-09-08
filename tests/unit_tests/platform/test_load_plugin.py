@@ -14,6 +14,8 @@
 
 # Integration tests for sglang_fl.load_plugin: step order and idempotency.
 
+from types import SimpleNamespace
+
 import pytest
 
 
@@ -25,6 +27,8 @@ def reset_plugin_loaded(monkeypatch):
     import sglang_fl
 
     monkeypatch.setattr(sglang_fl, "_plugin_loaded", False)
+    monkeypatch.setattr(sglang_fl, "_plugin_active", False)
+    monkeypatch.delenv("SGLANG_FL_MODE", raising=False)
 
 
 class TestLoadPluginStepOrder:
@@ -84,13 +88,12 @@ class TestLoadPluginIdempotency:
         def _count(key):
             def _inc(*a, **kw):
                 call_count[key] += 1
+
             return _inc
 
         monkeypatch.setattr(sglang_fl, "_setup_flaggems", _count("flaggems"))
         monkeypatch.setattr(sglang_fl, "_init_dispatch", lambda *a, **kw: None)
-        monkeypatch.setattr(
-            sglang_fl, "_setup_communicator_hooks", lambda: None
-        )
+        monkeypatch.setattr(sglang_fl, "_setup_communicator_hooks", lambda: None)
         monkeypatch.setattr(
             sglang_fl, "_apply_vendor_patches", _count("vendor_patches")
         )
@@ -101,3 +104,91 @@ class TestLoadPluginIdempotency:
         sglang_fl.load_plugin()
 
         assert call_count == {"flaggems": 1, "vendor_patches": 1}
+
+
+class TestPlatformProfileMode:
+    def test_framework_fallback_uses_active_device_method(self, monkeypatch):
+        import sglang.srt.platforms
+        import sglang_fl
+
+        monkeypatch.setattr(
+            sglang.srt.platforms,
+            "current_platform",
+            SimpleNamespace(device_type="cuda"),
+        )
+
+        class Op:
+            def forward_cuda(self):
+                return "sglang_cuda"
+
+            def forward_native(self):
+                return "sglang_native"
+
+        assert sglang_fl._framework_forward(Op())() == "sglang_cuda"
+
+    def test_framework_fallback_uses_native_without_device_method(self, monkeypatch):
+        import sglang.srt.platforms
+        import sglang_fl
+
+        monkeypatch.setattr(
+            sglang.srt.platforms,
+            "current_platform",
+            SimpleNamespace(device_type="custom_accelerator"),
+        )
+
+        class Op:
+            def forward_native(self):
+                return "sglang_native"
+
+        assert sglang_fl._framework_forward(Op())() == "sglang_native"
+
+    def test_disables_flaggems_but_keeps_platform_layers(
+        self, monkeypatch, reset_plugin_loaded
+    ):
+        import sglang_fl
+        import sglang_fl.profiling_hooks
+
+        calls = []
+        captured_config = {}
+
+        monkeypatch.setenv("SGLANG_FL_MODE", "platform_profile")
+        monkeypatch.setenv("SGLANG_FL_OOT_ENABLED", "0")
+        monkeypatch.setattr(
+            sglang_fl.profiling_hooks,
+            "setup_operator_profile_hooks",
+            lambda: calls.append("profile"),
+        )
+        monkeypatch.setattr(
+            sglang_fl,
+            "_setup_flaggems",
+            lambda *_: (_ for _ in ()).throw(
+                AssertionError("FlagGems must remain disabled")
+            ),
+        )
+
+        def _dispatch(config):
+            captured_config.update(config)
+            calls.append("dispatch")
+
+        monkeypatch.setattr(sglang_fl, "_init_dispatch", _dispatch)
+        monkeypatch.setattr(
+            sglang_fl,
+            "_setup_communicator_hooks",
+            lambda: calls.append("communicator"),
+        )
+        monkeypatch.setattr(
+            sglang_fl,
+            "_apply_vendor_patches",
+            lambda: calls.append("vendor_patches"),
+        )
+
+        sglang_fl.load_plugin()
+
+        assert calls == ["profile", "dispatch", "communicator", "vendor_patches"]
+        assert captured_config["prefer"] == "vendor"
+        assert captured_config["strict"] is True
+        assert captured_config["op_backends"] == {}
+        assert captured_config["deny_vendors"] == set()
+        assert captured_config["allow_vendors"] is None
+        assert captured_config["oot_blacklist"] == []
+        assert captured_config["oot_whitelist"] == []
