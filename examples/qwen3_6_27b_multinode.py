@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Qwen3.6-27B (Dense, hybrid attention) multi-node inference verification.
 
-Validates that sglang-plugin-FL correctly handles multi-node tensor parallelism
-for the dense Qwen3.6-27B model by launching a distributed SGLang server across
-2 nodes and running text, concurrent, multimodal (VL), and high-concurrency tests.
+Validates that sglang-plugin-FL serves the dense Qwen3.6-27B model across two
+nodes and runs text, concurrent, multimodal (VL), and high-concurrency tests.
+The default TP=2/PP=2 layout places one TP group on each node and sends pipeline
+traffic between nodes. Use TP=4/PP=1 to additionally exercise cross-node TP.
 
 Supports CUDA, MUSA, Ascend NPU, Hygon HCU, and Iluvatar CoreX; platform-specific server
 flags and env vars are applied automatically at runtime.
@@ -22,43 +23,55 @@ Usage:
 
   NOTE: Start master FIRST, then start worker within a few minutes.
 
-Full tested command (2 nodes × 2 GPUs each, TP=2 PP=2):
+Full tested NVIDIA command (2 nodes × 2 GPUs each, TP=2 PP=2):
 
   [Node 0 / Master / 192.168.0.66]
     CUDA_VISIBLE_DEVICES=0,1 \
-    SGLANG_FL_DIST_BACKEND=flagcx \
-    FLAGCX_PATH=/mine/FlagCX_v0.13.0 \
-    SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero \
+    MODEL_PATH=/models/Qwen3.6-27B \
+    USE_FLAGGEMS=1 USE_FLAGTUNE=0 SGLANG_PLUGINS=sglang_fl \
+    SGLANG_FL_DIST_BACKEND=nccl SGLANG_FL_DISAGG_FLAGCX=0 \
+    ATTENTION_BACKEND=triton SGLANG_HOST_IP=192.168.0.66 \
     SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK=0 \
-    GLOO_SOCKET_IFNAME=eth0 NCCL_SOCKET_IFNAME=eth0 \
+    GLOO_SOCKET_IFNAME=eth0 NCCL_SOCKET_IFNAME=eth1,eth2,eth3,eth4 \
+    NCCL_IB_HCA='=mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1' \
+    NCCL_IB_DISABLE=0 NCCL_IB_MERGE_VFS=0 NCCL_SOCKET_FAMILY=AF_INET \
         python examples/qwen3_6_27b_multinode.py --role master --master-addr 192.168.0.66 --tp 2 --pp 2
 
   [Node 1 / Worker / 192.168.0.65]
     CUDA_VISIBLE_DEVICES=0,1 \
-    SGLANG_FL_DIST_BACKEND=flagcx \
-    FLAGCX_PATH=/mine/FlagCX_v0.13.0 \
-    SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero \
+    MODEL_PATH=/models/Qwen3.6-27B \
+    USE_FLAGGEMS=1 USE_FLAGTUNE=0 SGLANG_PLUGINS=sglang_fl \
+    SGLANG_FL_DIST_BACKEND=nccl SGLANG_FL_DISAGG_FLAGCX=0 \
+    ATTENTION_BACKEND=triton SGLANG_HOST_IP=192.168.0.65 \
     SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK=0 \
-    GLOO_SOCKET_IFNAME=eth0 NCCL_SOCKET_IFNAME=eth0 \
+    GLOO_SOCKET_IFNAME=eth0 NCCL_SOCKET_IFNAME=eth1,eth2,eth3,eth4 \
+    NCCL_IB_HCA='=mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1' \
+    NCCL_IB_DISABLE=0 NCCL_IB_MERGE_VFS=0 NCCL_SOCKET_FAMILY=AF_INET \
         python examples/qwen3_6_27b_multinode.py --role worker --master-addr 192.168.0.66 --tp 2 --pp 2
 
   Total GPUs: TP × PP = 2 × 2 = 4 (2 per node)
 
+  The IP addresses, interface names, and HCA names above match the tested H20
+  cluster. Replace them with the target cluster's topology when reproducing.
+
   On MUSA, swap CUDA_VISIBLE_DEVICES → MUSA_VISIBLE_DEVICES; on Ascend NPU,
-  use ASCEND_RT_VISIBLE_DEVICES. SGLANG_FL_DIST_BACKEND=flagcx is recommended
-  on both non-CUDA platforms.
+  use ASCEND_RT_VISIBLE_DEVICES and select the platform-supported backend.
 
 Environment variables:
   MODEL_PATH       Model path (default: /models/Qwen3.6-27B)
   ATTENTION_BACKEND     Optional SGLang attention backend (e.g. triton)
+  USE_FLAGGEMS          FlagGems ATen replacement switch (default: 1)
+  USE_FLAGTUNE          FlagTune switch; 0 uses the default config space
+  SGLANG_PLUGINS        Set to sglang_fl to load this plugin explicitly
   CUDA_VISIBLE_DEVICES  GPU selection on CUDA (e.g. 0,1)
   MUSA_VISIBLE_DEVICES  Device selection on MUSA
   ASCEND_RT_VISIBLE_DEVICES  Device selection on Ascend NPU
   GLOO_SOCKET_IFNAME    Network interface for Gloo (default: eth0)
-  NCCL_SOCKET_IFNAME    Network interface for NCCL (default: eth0)
+  NCCL_SOCKET_IFNAME    Network interface(s) for NCCL (default: eth0)
   SGLANG_FL_DIST_BACKEND  Communication backend (flagcx / nccl)
-  FLAGCX_PATH           Path to FlagCX installation
-  SGLANG_FL_FLAGOS_BLACKLIST         Ops to exclude from FlagGems
+  NCCL_IB_HCA           Exact RDMA HCA/port selection; topology-specific
+  NCCL_IB_MERGE_VFS     Set to 0 when VF PCI-path merging hides the real NIC
+  SGLANG_FL_FLAGOS_BLACKLIST  Complete override; leave unset for platform YAML
   SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK  Set to 0 to skip memory check
 
 Supported TP sizes: 1, 2, 3, 4, 6, 8, 12, 24 (num_attention_heads=24)

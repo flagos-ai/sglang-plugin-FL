@@ -136,7 +136,7 @@ Empty mode does not choose or install a platform's attention, fused-op, or commu
 
 ```bash
 export SGLANG_PLUGINS=sglang_fl
-export SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero  # FlagGems bug workaround
+unset SGLANG_FL_FLAGOS_BLACKLIST                 # use platform YAML safety defaults
 export ATTENTION_BACKEND=triton                  # NVIDIA or another verified Triton-compatible platform
 
 python -m sglang.launch_server \
@@ -333,12 +333,12 @@ SGLANG_FL_* env vars > YAML config (SGLANG_FL_CONFIG) > Platform auto-detect YAM
 |----------|---------|-------------|
 | `USE_FLAGGEMS` | `1` | Master switch: `0` disables all ATen replacement |
 | `SGLANG_FL_FLAGOS_WHITELIST` | — | Only listed ATen ops use FlagGems (comma-separated) |
-| `SGLANG_FL_FLAGOS_BLACKLIST` | — | Listed ATen ops don't use FlagGems (comma-separated) |
+| `SGLANG_FL_FLAGOS_BLACKLIST` | — | Complete YAML blacklist override (comma-separated); leave unset for platform defaults |
 | `SGLANG_FLAGGEMS_RECORD` | `0` | `1` = record which ATen ops are replaced |
 | `SGLANG_FLAGGEMS_LOG_PATH` | — | Path to ATen replacement log file |
 | `SGLANG_FLAGGEMS_LOG_ONCE` | `1` | `1` = log each op only once, `0` = log every call |
 
-> `FLAGOS_WHITELIST` and `FLAGOS_BLACKLIST` are mutually exclusive. `FLAGOS_WHITELIST` takes priority over YAML `flagos_blacklist`.
+> `FLAGOS_WHITELIST` and `FLAGOS_BLACKLIST` are mutually exclusive. `FLAGOS_WHITELIST` takes priority over YAML `flagos_blacklist`; `FLAGOS_BLACKLIST` replaces the YAML list rather than extending it.
 
 #### Layer 3 — Distributed Communication
 

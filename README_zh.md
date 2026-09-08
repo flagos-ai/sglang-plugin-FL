@@ -151,7 +151,7 @@ Empty 模式不负责选择或安装平台的 attention、融合算子和通信�
 
 ```bash
 export SGLANG_PLUGINS=sglang_fl
-export SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero  # FlagGems bug 规避
+unset SGLANG_FL_FLAGOS_BLACKLIST                 # 使用平台 YAML 安全默认值
 export ATTENTION_BACKEND=triton                  # NVIDIA 或已验证的 Triton 兼容平台
 
 python -m sglang.launch_server \
@@ -346,12 +346,12 @@ SGLANG_FL_* 环境变量 > YAML 配置 (SGLANG_FL_CONFIG) > 平台自动检测 Y
 |------|--------|------|
 | `USE_FLAGGEMS` | `1` | 总开关：`0` 禁用所有 ATen 替换 |
 | `SGLANG_FL_FLAGOS_WHITELIST` | — | 仅列出的 ATen 算子使用 FlagGems（逗号分隔） |
-| `SGLANG_FL_FLAGOS_BLACKLIST` | — | 列出的 ATen 算子不使用 FlagGems（逗号分隔） |
+| `SGLANG_FL_FLAGOS_BLACKLIST` | — | 完整覆盖 YAML 黑名单（逗号分隔）；不设置时使用平台默认值 |
 | `SGLANG_FLAGGEMS_RECORD` | `0` | `1` = 记录被替换的 ATen 算子 |
 | `SGLANG_FLAGGEMS_LOG_PATH` | — | ATen 替换日志文件路径 |
 | `SGLANG_FLAGGEMS_LOG_ONCE` | `1` | `1` = 每个算子只记录一次，`0` = 每次调用都记录 |
 
-> `FLAGOS_WHITELIST` 和 `FLAGOS_BLACKLIST` 互斥。`FLAGOS_WHITELIST` 优先级高于 YAML 中的 `flagos_blacklist`。
+> `FLAGOS_WHITELIST` 和 `FLAGOS_BLACKLIST` 互斥。`FLAGOS_WHITELIST` 优先级高于 YAML 中的 `flagos_blacklist`；`FLAGOS_BLACKLIST` 会替换而不是追加 YAML 列表。
 
 #### Layer 3 — 分布式通信
 
