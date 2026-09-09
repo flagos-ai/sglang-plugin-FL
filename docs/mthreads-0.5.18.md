@@ -96,7 +96,9 @@ running TP4 on occupied cards. The original model memory settings are retained.
 
 Image preparation runs on the MUSA runner before starting the test container.
 It uses Python's standard library to fetch the public Harbor image in 8 MiB
-HTTP ranges, with at most four concurrent requests. The manifest, configuration
+HTTP ranges, with at most four concurrent requests. Successful DNS resolutions
+are cached for the duration of one pull without changing TLS hostname checks;
+PAX archive headers support layers larger than 8 GiB. The manifest, configuration
 and every compressed layer are checked against their pinned SHA256 digests.
 The compressed archive is streamed into Docker, and the loaded image ID must
 match the original configuration digest. The registry client and Docker import

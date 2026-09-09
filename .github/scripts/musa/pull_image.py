@@ -3,11 +3,14 @@
 import argparse
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from functools import lru_cache
 import hashlib
 from http.client import IncompleteRead
 import io
 import json
 import re
+import socket
 import sys
 import tarfile
 import threading
@@ -19,6 +22,19 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 
 CHUNK_SIZE = 8 * 1024**2
 WORKERS = 4
+ARCHIVE_FORMAT = tarfile.PAX_FORMAT
+
+
+@contextmanager
+def cached_dns():
+    # Thousands of range connections share a few hosts. Cache successful
+    # resolutions for this pull only; TLS still verifies the original hostname.
+    original = socket.getaddrinfo
+    socket.getaddrinfo = lru_cache(maxsize=32)(original)
+    try:
+        yield
+    finally:
+        socket.getaddrinfo = original
 
 
 def verify_digest(data, expected):
@@ -194,9 +210,7 @@ def save_image(registry, manifest, config, output):
         ]
     ).encode()
     with ThreadPoolExecutor(max_workers=WORKERS) as executor:
-        with tarfile.open(
-            fileobj=output, mode="w|", format=tarfile.USTAR_FORMAT
-        ) as archive:
+        with tarfile.open(fileobj=output, mode="w|", format=ARCHIVE_FORMAT) as archive:
             for name, data in (
                 (config_name, config),
                 ("manifest.json", docker_manifest),
@@ -226,14 +240,15 @@ def main():
     parser.add_argument("image")
     parser.add_argument("--manifest-only", action="store_true")
     args = parser.parse_args()
-    registry = Registry(args.image)
-    raw_manifest = registry.manifest()
-    if args.manifest_only:
-        sys.stdout.buffer.write(raw_manifest)
-        return
-    manifest = json.loads(raw_manifest)
-    config = registry.config(manifest["config"])
-    save_image(registry, manifest, config, sys.stdout.buffer)
+    with cached_dns():
+        registry = Registry(args.image)
+        raw_manifest = registry.manifest()
+        if args.manifest_only:
+            sys.stdout.buffer.write(raw_manifest)
+            return
+        manifest = json.loads(raw_manifest)
+        config = registry.config(manifest["config"])
+        save_image(registry, manifest, config, sys.stdout.buffer)
 
 
 if __name__ == "__main__":
