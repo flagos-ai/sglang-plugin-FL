@@ -15,8 +15,8 @@
 # SGLang-FL Dispatch Configuration for MUSA (Moore Threads) platform
 prefer: flagos
 
-# FlagGems tag:    v5.3.0
-# FlagGems commit: 98fae44cdf2898f39c7f24f080d7c88b83d7c593
+# Validated with FlagGems master (2026-09-08):
+# 01433e8304d78ef6c16ce76fe68e51e16c0b4d66, FlagTree 0.6.2a3+mthreads3.6.
 flagos_blacklist:
   # FlagGems 01433e830 (2026-09-08) broadcasts empty indices to size 1,
   # breaking PyTorch top-p sampling when the top-k mask selects no tokens.
@@ -24,6 +24,11 @@ flagos_blacklist:
   # SGLang 0.5.18's eager buffer registry slices boolean buffers. This
   # FlagGems snapshot rejects bool; native slice also preserves view aliasing.
   - slice
+  # FlagGems 01433e830 converts integer equality operands to FP32. Adjacent
+  # multimodal placeholder IDs above 2**24 must remain distinguishable.
+  - eq
+  - eq_scalar
+  - equal
   - count_nonzero
   - cumsum
   - mm
