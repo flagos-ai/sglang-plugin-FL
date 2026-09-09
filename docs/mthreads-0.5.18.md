@@ -80,6 +80,8 @@ All scopes share one container: the first cold pull exceeded the old unit
 job's 30-minute limit before any test began. The MUSA job allows 180 minutes
 for initialization and the full suite, with separate limits and logs for each
 test phase. A failing E2E group does not suppress the other two groups.
+Configuration generation also uses the MUSA runner queue, with a temporary
+Python environment; it does not depend on a separate GitHub-hosted runner.
 Its setup script installs the current PR checkout with `--no-deps` and
 checks the imported plugin path. The image supplies the dependencies, so
 individual jobs do not upgrade SGLang, Torch, FlagTree or FlagGems.
