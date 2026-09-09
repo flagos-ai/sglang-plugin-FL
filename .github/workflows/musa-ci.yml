@@ -126,16 +126,37 @@ jobs:
         if: ${{ !cancelled() && steps.functional.outcome == 'success' }}
         timeout-minutes: 60
         run: python3 .github/scripts/musa/container.py exec python tests/run.py --platform musa --device s5000 --scope e2e --task inference 2>&1 | tee musa-ci-results/inference.log
+      - name: Upload inference log immediately
+        if: ${{ always() && steps.inference.outcome != 'skipped' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: musa-inference-log
+          path: musa-ci-results/inference.log
       - name: Concurrent tests (all configured S5000 models)
         id: concurrent
         if: ${{ !cancelled() && steps.functional.outcome == 'success' }}
         timeout-minutes: 60
         run: python3 .github/scripts/musa/container.py exec python tests/run.py --platform musa --device s5000 --scope e2e --task concurrent 2>&1 | tee musa-ci-results/concurrent.log
+      - name: Upload concurrent log immediately
+        if: ${{ always() && steps.concurrent.outcome != 'skipped' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: musa-concurrent-log
+          path: musa-ci-results/concurrent.log
       - name: Serving tests (all configured S5000 models)
         id: serving
         if: ${{ !cancelled() && steps.functional.outcome == 'success' }}
         timeout-minutes: 60
         run: python3 .github/scripts/musa/container.py exec python tests/run.py --platform musa --device s5000 --scope e2e --task serving 2>&1 | tee musa-ci-results/serving.log
+      - name: Upload serving log immediately
+        if: ${{ always() && steps.serving.outcome != 'skipped' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: musa-serving-log
+          path: musa-ci-results/serving.log
       - name: Benchmark smoke tests
         if: >-
           ${{ !cancelled() &&

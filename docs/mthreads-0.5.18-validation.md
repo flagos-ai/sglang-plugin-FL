@@ -282,6 +282,26 @@ timed out before any GPU test. DNS and PAX fixes did not resolve the sustained
 CI throughput limit. The earlier all-zero upload probe is not representative
 of compressed image layers; diagnostics now compare real registry ranges and
 high-entropy payloads through both Docker import and load.
+Actions run `34369228544` at `3d5ee30` reused the verified image cache and
+completed 282 unit tests, 36 functional tests (three existing skips), both
+concurrent model cases and all 15 serving checks successfully. Inference
+passed three of four cases: Qwen3-4B TP2, with temperature 0.7 and a randomly
+chosen engine seed of 15650771, returned the Chinese name for Paris instead
+of the required literal `Paris`. Its original assertion failed, so benchmark
+was skipped and the overall run failed. The successful preflight had used
+seed 948037352. SGLang chooses a random engine seed when none is specified;
+the MUSA-only Qwen3-4B override now uses the conventional fixed seed 42 for
+reproducible sampling. Prompts, temperature, token limit and assertions are
+unchanged. Each E2E phase now uploads its log immediately so a failure can
+be inspected while later phases run.
+Three independent Qwen3-4B TP2 inference processes on `moer_14`, using the
+published image and seed 42, each passed the original two prompts with
+identical `Berlin` and `Paris` answers. Each exited 0, as did the full targeted
+preflight, and its container was removed. Logs, timestamps, exit codes and
+source hashes are retained in `ci-0909/seed42-preflight/`.
+The same Actions runner's short high-entropy probes reached 14.3 MiB/s for
+registry ranges and 84–95 MiB/s for Docker import/load through a Unix socket.
+This cached-image run does not verify sustained cold-pull throughput.
 Build and scope logs, exit codes and timestamps are retained under
 `/datapool/codex-musa-0518/ci-0909/`. Earlier setup/build failures remain
 separate; no test case was removed or newly skipped to produce these results.
