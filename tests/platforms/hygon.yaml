@@ -84,11 +84,11 @@ unsupported_features: []
 # env_defaults to the unit scope too, and a preset SGLANG_FL_PLATFORM forces
 # the dispatch manager to load the hygon platform config, breaking the
 # env-policy unit tests (ascend.yaml keeps its env_defaults empty for the
-# same reason). GEMS_VENDOR pins FlagGems' vendor detection (unit-safe).
+# same reason). GEMS_VENDOR needs no env_default either: the CI image bakes
+# it (docker/hygon/containerfile ENV), and setdefault semantics here would
+# let a bare-metal run override it if one ever needed to.
 env_defaults:
   SGLANG_FL_FLAGOS_BLACKLIST: "pow_scalar,pow_tensor_scalar,pow_tensor_tensor,pow_tensor_scalar_,pow_tensor_tensor_,cat,cumsum,cumsum_out,scaled_dot_product_attention,flash_attention_forward,count_nonzero"
-  GEMS_VENDOR: "hygon"
-  CUDA_DEVICE_MAX_CONNECTIONS: "1"
 
 # ---- Device-specific test configurations ------------------------------------
 bw1000:

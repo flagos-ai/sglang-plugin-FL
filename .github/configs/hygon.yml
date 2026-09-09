@@ -29,6 +29,8 @@ container_volumes:
 # vLLM-on-DCU recipe (vllm-plugin-FL .github/configs/hygon.yml).
 # --user root is required: the setup.sh step pip-installs the plugin into
 # /usr/local. --init: tini as PID 1 reaps orphaned sglang TP workers.
+# GEMS_VENDOR is not passed here: the CI image bakes it (docker/hygon/
+# containerfile ENV), needed there at FlagGems-rebuild time anyway.
 container_options: >-
   --hostname sglang-plugin-fl
   --ipc=host
@@ -41,4 +43,3 @@ container_options: >-
   --device /dev/mkfd
   --device /dev/dri
   --group-add video
-  -e GEMS_VENDOR=hygon
