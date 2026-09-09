@@ -60,6 +60,34 @@ the `fused/DSA` namespace directory. Keep `/opt/FlagGems/src` first on
 can shadow an editable install. Check `flag_gems.__file__` and
 `triton.__version__` in the actual inference Python before testing.
 
+## MUSA CI image
+
+The `ci` target in `docker/mthreads/empty-0.5.18.containerfile` adds the test
+dependencies and the real ShareGPT cache used by the benchmark smoke tests.
+It keeps the vendor Torch 2.9.0 stack, FlagTree 0.6.2a3+mthreads3.6 and the
+FlagGems commit documented above. SGLang is installed from its v0.5.18 source
+archive with explicit package-version metadata.
+
+```bash
+docker build --target ci \
+  -f docker/mthreads/empty-0.5.18.containerfile \
+  -t harbor.baai.ac.cn/plugin/sglang-plugin-fl:0.5.18-musa-ci-20260909 .
+```
+
+The MUSA-only workflow `.github/workflows/musa-ci.yml` targets PRs into
+`dev/0.5.18` and reuses the existing unit, functional, E2E and benchmark jobs.
+Its setup script installs the current PR checkout with `--no-deps` and
+checks the imported plugin path. The image supplies the dependencies, so
+individual jobs do not upgrade SGLang, Torch, FlagTree or FlagGems.
+At least four visible S5000 GPUs and the model mount `/data/models/Qwen`
+are required for the configured TP4 cases. The cached benchmark dataset
+works when GitHub Actions sets `HOME=/github/home`, without a network fetch.
+
+The shared graph fixture and graph arguments are compatible with 0.5.18:
+`disable_cuda_graph` remains valid, while disabled prefill graphs use
+`cuda_graph_backend_prefill: disabled`. Model cases and concurrency levels
+are unchanged. See the current validation record for build and CI results.
+
 ## Serving
 
 Select free physical GPU IDs with `MUSA_VISIBLE_DEVICES` before launch.
@@ -426,5 +454,6 @@ exercise graph replay beyond the short factual answers.
 This initial older-stack baseline did not cover cross-node TP/PP or
 speculative decoding; the updated-stack example results above cover those
 paths. Prefill graphs, audio and controlled performance benchmarking remain
-outside the completed validation. The Dockerfile mirrors the manual setup;
-a complete Docker image build was not run.
+outside the completed validation. This initial baseline used a manually
+prepared container; the later full CI image build is recorded in the current
+validation record.

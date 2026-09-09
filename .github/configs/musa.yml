@@ -3,8 +3,8 @@
 
 platform: musa
 
-# Docker image for this hardware
-ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl:0.5.18-musa-ci-20260909
+# Docker image for this hardware (tag: 0.5.18-musa-ci-20260909)
+ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:8c31e56f542ed1e7d2a07bf95c241b7700eb4945014cdc48da73dd77c261207b
 
 # Runner labels for this hardware
 runner_labels:
@@ -22,7 +22,7 @@ container_volumes:
 # set in the image ENV. Verified on the S5000 CI host: torch.musa.is_available()==True
 # with a plain `docker run`.)
 # --user root is required: the CI image installs libs under system paths and the
-# setup.sh step pip-installs the plugin into /usr/local.
+# setup.sh step installs the checkout into the image's inference environment.
 # --init: tini as PID 1 reaps orphan zombies from sglang TP workers on shutdown
 # (same rationale as cuda/ascend).
 container_options: >-
