@@ -20,7 +20,7 @@ def main():
             reported = now
     sys.stdout.buffer.flush()
     print(
-        f"Image stream complete: {total / 1024**3:.2f} GiB "
+        f"Image stream ended: {total / 1024**3:.2f} GiB "
         f"in {time.monotonic() - started:.0f}s",
         file=sys.stderr,
         flush=True,
