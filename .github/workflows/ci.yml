@@ -1,5 +1,5 @@
-# NVIDIA-only CI for the SGLang 0.5.18 development line.
-# Other backends stay disabled until their dedicated 0.5.18 upgrades begin.
+# CI workflow for the SGLang 0.5.18 development line.
+# NVIDIA is enabled; other backends remain defined but are temporarily disabled.
 name: CI
 
 on:
@@ -34,9 +34,74 @@ jobs:
     needs: lint
     uses: ./.github/workflows/_build_wheel.yml
 
-  test-cuda:
+  discover:
     needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      platforms: ${{ steps.detect.outputs.platforms }}
+    steps:
+      - name: Checkout (attempt 1)
+        id: checkout1
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          sparse-checkout: |
+            .github/configs
+            .github/scripts
+        continue-on-error: true
+      - name: Checkout (attempt 2)
+        id: checkout2
+        if: steps.checkout1.outcome == 'failure'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          sparse-checkout: |
+            .github/configs
+            .github/scripts
+        continue-on-error: true
+      - name: Checkout (attempt 3)
+        if: steps.checkout2.outcome == 'failure'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          sparse-checkout: |
+            .github/configs
+            .github/scripts
+      - name: Install CI script dependencies
+        run: pip install pyyaml
+      - name: Detect available platforms
+        id: detect
+        run: python3 .github/scripts/detect_platforms.py
+
+  test-cuda:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'cuda')
     uses: ./.github/workflows/_platform_test.yml
     with:
       platform: cuda
+    secrets: inherit
+
+  # Retained for the upcoming Ascend 0.5.18 adaptation.
+  test-ascend:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'ascend')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: ascend
+    secrets: inherit
+
+  # Retained for the upcoming Moore Threads MUSA 0.5.18 adaptation.
+  test-musa:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'musa')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: musa
+    secrets: inherit
+
+  # Retained for the upcoming T-Head PPU 0.5.18 adaptation.
+  test-thead:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'thead')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: thead
     secrets: inherit

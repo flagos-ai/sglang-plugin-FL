@@ -273,7 +273,7 @@ generate:
     temperature: 0.0
   parametrize:                          # List of explicit engine-param overrides
     - disable_cuda_graph: true
-      disable_piecewise_cuda_graph: true
+      cuda_graph_backend_prefill: disabled
       dtype: "bfloat16"
 ```
 
@@ -287,7 +287,7 @@ llm:
   context_length: 8192
   mem_fraction_static: 0.95
   disable_cuda_graph: true
-  disable_piecewise_cuda_graph: true
+  cuda_graph_backend_prefill: disabled
   trust_remote_code: true
 
 generate:
@@ -500,7 +500,7 @@ throughput:
       random_output_len: 1
       num_prompts: 4
       disable_cuda_graph: true
-      disable_piecewise_cuda_graph: true
+      cuda_graph_backend_prefill: disabled
       load_format: dummy   # no real weights needed
 
 latency:
@@ -512,7 +512,7 @@ latency:
       output_len: 1
       batch_size: 1
       disable_cuda_graph: true
-      disable_piecewise_cuda_graph: true
+      cuda_graph_backend_prefill: disabled
       load_format: dummy
 
 serve:

@@ -59,7 +59,7 @@ ENGINE_KWARGS = dict(
     tp_size=TP_SIZE,
     mem_fraction_static=0.5,
     disable_cuda_graph=True,
-    disable_piecewise_cuda_graph=True,
+    cuda_graph_backend_prefill="disabled",
 )
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
