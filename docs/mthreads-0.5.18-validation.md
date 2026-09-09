@@ -204,6 +204,13 @@ These preflight results are separate from the GitHub Actions result.
 The authoritative CI outcome is published on the
 [PR #95 checks page](https://github.com/flagos-ai/sglang-plugin-FL/pull/95/checks)
 under `MUSA SGLang 0.5.18 CI`.
+The first Actions attempt, run `34326740473`, was cancelled at the shared
+unit job's 30-minute timeout while Docker was still initializing the image;
+no test started. Its log records successful layer downloads/extraction and
+the timeout cancellation. The MUSA-only workflow now initializes one
+container for all scopes, with a 180-minute job limit and separate phase
+limits. All three E2E groups still run if a peer group fails, and all phase
+logs are uploaded as `musa-ci-results`.
 Build and scope logs, exit codes and timestamps are retained under
 `/datapool/codex-musa-0518/ci-0909/`. Earlier setup/build failures remain
 separate; no test case was removed or newly skipped to produce these results.

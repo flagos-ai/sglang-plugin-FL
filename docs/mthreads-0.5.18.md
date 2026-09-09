@@ -75,7 +75,11 @@ docker build --target ci \
 ```
 
 The MUSA-only workflow `.github/workflows/musa-ci.yml` targets PRs into
-`dev/0.5.18` and reuses the existing unit, functional, E2E and benchmark jobs.
+`dev/0.5.18` and runs the existing unit, functional, E2E and benchmark entrypoints.
+All scopes share one container: the first cold pull exceeded the old unit
+job's 30-minute limit before any test began. The MUSA job allows 180 minutes
+for initialization and the full suite, with separate limits and logs for each
+test phase. A failing E2E group does not suppress the other two groups.
 Its setup script installs the current PR checkout with `--no-deps` and
 checks the imported plugin path. The image supplies the dependencies, so
 individual jobs do not upgrade SGLang, Torch, FlagTree or FlagGems.
