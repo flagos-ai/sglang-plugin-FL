@@ -1,0 +1,25 @@
+name: MUSA SGLang 0.5.18 CI
+
+on:
+  pull_request:
+    branches: [dev/0.5.18]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+  workflow_dispatch:
+
+concurrency:
+  group: musa-0.5.18-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test-musa:
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: musa

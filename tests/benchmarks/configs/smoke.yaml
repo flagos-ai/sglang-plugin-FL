@@ -44,4 +44,3 @@ serve:
       random_input_len: 32
       random_output_len: 4
       num_prompts: 5
-
