@@ -94,6 +94,15 @@ contiguous group and exports `MUSA_VISIBLE_DEVICES` for all subsequent phases.
 If fewer than four devices are idle, it waits up to 30 minutes instead of
 running TP4 on occupied cards. The original model memory settings are retained.
 
+Image preparation runs on the MUSA runner before starting the test container.
+It uses checksum-pinned `crane` v0.22.1 to fetch the public Harbor image with
+proxy variables removed only from that command, then streams the compressed
+archive into Docker. The loaded image ID must match the pinned manifest's
+configuration digest. Existing verified images are reused; no registry login
+or shared Docker daemon reconfiguration is required. All phases then execute
+in one container, which is removed at job completion. Available transfer, device and
+test logs are uploaded even when image preparation fails.
+
 The shared graph fixture and graph arguments are compatible with 0.5.18:
 `disable_cuda_graph` remains valid, while disabled prefill graphs use
 `cuda_graph_backend_prefill: disabled`. Model cases and concurrency levels

@@ -223,6 +223,19 @@ The published image also passed a live selector probe on `moer_14`: automatic
 selection avoided occupied GPUs 4/5, and the explicit allocation `2,3,6,7`
 was preserved. Torch MUSA saw four devices and a tensor operation passed on
 each logical device, including the nonzero and noncontiguous mapping.
+Run `34338068214` passed the seven selector checks but was stopped after
+90 minutes of image initialization, before any GPU test began. Its completed
+log showed 13 of 73 unique layers cached/extracted and 37 downloaded/cached.
+The earlier 21-minute initialization had already cached 51 layers; it was
+not a complete cold pull. The new runner also reported a global HTTP/HTTPS
+proxy. MUSA image preparation now fetches the same pinned image directly
+from Harbor in the job process, streams it into Docker and verifies the
+loaded image ID. Proxy removal is limited to that registry command. The
+workflow retains all test phases and now uploads image preparation logs
+without depending on successful container initialization.
+Eleven CPU regression checks cover device selection and container lifecycle,
+including propagating failed test exit codes and limiting cleanup to the
+current run attempt's container.
 Build and scope logs, exit codes and timestamps are retained under
 `/datapool/codex-musa-0518/ci-0909/`. Earlier setup/build failures remain
 separate; no test case was removed or newly skipped to produce these results.
