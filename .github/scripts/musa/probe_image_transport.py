@@ -13,6 +13,7 @@ import subprocess
 import tarfile
 import time
 import uuid
+from urllib.parse import urlsplit
 
 from pull_image import Registry, cached_dns
 
@@ -126,6 +127,13 @@ def main():
     info = json.loads(
         subprocess.check_output(["docker", "info", "--format", "{{json .}}"], text=True)
     )
+    context = subprocess.run(
+        ["docker", "context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    endpoint = urlsplit(json.loads(context.stdout) if context.returncode == 0 else "")
     record(
         "environment",
         runner=platform.node(),
@@ -136,6 +144,8 @@ def main():
         driver=info.get("Driver"),
         daemon_cpus=info.get("NCPU"),
         daemon_memory=info.get("MemTotal"),
+        context_transport=endpoint.scheme,
+        context_host=endpoint.hostname,
     )
     with cached_dns():
         registry = Registry(os.environ["MUSA_CI_IMAGE"])
