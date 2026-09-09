@@ -248,6 +248,7 @@ def test_nvidia_config_has_only_required_flaggems_safety_fallbacks() -> None:
         "index_put_",
         "_index_put_impl_",
         "count_nonzero",
+        "mm",
     ]
 
 

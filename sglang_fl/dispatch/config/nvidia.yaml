@@ -26,6 +26,8 @@ prefer: flagos
 #   - count_nonzero: was observed to produce incorrect concurrent multimodal
 #     responses for Qwen3.6-35B-A3B with multi-node pipeline parallelism on
 #     FlagGems 5.3.6.dev0+g8ea5925; sequential requests remained correct.
+#   - mm: retain the native PyTorch kernel used by the previous CUDA CI. The
+#     FlagGems override is not yet validated for A100 TP=4 model-scale shapes.
 # Keep the rest of the ATen replacement layer enabled.
 flagos_blacklist:
   - slice
@@ -33,3 +35,4 @@ flagos_blacklist:
   - index_put_
   - _index_put_impl_
   - count_nonzero
+  - mm

@@ -29,6 +29,16 @@ device_types:
     memory_gb: 80
     tags: [hopper, fp8, bf16]
 
+# Qwen3.6 is a hybrid attention model. Pin its full-attention path to the
+# Triton backend used by the validated NVIDIA examples. The vision and linear
+# attention backends remain independently selected by SGLang.
+engine_overrides:
+  qwen3_6:
+    27b_tp4_nograph:
+      attention_backend: "triton"
+    35b_a3b_tp4_nograph:
+      attention_backend: "triton"
+
 # Default numerical tolerance for result comparison.
 tolerance:
   inference:
