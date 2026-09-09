@@ -154,7 +154,7 @@ def _patch_communication_op_fp32_all_reduce() -> None:
     and moe_tensor_model_parallel_all_reduce to convert BF16 inputs to FP32 before
     all-reduce and convert back to BF16 after.
 
-    Also patches imported references in all consuming modules.
+    Also updates selected imported references in consuming modules.
     """
     try:
         import sglang.srt.distributed as dist_pkg
@@ -246,7 +246,7 @@ def _patch_parallel_state_fp32_reduce_scatter() -> None:
 
 
 def _patch_flagcx_fp32_all_reduce() -> None:
-    """Cover eager-bound all-reduce imports routed through the FlagCX hook."""
+    """Cover eager-bound vision reductions routed through the FlagCX hook."""
     import torch
 
     from sglang_fl.distributed.communicator import CommunicatorFL
@@ -255,18 +255,26 @@ def _patch_flagcx_fp32_all_reduce() -> None:
 
     @wraps(original)
     def all_reduce_fp32(self, input_: torch.Tensor) -> torch.Tensor:
-        if input_.device.type == "musa" and input_.dtype == torch.bfloat16:
+        if (
+            input_.device.type == "musa"
+            and input_.dtype == torch.bfloat16
+            and input_.ndim == 3
+        ):
             # Vision embedding/linear layers bind communication_op functions
             # before the source-module patch. The active FlagCX hook also
             # bypasses GroupCoordinator's original method, so cover its actual
             # communicator entry point and retain the in-place return contract.
+            # Qwen vision uses [images, patches, channels]. Limit this extra
+            # coverage to that layout: promoting every 2D text-layer reduction
+            # regressed cross-node Dense TP4 on this MUSA/FlagCX stack. Existing
+            # source-level FP32 reductions remain unchanged.
             reduced = original(self, input_.float())
             input_.copy_(reduced)
             return input_
         return original(self, input_)
 
     CommunicatorFL.all_reduce = all_reduce_fp32
-    logger.info("MUSA FP32 FlagCX communicator all-reduce patch applied")
+    logger.info("MUSA FP32 FlagCX vision all-reduce patch applied")
 
 
 def _patch_fp32_tp_all_reduce() -> None:

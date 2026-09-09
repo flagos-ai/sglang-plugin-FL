@@ -14,10 +14,16 @@ from sglang_fl.distributed.communicator import CommunicatorFL
 
 
 @pytest.mark.parametrize(
-    "device,dtype",
-    [("cpu", torch.bfloat16), ("musa", torch.bfloat16), ("musa", torch.float32)],
+    "device,dtype,shape",
+    [
+        ("cpu", torch.bfloat16, (1, 1, 3)),
+        ("musa", torch.bfloat16, (1, 1, 3)),
+        ("musa", torch.float32, (1, 1, 3)),
+        ("musa", torch.bfloat16, (1, 3)),
+        ("musa", torch.bfloat16, (3,)),
+    ],
 )
-def test_fp32_communicator_scope_and_inplace_result(monkeypatch, device, dtype):
+def test_fp32_communicator_scope_and_inplace_result(monkeypatch, device, dtype, shape):
     if device == "musa" and (
         not hasattr(torch, "musa") or not torch.musa.is_available()
     ):
@@ -40,16 +46,17 @@ def test_fp32_communicator_scope_and_inplace_result(monkeypatch, device, dtype):
     def eager_upstream_reference(value):
         return coordinator.fl_communicator.all_reduce(value)
 
-    value = torch.tensor([1, 2, 3], device=device, dtype=dtype)
+    value = torch.tensor([1, 2, 3], device=device, dtype=dtype).reshape(shape)
     result = eager_upstream_reference(value)
     assert result is value
     torch.testing.assert_close(
-        value.cpu(), torch.tensor([1.125, 2.125, 3.125], dtype=dtype)
+        value.cpu(), torch.tensor([1.125, 2.125, 3.125], dtype=dtype).reshape(shape)
     )
     assert len(calls) == 1
-    expected_dtype = torch.float32 if device == "musa" else dtype
+    promoted = device == "musa" and dtype == torch.bfloat16 and len(shape) == 3
+    expected_dtype = torch.float32 if promoted else dtype
     assert calls[0][1] == expected_dtype
-    if device == "musa" and dtype == torch.bfloat16:
+    if promoted:
         assert calls[0][0] is not value
     else:
         assert calls[0][0] is value

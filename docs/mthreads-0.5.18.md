@@ -1,5 +1,9 @@
 # MUSA empty runtime with SGLang 0.5.18
 
+The current issue-resolution results are in
+[the 2026-09-09 validation record](mthreads-0.5.18-validation.md).
+The dated 2026-09-08 results below are the historical baseline before those fixes.
+
 This setup upgrades the Moore Threads empty image used for Qwen3.6 while
 retaining its MUSA 4.3.5, torch/torch_musa 2.9.0,
 MATE/flash_attn_3 0.2.1 and FlagCX 0.13.0 stack. Upgrade the compiler to
@@ -114,6 +118,21 @@ For eager decode, replace the last line with
   inputs passed the live embedding-mask regression on MUSA.
   If overriding `SGLANG_FL_FLAGOS_BLACKLIST`, include `broadcast_tensors`,
   `slice`, `eq`, `eq_scalar`, and `equal` alongside your other required exclusions.
+- `SGLANG_MUSA_FP32_TP_ALLREDUCE=1` also covers the active FlagCX communicator's
+  three-dimensional vision tensors (`images, patches, channels`).
+  Vision embedding and linear layers retain eagerly imported all-reduce
+  references, bypassing the original source-module patch. The communicator
+  fallback preserves in-place writes and the input dtype. This additional
+  coverage leaves two-dimensional text tensors on their existing path;
+  indiscriminate promotion regressed cross-node Dense TP4. The unsuccessful
+  repeat/arange/copy blacklist experiments are not part of the default list.
+- Qwen3.5/3.6 MTP uses synchronous scheduling on MUSA to avoid the overlap
+  result-copy watchdog. Decode graphs remain enabled. The MTP example uses
+  the effective scheduling mode and fresh prefixes in both comparison phases.
+- A regular PP loop forwards an explicit `ShutdownReq` before exiting.
+  Nonzero nodes skip HTTP initialization after their schedulers exit, and
+  nonzero child exit codes still raise an error. Transport failures are not
+  treated as successful shutdowns.
 
 Run the targeted regression checks in the inference environment:
 
@@ -124,9 +143,14 @@ python -m pytest -q \
   tests/unit_tests/platform/test_musa_triton_compat.py \
   tests/unit_tests/platform/test_musa_sampling_mask.py \
   tests/unit_tests/platform/test_musa_multimodal_mask.py \
+  tests/unit_tests/platform/test_musa_runtime_config.py \
+  tests/unit_tests/platform/test_musa_fp32_collective.py \
+  tests/unit_tests/platform/test_musa_lifecycle.py \
   tests/unit_tests/platform/test_musa_pp_compat.py \
   tests/unit_tests/dispatch/test_base_fused_op_registration.py \
-  tests/unit_tests/distributed/test_communicator_hooks.py
+  tests/unit_tests/distributed/test_communicator.py \
+  tests/unit_tests/distributed/test_communicator_hooks.py \
+  tests/unit_tests/distributed/test_flagcx.py
 ```
 
 ## Additional model matrix
@@ -180,6 +204,10 @@ The additional matrix used two available S5000 GPUs on one host. The
 separate cross-node TP/PP example runs are reported below.
 
 ## Original examples coverage (2026-09-08)
+
+This section records the pre-fix results. References to unresolved issues
+describe their state on that date; see the linked 2026-09-09 record for the
+subsequent fixes and reruns.
 
 All seven Python examples have been executed across the nine configurations
 below, including the complete text, image and concurrent sections and the
@@ -337,7 +365,7 @@ MODEL_PATH=/models/Qwen3.6-27B python examples/qwen3_6_27b_concurrent.py --mode 
 MODEL_PATH=/models/Qwen3.6-35B-A3B python examples/qwen3_6_35b_a3b_offline_inference.py
 MODEL_PATH=/models/Qwen3.6-35B-A3B python examples/qwen3_6_35b_a3b_concurrent.py --mode all
 
-# Default graph configuration: observed watchdog failure, retained for reproduction.
+# Default graph configuration: the MUSA plugin selects synchronous MTP scheduling.
 MODEL_PATH=/models/Qwen3.6-27B python examples/qwen3_6_27b_mtp_inference.py
 # Eager comparison: retains all prompts and baseline.
 MODEL_PATH=/models/Qwen3.6-27B python examples/qwen3_6_27b_mtp_inference.py \
