@@ -25,6 +25,7 @@ from .patches.causal_conv1d import patch_causal_conv1d
 from .patches.clamp_position import patch_clamp_position
 from .patches.pp_send_first import patch_pp_send_recv_and_preprocess_output_tensors
 from .patches.suppress_pynccl import patch_suppress_pynccl
+from .patches.triton_xpu_device import patch_triton_xpu_device_sync
 
 logger = logging.getLogger(__name__)
 _patches_applied = False
@@ -42,6 +43,7 @@ def apply_kunlunxin_patches():
     patch_suppress_pynccl()
     patch_pp_send_recv_and_preprocess_output_tensors()
     patch_attention_backend_choice()
+    patch_triton_xpu_device_sync()
 
 
 apply_kunlunxin_patches()
