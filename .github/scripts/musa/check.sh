@@ -4,6 +4,12 @@
 set -euo pipefail
 echo "=== Checking Moore Threads MUSA GPU availability ==="
 mthreads-gmi
+MUSA_VISIBLE_DEVICES=$(python .github/scripts/musa/select_gpus.py)
+export MUSA_VISIBLE_DEVICES
+echo "Using MUSA_VISIBLE_DEVICES=$MUSA_VISIBLE_DEVICES"
+if [ -n "${GITHUB_ENV:-}" ]; then
+  printf 'MUSA_VISIBLE_DEVICES=%s\n' "$MUSA_VISIBLE_DEVICES" >> "$GITHUB_ENV"
+fi
 python - <<'PY'
 import torch
 import torch_musa
