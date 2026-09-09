@@ -5,7 +5,7 @@
 import sys
 
 import pytest
-
+from pathlib import Path
 from tests.benchmarks.utils import load_benchmark_case, read_last_jsonl, run_command, to_cli_args
 
 
@@ -15,7 +15,10 @@ def test_benchmark_latency(tmp_path):
     params = dict(case.get("parameters", {}))
 
     result_file = tmp_path / "latency_result.jsonl"
-    command = [sys.executable, "-m", "sglang_fl.bench_one_batch"]
+    entrypoint = Path(__file__).with_name(
+        "bench_one_batch_with_plugins.py"
+    )
+    command = [sys.executable, str(entrypoint)]
     command.extend(to_cli_args(params))
     command.extend(["--result-filename", str(result_file)])
 
