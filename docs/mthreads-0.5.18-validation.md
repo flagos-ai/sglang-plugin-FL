@@ -236,6 +236,17 @@ without depending on successful container initialization.
 Eleven CPU regression checks cover device selection and container lifecycle,
 including propagating failed test exit codes and limiting cleanup to the
 current run attempt's container.
+The full direct-transfer preflight on `moer_14` subsequently passed: 30.05 GiB
+in 2,132 seconds, the unchanged published image ID, 282 unit checks, 36
+functional checks with three existing skips, and all three benchmark cases.
+The script exited 0 and removed its task container. The official crane archive
+was checksum-verified locally and copied to `moer_14` because that machine's
+direct GitHub Release request failed; the production CI keeps its existing
+GitHub download configuration. Evidence is in `ci-0909/direct-ci/`.
+Actions run `34348159578` instead reached the transfer timeout after 60 minutes
+and only 5.89 GiB, at roughly 1.7 MiB/s. No model test started. Transport
+diagnostics now measure registry reads separately from Docker API uploads,
+and the Docker import client also bypasses inherited proxy variables.
 Build and scope logs, exit codes and timestamps are retained under
 `/datapool/codex-musa-0518/ci-0909/`. Earlier setup/build failures remain
 separate; no test case was removed or newly skipped to produce these results.

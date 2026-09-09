@@ -34,7 +34,8 @@ else
   # The compressed tar stream avoids a second 30 GiB archive on the runner disk.
   direct_crane pull "$MUSA_CI_IMAGE" /dev/stdout \
     | python3 .github/scripts/musa/stream_image.py \
-    | timeout 75m docker load
+    | /usr/bin/env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+        -u http_proxy -u https_proxy -u all_proxy timeout 75m docker load
 fi
 actual_id=$(docker image inspect "$image_id" --format '{{.Id}}')
 test "$actual_id" = "$image_id"
