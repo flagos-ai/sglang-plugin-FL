@@ -3,9 +3,14 @@
 #
 # DCU is HIP-based: torch.cuda.is_available() is True, so get_platform_name()
 # reports "nvidia" and dispatch/config/nvidia.yaml would be the auto-loaded
-# config — dispatch/config/hygon.yaml (universal-ops subset) is pinned
-# explicitly via SGLANG_FL_CONFIG below. Note the env blacklist REPLACES (not
-# merges with) the yaml flagos_blacklist, so it must carry the FULL set.
+# config — dispatch/config/hygon.yaml (universal-ops subset) is for
+# standalone plugin users on DCU, loaded manually via SGLANG_FL_CONFIG.
+# It cannot be pinned in CI: run.py applies env_defaults to the unit scope
+# and image ENV reaches the unit job identically, and a preset config file
+# wholesale-outranks the SGLANG_FL_* env vars in PolicyManager — proven by
+# run 34335805046 (2026-09-09): test_env_policy failed with
+# "assert 'flagos' == 'vendor'". CI rides the FULL env blacklist below
+# instead (it REPLACES, not merges with, yaml flagos_blacklist).
 # FlagGems detects its hygon backend without any env (verified on BW1000).
 # The e2e/functional/unit/benchmark case sets are intentionally IDENTICAL to
 # cuda.yaml / thead.yaml / ascend.yaml.
@@ -71,14 +76,11 @@ unsupported_features: []
 #   make_ttgir compile abort on the torch_native attention warmup shape
 #   (SDPA + aten flash_attention_forward, observed 2026-08-24), eplb
 #   expert_location dim-order mismatch (count_nonzero, observed 2026-08-24)
-# SGLANG_FL_CONFIG pins dispatch/config/hygon.yaml (detection reports
-# "nvidia" on DCU, so it cannot auto-load). EXPERIMENT: if the env-policy
-# unit tests reject a preset config file (PolicyManager: file outranks the
-# SGLANG_FL_* env vars), this moves per-job — env_defaults and image ENV
-# both reach the unit job identically.
+# SGLANG_FL_CONFIG pins dispatch/config/hygon.yaml for standalone use
+# (detection reports "nvidia" on DCU, so it cannot auto-load); it is
+# deliberately NOT set in CI — see the header note.
 env_defaults:
   SGLANG_FL_FLAGOS_BLACKLIST: "pow_scalar,pow_tensor_scalar,pow_tensor_tensor,pow_tensor_scalar_,pow_tensor_tensor_,cat,cumsum,cumsum_out,scaled_dot_product_attention,flash_attention_forward,count_nonzero"
-  SGLANG_FL_CONFIG: "sglang_fl/dispatch/config/hygon.yaml"
 
 # ---- Device-specific test configurations ------------------------------------
 bw1000:

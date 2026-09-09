@@ -13,6 +13,7 @@ pip install pytest pytest-timeout pyyaml
 echo "=== Installation complete ==="
 python -c "import sglang_fl; print(f'sglang_fl {sglang_fl.__name__} loaded')"
 
-# NOTE: no env exports here — the platform envs (full op blacklist + config
-# pin) live in tests/platforms/hygon.yaml env_defaults, applied per-scope by
-# tests/run.py.
+# NOTE: no env exports here — the platform env (full op blacklist) lives in
+# tests/platforms/hygon.yaml env_defaults, applied per-scope by tests/run.py.
+# SGLANG_FL_CONFIG is deliberately not preset anywhere in CI (see the
+# platforms yaml header).

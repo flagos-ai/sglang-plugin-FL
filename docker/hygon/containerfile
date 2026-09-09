@@ -67,11 +67,16 @@ ARG PIP_INDEX_URL=
 
 # NOTE: no SGLANG_FL_* or GEMS_VENDOR envs are baked.
 # dispatch/config/hygon.yaml is not auto-loaded on DCU (get_platform_name()
-# reports "nvidia" there, torch.cuda is available); CI pins it via the
-# SGLANG_FL_CONFIG env_default in tests/platforms/hygon.yaml. FlagGems
-# detects its hygon backend with no env at all (verified on BW1000:
-# DeviceDetector reports vendor=hygon / device=cuda with GEMS_VENDOR unset),
-# and the FlagGems build itself never consults the detector.
+# reports "nvidia" there, torch.cuda is available); CI rides the FULL op
+# blacklist via the SGLANG_FL_FLAGOS_BLACKLIST env_default in
+# tests/platforms/hygon.yaml instead — a preset SGLANG_FL_CONFIG cannot be
+# used in CI (it wholesale-outranks the SGLANG_FL_* env vars in
+# PolicyManager and breaks the env-policy unit tests, proven in run
+# 34335805046). Standalone users load the yaml manually via
+# SGLANG_FL_CONFIG. FlagGems detects its hygon backend with no env at all
+# (verified on BW1000: DeviceDetector reports vendor=hygon / device=cuda
+# with GEMS_VENDOR unset), and the FlagGems build itself never consults
+# the detector.
 ENV DEBIAN_FRONTEND=noninteractive \
     HF_ENDPOINT=https://huggingface.co
 
