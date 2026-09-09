@@ -122,7 +122,13 @@ def _patch_pp_launch_batch_add_sync() -> None:
 
 def _patch_multimodal_mask() -> None:
     try:
+        from importlib import import_module
+
         from sglang.srt.managers import mm_utils
+
+        # 0.5.18 re-exports this function from mm_schedule. Patch the module
+        # owning its globals, where the mask helper is actually looked up.
+        mask_module = import_module(mm_utils.get_embedding_and_mask.__module__)
     except Exception as e:
         logger.warning("MUSA multimodal mask patch skipped: %s", e)
         return
@@ -137,8 +143,8 @@ def _patch_multimodal_mask() -> None:
             mask |= input_ids == token
         return mask.unsqueeze(-1)
 
-    mm_utils._get_multimodal_mask = _get_multimodal_mask_loop
-    logger.info("MUSA multimodal mask patch applied")
+    mask_module._get_multimodal_mask = _get_multimodal_mask_loop
+    logger.info("MUSA multimodal mask patch applied to %s", mask_module.__name__)
 
 
 def _patch_communication_op_fp32_all_reduce() -> None:

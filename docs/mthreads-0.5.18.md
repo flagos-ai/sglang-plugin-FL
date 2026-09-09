@@ -105,8 +105,15 @@ For eager decode, replace the last line with
 - Native `slice` handles the boolean buffers filled by SGLang 0.5.18's eager
   runner and preserves their view aliasing. The tested FlagGems snapshot
   rejects boolean slicing, which the original offline example exposed.
-  If overriding `SGLANG_FL_FLAGOS_BLACKLIST`, include `broadcast_tensors`
-  and `slice` alongside your other required exclusions.
+- The multimodal mask patch follows the module owning `get_embedding_and_mask`.
+  In 0.5.18, `mm_utils` re-exports this function from `mm_schedule`; patching
+  only `mm_utils._get_multimodal_mask` leaves the live implementation unchanged.
+- Native `eq`, `eq_scalar`, and `equal` preserve integer placeholder IDs above
+  `2**24`. FlagGems `01433e830` converts equality operands to FP32 and can
+  incorrectly match adjacent IDs. Both contiguous and strided int32/int64
+  inputs passed the live embedding-mask regression on MUSA.
+  If overriding `SGLANG_FL_FLAGOS_BLACKLIST`, include `broadcast_tensors`,
+  `slice`, `eq`, `eq_scalar`, and `equal` alongside your other required exclusions.
 
 Run the targeted regression checks in the inference environment:
 
@@ -116,6 +123,7 @@ python -m pytest -q \
   tests/unit_tests/platform/test_musa_gated_layernorm.py \
   tests/unit_tests/platform/test_musa_triton_compat.py \
   tests/unit_tests/platform/test_musa_sampling_mask.py \
+  tests/unit_tests/platform/test_musa_multimodal_mask.py \
   tests/unit_tests/platform/test_musa_pp_compat.py \
   tests/unit_tests/dispatch/test_base_fused_op_registration.py \
   tests/unit_tests/distributed/test_communicator_hooks.py
