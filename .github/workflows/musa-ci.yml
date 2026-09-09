@@ -55,6 +55,8 @@ jobs:
         run: python .github/scripts/load_config.py --platform musa
       - name: Show the complete configured model matrix
         run: python .github/scripts/generate_matrix.py --platform musa
+      - name: Check MUSA device selection
+        run: python .github/scripts/musa/test_select_gpus.py
 
   test-musa:
     name: MUSA full test suite

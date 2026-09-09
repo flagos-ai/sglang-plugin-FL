@@ -211,6 +211,18 @@ the timeout cancellation. The MUSA-only workflow now initializes one
 container for all scopes, with a 180-minute job limit and separate phase
 limits. All three E2E groups still run if a peer group fails, and all phase
 logs are uploaded as `musa-ci-results`.
+Run `34331550776` reached the actual tests: Unit and Functional passed, but
+the model groups exposed an occupied runner GPU. The initial device report
+showed GPU 0 using 66,325 MiB while GPUs 1–7 used 2 MiB each. TP2/TP4 failed
+SGLang's unbalanced-memory check; the TP1 small-model case passed. The runtime
+and imported package versions matched preflight. MUSA CI now selects four
+idle devices from the runner's existing allocation and waits when fewer are
+available, preserving TP sizes and model memory settings. Seven CPU checks
+cover the observed occupancy, explicit allocations and insufficient capacity.
+The published image also passed a live selector probe on `moer_14`: automatic
+selection avoided occupied GPUs 4/5, and the explicit allocation `2,3,6,7`
+was preserved. Torch MUSA saw four devices and a tensor operation passed on
+each logical device, including the nonzero and noncontiguous mapping.
 Build and scope logs, exit codes and timestamps are retained under
 `/datapool/codex-musa-0518/ci-0909/`. Earlier setup/build failures remain
 separate; no test case was removed or newly skipped to produce these results.

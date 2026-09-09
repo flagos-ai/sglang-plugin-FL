@@ -88,6 +88,11 @@ individual jobs do not upgrade SGLang, Torch, FlagTree or FlagGems.
 At least four visible S5000 GPUs and the model mount `/data/models/Qwen`
 are required for the configured TP4 cases. The cached benchmark dataset
 works when GitHub Actions sets `HOME=/github/home`, without a network fetch.
+The device check queries `mthreads-gmi` JSON and selects four idle devices
+before importing Torch. It respects existing device allocations, prefers a
+contiguous group and exports `MUSA_VISIBLE_DEVICES` for all subsequent phases.
+If fewer than four devices are idle, it waits up to 30 minutes instead of
+running TP4 on occupied cards. The original model memory settings are retained.
 
 The shared graph fixture and graph arguments are compatible with 0.5.18:
 `disable_cuda_graph` remains valid, while disabled prefill graphs use
