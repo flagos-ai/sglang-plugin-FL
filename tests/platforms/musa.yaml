@@ -75,7 +75,7 @@ unsupported_features: []
 # Its slice implementation rejects the eager runner's boolean buffers as well.
 # Integer eq/eq_scalar/equal must preserve multimodal IDs above 2**24.
 env_defaults:
-  SGLANG_FL_FLAGOS_BLACKLIST: "mul,sort,broadcast_tensors,slice,eq,eq_scalar,equal"
+  SGLANG_FL_FLAGOS_BLACKLIST: "mul,sort,broadcast_tensors,slice,repeat,eq,eq_scalar,equal"
 
 # ---- Device-specific test configurations ------------------------------------
 s5000:
