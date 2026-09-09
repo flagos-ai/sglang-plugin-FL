@@ -14,7 +14,8 @@ echo "=== Installation complete ==="
 python -c "import sglang_fl; print(f'sglang_fl {sglang_fl.__name__} loaded')"
 
 # NOTE: no SGLANG_FL_CONFIG / SGLANG_FL_PLATFORM export here (unlike what an
-# earlier revision did): exporting either breaks the env-policy unit tests,
-# and neither is needed on DCU — FlagGems DeviceDetector reports vendor=hygon
-# through torch.cuda, so the plugin auto-loads hygon.yaml. The op blacklist is
-# carried by tests/platforms/hygon.yaml env_defaults instead.
+# earlier revision did): exporting either breaks the env-policy unit tests.
+# Neither would load a hygon dispatch config anyway — on DCU the plugin's
+# get_platform_name() sees torch.cuda as available and picks the nvidia
+# config. The op blacklist is carried by tests/platforms/hygon.yaml
+# env_defaults instead.

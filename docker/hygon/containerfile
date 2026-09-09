@@ -68,10 +68,13 @@ ARG PIP_INDEX_URL=
 # NOTE: no SGLANG_FL_* envs are baked. Plugin envs live in
 # tests/platforms/hygon.yaml env_defaults (applied per-scope by tests/run.py);
 # SGLANG_FL_PLATFORM in particular must NOT be exported globally — it forces
-# the dispatch manager to load the hygon platform config and breaks the
-# env-policy unit tests (same reason ascend.yaml keeps env_defaults empty).
-# DCU auto-detection works anyway: FlagGems DeviceDetector reports
-# vendor=hygon through torch.cuda, so hygon.yaml loads without any env.
+# the dispatch manager to load a platform config and breaks the env-policy
+# unit tests (same reason ascend.yaml keeps env_defaults empty). No dispatch
+# platform config is needed on DCU: get_platform_name() reports "nvidia"
+# there (torch.cuda is available), and the DCU op exclusions ride on the
+# SGLANG_FL_FLAGOS_BLACKLIST env. GEMS_VENDOR below pins FlagGems' own vendor
+# detection — at build time for the FlagGems rebuild, at runtime so the
+# hygon backend loads without the device-query fallback path.
 ENV DEBIAN_FRONTEND=noninteractive \
     HF_ENDPOINT=https://huggingface.co \
     GEMS_VENDOR=hygon
