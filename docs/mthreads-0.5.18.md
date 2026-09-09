@@ -80,6 +80,9 @@ All scopes share one container: the first cold pull exceeded the old unit
 job's 30-minute limit before any test began. The MUSA job allows 180 minutes
 for initialization and the full suite, with separate limits and logs for each
 test phase. A failing E2E group does not suppress the other two groups.
+Each E2E phase uploads its log immediately, as well as in the final combined
+artifact. Qwen3-4B's MUSA engine override fixes `random_seed=42` so the existing
+temperature-0.7 sampling smoke check is reproducible across fresh engines.
 Configuration generation also uses the MUSA runner queue, with a temporary
 Python environment; it does not depend on a separate GitHub-hosted runner.
 Its setup script installs the current PR checkout with `--no-deps` and

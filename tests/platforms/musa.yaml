@@ -33,6 +33,8 @@ engine_overrides:
       page_size: 1
     4b_tp2:
       page_size: 1
+      # Keep non-greedy smoke sampling reproducible across fresh engines.
+      random_seed: 42
   qwen3_6:
     27b_tp4_nograph:
       page_size: 1
