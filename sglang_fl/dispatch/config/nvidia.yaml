@@ -15,10 +15,10 @@
 # SGLang-FL Dispatch Configuration for NVIDIA GPU
 prefer: flagos
 
-# FlagGems' TopK path produces incorrect MoE routing tokens for
-# Qwen3.6-35B-A3B at TP=4 on A100. Skip only the OOT TopK bridge so SGLang's
-# complete forward_cuda path retains its output-format, symmetric-memory, and
-# waterfill handling. All other fused-op bridges remain enabled.
+# Qwen3.6-35B-A3B at TP=4 on A100 produces silent incorrect output when the
+# FlagGems-backed TopK bridge is selected. Skip only that OOT bridge so
+# SGLang's complete forward_cuda path retains its output-format,
+# symmetric-memory, and waterfill handling. All other bridges remain enabled.
 oot_blacklist:
   - TopK
 
