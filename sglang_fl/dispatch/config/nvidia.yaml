@@ -16,14 +16,10 @@
 prefer: flagos
 
 # Keep TopK on SGLang's complete forward_cuda path so its output-format,
-# symmetric-memory, and waterfill handling remain intact. Qwen3.6-35B-A3B at
-# TP=4 on A100 still produces silent incorrect output after that fallback; the
-# remaining FlagOS fused path is SiluAndMul. Keep it on SGLang's CUDA path while
-# that A100-specific activation issue is investigated. Other OOT bridges remain
-# enabled.
+# symmetric-memory, and waterfill handling remain intact. Other OOT bridges
+# remain enabled.
 oot_blacklist:
   - TopK
-  - SiluAndMul
 
 # FlagGems master currently does not match the PyTorch/SGLang 0.5.18
 # contracts for these operators:
@@ -38,10 +34,6 @@ oot_blacklist:
 #     FlagGems 5.3.6.dev0+g8ea5925; sequential requests remained correct.
 #   - mm: retain the native PyTorch kernel used by the previous CUDA CI. The
 #     FlagGems override is not yet validated for A100 TP=4 model-scale shapes.
-#   - isin: SGLang uses this result as the Qwen3.6 multimodal placeholder mask.
-#     Its FlagGems Triton 3.6 kernel emits non-scalar logical-operation warnings
-#     immediately before a corrupt A100 concurrent VL response, so use PyTorch
-#     until that implementation is corrected.
 # Keep the rest of the ATen replacement layer enabled.
 flagos_blacklist:
   - slice
@@ -50,4 +42,3 @@ flagos_blacklist:
   - _index_put_impl_
   - count_nonzero
   - mm
-  - isin
