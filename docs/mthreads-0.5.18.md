@@ -95,10 +95,12 @@ If fewer than four devices are idle, it waits up to 30 minutes instead of
 running TP4 on occupied cards. The original model memory settings are retained.
 
 Image preparation runs on the MUSA runner before starting the test container.
-It uses checksum-pinned `crane` v0.22.1 to fetch the public Harbor image, then
-streams the compressed archive into Docker. Proxy variables are removed only
-from the registry client and Docker import command. The loaded image ID must
-match the pinned manifest's configuration digest. Existing verified images are reused; no registry login
+It uses Python's standard library to fetch the public Harbor image in 8 MiB
+HTTP ranges, with at most four concurrent requests. The manifest, configuration
+and every compressed layer are checked against their pinned SHA256 digests.
+The compressed archive is streamed into Docker, and the loaded image ID must
+match the original configuration digest. The registry client and Docker import
+command use direct connections. Existing verified images are reused; no registry login
 or shared Docker daemon reconfiguration is required. All phases then execute
 in one container, which is removed at job completion. Available transfer, device and
 test logs are uploaded even when image preparation fails.

@@ -244,9 +244,18 @@ was checksum-verified locally and copied to `moer_14` because that machine's
 direct GitHub Release request failed; the production CI keeps its existing
 GitHub download configuration. Evidence is in `ci-0909/direct-ci/`.
 Actions run `34348159578` instead reached the transfer timeout after 60 minutes
-and only 5.89 GiB, at roughly 1.7 MiB/s. No model test started. Transport
-diagnostics now measure registry reads separately from Docker API uploads,
-and the Docker import client also bypasses inherited proxy variables.
+and only 5.89 GiB, at roughly 1.7 MiB/s. No model test started. Diagnostic run
+`34355271769` measured 19–21 MiB/s for 8 MiB HTTP range reads and about
+93 MiB/s for Docker API uploads. Clearing inherited proxies made no material
+difference; the Docker transport was a Unix socket and the daemon had no proxy.
+That run was stopped after obtaining the measurements, before GPU tests.
+The final transfer client therefore uses the verified range-read path with
+four concurrent 8 MiB requests, checks every layer SHA256 and preserves the
+original image configuration and repeated-layer references. It needs no
+external image-transfer binary. Seventeen helper tests cover device allocation,
+container cleanup, out-of-order chunks, incorrect ranges and digest mismatches.
+A small real Docker-load round trip also preserved the exact configuration
+ID and duplicate-layer references; its temporary diagnostic image was removed.
 Build and scope logs, exit codes and timestamps are retained under
 `/datapool/codex-musa-0518/ci-0909/`. Earlier setup/build failures remain
 separate; no test case was removed or newly skipped to produce these results.
