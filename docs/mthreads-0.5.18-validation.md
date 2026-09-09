@@ -246,7 +246,7 @@ GitHub download configuration. Evidence is in `ci-0909/direct-ci/`.
 Actions run `34348159578` instead reached the transfer timeout after 60 minutes
 and only 5.89 GiB, at roughly 1.7 MiB/s. No model test started. Diagnostic run
 `34355271769` measured 19–21 MiB/s for 8 MiB HTTP range reads and about
-93 MiB/s for Docker API uploads. Clearing inherited proxies made no material
+93 MiB/s for all-zero Docker API uploads. Clearing inherited proxies made no material
 difference; the Docker transport was a Unix socket and the daemon had no proxy.
 That run was stopped after obtaining the measurements, before GPU tests.
 The final transfer client therefore uses the verified range-read path with
@@ -269,6 +269,19 @@ allocation expressed as GPU UUIDs. The selector now maps those UUIDs through
 the driver's visible device report and intersects any numeric MUSA mask. An
 unknown UUID still fails instead of expanding the allocation. Regression tests
 cover UUID mapping, mask intersection and rejection of unreported devices.
+The corrected full range transfer on `moer_14` verified all 73 unique layers,
+including the 10.24 GiB layer, and the original image ID: 30.05 GiB in 1,427
+seconds. A Windows `git archive` line-ending issue then stopped the local
+shell preflight; the committed scripts are LF. After normalizing that isolated
+copy, all ten runtime helper hashes matched the current PR, 22 helper tests,
+282 unit tests and 36 functional tests passed (three existing skips), and the
+runtime check exited 0 and removed its container. Both logs are retained in
+`ci-0909/range-ci-v2/`.
+Actions run `34360832372` still transferred only 5.87 GiB in 60 minutes and
+timed out before any GPU test. DNS and PAX fixes did not resolve the sustained
+CI throughput limit. The earlier all-zero upload probe is not representative
+of compressed image layers; diagnostics now compare real registry ranges and
+high-entropy payloads through both Docker import and load.
 Build and scope logs, exit codes and timestamps are retained under
 `/datapool/codex-musa-0518/ci-0909/`. Earlier setup/build failures remain
 separate; no test case was removed or newly skipped to produce these results.

@@ -87,6 +87,17 @@ jobs:
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.10"
+      - name: Measure image transport with high-entropy data
+        timeout-minutes: 10
+        run: |
+          mkdir -p musa-ci-results
+          python3 .github/scripts/musa/probe_image_transport.py 2>&1 | tee musa-ci-results/transport.log
+      - name: Upload image transport measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: musa-image-transport
+          path: musa-ci-results/transport.log
       - name: Prepare pinned image with direct Harbor access
         timeout-minutes: 85
         run: |
