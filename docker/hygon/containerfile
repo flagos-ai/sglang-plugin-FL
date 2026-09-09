@@ -65,17 +65,15 @@ ARG GIT_PROXY=
 # Empty (default) = pypi.org direct.
 ARG PIP_INDEX_URL=
 
-# NOTE: no SGLANG_FL_* envs are baked. dispatch/config/hygon.yaml is not
-# auto-loaded on DCU (get_platform_name() reports "nvidia" there, torch.cuda
-# is available); CI pins it via SGLANG_FL_CONFIG exported by
-# .github/scripts/hygon/check.sh for the non-unit jobs only — a preset
-# config file outranks the SGLANG_FL_* env vars in PolicyManager and would
-# break the env-policy unit tests. GEMS_VENDOR below pins FlagGems' own
-# vendor detection — at build time for the FlagGems rebuild, at runtime so
-# the hygon backend loads without the device-query fallback path.
+# NOTE: no SGLANG_FL_* or GEMS_VENDOR envs are baked.
+# dispatch/config/hygon.yaml is not auto-loaded on DCU (get_platform_name()
+# reports "nvidia" there, torch.cuda is available); CI pins it via the
+# SGLANG_FL_CONFIG env_default in tests/platforms/hygon.yaml. FlagGems
+# detects its hygon backend with no env at all (verified on BW1000:
+# DeviceDetector reports vendor=hygon / device=cuda with GEMS_VENDOR unset),
+# and the FlagGems build itself never consults the detector.
 ENV DEBIAN_FRONTEND=noninteractive \
-    HF_ENDPOINT=https://huggingface.co \
-    GEMS_VENDOR=hygon
+    HF_ENDPOINT=https://huggingface.co
 
 # ---------------------------------------------------------------------------
 # SGLang (stock wheel, dependency-free install)
@@ -167,7 +165,8 @@ RUN T="/usr/local/lib/python3.10/dist-packages/aiter/ops/triton" && \
 # v5.3.0 builds with scikit-build-core, so cmake/ninja/pybind11 are staged
 # first. The triton 3.6.0 DTK build from the base image compiles the kernels.
 # SETUPTOOLS_SCM_PRETEND_VERSION avoids setuptools-scm git-describe issues in
-# the --depth 1 clone. GEMS_VENDOR=hygon pins the vendor detection.
+# the --depth 1 clone. (No GEMS_VENDOR needed: the scikit-build-core build
+# never consults the device detector.)
 RUN PIP_CI="$( [ -n "${PIP_INDEX_URL}" ] && echo "-i ${PIP_INDEX_URL}" )" && \
     if [ -n "${FLAGGEMS_VERSION}" ]; then \
         pip install ${PIP_CI} --no-cache-dir -U "setuptools<77" "setuptools-scm>=8,<10" \

@@ -13,8 +13,6 @@ pip install pytest pytest-timeout pyyaml
 echo "=== Installation complete ==="
 python -c "import sglang_fl; print(f'sglang_fl {sglang_fl.__name__} loaded')"
 
-# NOTE: no SGLANG_FL_CONFIG / SGLANG_FL_PLATFORM export here: a preset
-# SGLANG_FL_CONFIG outranks the SGLANG_FL_* env vars in PolicyManager and
-# would break the env-policy unit tests in this job. The DCU dispatch config
-# is exported by check.sh instead, which runs per job and skips only the
-# unit job.
+# NOTE: no env exports here — the platform envs (full op blacklist + config
+# pin) live in tests/platforms/hygon.yaml env_defaults, applied per-scope by
+# tests/run.py.

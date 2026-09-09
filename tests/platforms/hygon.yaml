@@ -3,12 +3,10 @@
 #
 # DCU is HIP-based: torch.cuda.is_available() is True, so get_platform_name()
 # reports "nvidia" and dispatch/config/nvidia.yaml would be the auto-loaded
-# config — dispatch/config/hygon.yaml is instead pinned explicitly via
-# SGLANG_FL_CONFIG, exported by .github/scripts/hygon/check.sh (NOT an
-# env_default here: run.py applies env_defaults to the unit scope too, and a
-# preset config file outranks the SGLANG_FL_* env vars in PolicyManager,
-# breaking the env-policy unit tests). FlagGems selects its hygon backend
-# via GEMS_VENDOR, baked in the CI image ENV.
+# config — dispatch/config/hygon.yaml (universal-ops subset) is pinned
+# explicitly via SGLANG_FL_CONFIG below. Note the env blacklist REPLACES (not
+# merges with) the yaml flagos_blacklist, so it must carry the FULL set.
+# FlagGems detects its hygon backend without any env (verified on BW1000).
 # The e2e/functional/unit/benchmark case sets are intentionally IDENTICAL to
 # cuda.yaml / thead.yaml / ascend.yaml.
 #
@@ -58,19 +56,29 @@ engine_overrides:
 unsupported_features: []
 
 # Default environment variables for this platform.
-# tests/run.py applies these before invoking pytest.
+# tests/run.py applies these before invoking pytest (setdefault — a
+# user-exported value always wins).
 #
-# Intentionally EMPTY: the DCU op blacklist lives in
-# sglang_fl/dispatch/config/hygon.yaml (root causes documented there),
-# loaded via the SGLANG_FL_CONFIG exported by check.sh for the non-unit CI
-# jobs. SGLANG_FL_CONFIG must NOT be an env_default — run.py applies
-# env_defaults to the unit scope too, and a preset config file outranks the
-# SGLANG_FL_* env vars in PolicyManager, breaking the env-policy unit tests
-# (ascend.yaml keeps its env_defaults empty for a similar reason).
-# SGLANG_FL_PLATFORM is likewise not set. GEMS_VENDOR stays image-only
-# (docker/hygon/containerfile ENV): the FlagGems rebuild needs it at image
-# build time, which env_defaults cannot reach.
-env_defaults: {}
+# SGLANG_FL_FLAGOS_BLACKLIST carries the FULL op set: the env REPLACES (not
+# merges with) yaml flagos_blacklist, so a partial list here would silently
+# drop the yaml's universal ops (cat/cumsum/cumsum_out) in every scope.
+# Universal ops + model-specific ones:
+# - cat, cumsum, cumsum_out: every case's scheduler/serving paths (also the
+#   yaml's universal subset — see dispatch/config/hygon.yaml for root causes)
+# - pow family, scaled_dot_product_attention, flash_attention_forward,
+#   count_nonzero: exercised by the qwen3 dense (4b/06b) cases — wrong
+#   numerics on DCU (pow/cat: validated vLLM-on-DCU recipe), DTK triton
+#   make_ttgir compile abort on the torch_native attention warmup shape
+#   (SDPA + aten flash_attention_forward, observed 2026-08-24), eplb
+#   expert_location dim-order mismatch (count_nonzero, observed 2026-08-24)
+# SGLANG_FL_CONFIG pins dispatch/config/hygon.yaml (detection reports
+# "nvidia" on DCU, so it cannot auto-load). EXPERIMENT: if the env-policy
+# unit tests reject a preset config file (PolicyManager: file outranks the
+# SGLANG_FL_* env vars), this moves per-job — env_defaults and image ENV
+# both reach the unit job identically.
+env_defaults:
+  SGLANG_FL_FLAGOS_BLACKLIST: "pow_scalar,pow_tensor_scalar,pow_tensor_tensor,pow_tensor_scalar_,pow_tensor_tensor_,cat,cumsum,cumsum_out,scaled_dot_product_attention,flash_attention_forward,count_nonzero"
+  SGLANG_FL_CONFIG: "sglang_fl/dispatch/config/hygon.yaml"
 
 # ---- Device-specific test configurations ------------------------------------
 bw1000:
