@@ -160,7 +160,53 @@ in 20.44 seconds**. Three unchanged fused-op registration tests also passed
 in a separate run. Ruff and `git diff --check` passed. A wheel built from the
 final package source passed content checks for the runtime/lifecycle modules,
 vision-only FP32 scope, and the retained blacklist. This verifies package
-construction; a full Docker image build was not performed.
+construction. The subsequent full CI image build is recorded below.
+
+## MUSA CI environment follow-up (2026-09-09)
+
+The `ci` target of `docker/mthreads/empty-0.5.18.containerfile` built
+successfully from a clean source context on `moer_14`. Its runtime is SGLang
+0.5.18, Torch/torch_musa 2.9.0, FlagTree 0.6.2a3+mthreads3.6 / Triton 3.6.0,
+and FlagGems 5.4.0.dev20260908+g01433e830. The CI stage includes pytest and
+the real ShareGPT dataset cache. Dependency installation preserves the
+vendor Torch version, and the SGLang source archive receives explicit 0.5.18
+package-version metadata.
+
+The public image is
+`harbor.baai.ac.cn/plugin/sglang-plugin-fl:0.5.18-musa-ci-20260909`,
+published with digest
+`sha256:8c31e56f542ed1e7d2a07bf95c241b7700eb4945014cdc48da73dd77c261207b`.
+An empty Docker credential configuration successfully reads its manifest.
+The MUSA CI configuration pins this digest.
+
+The dedicated MUSA workflow targets `dev/0.5.18` and runs the existing test
+matrix. Its setup installs the current PR checkout without resolving
+dependencies and checks that `sglang_fl` imports from that checkout.
+The approved shared test corrections initialize the graph fixture's vendor
+name and replace obsolete `disable_piecewise_cuda_graph` arguments with
+`cuda_graph_backend_prefill: disabled`. The existing `disable_cuda_graph`
+argument remains valid and is retained.
+
+Fresh-container preflight uses four S5000 GPUs on `moer_14`, the repository
+mounted at `/workspace`, models under `/data/models/Qwen`, and the Actions
+home directory `/github/home`. It imports FlagGems from `/opt/FlagGems/src`.
+
+| Preflight scope | Result |
+| --- | --- |
+| Unit | 282 passed, exit 0 |
+| Functional | 36 passed / 3 existing skips, exit 0 |
+| Inference | Qwen3-4B TP2, Qwen3-0.6B TP1, Qwen3.6-35B-A3B TP4 and Qwen3.6-27B TP4: all four passed, exit 0 |
+| Concurrent | Both Qwen3.6 TP4 cases passed all text, VL and mixed requests, exit 0 |
+| Serving | Qwen3-4B TP2 and both Qwen3.6 TP4 cases: 5 checks each, all 15 passed, exit 0 |
+| Benchmark | Original throughput, latency and serve smoke tests: all three passed, exit 0 |
+
+These preflight results are separate from the GitHub Actions result.
+The authoritative CI outcome is published on the
+[PR #95 checks page](https://github.com/flagos-ai/sglang-plugin-FL/pull/95/checks)
+under `MUSA SGLang 0.5.18 CI`.
+Build and scope logs, exit codes and timestamps are retained under
+`/datapool/codex-musa-0518/ci-0909/`. Earlier setup/build failures remain
+separate; no test case was removed or newly skipped to produce these results.
 
 ## Selected evidence locations
 
@@ -221,6 +267,7 @@ Strict MTP baseline equality is still reported independently of content
 validation. The model checks are serving smoke tests, not quality benchmarks.
 Resource-tracker cleanup `KeyError` warnings and MCCL process-group teardown
 warnings remain in some otherwise successful logs; final exit codes were 0
-and no task-owned inference processes remained after completion. Prefill graphs,
-audio, a full Docker image build, and controlled performance benchmarking remain
-outside this validation.
+and no task-owned inference processes remained after those completed runs.
+Prefill graphs, audio and controlled performance benchmarking remain outside
+this validation. Benchmark smoke tests check entrypoint execution, not
+performance regressions.
