@@ -69,8 +69,7 @@ SGLang v0.5.12 和 v0.5.11，等待各自的专项升级。
 
 已验证的 H100 环境会卸载随 PyTorch 安装的 Triton 包，改用 FlagTree 0.6.2a1
 提供 Triton 3.6 兼容编译器；已验证的 FlagGems master 快照可以在 H100 上接管
-`to_copy`。CUDA containerfile 会基于官方 SGLang v0.5.18 runtime 镜像复现这套
-固定依赖。该镜像不安装 FlagCX，因为 NVIDIA 默认使用 SGLang 原生 NCCL 路径。
+`to_copy`。
 
 ## 模型验证状态
 
@@ -93,28 +92,8 @@ Qwen3.6-35B-A3B 已通过普通对话、强制 128-token decode 和四并发请�
 
 ### 方式 A：标准安装（NVIDIA CUDA）
 
-1. 构建 CUDA 镜像，或按上表准备等价的 SGLang v0.5.18 NVIDIA 环境。如果
-   Docker Hub 不可达，可以通过 `--build-arg SGLANG_BASE_IMAGE=<镜像地址>`
-   覆盖基础镜像：
-
-```bash
-docker buildx build --load \
-    -f docker/cuda/containerfile \
-    -t sglang-plugin-fl:cuda-sglang0.5.18-ci \
-    .
-```
-
-   构建机访问 GitHub 需要代理时，通过 BuildKit secret 临时传入，不要将代理
-   凭据写入 Dockerfile 或镜像层：
-
-```bash
-export GIT_PROXY=http://proxy.example:3128
-docker buildx build --load \
-    --secret id=git_proxy,env=GIT_PROXY \
-    -f docker/cuda/containerfile \
-    -t sglang-plugin-fl:cuda-sglang0.5.18-ci \
-    .
-```
+1. 按上表准备 SGLang v0.5.18 NVIDIA 环境，可从官方
+   `lmsysorg/sglang:v0.5.18-runtime` 镜像开始配置；NVIDIA 通信继续使用 NCCL。
 
 2. 安装本插件，并保留已验证的依赖版本：
 
