@@ -187,6 +187,9 @@ def _make_baseline_engine(
         disable_cuda_graph=disable_cuda_graph,
         disable_overlap_schedule=disable_overlap_schedule,
         trust_remote_code=True,
+        # MTP uses fresh prefixes. Reusing hybrid states only in the baseline
+        # changes prefill shapes and rounding, confounding greedy comparison.
+        disable_radix_cache=True,
         **platform_kwargs,
         **_piecewise_graph_kwargs(disable_piecewise_cuda_graph),
     )
@@ -268,7 +271,7 @@ def main():
     print("=" * 70)
     print(f"  Model: {MODEL_PATH}")
     print(f"  TP: {TP_SIZE} | max_tokens: {max_tokens} | mode: {mode_str}")
-    print(f"  Overlap schedule: {not args.disable_overlap_schedule}")
+    print(f"  Requested overlap schedule: {not args.disable_overlap_schedule}")
     print("  MTP: algorithm=EAGLE, num_steps=3, topk=1, draft_tokens=4")
     print(f"  Prompts: {len(PROMPTS)} (factual/math/code/explanation/creative)")
     print()
@@ -284,6 +287,11 @@ def main():
         disable_overlap_schedule=args.disable_overlap_schedule,
     )
     print(f"  Engine loaded in {time.perf_counter() - t0:.1f}s")
+
+    # Platform compatibility defaults may resolve the requested mode (e.g.
+    # MUSA MTP). Compare against a baseline using that same effective mode.
+    effective_disable_overlap = mtp_engine.server_args.disable_overlap_schedule
+    print(f"  Effective overlap schedule: {not effective_disable_overlap}")
 
     mtp_results = run_inference(mtp_engine, PROMPTS, max_tokens)
 
@@ -335,7 +343,7 @@ def main():
         baseline_engine = _make_baseline_engine(
             disable_cuda_graph=disable_cg,
             disable_piecewise_cuda_graph=disable_pcg,
-            disable_overlap_schedule=args.disable_overlap_schedule,
+            disable_overlap_schedule=effective_disable_overlap,
         )
         print(f"  Engine loaded in {time.perf_counter() - t0:.1f}s")
 

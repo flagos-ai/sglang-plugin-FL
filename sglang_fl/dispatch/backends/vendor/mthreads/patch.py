@@ -245,6 +245,30 @@ def _patch_parallel_state_fp32_reduce_scatter() -> None:
     logger.info("MUSA FP32 parallel_state reduce_scatter patch applied")
 
 
+def _patch_flagcx_fp32_all_reduce() -> None:
+    """Cover eager-bound all-reduce imports routed through the FlagCX hook."""
+    import torch
+
+    from sglang_fl.distributed.communicator import CommunicatorFL
+
+    original = CommunicatorFL.all_reduce
+
+    @wraps(original)
+    def all_reduce_fp32(self, input_: torch.Tensor) -> torch.Tensor:
+        if input_.device.type == "musa" and input_.dtype == torch.bfloat16:
+            # Vision embedding/linear layers bind communication_op functions
+            # before the source-module patch. The active FlagCX hook also
+            # bypasses GroupCoordinator's original method, so cover its actual
+            # communicator entry point and retain the in-place return contract.
+            reduced = original(self, input_.float())
+            input_.copy_(reduced)
+            return input_
+        return original(self, input_)
+
+    CommunicatorFL.all_reduce = all_reduce_fp32
+    logger.info("MUSA FP32 FlagCX communicator all-reduce patch applied")
+
+
 def _patch_fp32_tp_all_reduce() -> None:
     """Apply all FP32 TP all-reduce patches when SGLANG_MUSA_FP32_TP_ALLREDUCE=1."""
     if not _MUSA_FP32_TP_ALLREDUCE:
@@ -255,6 +279,7 @@ def _patch_fp32_tp_all_reduce() -> None:
         return
 
     _patch_communication_op_fp32_all_reduce()
+    _patch_flagcx_fp32_all_reduce()
     _patch_parallel_state_fp32_reduce_scatter()
     logger.info("MUSA FP32 TP all-reduce patches applied")
 
@@ -277,6 +302,7 @@ def apply_musa_patches() -> None:
         return
 
     from .triton_compat import patch_triton_pdl_symbols
+    from .lifecycle import apply_musa_lifecycle_patches
 
     patch_triton_pdl_symbols()
     _patch_vision_flash_attention()
@@ -284,6 +310,7 @@ def apply_musa_patches() -> None:
     _patch_pp_launch_batch_add_sync()
     _patch_multimodal_mask()
     _patch_fp32_tp_all_reduce()
+    apply_musa_lifecycle_patches()
     _patches_applied = True
     logger.info("All MUSA PP patches applied successfully")
 
