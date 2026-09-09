@@ -252,10 +252,18 @@ That run was stopped after obtaining the measurements, before GPU tests.
 The final transfer client therefore uses the verified range-read path with
 four concurrent 8 MiB requests, checks every layer SHA256 and preserves the
 original image configuration and repeated-layer references. It needs no
-external image-transfer binary. Seventeen helper tests cover device allocation,
+external image-transfer binary. Twenty helper tests cover device allocation,
 container cleanup, out-of-order chunks, incorrect ranges and digest mismatches.
 A small real Docker-load round trip also preserved the exact configuration
 ID and duplicate-layer references; its temporary diagnostic image was removed.
+Run `34358203048` stopped after 2.54 GiB because repeated connections exhausted
+their retries on a temporary DNS resolution failure; no GPU test started.
+The downloader now caches successful DNS resolutions for one pull, retaining
+the original hostname for TLS verification. Failed resolutions are not cached.
+The full range preflight separately exposed USTAR's 8 GiB per-file limit after
+16.59 GiB had streamed. The archive now uses PAX headers, with a regression
+check for a 12 GiB layer. Both failed runs retain their logs and nonzero exit
+codes; neither is counted as a successful image pull or model test.
 Build and scope logs, exit codes and timestamps are retained under
 `/datapool/codex-musa-0518/ci-0909/`. Earlier setup/build failures remain
 separate; no test case was removed or newly skipped to produce these results.

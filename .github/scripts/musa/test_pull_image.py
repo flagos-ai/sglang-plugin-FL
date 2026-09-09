@@ -5,12 +5,21 @@ import gzip
 import hashlib
 import io
 import json
+import socket
 import tarfile
 import time
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
-from pull_image import ChunkReader, check_range, save_image, verify_digest
+from pull_image import (
+    ARCHIVE_FORMAT,
+    ChunkReader,
+    cached_dns,
+    check_range,
+    save_image,
+    verify_digest,
+)
 
 
 def digest(data):
@@ -28,6 +37,38 @@ class FakeRegistry:
 
 
 class ImagePullTests(unittest.TestCase):
+    def test_successful_dns_is_cached_only_within_the_pull(self):
+        addresses = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", 443))]
+        with patch("socket.getaddrinfo", return_value=addresses) as resolver:
+            with cached_dns():
+                for _ in range(5):
+                    self.assertEqual(
+                        socket.getaddrinfo("registry.example", 443), addresses
+                    )
+                resolver.assert_called_once_with("registry.example", 443)
+            self.assertIs(socket.getaddrinfo, resolver)
+
+    def test_transient_dns_failure_is_not_cached(self):
+        with patch(
+            "socket.getaddrinfo",
+            side_effect=[socket.gaierror(socket.EAI_AGAIN, "temporary failure"), []],
+        ) as resolver:
+            with cached_dns():
+                with self.assertRaises(socket.gaierror):
+                    socket.getaddrinfo("registry.example", 443)
+                self.assertEqual(socket.getaddrinfo("registry.example", 443), [])
+                self.assertEqual(socket.getaddrinfo("registry.example", 443), [])
+                self.assertEqual(resolver.call_count, 2)
+
+    def test_archive_header_preserves_layer_sizes_above_eight_gib(self):
+        info = tarfile.TarInfo("large-layer.tar.gz")
+        info.size = 12 * 1024**3
+        header = io.BytesIO(info.tobuf(format=ARCHIVE_FORMAT))
+        with tarfile.open(fileobj=header, mode="r|") as archive:
+            restored = archive.next()
+            self.assertEqual(restored.name, info.name)
+            self.assertEqual(restored.size, info.size)
+
     def test_out_of_order_chunks_support_small_archive_reads(self):
         data = bytes(range(256)) * 3
         descriptor = {"size": len(data), "digest": digest(data)}
