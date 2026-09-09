@@ -9,8 +9,13 @@ import sys
 import time
 
 
-def allowed_gpu_ids(environ):
+def allowed_gpu_ids(environ, report=None):
     """Keep selection within any device allocation supplied by the runner."""
+    uuid_to_index = {
+        gpu["GPU UUID"].lower(): int(gpu["Index"])
+        for gpu in (report or {}).get("GPU", [])
+        if "GPU UUID" in gpu
+    }
     allowed = None
     for key in ("MTHREADS_VISIBLE_DEVICES", "MUSA_VISIBLE_DEVICES"):
         value = environ.get(key)
@@ -19,10 +24,15 @@ def allowed_gpu_ids(environ):
         if value.strip().lower() in ("", "none", "void", "-1"):
             current = set()
         else:
-            parts = value.split(",")
-            if not all(part.strip().isdigit() for part in parts):
-                raise ValueError(f"Unsupported {key} allocation: {value!r}")
-            current = {int(part) for part in parts}
+            current = set()
+            for part in value.split(","):
+                part = part.strip().lower()
+                if part.isdigit():
+                    current.add(int(part))
+                elif part in uuid_to_index:
+                    current.add(uuid_to_index[part])
+                else:
+                    raise ValueError(f"Unsupported {key} allocation: {value!r}")
         allowed = current if allowed is None else allowed & current
     return allowed
 
@@ -63,18 +73,18 @@ def choose_gpu_ids(idle, count=4):
 
 
 def main():
-    allowed = allowed_gpu_ids(os.environ)
     wait_seconds = int(os.environ.get("MUSA_CI_GPU_WAIT_SECONDS", "1800"))
     deadline = time.monotonic() + wait_seconds
     while True:
         result = subprocess.run(
-            ["mthreads-gmi", "-q", "-d", "MEMORY,UTILIZATION", "--json"],
+            ["mthreads-gmi", "-q", "--json"],
             check=True,
             capture_output=True,
             text=True,
             timeout=30,
         )
         report = json.loads(result.stdout)
+        allowed = allowed_gpu_ids(os.environ, report)
         idle = idle_gpu_ids(report, allowed)
         selected = choose_gpu_ids(idle)
         state = ", ".join(
