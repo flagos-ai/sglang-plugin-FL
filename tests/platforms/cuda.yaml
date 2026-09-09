@@ -31,13 +31,18 @@ device_types:
 
 # Qwen3.6 is a hybrid attention model. Pin its full-attention path to the
 # Triton backend used by the validated NVIDIA examples. The vision and linear
-# attention backends remain independently selected by SGLang.
+# attention backends remain independently selected by SGLang. Disable overlap
+# scheduling for these correctness tests because A100 TP=4 concurrent decoding
+# of the dense 27B model otherwise corrupts later tokens even though its
+# single-request inference stays valid; use the same safe mode for both hybrids.
 engine_overrides:
   qwen3_6:
     27b_tp4_nograph:
       attention_backend: "triton"
+      disable_overlap_schedule: true
     35b_a3b_tp4_nograph:
       attention_backend: "triton"
+      disable_overlap_schedule: true
 
 # Default numerical tolerance for result comparison.
 tolerance:

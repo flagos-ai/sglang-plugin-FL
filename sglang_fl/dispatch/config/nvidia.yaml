@@ -15,6 +15,13 @@
 # SGLang-FL Dispatch Configuration for NVIDIA GPU
 prefer: flagos
 
+# FlagGems' TopK path produces incorrect MoE routing tokens for
+# Qwen3.6-35B-A3B at TP=4 on A100. Skip only the OOT TopK bridge so SGLang's
+# complete forward_cuda path retains its output-format, symmetric-memory, and
+# waterfill handling. All other fused-op bridges remain enabled.
+oot_blacklist:
+  - TopK
+
 # FlagGems master currently does not match the PyTorch/SGLang 0.5.18
 # contracts for these operators:
 #   - slice: weight loading passes an explicit start/end without step.
