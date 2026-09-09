@@ -252,7 +252,7 @@ That run was stopped after obtaining the measurements, before GPU tests.
 The final transfer client therefore uses the verified range-read path with
 four concurrent 8 MiB requests, checks every layer SHA256 and preserves the
 original image configuration and repeated-layer references. It needs no
-external image-transfer binary. Twenty helper tests cover device allocation,
+external image-transfer binary. Twenty-two helper tests cover device allocation,
 container cleanup, out-of-order chunks, incorrect ranges and digest mismatches.
 A small real Docker-load round trip also preserved the exact configuration
 ID and duplicate-layer references; its temporary diagnostic image was removed.
@@ -264,6 +264,11 @@ The full range preflight separately exposed USTAR's 8 GiB per-file limit after
 16.59 GiB had streamed. The archive now uses PAX headers, with a regression
 check for a 12 GiB layer. Both failed runs retain their logs and nonzero exit
 codes; neither is counted as a successful image pull or model test.
+Run `34360228140` reused the verified image but its device check found a runner
+allocation expressed as GPU UUIDs. The selector now maps those UUIDs through
+the driver's visible device report and intersects any numeric MUSA mask. An
+unknown UUID still fails instead of expanding the allocation. Regression tests
+cover UUID mapping, mask intersection and rejection of unreported devices.
 Build and scope logs, exit codes and timestamps are retained under
 `/datapool/codex-musa-0518/ci-0909/`. Earlier setup/build failures remain
 separate; no test case was removed or newly skipped to produce these results.

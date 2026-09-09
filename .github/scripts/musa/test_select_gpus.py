@@ -45,6 +45,24 @@ class SelectGpuTests(unittest.TestCase):
     def test_noncontiguous_allocation_remains_usable(self):
         self.assertEqual(choose_gpu_ids([0, 2, 4, 6]), [0, 2, 4, 6])
 
+    def test_uuid_allocation_maps_to_visible_indices_and_intersects_mask(self):
+        report = snapshot([2] * 8)
+        for index, gpu in enumerate(report["GPU"]):
+            gpu["GPU UUID"] = f"c4c4e04c-7908-1fcc-7713-{index:012x}"
+        allocation = ",".join(report["GPU"][i]["GPU UUID"] for i in (1, 2, 4, 6))
+        environ = {"MTHREADS_VISIBLE_DEVICES": allocation}
+        allowed = allowed_gpu_ids(environ, report)
+        self.assertEqual(choose_gpu_ids(idle_gpu_ids(report, allowed)), [1, 2, 4, 6])
+        environ["MUSA_VISIBLE_DEVICES"] = "0,2,4"
+        self.assertEqual(allowed_gpu_ids(environ, report), {2, 4})
+
+    def test_unreported_uuid_does_not_expand_runner_allocation(self):
+        with self.assertRaises(ValueError):
+            allowed_gpu_ids(
+                {"MTHREADS_VISIBLE_DEVICES": "c4c4e04c-7908-1fcc-7713-4c2f35bdaabb"},
+                snapshot([2] * 8),
+            )
+
     def test_hidden_devices_remain_hidden(self):
         self.assertEqual(allowed_gpu_ids({"MUSA_VISIBLE_DEVICES": ""}), set())
         with self.assertRaises(ValueError):
