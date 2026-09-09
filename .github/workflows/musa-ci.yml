@@ -55,8 +55,8 @@ jobs:
         run: python .github/scripts/load_config.py --platform musa
       - name: Show the complete configured model matrix
         run: python .github/scripts/generate_matrix.py --platform musa
-      - name: Check MUSA device selection
-        run: python .github/scripts/musa/test_select_gpus.py
+      - name: Check MUSA CI helpers
+        run: python -m unittest discover -s .github/scripts/musa -p 'test_*.py'
 
   test-musa:
     name: MUSA full test suite
@@ -66,10 +66,9 @@ jobs:
     # limit before tests began. Initialize once, then run every configured scope
     # in the same container, as in the complete S5000 preflight.
     timeout-minutes: 180
-    container:
-      image: ${{ fromJson(needs.setup.outputs.config).ci_image }}
-      volumes: ${{ fromJson(needs.setup.outputs.config).container_volumes }}
-      options: ${{ fromJson(needs.setup.outputs.config).container_options }}
+    env:
+      MUSA_CI_CONFIG: ${{ needs.setup.outputs.config }}
+      MUSA_CI_IMAGE: ${{ fromJson(needs.setup.outputs.config).ci_image }}
     steps:
       - name: Checkout (attempt 1)
         id: checkout1
@@ -84,19 +83,30 @@ jobs:
         if: steps.checkout2.outcome == 'failure'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - name: Set up orchestration Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.10"
+      - name: Prepare pinned image with direct Harbor access
+        timeout-minutes: 85
+        run: |
+          mkdir -p musa-ci-results
+          bash .github/scripts/musa/prepare_image.sh 2>&1 | tee musa-ci-results/image.log
+      - name: Start MUSA test container
+        run: python3 .github/scripts/musa/container.py start
       - name: Check device availability
-        run: bash .github/scripts/musa/check.sh
+        run: python3 .github/scripts/musa/container.py exec bash .github/scripts/musa/check.sh 2>&1 | tee musa-ci-results/device.log
       - name: Install project
         run: |
           mkdir -p musa-ci-results
-          bash .github/scripts/musa/setup.sh 2>&1 | tee musa-ci-results/setup.log
+          python3 .github/scripts/musa/container.py exec bash .github/scripts/musa/setup.sh 2>&1 | tee musa-ci-results/setup.log
       - name: Unit tests
         timeout-minutes: 15
-        run: python tests/run.py --platform musa --scope unit 2>&1 | tee musa-ci-results/unit.log
+        run: python3 .github/scripts/musa/container.py exec python tests/run.py --platform musa --scope unit 2>&1 | tee musa-ci-results/unit.log
       - name: Functional tests
         id: functional
         timeout-minutes: 15
-        run: python tests/run.py --platform musa --scope functional 2>&1 | tee musa-ci-results/functional.log
+        run: python3 .github/scripts/musa/container.py exec python tests/run.py --platform musa --scope functional 2>&1 | tee musa-ci-results/functional.log
 
       # Retain the reusable workflow's fail-fast=false behavior across the
       # three E2E groups: one failing group must not suppress the other two.
@@ -104,17 +114,17 @@ jobs:
         id: inference
         if: ${{ !cancelled() && steps.functional.outcome == 'success' }}
         timeout-minutes: 60
-        run: python tests/run.py --platform musa --device s5000 --scope e2e --task inference 2>&1 | tee musa-ci-results/inference.log
+        run: python3 .github/scripts/musa/container.py exec python tests/run.py --platform musa --device s5000 --scope e2e --task inference 2>&1 | tee musa-ci-results/inference.log
       - name: Concurrent tests (all configured S5000 models)
         id: concurrent
         if: ${{ !cancelled() && steps.functional.outcome == 'success' }}
         timeout-minutes: 60
-        run: python tests/run.py --platform musa --device s5000 --scope e2e --task concurrent 2>&1 | tee musa-ci-results/concurrent.log
+        run: python3 .github/scripts/musa/container.py exec python tests/run.py --platform musa --device s5000 --scope e2e --task concurrent 2>&1 | tee musa-ci-results/concurrent.log
       - name: Serving tests (all configured S5000 models)
         id: serving
         if: ${{ !cancelled() && steps.functional.outcome == 'success' }}
         timeout-minutes: 60
-        run: python tests/run.py --platform musa --device s5000 --scope e2e --task serving 2>&1 | tee musa-ci-results/serving.log
+        run: python3 .github/scripts/musa/container.py exec python tests/run.py --platform musa --device s5000 --scope e2e --task serving 2>&1 | tee musa-ci-results/serving.log
       - name: Benchmark smoke tests
         if: >-
           ${{ !cancelled() &&
@@ -122,8 +132,11 @@ jobs:
               steps.concurrent.outcome == 'success' &&
               steps.serving.outcome == 'success' }}
         timeout-minutes: 30
-        run: python tests/run.py --platform musa --scope benchmark 2>&1 | tee musa-ci-results/benchmark.log
+        run: python3 .github/scripts/musa/container.py exec python tests/run.py --platform musa --scope benchmark 2>&1 | tee musa-ci-results/benchmark.log
 
+      - name: Stop MUSA test container
+        if: always()
+        run: python3 .github/scripts/musa/container.py stop
       - name: Upload MUSA test logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
