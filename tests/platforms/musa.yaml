@@ -74,8 +74,10 @@ unsupported_features: []
 # top-p sampling. Keep this exclusion when overriding the plugin's default list.
 # Its slice implementation rejects the eager runner's boolean buffers as well.
 # Integer eq/eq_scalar/equal must preserve multimodal IDs above 2**24.
+# This environment variable replaces the runtime list, so retain every runtime
+# exclusion as well as the older CI image's mul/sort workarounds.
 env_defaults:
-  SGLANG_FL_FLAGOS_BLACKLIST: "mul,sort,broadcast_tensors,slice,repeat,eq,eq_scalar,equal"
+  SGLANG_FL_FLAGOS_BLACKLIST: "mul,sort,broadcast_tensors,slice,eq,eq_scalar,equal,count_nonzero,cumsum,mm,unique,_unique2,unique_dim,unique_consecutive"
 
 # ---- Device-specific test configurations ------------------------------------
 s5000:

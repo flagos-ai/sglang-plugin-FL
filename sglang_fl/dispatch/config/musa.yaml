@@ -24,9 +24,6 @@ flagos_blacklist:
   # SGLang 0.5.18's eager buffer registry slices boolean buffers. This
   # FlagGems snapshot rejects bool; native slice also preserves view aliasing.
   - slice
-  # MUSA repeat autotuning failed during TP4 decode mRoPE position expansion
-  # with this FlagTree/FlagGems stack. Keep the native repeat implementation.
-  - repeat
   # FlagGems 01433e830 converts integer equality operands to FP32. Adjacent
   # multimodal placeholder IDs above 2**24 must remain distinguishable.
   - eq

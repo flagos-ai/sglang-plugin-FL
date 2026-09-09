@@ -22,7 +22,10 @@ Complete example coverage includes all seven scripts. Run both concurrency
 scripts with `--mode all`, keep the MTP baseline enabled, and require all four
 images in `test_images`. For MUSA, the nine-configuration checklist, commands
 and current limitations are recorded in
-[the SGLang 0.5.18 validation document](../docs/mthreads-0.5.18.md).
+[the SGLang 0.5.18 validation record](../docs/mthreads-0.5.18-validation.md).
+The MTP script can exit 0 with an exact-output comparison warning; inspect its
+summary as well as the exit code. Setup commands are in the
+[MUSA guide](../docs/mthreads-0.5.18.md).
 
 ## Usage
 
@@ -48,7 +51,7 @@ These scripts are designed for CI use:
 - **Model path**: Configurable via `MODEL_PATH` env var
 - **Skip if model missing**: Prints message and exits with code 1
 - **No interactive input**: Fully automated
-- **Deterministic**: temperature=0, greedy decoding
+- **Greedy decoding**: temperature=0; exact outputs can still differ across execution modes
 
 A CI workflow can run them as:
 
