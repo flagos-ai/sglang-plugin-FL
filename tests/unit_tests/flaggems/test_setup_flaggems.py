@@ -249,16 +249,17 @@ def test_nvidia_config_has_only_required_flaggems_safety_fallbacks() -> None:
         "_index_put_impl_",
         "count_nonzero",
         "mm",
+        "isin",
     ]
 
 
-def test_nvidia_config_keeps_topk_on_sglang_cuda_path() -> None:
+def test_nvidia_config_keeps_sensitive_fused_ops_native() -> None:
     from sglang_fl.dispatch.config.utils import load_platform_config
 
     config = load_platform_config("nvidia")
 
     assert config is not None
-    assert config.get("oot_blacklist") == ["TopK"]
+    assert config.get("oot_blacklist") == ["TopK", "SiluAndMul"]
 
 
 def test_env_blacklist_overrides_yaml_flagos_blacklist(
