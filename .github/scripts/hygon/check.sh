@@ -33,3 +33,15 @@ print(f"DCU count: {count}")
 if count < 4:
     raise RuntimeError(f"At least 4 DCUs are required for tp4 cases, found {count}")
 PY
+
+# Export the DCU dispatch config for every CI job EXCEPT unit: on DCU
+# get_platform_name() reports "nvidia", so dispatch/config/hygon.yaml never
+# auto-loads — SGLANG_FL_CONFIG pins it explicitly, making that file the
+# single home of the op blacklist. Never in the unit job: a preset config
+# file outranks the SGLANG_FL_* env vars in PolicyManager
+# (tests/unit_tests/dispatch/test_env_policy.py), which is also why this is
+# NOT an env_default in tests/platforms/hygon.yaml (run.py applies those to
+# the unit scope too).
+if [[ -n "${GITHUB_ENV:-}" && "${GITHUB_JOB:-}" != "unit-tests" ]]; then
+  echo "SGLANG_FL_CONFIG=${GITHUB_WORKSPACE}/sglang_fl/dispatch/config/hygon.yaml" >> "${GITHUB_ENV}"
+fi

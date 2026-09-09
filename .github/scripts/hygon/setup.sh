@@ -13,9 +13,8 @@ pip install pytest pytest-timeout pyyaml
 echo "=== Installation complete ==="
 python -c "import sglang_fl; print(f'sglang_fl {sglang_fl.__name__} loaded')"
 
-# NOTE: no SGLANG_FL_CONFIG / SGLANG_FL_PLATFORM export here (unlike what an
-# earlier revision did): exporting either breaks the env-policy unit tests.
-# Neither would load a hygon dispatch config anyway — on DCU the plugin's
-# get_platform_name() sees torch.cuda as available and picks the nvidia
-# config. The op blacklist is carried by tests/platforms/hygon.yaml
-# env_defaults instead.
+# NOTE: no SGLANG_FL_CONFIG / SGLANG_FL_PLATFORM export here: a preset
+# SGLANG_FL_CONFIG outranks the SGLANG_FL_* env vars in PolicyManager and
+# would break the env-policy unit tests in this job. The DCU dispatch config
+# is exported by check.sh instead, which runs per job and skips only the
+# unit job.

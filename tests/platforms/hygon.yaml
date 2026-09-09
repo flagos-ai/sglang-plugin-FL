@@ -1,12 +1,13 @@
 # Hygon DCU Platform Configuration (BW1000 / DTK 26.04, HIP-based).
 # Flexible test selection mechanism for Hygon DCU environments.
 #
-# DCU is HIP-based: torch.cuda.is_available() is True, so the plugin's
-# get_platform_name() reports "nvidia" and dispatch/config/nvidia.yaml
-# (prefer: flagos only) is the effective dispatch config — no hygon dispatch
-# yaml exists, and SGLANG_FL_PLATFORM would not help: get_platform_name()
-# consults it only after torch probing. The DCU op exclusions ride on the
-# SGLANG_FL_FLAGOS_BLACKLIST env below. FlagGems selects its hygon backend
+# DCU is HIP-based: torch.cuda.is_available() is True, so get_platform_name()
+# reports "nvidia" and dispatch/config/nvidia.yaml would be the auto-loaded
+# config — dispatch/config/hygon.yaml is instead pinned explicitly via
+# SGLANG_FL_CONFIG, exported by .github/scripts/hygon/check.sh (NOT an
+# env_default here: run.py applies env_defaults to the unit scope too, and a
+# preset config file outranks the SGLANG_FL_* env vars in PolicyManager,
+# breaking the env-policy unit tests). FlagGems selects its hygon backend
 # via GEMS_VENDOR, baked in the CI image ENV.
 # The e2e/functional/unit/benchmark case sets are intentionally IDENTICAL to
 # cuda.yaml / thead.yaml / ascend.yaml.
@@ -59,38 +60,17 @@ unsupported_features: []
 # Default environment variables for this platform.
 # tests/run.py applies these before invoking pytest.
 #
-# SGLANG_FL_FLAGOS_BLACKLIST: the env blacklist outranks any yaml, and on
-# DCU it is the ONLY carrier of the op exclusions — the plugin's platform
-# auto-detect reports "nvidia" (torch.cuda.is_available() is True), so no
-# hygon yaml ever loads and there is none to keep in sync.
-# The list mirrors the validated vLLM-on-DCU recipe: the pow family produces
-# wrong numerics on DCU and cat hits a FlagGems triton issue.
-# cumsum/cumsum_out: FlagGems' cumsum wrapper computes K = numel // M // N and
-# ZeroDivisionErrors on the EMPTY extend_seq_lens[:-1] slice a single-request
-# prefill produces (serving smoke sends one request at a time; observed on DCU
-# 2026-08-20, e2e serving qwen3/4b_tp2). torch.cumsum is fine on DCU — the CI
-# image already casts the lens tensors to int64 where the HIP kernel needs it.
-# Same entry enflame.yaml / thead blacklist carry.
-# scaled_dot_product_attention / flash_attention_forward: FlagGems' _hygon
-# flash_api autotunes a triton config per shape; the server-warmup prefill
-# shape hits a DTK triton make_ttgir PassManager::run failure (compile abort,
-# observed 2026-08-24 in e2e serving qwen3/4b_tp2 warmup). On torch 2.10
-# sglang's torch_native attention dispatches through the aten-level
-# flash_attention_forward patch, so BOTH names must be excluded for the
-# fallback to aten SDPA (HIP) to take effect.
-# count_nonzero: FlagGems' dim_compress permutes with a mismatched dim order
-# on the 3-D tensor sglang's eplb expert_location._init_raw feeds it (qwen3_6
-# 35b_a3b init, observed 2026-08-24); torch.count_nonzero handles it fine.
-# Same entry enflame.yaml carries.
-# NOTE: SGLANG_FL_PLATFORM is intentionally NOT set. tests/run.py applies
-# env_defaults to the unit scope too, and a preset SGLANG_FL_PLATFORM forces
-# the dispatch manager to load the hygon platform config, breaking the
-# env-policy unit tests (ascend.yaml keeps its env_defaults empty for the
-# same reason). GEMS_VENDOR needs no env_default either: the CI image bakes
-# it (docker/hygon/containerfile ENV), and setdefault semantics here would
-# let a bare-metal run override it if one ever needed to.
-env_defaults:
-  SGLANG_FL_FLAGOS_BLACKLIST: "pow_scalar,pow_tensor_scalar,pow_tensor_tensor,pow_tensor_scalar_,pow_tensor_tensor_,cat,cumsum,cumsum_out,scaled_dot_product_attention,flash_attention_forward,count_nonzero"
+# Intentionally EMPTY: the DCU op blacklist lives in
+# sglang_fl/dispatch/config/hygon.yaml (root causes documented there),
+# loaded via the SGLANG_FL_CONFIG exported by check.sh for the non-unit CI
+# jobs. SGLANG_FL_CONFIG must NOT be an env_default — run.py applies
+# env_defaults to the unit scope too, and a preset config file outranks the
+# SGLANG_FL_* env vars in PolicyManager, breaking the env-policy unit tests
+# (ascend.yaml keeps its env_defaults empty for a similar reason).
+# SGLANG_FL_PLATFORM is likewise not set. GEMS_VENDOR stays image-only
+# (docker/hygon/containerfile ENV): the FlagGems rebuild needs it at image
+# build time, which env_defaults cannot reach.
+env_defaults: {}
 
 # ---- Device-specific test configurations ------------------------------------
 bw1000:

@@ -65,16 +65,14 @@ ARG GIT_PROXY=
 # Empty (default) = pypi.org direct.
 ARG PIP_INDEX_URL=
 
-# NOTE: no SGLANG_FL_* envs are baked. Plugin envs live in
-# tests/platforms/hygon.yaml env_defaults (applied per-scope by tests/run.py);
-# SGLANG_FL_PLATFORM in particular must NOT be exported globally — it forces
-# the dispatch manager to load a platform config and breaks the env-policy
-# unit tests (same reason ascend.yaml keeps env_defaults empty). No dispatch
-# platform config is needed on DCU: get_platform_name() reports "nvidia"
-# there (torch.cuda is available), and the DCU op exclusions ride on the
-# SGLANG_FL_FLAGOS_BLACKLIST env. GEMS_VENDOR below pins FlagGems' own vendor
-# detection — at build time for the FlagGems rebuild, at runtime so the
-# hygon backend loads without the device-query fallback path.
+# NOTE: no SGLANG_FL_* envs are baked. dispatch/config/hygon.yaml is not
+# auto-loaded on DCU (get_platform_name() reports "nvidia" there, torch.cuda
+# is available); CI pins it via SGLANG_FL_CONFIG exported by
+# .github/scripts/hygon/check.sh for the non-unit jobs only — a preset
+# config file outranks the SGLANG_FL_* env vars in PolicyManager and would
+# break the env-policy unit tests. GEMS_VENDOR below pins FlagGems' own
+# vendor detection — at build time for the FlagGems rebuild, at runtime so
+# the hygon backend loads without the device-query fallback path.
 ENV DEBIAN_FRONTEND=noninteractive \
     HF_ENDPOINT=https://huggingface.co \
     GEMS_VENDOR=hygon
