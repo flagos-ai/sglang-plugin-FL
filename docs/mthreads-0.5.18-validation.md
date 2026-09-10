@@ -205,120 +205,60 @@ These preflight results are separate from the GitHub Actions result.
 The authoritative CI outcome is published on the
 [PR #95 checks page](https://github.com/flagos-ai/sglang-plugin-FL/pull/95/checks)
 under `CI` / `test-musa` / `MUSA full test suite`.
-Before integration, standalone run `34379124461` at `9876d93` passed 22
+Before integration, [standalone run 34379124461](https://github.com/flagos-ai/sglang-plugin-FL/actions/runs/34379124461) at `9876d93` passed 22
 helpers, 282 unit tests, 36 functional tests (three existing skips), all four
 inference and both concurrent configurations, all 15 serving checks, and all
 three benchmark smoke cases. Its full job took 51m30s, including successful
 container cleanup and artifact upload. It reused the verified image cache.
-The branch now includes baseline `0291457` (NVIDIA CI #99). MUSA is enabled
-in the existing platform registry; the separate `musa-ci.yml` event workflow
-has been removed. Within `_platform_test.yml`, MUSA retains the validated
-single-container test sequence and other platforms retain their original
-job bodies. The shared notification derives MUSA's status from that full
-job. Transport probes remain available as an explicit diagnostic command,
-rather than a prerequisite of every cached-image test run. The previous
-standalone result is separate from validation of this integration.
-The first Actions attempt, run `34326740473`, was cancelled at the shared
-unit job's 30-minute timeout while Docker was still initializing the image;
-no test started. Its log records successful layer downloads/extraction and
-the timeout cancellation. The MUSA test job now initializes one
-container for all scopes, with a 180-minute job limit and separate phase
-limits. All three E2E groups still run if a peer group fails, and all phase
-logs are uploaded as `musa-ci-results`.
-Run `34331550776` reached the actual tests: Unit and Functional passed, but
-the model groups exposed an occupied runner GPU. The initial device report
-showed GPU 0 using 66,325 MiB while GPUs 1–7 used 2 MiB each. TP2/TP4 failed
-SGLang's unbalanced-memory check; the TP1 small-model case passed. The runtime
-and imported package versions matched preflight. MUSA CI now selects four
-idle devices from the runner's existing allocation and waits when fewer are
-available, preserving TP sizes and model memory settings. Seven CPU checks
-cover the observed occupancy, explicit allocations and insufficient capacity.
-The published image also passed a live selector probe on `moer_14`: automatic
-selection avoided occupied GPUs 4/5, and the explicit allocation `2,3,6,7`
-was preserved. Torch MUSA saw four devices and a tensor operation passed on
-each logical device, including the nonzero and noncontiguous mapping.
-Run `34338068214` passed the seven selector checks but was stopped after
-90 minutes of image initialization, before any GPU test began. Its completed
-log showed 13 of 73 unique layers cached/extracted and 37 downloaded/cached.
-The earlier 21-minute initialization had already cached 51 layers; it was
-not a complete cold pull. The new runner also reported a global HTTP/HTTPS
-proxy. MUSA image preparation now fetches the same pinned image directly
-from Harbor in the job process, streams it into Docker and verifies the
-loaded image ID. Proxy removal is limited to that registry command. The
-workflow retains all test phases and now uploads image preparation logs
-without depending on successful container initialization.
-Eleven CPU regression checks cover device selection and container lifecycle,
-including propagating failed test exit codes and limiting cleanup to the
-current run attempt's container.
-The full direct-transfer preflight on `moer_14` subsequently passed: 30.05 GiB
-in 2,132 seconds, the unchanged published image ID, 282 unit checks, 36
-functional checks with three existing skips, and all three benchmark cases.
-The script exited 0 and removed its task container. The official crane archive
-was checksum-verified locally and copied to `moer_14` because that machine's
-direct GitHub Release request failed; the production CI keeps its existing
-GitHub download configuration. Evidence is in `ci-0909/direct-ci/`.
-Actions run `34348159578` instead reached the transfer timeout after 60 minutes
-and only 5.89 GiB, at roughly 1.7 MiB/s. No model test started. Diagnostic run
-`34355271769` measured 19–21 MiB/s for 8 MiB HTTP range reads and about
-93 MiB/s for all-zero Docker API uploads. Clearing inherited proxies made no material
-difference; the Docker transport was a Unix socket and the daemon had no proxy.
-That run was stopped after obtaining the measurements, before GPU tests.
-The final transfer client therefore uses the verified range-read path with
-four concurrent 8 MiB requests, checks every layer SHA256 and preserves the
-original image configuration and repeated-layer references. It needs no
-external image-transfer binary. Twenty-two helper tests cover device allocation,
-container cleanup, out-of-order chunks, incorrect ranges and digest mismatches.
-A small real Docker-load round trip also preserved the exact configuration
-ID and duplicate-layer references; its temporary diagnostic image was removed.
-Run `34358203048` stopped after 2.54 GiB because repeated connections exhausted
-their retries on a temporary DNS resolution failure; no GPU test started.
-The downloader now caches successful DNS resolutions for one pull, retaining
-the original hostname for TLS verification. Failed resolutions are not cached.
-The full range preflight separately exposed USTAR's 8 GiB per-file limit after
-16.59 GiB had streamed. The archive now uses PAX headers, with a regression
-check for a 12 GiB layer. Both failed runs retain their logs and nonzero exit
-codes; neither is counted as a successful image pull or model test.
-Run `34360228140` reused the verified image but its device check found a runner
-allocation expressed as GPU UUIDs. The selector now maps those UUIDs through
-the driver's visible device report and intersects any numeric MUSA mask. An
-unknown UUID still fails instead of expanding the allocation. Regression tests
-cover UUID mapping, mask intersection and rejection of unreported devices.
-The corrected full range transfer on `moer_14` verified all 73 unique layers,
-including the 10.24 GiB layer, and the original image ID: 30.05 GiB in 1,427
-seconds. A Windows `git archive` line-ending issue then stopped the local
-shell preflight; the committed scripts are LF. After normalizing that isolated
-copy, all ten runtime helper hashes matched the current PR, 22 helper tests,
-282 unit tests and 36 functional tests passed (three existing skips), and the
-runtime check exited 0 and removed its container. Both logs are retained in
-`ci-0909/range-ci-v2/`.
-Actions run `34360832372` still transferred only 5.87 GiB in 60 minutes and
-timed out before any GPU test. DNS and PAX fixes did not resolve the sustained
-CI throughput limit. The earlier all-zero upload probe is not representative
-of compressed image layers; diagnostics now compare real registry ranges and
-high-entropy payloads through both Docker import and load.
-Actions run `34369228544` at `3d5ee30` reused the verified image cache and
-completed 282 unit tests, 36 functional tests (three existing skips), both
-concurrent model cases and all 15 serving checks successfully. Inference
-passed three of four cases: Qwen3-4B TP2, with temperature 0.7 and a randomly
-chosen engine seed of 15650771, returned the Chinese name for Paris instead
-of the required literal `Paris`. Its original assertion failed, so benchmark
-was skipped and the overall run failed. The successful preflight had used
-seed 948037352. SGLang chooses a random engine seed when none is specified;
-the MUSA-only Qwen3-4B override now uses the conventional fixed seed 42 for
-reproducible sampling. Prompts, temperature, token limit and assertions are
-unchanged. Each E2E phase now uploads its log immediately so a failure can
-be inspected while later phases run.
-Three independent Qwen3-4B TP2 inference processes on `moer_14`, using the
-published image and seed 42, each passed the original two prompts with
-identical `Berlin` and `Paris` answers. Each exited 0, as did the full targeted
-preflight, and its container was removed. Logs, timestamps, exit codes and
-source hashes are retained in `ci-0909/seed42-preflight/`.
-The same Actions runner's short high-entropy probes reached 14.3 MiB/s for
-registry ranges and 84–95 MiB/s for Docker import/load through a Unix socket.
-This cached-image run does not verify sustained cold-pull throughput.
-Build and scope logs, exit codes and timestamps are retained under
-`/datapool/codex-musa-0518/ci-0909/`. Earlier setup/build failures remain
-separate; no test case was removed or newly skipped to produce these results.
+### Integration with the current upstream CI (2026-09-10)
+
+The PR is being rebased onto `upstream/dev/0.5.18` at `0291457` (NVIDIA CI
+#99). MUSA is enabled in the existing platform registry and `_platform_test.yml`;
+there is no separate MUSA event workflow. Other platforms retain their original
+job bodies. MUSA runs all six test scopes in one native Actions job container
+with a 180-minute limit, avoiding repeated initialization of the 30.05 GiB
+image. The shared notification uses that job's result. An E2E failure does not
+suppress its peer groups, and each group retains its own log and timeout.
+
+The custom registry downloader, Docker lifecycle wrapper and transport probes
+have been removed. Docker now pulls the pinned image, and Actions manages the
+container lifecycle. The retained MUSA scripts install the checkout without
+changing the image's dependencies and select four idle GPUs within the runner's
+existing allocation. Nine selector regression checks cover occupancy, numeric
+and UUID allocations, allocation intersection and insufficient capacity.
+The existing model sizes, prompts, concurrency and assertions are unchanged.
+`examples/README.md` matches upstream; backend-specific results belong here.
+
+The completed historical run linked above predates this integration and rebase.
+The current head's outcome must be checked separately on the PR checks page.
+
+### CI failures addressed and remaining infrastructure limit
+
+- The original 30-minute unit job timed out while initializing the image, before
+  tests began. MUSA now initializes once for the complete suite.
+- Run `34331550776` passed unit and functional tests but encountered an occupied
+  GPU (66,325 MiB used). Selection now waits for four idle allocated devices.
+  Live probes preserved numeric and noncontiguous allocations and exercised a
+  tensor operation on each selected logical device. UUID allocations observed
+  in run `34360228140` are mapped through the driver's visible device report.
+- Run `34369228544` passed three of four inference cases, both concurrent cases
+  and all 15 serving checks. Qwen3-4B at temperature 0.7 returned a Chinese name
+  for Paris and failed the existing literal `Paris` assertion. The MUSA-only
+  engine override fixes `random_seed=42`; three independent preflight engines
+  and run `34379124461` then passed with the original prompts and assertions.
+- Cold image transfers remain sensitive to runner bandwidth. Both native Docker
+  initialization and experimental transfer clients timed out on cold runners.
+  The range client still transferred only 5.87 GiB in 60 minutes in run
+  `34360832372`, despite a successful 30.05 GiB local preflight. Those experiments
+  did not fix sustained CI transfer throughput and are not production CI code.
+  The successful 51m30s run reused a verified cache and does not validate a cold
+  pull. Earlier failed runs remain failures, with no GPU-test pass inferred.
+
+Build and phase logs, timestamps and exit codes remain under
+`/datapool/codex-musa-0518/ci-0909/`. The historical successful-run evidence is
+also archived as `ci-0909/pr95-musa-ci-9876d93-evidence.tar.gz`, SHA256
+`116ca72f0d2fea1873825e84fa5840ceecf11d383b245ffe7c99022cc74ba9f5`.
+No test case was removed or newly skipped to obtain these results.
 
 ## Selected evidence locations
 

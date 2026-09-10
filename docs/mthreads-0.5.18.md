@@ -100,18 +100,13 @@ contiguous group and exports `MUSA_VISIBLE_DEVICES` for all subsequent phases.
 If fewer than four devices are idle, it waits up to 30 minutes instead of
 running TP4 on occupied cards. The original model memory settings are retained.
 
-Image preparation runs on the MUSA runner before starting the test container.
-It uses Python's standard library to fetch the public Harbor image in 8 MiB
-HTTP ranges, with at most four concurrent requests. Successful DNS resolutions
-are cached for the duration of one pull without changing TLS hostname checks;
-PAX archive headers support layers larger than 8 GiB. The manifest, configuration
-and every compressed layer are checked against their pinned SHA256 digests.
-The compressed archive is streamed into Docker, and the loaded image ID must
-match the original configuration digest. The registry client and Docker import
-command use direct connections. Existing verified images are reused; no registry login
-or shared Docker daemon reconfiguration is required. All phases then execute
-in one container, which is removed at job completion. Available transfer, device and
-test logs are uploaded even when image preparation fails.
+GitHub Actions pulls the digest-pinned public image and manages the job
+container's lifecycle using its native `container` configuration. No custom
+registry downloader, Docker wrapper or transfer probe is required. An existing
+image cache is reused by Docker. Cold initialization remains sensitive to the
+runner's registry bandwidth; the previous cached-image pass does not establish
+cold-pull throughput. Device and test logs are uploaded as `musa-ci-results`;
+image initialization logs are part of the Actions job log.
 
 The shared graph fixture and graph arguments are compatible with 0.5.18:
 `disable_cuda_graph` remains valid, while disabled prefill graphs use
