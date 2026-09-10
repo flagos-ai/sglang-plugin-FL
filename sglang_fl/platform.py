@@ -226,7 +226,12 @@ class PlatformFL(SRTPlatform):
         return _ATTN_BACKEND_MAP.get(self._vendor_name, "torch_native")
 
     def get_graph_runner_cls(self) -> type:
-        """Return graph runner class for this platform."""
+        """Return the graph runner used by SGLang's decode capture path.
+
+        Current SGLang calls this platform factory only from
+        ``capture_decode_graph``. Prefill graph capture constructs
+        ``PrefillCudaGraphRunner`` directly in SGLang core.
+        """
         if self._device_type == "npu":
             from sglang.srt.hardware_backend.npu.graph_runner.npu_graph_runner import (
                 NPUGraphRunner,
@@ -234,14 +239,17 @@ class PlatformFL(SRTPlatform):
 
             return NPUGraphRunner
         try:
-            # SGLang main moved the decode runner into the runner package.
+            # SGLang split the legacy graph runner into phase-specific runners.
             from sglang.srt.model_executor.runner.decode_cuda_graph_runner import (
-                DecodeCudaGraphRunner as CudaGraphRunner,
+                DecodeCudaGraphRunner,
             )
+
+            return DecodeCudaGraphRunner
         except ImportError:
+            # In older SGLang, CudaGraphRunner served the decode capture path.
             from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
 
-        return CudaGraphRunner
+            return CudaGraphRunner
 
     def get_mha_kv_pool_cls(self) -> type:
         if self._device_type == "npu":

@@ -79,17 +79,19 @@ def test_platform_graph_capability_flags() -> None:
         assert platform.support_piecewise_cuda_graph() is piecewise_graph
 
 
-def test_cuda_like_platform_uses_sglang_cuda_graph_runner() -> None:
-    """CUDA and MUSA reuse SGLang's native CudaGraphRunner."""
+def test_cuda_like_platform_uses_sglang_decode_graph_runner() -> None:
+    """CUDA and MUSA reuse SGLang's native decode graph runner."""
     try:
         from sglang.srt.model_executor.runner.decode_cuda_graph_runner import (
-            DecodeCudaGraphRunner as CudaGraphRunner,
+            DecodeCudaGraphRunner,
         )
     except ImportError:
-        from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
+        from sglang.srt.model_executor.cuda_graph_runner import (
+            CudaGraphRunner as DecodeCudaGraphRunner,
+        )
 
-    assert _platform_for("cuda").get_graph_runner_cls() is CudaGraphRunner
-    assert _platform_for("musa").get_graph_runner_cls() is CudaGraphRunner
+    assert _platform_for("cuda").get_graph_runner_cls() is DecodeCudaGraphRunner
+    assert _platform_for("musa").get_graph_runner_cls() is DecodeCudaGraphRunner
 
 
 def test_npu_platform_uses_sglang_npu_graph_runner() -> None:
