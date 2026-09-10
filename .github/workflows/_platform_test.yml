@@ -8,9 +8,6 @@
 # 5. benchmark:  Run benchmark smoke tests (throughput, latency, serve entrypoints)
 # 6. notify:     Send Feishu notification with overall platform status
 #
-# MUSA retains these scopes in one Actions job container to avoid repeated
-# cold pulls of its 30 GiB image. Other platforms keep the existing job chain.
-#
 # Users can modify test settings in tests/platforms/*.yaml:
 # - e2e: Add/remove model test cases in the support lists
 # - functional: Adjust include/exclude patterns for component tests
@@ -63,7 +60,7 @@ jobs:
         run: pip install pyyaml
       - id: load
         run: python .github/scripts/load_config.py --platform ${{ inputs.platform }}
-      - name: Check MUSA CI helpers
+      - name: Check MUSA GPU selector
         if: inputs.platform == 'musa'
         run: python -m unittest discover -s .github/scripts/musa -p 'test_*.py'
       - id: changes
@@ -86,7 +83,6 @@ jobs:
             $CHANGED_ARG
 
   unit:
-    if: inputs.platform != 'musa'
     needs: [setup]
     uses: ./.github/workflows/_unit_test.yml
     with:
@@ -95,9 +91,10 @@ jobs:
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
+      # Include cold initialization of the vendor image in the job timeout.
+      timeout: ${{ inputs.platform == 'musa' && 180 || 30 }}
 
   functional:
-    if: inputs.platform != 'musa'
     needs: [setup, unit]
     uses: ./.github/workflows/_functional_test.yml
     with:
@@ -106,12 +103,15 @@ jobs:
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
+      timeout: ${{ inputs.platform == 'musa' && 180 || 15 }}
 
   e2e:
     needs: [setup, functional]
-    if: inputs.platform != 'musa' && needs.setup.outputs.e2e_matrix != '[]'
+    if: needs.setup.outputs.e2e_matrix != '[]'
     strategy:
       fail-fast: false
+      # MUSA model groups share the TP4 runner pool; keep their allocation serial.
+      max-parallel: ${{ inputs.platform == 'musa' && 1 || 256 }}
       matrix:
         test: ${{ fromJson(needs.setup.outputs.e2e_matrix) }}
     uses: ./.github/workflows/_e2e_test.yml
@@ -124,10 +124,9 @@ jobs:
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
-      timeout: ${{ matrix.test.timeout || 60 }}
+      timeout: ${{ inputs.platform == 'musa' && 180 || matrix.test.timeout || 60 }}
 
   benchmark:
-    if: inputs.platform != 'musa'
     needs: [setup, e2e]
     uses: ./.github/workflows/_benchmark_test.yml
     with:
@@ -136,117 +135,16 @@ jobs:
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
-      timeout: 30
-
-  musa:
-    name: MUSA full test suite
-    needs: setup
-    if: inputs.platform == 'musa'
-    defaults:
-      run:
-        shell: bash
-    runs-on: ${{ fromJson(needs.setup.outputs.config).runner_labels }}
-    # A cold pull of this vendor runtime exceeded the shared unit job's 30m
-    # limit before tests began. Initialize once, then run every configured scope
-    # in the same container, as in the complete S5000 preflight.
-    timeout-minutes: 180
-    container:
-      image: ${{ fromJson(needs.setup.outputs.config).ci_image }}
-      volumes:
-        - ${{ fromJson(needs.setup.outputs.config).container_volumes[0] }}
-      options: ${{ fromJson(needs.setup.outputs.config).container_options }}
-    steps:
-      - name: Checkout (attempt 1)
-        id: checkout1
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        continue-on-error: true
-      - name: Checkout (attempt 2)
-        id: checkout2
-        if: steps.checkout1.outcome == 'failure'
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        continue-on-error: true
-      - name: Checkout (attempt 3)
-        if: steps.checkout2.outcome == 'failure'
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: Check device availability
-        run: |
-          mkdir -p musa-ci-results
-          bash .github/scripts/musa/check.sh 2>&1 | tee musa-ci-results/device.log
-      - name: Install project
-        run: bash .github/scripts/musa/setup.sh 2>&1 | tee musa-ci-results/setup.log
-      - name: Unit tests
-        timeout-minutes: 15
-        run: python tests/run.py --platform musa --scope unit 2>&1 | tee musa-ci-results/unit.log
-      - name: Functional tests
-        id: functional
-        timeout-minutes: 15
-        run: python tests/run.py --platform musa --scope functional 2>&1 | tee musa-ci-results/functional.log
-
-      # Retain the reusable workflow's fail-fast=false behavior across the
-      # three E2E groups: one failing group must not suppress the other two.
-      - name: Inference tests (all configured S5000 models)
-        id: inference
-        if: ${{ !cancelled() && steps.functional.outcome == 'success' }}
-        timeout-minutes: 60
-        run: python tests/run.py --platform musa --device s5000 --scope e2e --task inference 2>&1 | tee musa-ci-results/inference.log
-      - name: Upload inference log immediately
-        if: ${{ always() && steps.inference.outcome != 'skipped' }}
-        continue-on-error: true
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: musa-inference-log
-          path: musa-ci-results/inference.log
-      - name: Concurrent tests (all configured S5000 models)
-        id: concurrent
-        if: ${{ !cancelled() && steps.functional.outcome == 'success' }}
-        timeout-minutes: 60
-        run: python tests/run.py --platform musa --device s5000 --scope e2e --task concurrent 2>&1 | tee musa-ci-results/concurrent.log
-      - name: Upload concurrent log immediately
-        if: ${{ always() && steps.concurrent.outcome != 'skipped' }}
-        continue-on-error: true
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: musa-concurrent-log
-          path: musa-ci-results/concurrent.log
-      - name: Serving tests (all configured S5000 models)
-        id: serving
-        if: ${{ !cancelled() && steps.functional.outcome == 'success' }}
-        timeout-minutes: 60
-        run: python tests/run.py --platform musa --device s5000 --scope e2e --task serving 2>&1 | tee musa-ci-results/serving.log
-      - name: Upload serving log immediately
-        if: ${{ always() && steps.serving.outcome != 'skipped' }}
-        continue-on-error: true
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: musa-serving-log
-          path: musa-ci-results/serving.log
-      - name: Benchmark smoke tests
-        if: >-
-          ${{ !cancelled() &&
-              steps.inference.outcome == 'success' &&
-              steps.concurrent.outcome == 'success' &&
-              steps.serving.outcome == 'success' }}
-        timeout-minutes: 30
-        run: python tests/run.py --platform musa --scope benchmark 2>&1 | tee musa-ci-results/benchmark.log
-      - name: Upload MUSA test logs
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: musa-ci-results
-          path: musa-ci-results/
+      timeout: ${{ inputs.platform == 'musa' && 180 || 30 }}
 
   notify:
-    needs: [unit, functional, e2e, benchmark, musa]
+    needs: [unit, functional, e2e, benchmark]
     if: always()
     uses: ./.github/workflows/_notify_feishu.yml
     with:
       platform: ${{ inputs.platform }}
       status: >-
-        ${{ inputs.platform == 'musa' &&
-            (needs.musa.result == 'success' && 'success' ||
-             needs.musa.result == 'cancelled' && 'cancelled' || 'failure') ||
-            (needs.unit.result == 'success' &&
+        ${{ (needs.unit.result == 'success' &&
              needs.functional.result == 'success' &&
              (needs.e2e.result == 'success' || needs.e2e.result == 'skipped') &&
              (needs.benchmark.result == 'success' || needs.benchmark.result == 'skipped'))
