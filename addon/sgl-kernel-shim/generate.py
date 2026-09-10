@@ -228,9 +228,33 @@ NPU_MODULES = [
 ]
 
 
+# Capability queries are the one part of the import face that is genuinely
+# *called* on the flagos route rather than merely imported. sglang asks whether
+# the device supports programmatic dependent launch, and the answer is not a
+# kernel — it is a boolean the caller stores and later passes as a kernel's
+# constexpr. A _Dummy there does not fail at the call; it fails much later,
+# inside Triton's constexpr hash:
+#
+#     triton/compiler/compiler.py, in hash
+#       constants_key = '-'.join([get_key(v) for k, v in ...])
+#     TypeError: sequence item 13: expected str instance, _Dummy found
+#
+# (iluvatar decode attention, via sglang/srt/layers/attention/triton_backend.py
+# -> is_arch_support_pdl()). PDL is an NVIDIA Hopper+ feature, so False is the
+# honest answer on every backend this shim serves.
+REAL_SYMBOLS = {
+    "utils": '''
+
+def is_arch_support_pdl() -> bool:
+    """Programmatic dependent launch: NVIDIA Hopper+ only, never here."""
+    return False
+
+''',
+}
+
+
 def main() -> None:
     os.makedirs(PKG, exist_ok=True)
-
     init = (
         '"""FlagOS zero-sgl-kernel shim for sglang 0.5.18 (import face only)."""\n'
         "\n"
@@ -258,6 +282,7 @@ def main() -> None:
             f'"""Stub submodule `sgl_kernel.{sub}` (zero-sgl-kernel route)."""\n'
             "\n"
             "from sgl_kernel import __getattr__  # noqa: F401\n"
+            + REAL_SYMBOLS.get(sub, "")
         )
         with open(os.path.join(PKG, sub + ".py"), "w") as f:
             f.write(body)
