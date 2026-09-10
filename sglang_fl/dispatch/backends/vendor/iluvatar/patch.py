@@ -21,11 +21,14 @@ Iluvatar is CUDA-alias: `is_cuda()` is True and `torch.cuda` works, so sglang's
 CUDA paths are selected even though the corex platform has neither an NVIDIA
 device nor the NVIDIA-only packages those paths expect. Each patch here closes
 one such gap; see the module docstrings for the individual failure.
+
+Prerequisites that must exist before sglang_fl imports sglang live in
+``early_patch.py`` instead — the late slot this module occupies is too late
+for them.
 """
 
 import logging
 
-from .patches.flashinfer_stub import patch_flashinfer_stub
 from .patches.legacy_gpu_gate import patch_legacy_gpu_gate
 
 logger = logging.getLogger(__name__)
@@ -39,9 +42,6 @@ def apply_iluvatar_patches() -> None:
         return
     _patches_applied = True
 
-    # Must run before anything imports the quantization package: the stub is
-    # what keeps its module-level `from flashinfer import ...` from aborting.
-    patch_flashinfer_stub()
     patch_legacy_gpu_gate()
 
 
