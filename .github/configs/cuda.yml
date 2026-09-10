@@ -3,8 +3,9 @@
 
 platform: cuda
 
-# Docker image for this hardware
-ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-cuda-ci
+# Docker image built from docker/cuda/containerfile. Keep the SGLang version in
+# the tag so an old 0.5.11 image cannot be mistaken for the 0.5.18 CI runtime.
+ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl:0.2.0-cuda-sglang0.5.18-ci
 
 # Runner labels for this hardware
 runner_labels:
@@ -14,12 +15,17 @@ runner_labels:
 container_volumes:
   - /mnt/airs-business/cicd/models:/data/models/Qwen
 
-# Container options (no --privileged; GPU access via NVIDIA_VISIBLE_DEVICES env var
-# which triggers nvidia-container-toolkit hook on the host docker daemon)
+# Container options (no --privileged). The NVIDIA self-hosted runner already
+# provides GPU access through its configured Docker runtime; keep the options
+# aligned with that validated runner instead of requiring a named runtime.
 # --user root is required: CI images install CUDA/NCCL libs under system paths,
 # and pip install needs write access to /usr/local. This matches org convention.
 # --init: tini as PID 1 reaps orphan zombies from sglang TP workers on shutdown
 # (PID 1 was tail -f /dev/null, never wait()s -> zombies pile up, kill_process_tree times out)
+# The A100 runner exercises different Triton shapes from the validated H100/H20
+# environments. Keep its provisional correctness fallbacks CI-local instead of
+# changing the NVIDIA runtime defaults. Both variables replace (not extend) the
+# plugin YAML lists, so each value includes the complete fallback set.
 container_options: >-
   --hostname sglang-plugin-fl
   --ipc=host
@@ -29,4 +35,6 @@ container_options: >-
   --user root
   -e NVIDIA_VISIBLE_DEVICES=all
   -e NVIDIA_DRIVER_CAPABILITIES=compute,utility
+  -e SGLANG_FL_FLAGOS_BLACKLIST=slice,masked_scatter_,index_put_,_index_put_impl_,count_nonzero,mm,linear,any_dim
+  -e SGLANG_FL_OOT_BLACKLIST=TopK,SiluAndMul
   --init

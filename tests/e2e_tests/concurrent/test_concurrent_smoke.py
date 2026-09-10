@@ -226,7 +226,7 @@ def _check_images() -> None:
 def _engine_kwargs() -> dict[str, Any]:
     kwargs = _CFG.engine_kwargs()
     kwargs.setdefault("disable_cuda_graph", True)
-    kwargs.setdefault("disable_piecewise_cuda_graph", True)
+    kwargs.setdefault("cuda_graph_backend_prefill", "disabled")
     return kwargs
 
 

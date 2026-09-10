@@ -12,7 +12,7 @@ llm:
   context_length: 4096
   mem_fraction_static: 0.70
   disable_cuda_graph: true
-  disable_piecewise_cuda_graph: true
+  cuda_graph_backend_prefill: disabled
   trust_remote_code: true
   disable_custom_all_reduce: true
 

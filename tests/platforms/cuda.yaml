@@ -29,6 +29,21 @@ device_types:
     memory_gb: 80
     tags: [hopper, fp8, bf16]
 
+# Qwen3.6 is a hybrid attention model. Pin its full-attention path to the
+# Triton backend used by the validated NVIDIA examples. The vision and linear
+# attention backends remain independently selected by SGLang. Disable overlap
+# scheduling for these correctness tests because A100 TP=4 concurrent decoding
+# of the dense 27B model otherwise corrupts later tokens even though its
+# single-request inference stays valid; use the same safe mode for both hybrids.
+engine_overrides:
+  qwen3_6:
+    27b_tp4_nograph:
+      attention_backend: "triton"
+      disable_overlap_schedule: true
+    35b_a3b_tp4_nograph:
+      attention_backend: "triton"
+      disable_overlap_schedule: true
+
 # Default numerical tolerance for result comparison.
 tolerance:
   inference:
@@ -51,8 +66,15 @@ unsupported_features: []
 env_defaults:
   CUDA_DEVICE_MAX_CONNECTIONS: "1"
   NCCL_ALGO: "Ring"
-  # flag-gems 5.0.0 count_nonzero bug with 3D tensors (fixed in dev, pending 5.0.1).
-  SGLANG_FL_FLAGOS_BLACKLIST: "count_nonzero,mm"
+  USE_FLAGGEMS: "1"
+  # FlagTree's cost-model mode needs the optional `flagtune` dependency set and
+  # a remotely resolved model package. NVIDIA validation uses FlagGems' default
+  # configs instead, matching the documented multi-node examples and keeping CI
+  # independent of that optional service.
+  USE_FLAGTUNE: "0"
+  # Do not set SGLANG_FL_FLAGOS_BLACKLIST here. The versioned NVIDIA safety
+  # defaults live in sglang_fl/dispatch/config/nvidia.yaml; an environment
+  # override would replace that complete list instead of extending it.
 
 # ---- Device-specific test configurations ------------------------------------
 a100:

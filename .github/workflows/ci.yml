@@ -1,12 +1,14 @@
-# CI Workflow for SGLang Plugin FL
-# Orchestrates lint, build, and per-platform testing.
+# CI workflow for the SGLang 0.5.18 development line.
+# NVIDIA is enabled; other backends remain defined but are temporarily disabled.
 name: CI
 
 on:
   schedule:
-    - cron: '0 18 * * *'  # daily at 2:00 AM CST (UTC+8)
+    - cron: "0 18 * * *" # daily at 2:00 AM CST (UTC+8)
+  push:
+    branches: ["dev/0.5.18"]
   pull_request:
-    branches: [main]
+    branches: ["dev/0.5.18"]
     paths-ignore:
       - "**.md"
       - "docs/**"
@@ -25,22 +27,13 @@ permissions:
   pull-requests: write
 
 jobs:
-  # ============================================================
-  # Job 1: Lint (ruff check, ruff format, typos)
-  # ============================================================
   lint:
     uses: ./.github/workflows/_lint.yml
 
-  # ============================================================
-  # Job 3: Build & install check
-  # ============================================================
   build:
     needs: lint
     uses: ./.github/workflows/_build_wheel.yml
 
-  # ============================================================
-  # Job 4: Discover which platforms to test
-  # ============================================================
   discover:
     needs: build
     runs-on: ubuntu-latest
@@ -78,9 +71,6 @@ jobs:
         id: detect
         run: python3 .github/scripts/detect_platforms.py
 
-  # ============================================================
-  # Job 6a: CUDA platform testing
-  # ============================================================
   test-cuda:
     needs: discover
     if: contains(fromJson(needs.discover.outputs.platforms), 'cuda')
@@ -89,9 +79,7 @@ jobs:
       platform: cuda
     secrets: inherit
 
-  # ============================================================
-  # Job 6b: Ascend platform testing
-  # ============================================================
+  # Retained for the upcoming Ascend 0.5.18 adaptation.
   test-ascend:
     needs: discover
     if: contains(fromJson(needs.discover.outputs.platforms), 'ascend')
@@ -99,10 +87,8 @@ jobs:
     with:
       platform: ascend
     secrets: inherit
-      
-  # ============================================================
-  # Job 6c: Moore Threads MUSA platform testing
-  # ============================================================
+
+  # Retained for the upcoming Moore Threads MUSA 0.5.18 adaptation.
   test-musa:
     needs: discover
     if: contains(fromJson(needs.discover.outputs.platforms), 'musa')
@@ -111,9 +97,7 @@ jobs:
       platform: musa
     secrets: inherit
 
-  # ============================================================
-  # Job 6c: T-Head PPU platform testing
-  # ============================================================
+  # Retained for the upcoming T-Head PPU 0.5.18 adaptation.
   test-thead:
     needs: discover
     if: contains(fromJson(needs.discover.outputs.platforms), 'thead')

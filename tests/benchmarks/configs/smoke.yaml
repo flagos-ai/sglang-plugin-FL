@@ -4,11 +4,12 @@ throughput:
     case: 06b_tp1
     parameters:
       dataset_name: random
+      dataset_path: tests/benchmarks/data/sharegpt_smoke.json
       random_input_len: 32
       random_output_len: 1
       num_prompts: 4
       disable_cuda_graph: true
-      disable_piecewise_cuda_graph: true
+      cuda_graph_backend_prefill: disabled
       load_format: dummy
 
 latency:
@@ -20,7 +21,7 @@ latency:
       output_len: 1
       batch_size: 1
       disable_cuda_graph: true
-      disable_piecewise_cuda_graph: true
+      cuda_graph_backend_prefill: disabled
       load_format: dummy
 
 serve:
@@ -33,12 +34,13 @@ serve:
       context_length: 1024
       max_total_tokens: 1024
       disable_cuda_graph: true
-      disable_piecewise_cuda_graph: true
+      cuda_graph_backend_prefill: disabled
       load_format: dummy
     client_parameters:
       model: smoke-model
       backend: sglang-oai-chat
       dataset_name: random
+      dataset_path: tests/benchmarks/data/sharegpt_smoke.json
       random_input_len: 32
       random_output_len: 4
       num_prompts: 5

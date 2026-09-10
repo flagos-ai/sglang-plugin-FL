@@ -1,0 +1,11 @@
+# The CUDA build copies only the version verifier. Keep repository history,
+# local caches, credentials, models, and unrelated untracked files out of the
+# context, without constraining the other vendors' containerfiles.
+**
+!docker/
+!docker/cuda/
+!docker/cuda/containerfile
+!.github/
+!.github/scripts/
+!.github/scripts/cuda/
+!.github/scripts/cuda/verify_environment.py

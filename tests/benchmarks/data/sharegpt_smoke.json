@@ -1,0 +1,32 @@
+[
+  {
+    "conversations": [
+      {"from": "human", "value": "Briefly explain why the sky looks blue."},
+      {"from": "gpt", "value": "Air scatters shorter blue wavelengths more strongly than longer wavelengths."}
+    ]
+  },
+  {
+    "conversations": [
+      {"from": "human", "value": "Give one practical tip for writing reliable tests."},
+      {"from": "gpt", "value": "Keep each test focused on one observable behavior and make its inputs deterministic."}
+    ]
+  },
+  {
+    "conversations": [
+      {"from": "human", "value": "What does tensor parallelism distribute?"},
+      {"from": "gpt", "value": "It partitions tensor computations and model parameters across multiple accelerators."}
+    ]
+  },
+  {
+    "conversations": [
+      {"from": "human", "value": "Describe a benefit of offline benchmark data."},
+      {"from": "gpt", "value": "It makes benchmark runs reproducible and independent of external network availability."}
+    ]
+  },
+  {
+    "conversations": [
+      {"from": "human", "value": "Why should dependency versions be checked in CI?"},
+      {"from": "gpt", "value": "Version checks catch accidental resolver drift before it changes runtime behavior."}
+    ]
+  }
+]

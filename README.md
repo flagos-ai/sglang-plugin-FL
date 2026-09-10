@@ -54,8 +54,7 @@ upgrade passes are completed.
 
 The validated H100 environment removes the Triton package installed with
 PyTorch and uses FlagTree 0.6.2a1 as its Triton 3.6-compatible compiler. The
-verified FlagGems master snapshot handles `to_copy` on H100. CUDA container
-integration for this dependency stack is intentionally deferred.
+verified FlagGems master snapshot handles `to_copy` on H100.
 
 ## Model Validation Status
 
@@ -78,8 +77,7 @@ were not available in the shared model directory.
 
 1. Prepare an SGLang v0.5.18 NVIDIA environment with the dependency versions
    listed above. The official `lmsysorg/sglang:v0.5.18-runtime` image is a
-   suitable starting point; NVIDIA communication continues to use NCCL. The
-   repository's CUDA containerfile has not yet been upgraded to this stack.
+   suitable starting point; NVIDIA communication continues to use NCCL.
 
 2. Install the plugin itself without replacing the validated dependencies:
 

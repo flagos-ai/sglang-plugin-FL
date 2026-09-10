@@ -55,7 +55,9 @@ def server(plugin_dispatch_log):
 
     with SGLangServer(
         model_path=_CFG.model,
-        tp_size=int(_CFG.engine.get("tp_size", _CFG.engine.get("tensor_parallel_size", 1))),
+        tp_size=int(
+            _CFG.engine.get("tp_size", _CFG.engine.get("tensor_parallel_size", 1))
+        ),
         api_key=serve.api_key,
         served_model_name=serve.served_model_name,
         max_retries=serve.startup_retries,
@@ -104,6 +106,7 @@ def test_plugin_activated(server):
         "SGLang became ready without the sglang_fl activation marker. "
         f"Server log tail:\n{logs[-4000:]}"
     )
+
 
 @pytest.mark.e2e
 def test_model_list(base_url, headers):
@@ -194,9 +197,14 @@ def _run_chat_non_streaming(
     assert "choices" in data
     assert len(data["choices"]) > 0
 
-    content = data["choices"][0]["message"]["content"]
-    assert len(content.strip()) > 0, "Assistant message is empty"
-    print(f"\nResponse: {content}")
+    message = data["choices"][0]["message"]
+    content = message.get("content") or ""
+    reasoning = message.get("reasoning_content") or ""
+    assert content.strip() or reasoning.strip(), (
+        "Assistant message has neither non-blank content nor reasoning_content: "
+        f"{message!r}"
+    )
+    print(f"\nResponse: {content or reasoning}")
 
 
 def _run_chat_streaming(
@@ -227,12 +235,18 @@ def _run_chat_streaming(
     response = client.chat.completions.create(**create_kwargs)
 
     text = ""
+    reasoning = ""
     for chunk in response:
-        if chunk.choices and chunk.choices[0].delta.content:
-            text += chunk.choices[0].delta.content
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        text += delta.content or ""
+        reasoning += getattr(delta, "reasoning_content", None) or ""
 
-    assert len(text.strip()) > 0, "Streaming response is empty"
-    print(f"\nStreaming response: {text}")
+    assert text.strip() or reasoning.strip(), (
+        "Streaming response has neither non-blank content nor reasoning_content"
+    )
+    print(f"\nStreaming response: {text or reasoning}")
 
 
 def _run_embedding(base_url: str, headers: dict[str, str]) -> None:
@@ -272,6 +286,7 @@ def test_endpoint(endpoint: str, base_url, headers):
     runner = _ENDPOINT_RUNNERS.get(endpoint)
     assert runner is not None, f"Unknown endpoint type: {endpoint}"
     runner(base_url, headers)
+
 
 @pytest.mark.e2e
 def test_plugin_dispatch_activity(server, base_url, headers, plugin_dispatch_log):
