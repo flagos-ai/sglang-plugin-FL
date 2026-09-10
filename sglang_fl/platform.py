@@ -173,11 +173,28 @@ class PlatformFL(SRTPlatform):
     # Planned methods (provide implementations for future core migration)
     # ------------------------------------------------------------------
 
-    def get_device(self, local_rank: int) -> torch.device:
-        return torch.device(self._device_type, local_rank)
+    def get_device(self, device_id: Optional[int] = None) -> str:
+        """Device string for the core to consume, e.g. 'ptpu' / 'ptpu:3'.
 
-    def set_device(self, device: torch.device) -> None:
+        The core stores this in ``ServerArgs.device`` and strips a trailing
+        index from it (``server_args._handle_missing_default_values``), and
+        ``utils.common.get_device()`` delegates here whenever none of the
+        known accelerators matched. Both expect a *string*; returning a
+        ``torch.device`` object fails at the first ``.split(":")``. Devices
+        whose torch exposes ``cuda.is_available()`` never reach this method
+        (the core answers "cuda" first), which is why the wrong return type
+        went unnoticed until a non-CUDA-alias platform — sunrise/ptpu — hit it.
+        """
+        if device_id is None:
+            return self._device_type
+        return f"{self._device_type}:{device_id}"
+
+    def set_device(self, device) -> None:
         if self._info.torch_device_fn is not None:
+            # Callers pass what get_device() handed them (a string, or an
+            # index); the torch backend device fn wants a torch.device.
+            if isinstance(device, str):
+                device = torch.device(device)
             self._info.torch_device_fn.set_device(device)
 
     def get_device_name(self, device_id: int = 0) -> str:
