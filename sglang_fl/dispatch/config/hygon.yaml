@@ -1,0 +1,30 @@
+# SGLang-FL Dispatch Configuration for Hygon DCU (DTK / HIP).
+# NOT auto-loaded: get_platform_name() reports "nvidia" on DCU (DTK torch is
+# plain HIP torch with a working torch.cuda, and SGLANG_FL_PLATFORM is only
+# consulted after the torch probes). Load it explicitly with
+# SGLANG_FL_CONFIG=<repo>/sglang_fl/dispatch/config/hygon.yaml when running
+# the plugin on DCU outside CI.
+#
+# This file carries only the operators EVERY DCU workload hits (scheduler /
+# serving paths); the model-specific exclusions (pow family, torch_native
+# attention pair, count_nonzero — exercised by the qwen3 dense cases) are CI
+# test concerns and ride on the SGLANG_FL_FLAGOS_BLACKLIST env in
+# tests/platforms/hygon.yaml instead. Auto-loading for real would need the
+# detection fix flagged to the dispatch owners in the PR description.
+
+prefer: flagos
+
+# FlagGems tag: v5.3.0 (rebuilt in the CI image for repo-baseline alignment).
+#
+# cat: torch.cat wrong numerics / FlagGems triton issue on DCU (validated
+# vLLM-on-DCU recipe).
+# cumsum, cumsum_out: FlagGems' wrapper computes K = numel // M // N and
+# ZeroDivisionErrors on the EMPTY extend_seq_lens[:-1] slice a single-request
+# prefill produces (e2e serving qwen3/4b_tp2, 2026-08-20); torch.cumsum is
+# fine — the CI image casts the lens tensors to int64 where the HIP kernel
+# needs it.
+# Override per-run with env SGLANG_FL_FLAGOS_BLACKLIST if needed.
+flagos_blacklist:
+  - cat
+  - cumsum
+  - cumsum_out
