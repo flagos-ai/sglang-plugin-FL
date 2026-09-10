@@ -233,7 +233,13 @@ class PlatformFL(SRTPlatform):
             )
 
             return NPUGraphRunner
-        from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
+        try:
+            # SGLang main moved the decode runner into the runner package.
+            from sglang.srt.model_executor.runner.decode_cuda_graph_runner import (
+                DecodeCudaGraphRunner as CudaGraphRunner,
+            )
+        except ImportError:
+            from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
 
         return CudaGraphRunner
 
@@ -258,6 +264,11 @@ class PlatformFL(SRTPlatform):
         from sglang.srt.mem_cache.memory_pool import MLATokenToKVPool
 
         return MLATokenToKVPool
+
+    def get_dsa_kv_pool_cls(self) -> type:
+        from sglang.srt.mem_cache.memory_pool import DSATokenToKVPool
+
+        return DSATokenToKVPool
 
     def get_nsa_kv_pool_cls(self) -> type:
         if self._device_type == "npu":
@@ -300,7 +311,7 @@ class PlatformFL(SRTPlatform):
     def support_piecewise_cuda_graph(self) -> bool:
         return self._device_type == "cuda"
 
-    def is_pin_memory_available(self) -> bool:
+    def is_pin_memory_available(self, device=None) -> bool:
         return self._device_type in ("cuda", "npu", "xpu", "musa", "tsingmicro")
 
     def supports_fp8(self) -> bool:
