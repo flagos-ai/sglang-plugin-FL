@@ -212,7 +212,7 @@ three benchmark smoke cases. Its full job took 51m30s, including successful
 container cleanup and artifact upload. It reused the verified image cache.
 ### Integration with the current upstream CI (2026-09-10)
 
-The PR is being rebased onto `upstream/dev/0.5.18` at `0291457` (NVIDIA CI
+The PR has been rebased onto `upstream/dev/0.5.18` at `0291457` (NVIDIA CI
 #99). MUSA is enabled in the existing platform registry and `_platform_test.yml`;
 there is no separate MUSA event workflow. Other platforms retain their original
 job bodies. MUSA runs all six test scopes in one native Actions job container
