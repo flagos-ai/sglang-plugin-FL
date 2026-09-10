@@ -436,37 +436,6 @@ def _setup_flaggems(config: dict = None):
 # ─── Vendor-specific sglang patches ───────────────────────────────────────────
 
 
-def _apply_early_vendor_patches() -> None:
-    """Import vendor/<vendor_name>/early_patch.py, if the vendor has one.
-
-    The counterpart of ``_apply_vendor_patches`` for fixes that must land
-    *before* sglang_fl's own layers import sglang modules. load_plugin()
-    reaches into sglang from several of its layers (the dispatch AROUND hook
-    builds op classes, the communicator hooks touch distributed), and on a
-    platform whose sglang import chain is broken until a vendor patch has run,
-    the late slot is too late: the plugin's own import is what fails first.
-    Iluvatar is such a case — its corex torch makes `is_cuda()` true while
-    flashinfer does not exist, so any layer pulling in
-    sglang.srt.layers.quantization raises before step 5.
-
-    Same vendor resolution and absence tolerance as the late slot.
-    """
-    import importlib
-
-    from sglang_fl.utils import get_device_info
-
-    info = get_device_info()
-    if info is None:
-        return
-
-    module = f"sglang_fl.dispatch.backends.vendor.{info.vendor_name}.early_patch"
-    try:
-        importlib.import_module(module)
-        logger.info("early vendor patch loaded: %s", module)
-    except ImportError:
-        pass
-
-
 def _apply_vendor_patches() -> None:
     """Import vendor/<vendor_name>/patch.py to apply vendor monkey-patches
     on sglang internals. Called last in load_plugin(), after every sglang_fl
@@ -790,11 +759,6 @@ def load_plugin():
 
     # 0. Build unified config (YAML + env vars)
     config = _build_config()
-
-    # 0b. Vendor patches that must precede our own sglang imports (see the
-    #     docstring: layer 3 imports sglang modules, so a vendor whose import
-    #     chain is broken until patched cannot wait for step 5).
-    _apply_early_vendor_patches()
 
     # 1. FlagGems ATen ops
     _setup_flaggems(config)

@@ -1,0 +1,13 @@
+[project]
+name = "flashinfer-shim"
+version = "0.1.0"
+description = "Import-face flashinfer stub for CUDA-alias vendors without a flashinfer build"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["flashinfer"]

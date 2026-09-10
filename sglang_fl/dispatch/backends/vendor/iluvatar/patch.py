@@ -21,10 +21,6 @@ Iluvatar is CUDA-alias: `is_cuda()` is True and `torch.cuda` works, so sglang's
 CUDA paths are selected even though the corex platform has neither an NVIDIA
 device nor the NVIDIA-only packages those paths expect. Each patch here closes
 one such gap; see the module docstrings for the individual failure.
-
-Prerequisites that must exist before sglang_fl imports sglang live in
-``early_patch.py`` instead — the late slot this module occupies is too late
-for them.
 """
 
 import logging
