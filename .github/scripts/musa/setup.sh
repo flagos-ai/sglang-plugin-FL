@@ -7,7 +7,11 @@
 set -euo pipefail
 git config --global --add safe.directory "$(pwd)"
 echo "=== Installing sglang-plugin-FL (MUSA) ==="
-pip install --upgrade pip "setuptools>=68,<82" wheel
+# The MUSA image already carries a working pip.  Do not force a PyPI lookup
+# for a newer pip on the self-hosted runner: its outbound proxy can return
+# transient 500s before project installation even starts.  Dependencies are
+# still upgraded below when the installed version does not satisfy the spec.
+pip install "setuptools>=68,<82" wheel
 pip install -e ".[dev]" --no-build-isolation || pip install -e . --no-build-isolation
 pip install pytest pytest-timeout pyyaml
 echo "=== Installation complete ==="

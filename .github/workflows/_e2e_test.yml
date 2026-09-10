@@ -81,8 +81,9 @@ jobs:
         run: bash .github/scripts/${{ inputs.platform }}/setup.sh
 
       - name: Run E2E tests
-        # SGLANG_FL_FLAGOS_BLACKLIST is set per-platform in tests/platforms/<platform>.yaml (env_defaults),
-        # so e2e/benchmark inherit the right op blacklist per arch (cuda: count_nonzero; ascend: see ascend.yaml).
+        # The per-arch op blacklist reaches e2e/benchmark either via env_defaults
+        # in tests/platforms/<platform>.yaml (cuda/thead/musa) or via the plugin's
+        # dispatch config flagos_blacklist (enflame: gcu.yaml, ascend: ascend.yaml).
         run: |
           python tests/run.py \
             --platform ${{ inputs.platform }} \

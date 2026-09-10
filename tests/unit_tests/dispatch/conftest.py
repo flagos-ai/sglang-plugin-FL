@@ -18,14 +18,23 @@ import logging
 
 import pytest
 
+import sglang_fl.dispatch.config as dispatch_config
 from sglang_fl.dispatch.types import BackendImplKind, BackendPriority, OpImpl
 from sglang_fl.dispatch.registry import OpRegistry
 from sglang_fl.dispatch.policy import reset_global_policy
 
-
 @pytest.fixture(autouse=True)
-def _reset_policy():
-    """Reset global policy before each test."""
+def _reset_policy(monkeypatch):
+    """Provide a platform-neutral environment for dispatch unit tests."""
+
+    # Generic dispatch unit tests verify built-in policy behavior and should
+    # not depend on the hardware platform where pytest is executed.
+    monkeypatch.setattr(
+        dispatch_config,
+        "get_config_path",
+        lambda platform=None: None,
+    )
+
     reset_global_policy()
     yield
     reset_global_policy()
