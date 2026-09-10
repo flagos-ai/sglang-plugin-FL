@@ -33,6 +33,8 @@ engine_overrides:
       page_size: 1
     4b_tp2:
       page_size: 1
+      # Keep non-greedy smoke sampling reproducible across fresh engines.
+      random_seed: 42
   qwen3_6:
     27b_tp4_nograph:
       page_size: 1
@@ -70,8 +72,14 @@ unsupported_features: []
 # all-reduce) hangs; blacklisting it falls back to torch_musa's native sort. TP1 is
 # unaffected (no inter-rank collective), as is greedy/argmax decode (no sort). Add more
 # ops here if other FlagGems ops misbehave on MUSA during bring-up.
+# FlagGems master 01433e830 also mishandles empty-index broadcast_tensors in
+# top-p sampling. Keep this exclusion when overriding the plugin's default list.
+# Its slice implementation rejects the eager runner's boolean buffers as well.
+# Integer eq/eq_scalar/equal must preserve multimodal IDs above 2**24.
+# This environment variable replaces the runtime list, so retain every runtime
+# exclusion as well as the older CI image's mul/sort workarounds.
 env_defaults:
-  SGLANG_FL_FLAGOS_BLACKLIST: "mul,sort"
+  SGLANG_FL_FLAGOS_BLACKLIST: "mul,sort,broadcast_tensors,slice,eq,eq_scalar,equal,count_nonzero,cumsum,mm,unique,_unique2,unique_dim,unique_consecutive"
 
 # ---- Device-specific test configurations ------------------------------------
 s5000:

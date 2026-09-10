@@ -29,7 +29,7 @@ _MUSA_FP32_TP_ALLREDUCE = os.environ.get(
 
 def _patch_pp_send_recv_order() -> None:
     try:
-        from sglang.srt.managers.scheduler_pp_mixin import SchedulerPPMixin
+        from sglang.srt.managers import scheduler_pp_mixin
         from sglang.srt.model_executor.forward_batch_info import PPProxyTensors
     except Exception as e:
         logger.warning("MUSA PP send/recv order patch skipped: %s", e)
@@ -37,6 +37,8 @@ def _patch_pp_send_recv_order() -> None:
 
     import torch
 
+    SchedulerPPMixin = scheduler_pp_mixin.SchedulerPPMixin
+    can_skip_output_comm = getattr(scheduler_pp_mixin, "_pp_can_skip_output_comm", None)
     orig_fn = SchedulerPPMixin._pp_send_recv_and_preprocess_output_tensors
 
     @wraps(orig_fn)
@@ -64,19 +66,27 @@ def _patch_pp_send_recv_order() -> None:
 
         def _do_recv():
             nonlocal next_pp_outputs, batch_result, d2h_event
-            if mbs[next_mb_id] is None or mbs[next_mb_id].forward_mode.is_prebuilt():
+            target = mbs[next_mb_id]
+            if target is None or target.forward_mode.is_prebuilt():
+                return
+            if can_skip_output_comm is not None and can_skip_output_comm(target):
+                next_pp_outputs, batch_result, d2h_event = (
+                    self._pp_make_skip_output_result(target, mb_metadata[next_mb_id])
+                )
                 return
             with torch.profiler.record_function("recv_res_dict_from_prev_stage"):
                 next_pp_outputs = PPProxyTensors(self._pp_recv_dict_from_prev_stage())
             with self.copy_stream_ctx:
                 self.copy_stream.wait_stream(self.schedule_stream)
                 batch_result = self._pp_prep_batch_result(
-                    mbs[next_mb_id], mb_metadata[next_mb_id], next_pp_outputs
+                    target, mb_metadata[next_mb_id], next_pp_outputs
                 )
                 d2h_event = self.device_module.Event()
                 d2h_event.record(self.device_module.current_stream())
 
-        if (self.pp_rank % 2) == 0:
+        # SGLang 0.5.18 moved scheduler ranks into ParallelState (`ps`).
+        parallel_state = getattr(self, "ps", self)
+        if (parallel_state.pp_rank % 2) == 0:
             send_output_work = _do_send()
             _do_recv()
         else:
@@ -112,7 +122,13 @@ def _patch_pp_launch_batch_add_sync() -> None:
 
 def _patch_multimodal_mask() -> None:
     try:
+        from importlib import import_module
+
         from sglang.srt.managers import mm_utils
+
+        # 0.5.18 re-exports this function from mm_schedule. Patch the module
+        # owning its globals, where the mask helper is actually looked up.
+        mask_module = import_module(mm_utils.get_embedding_and_mask.__module__)
     except Exception as e:
         logger.warning("MUSA multimodal mask patch skipped: %s", e)
         return
@@ -127,8 +143,8 @@ def _patch_multimodal_mask() -> None:
             mask |= input_ids == token
         return mask.unsqueeze(-1)
 
-    mm_utils._get_multimodal_mask = _get_multimodal_mask_loop
-    logger.info("MUSA multimodal mask patch applied")
+    mask_module._get_multimodal_mask = _get_multimodal_mask_loop
+    logger.info("MUSA multimodal mask patch applied to %s", mask_module.__name__)
 
 
 def _patch_communication_op_fp32_all_reduce() -> None:
@@ -138,7 +154,7 @@ def _patch_communication_op_fp32_all_reduce() -> None:
     and moe_tensor_model_parallel_all_reduce to convert BF16 inputs to FP32 before
     all-reduce and convert back to BF16 after.
 
-    Also patches imported references in all consuming modules.
+    Also updates selected imported references in consuming modules.
     """
     try:
         import sglang.srt.distributed as dist_pkg
@@ -229,6 +245,38 @@ def _patch_parallel_state_fp32_reduce_scatter() -> None:
     logger.info("MUSA FP32 parallel_state reduce_scatter patch applied")
 
 
+def _patch_flagcx_fp32_all_reduce() -> None:
+    """Cover eager-bound vision reductions routed through the FlagCX hook."""
+    import torch
+
+    from sglang_fl.distributed.communicator import CommunicatorFL
+
+    original = CommunicatorFL.all_reduce
+
+    @wraps(original)
+    def all_reduce_fp32(self, input_: torch.Tensor) -> torch.Tensor:
+        if (
+            input_.device.type == "musa"
+            and input_.dtype == torch.bfloat16
+            and input_.ndim == 3
+        ):
+            # Vision embedding/linear layers bind communication_op functions
+            # before the source-module patch. The active FlagCX hook also
+            # bypasses GroupCoordinator's original method, so cover its actual
+            # communicator entry point and retain the in-place return contract.
+            # Qwen vision uses [images, patches, channels]. Limit this extra
+            # coverage to that layout: promoting every 2D text-layer reduction
+            # regressed cross-node Dense TP4 on this MUSA/FlagCX stack. Existing
+            # source-level FP32 reductions remain unchanged.
+            reduced = original(self, input_.float())
+            input_.copy_(reduced)
+            return input_
+        return original(self, input_)
+
+    CommunicatorFL.all_reduce = all_reduce_fp32
+    logger.info("MUSA FP32 FlagCX vision all-reduce patch applied")
+
+
 def _patch_fp32_tp_all_reduce() -> None:
     """Apply all FP32 TP all-reduce patches when SGLANG_MUSA_FP32_TP_ALLREDUCE=1."""
     if not _MUSA_FP32_TP_ALLREDUCE:
@@ -239,8 +287,21 @@ def _patch_fp32_tp_all_reduce() -> None:
         return
 
     _patch_communication_op_fp32_all_reduce()
+    _patch_flagcx_fp32_all_reduce()
     _patch_parallel_state_fp32_reduce_scatter()
     logger.info("MUSA FP32 TP all-reduce patches applied")
+
+
+def _patch_vision_flash_attention() -> None:
+    """Bind the varlen entry point used by VisionFlash3Attention on MUSA."""
+    from sglang.srt.layers.attention import vision
+
+    # 0.5.18 changed VisionFlash3Attention to call flash_attn_func, but only
+    # binds that name in the CUDA branch. MUSA still imports the real varlen
+    # implementation, which accepts the same packed Q/K/V and sequence lengths.
+    if not hasattr(vision, "flash_attn_func"):
+        vision.flash_attn_func = vision.flash_attn_varlen_func
+        logger.info("MUSA vision FA3 varlen entry point installed")
 
 
 def apply_musa_patches() -> None:
@@ -248,10 +309,16 @@ def apply_musa_patches() -> None:
     if _patches_applied:
         return
 
+    from .triton_compat import patch_triton_pdl_symbols
+    from .lifecycle import apply_musa_lifecycle_patches
+
+    patch_triton_pdl_symbols()
+    _patch_vision_flash_attention()
     _patch_pp_send_recv_order()
     _patch_pp_launch_batch_add_sync()
     _patch_multimodal_mask()
     _patch_fp32_tp_all_reduce()
+    apply_musa_lifecycle_patches()
     _patches_applied = True
     logger.info("All MUSA PP patches applied successfully")
 
