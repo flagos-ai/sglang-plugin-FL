@@ -28,8 +28,3 @@ unparseable = "unparseable"
 thw = "thw"
 # MUSA / flashinfer C++ header file extension (.muh), e.g. flashinfer/sampling.muh
 muh = "muh"
-
-[default.extend-identifiers]
-# SSH aliases for the Moore Threads validation machines.
-moer_14 = "moer_14"
-moer_15 = "moer_15"
