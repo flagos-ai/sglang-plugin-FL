@@ -1,5 +1,5 @@
 # CI workflow for the SGLang 0.5.18 development line.
-# NVIDIA is enabled; other backends remain defined but are temporarily disabled.
+# NVIDIA and MUSA are enabled; the other backends remain temporarily disabled.
 name: CI
 
 on:
@@ -88,7 +88,7 @@ jobs:
       platform: ascend
     secrets: inherit
 
-  # Retained for the upcoming Moore Threads MUSA 0.5.18 adaptation.
+  # Moore Threads MUSA uses the same platform entrypoint as NVIDIA.
   test-musa:
     needs: discover
     if: contains(fromJson(needs.discover.outputs.platforms), 'musa')

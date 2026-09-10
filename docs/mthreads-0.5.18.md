@@ -74,8 +74,10 @@ docker build --target ci \
   -t harbor.baai.ac.cn/plugin/sglang-plugin-fl:0.5.18-musa-ci-20260909 .
 ```
 
-The MUSA-only workflow `.github/workflows/musa-ci.yml` targets PRs into
-`dev/0.5.18` and runs the existing unit, functional, E2E and benchmark entrypoints.
+MUSA is enabled in `.github/configs/platforms.yml` alongside NVIDIA. The existing
+`.github/workflows/ci.yml` invokes `_platform_test.yml` for both platforms on
+`dev/0.5.18`; there is no separate MUSA event workflow. The MUSA branch runs the
+existing unit, functional, E2E and benchmark entrypoints.
 All scopes share one container: the first cold pull exceeded the old unit
 job's 30-minute limit before any test began. The MUSA job allows 180 minutes
 for initialization and the full suite, with separate limits and logs for each
@@ -83,8 +85,8 @@ test phase. A failing E2E group does not suppress the other two groups.
 Each E2E phase uploads its log immediately, as well as in the final combined
 artifact. Qwen3-4B's MUSA engine override fixes `random_seed=42` so the existing
 temperature-0.7 sampling smoke check is reproducible across fresh engines.
-Configuration generation also uses the MUSA runner queue, with a temporary
-Python environment; it does not depend on a separate GitHub-hosted runner.
+The shared lint, wheel build, discovery and platform setup jobs precede MUSA
+testing. The other platforms retain their existing sequence of test jobs.
 Its setup script installs the current PR checkout with `--no-deps` and
 checks the imported plugin path. The image supplies the dependencies, so
 individual jobs do not upgrade SGLang, Torch, FlagTree or FlagGems.

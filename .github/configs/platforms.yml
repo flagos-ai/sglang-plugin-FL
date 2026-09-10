@@ -12,8 +12,7 @@ platforms:
     # Temporarily disabled until the dedicated SGLang 0.5.18 adaptation is merged.
     enabled: false
   musa:
-    # Temporarily disabled until the dedicated SGLang 0.5.18 adaptation is merged.
-    enabled: false
+    enabled: true
   thead:
     # Self-hosted runner pool: label flagcicd-810e (4 runners, online).
     # CI image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-thead-ci.
