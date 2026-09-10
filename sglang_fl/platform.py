@@ -226,16 +226,30 @@ class PlatformFL(SRTPlatform):
         return _ATTN_BACKEND_MAP.get(self._vendor_name, "torch_native")
 
     def get_graph_runner_cls(self) -> type:
-        """Return graph runner class for this platform."""
+        """Return the graph runner used by SGLang's decode capture path.
+
+        Current SGLang calls this platform factory only from
+        ``capture_decode_graph``. Prefill graph capture constructs
+        ``PrefillCudaGraphRunner`` directly in SGLang core.
+        """
         if self._device_type == "npu":
             from sglang.srt.hardware_backend.npu.graph_runner.npu_graph_runner import (
                 NPUGraphRunner,
             )
 
             return NPUGraphRunner
-        from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
+        try:
+            # SGLang split the legacy graph runner into phase-specific runners.
+            from sglang.srt.model_executor.runner.decode_cuda_graph_runner import (
+                DecodeCudaGraphRunner,
+            )
 
-        return CudaGraphRunner
+            return DecodeCudaGraphRunner
+        except ImportError:
+            # In older SGLang, CudaGraphRunner served the decode capture path.
+            from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
+
+            return CudaGraphRunner
 
     def get_mha_kv_pool_cls(self) -> type:
         if self._device_type == "npu":
@@ -258,6 +272,11 @@ class PlatformFL(SRTPlatform):
         from sglang.srt.mem_cache.memory_pool import MLATokenToKVPool
 
         return MLATokenToKVPool
+
+    def get_dsa_kv_pool_cls(self) -> type:
+        from sglang.srt.mem_cache.memory_pool import DSATokenToKVPool
+
+        return DSATokenToKVPool
 
     def get_nsa_kv_pool_cls(self) -> type:
         if self._device_type == "npu":
@@ -300,7 +319,7 @@ class PlatformFL(SRTPlatform):
     def support_piecewise_cuda_graph(self) -> bool:
         return self._device_type == "cuda"
 
-    def is_pin_memory_available(self) -> bool:
+    def is_pin_memory_available(self, device=None) -> bool:
         return self._device_type in ("cuda", "npu", "xpu", "musa", "tsingmicro")
 
     def supports_fp8(self) -> bool:
