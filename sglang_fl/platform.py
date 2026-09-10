@@ -52,6 +52,10 @@ _DIST_BACKEND_MAP = {
     "enflame": "eccl",
     "tsingmicro": "tccl",
     "hygon": "nccl",
+    # sunrise's torch is a +cpu build carrying the PTPU ProcessGroup; its
+    # available backends are pccl and gloo (no NCCL), so the nccl fallback
+    # aborts every startup with "Distributed package doesn't have NCCL built in".
+    "sunrise": "pccl",
 }
 
 # Attention backend mapping: vendor_name -> default backend
