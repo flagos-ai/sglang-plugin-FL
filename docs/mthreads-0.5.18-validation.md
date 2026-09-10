@@ -179,8 +179,9 @@ published with digest
 An empty Docker credential configuration successfully reads its manifest.
 The MUSA CI configuration pins this digest.
 
-The dedicated MUSA workflow targets `dev/0.5.18` and runs the existing test
-matrix. Its setup installs the current PR checkout without resolving
+The existing `ci.yml` / `_platform_test.yml` pipeline enables MUSA alongside
+NVIDIA on `dev/0.5.18` and runs the complete MUSA test matrix. Its setup
+installs the current PR checkout without resolving
 dependencies and checks that `sglang_fl` imports from that checkout.
 The approved shared test corrections initialize the graph fixture's vendor
 name and replace obsolete `disable_piecewise_cuda_graph` arguments with
@@ -203,11 +204,24 @@ home directory `/github/home`. It imports FlagGems from `/opt/FlagGems/src`.
 These preflight results are separate from the GitHub Actions result.
 The authoritative CI outcome is published on the
 [PR #95 checks page](https://github.com/flagos-ai/sglang-plugin-FL/pull/95/checks)
-under `MUSA SGLang 0.5.18 CI`.
+under `CI` / `test-musa` / `MUSA full test suite`.
+Before integration, standalone run `34379124461` at `9876d93` passed 22
+helpers, 282 unit tests, 36 functional tests (three existing skips), all four
+inference and both concurrent configurations, all 15 serving checks, and all
+three benchmark smoke cases. Its full job took 51m30s, including successful
+container cleanup and artifact upload. It reused the verified image cache.
+The branch now includes baseline `0291457` (NVIDIA CI #99). MUSA is enabled
+in the existing platform registry; the separate `musa-ci.yml` event workflow
+has been removed. Within `_platform_test.yml`, MUSA retains the validated
+single-container test sequence and other platforms retain their original
+job bodies. The shared notification derives MUSA's status from that full
+job. Transport probes remain available as an explicit diagnostic command,
+rather than a prerequisite of every cached-image test run. The previous
+standalone result is separate from validation of this integration.
 The first Actions attempt, run `34326740473`, was cancelled at the shared
 unit job's 30-minute timeout while Docker was still initializing the image;
 no test started. Its log records successful layer downloads/extraction and
-the timeout cancellation. The MUSA-only workflow now initializes one
+the timeout cancellation. The MUSA test job now initializes one
 container for all scopes, with a 180-minute job limit and separate phase
 limits. All three E2E groups still run if a peer group fails, and all phase
 logs are uploaded as `musa-ci-results`.
