@@ -25,6 +25,7 @@ one such gap; see the module docstrings for the individual failure.
 
 import logging
 
+from .patches.clamp_position import patch_clamp_position
 from .patches.legacy_gpu_gate import patch_legacy_gpu_gate
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ def apply_iluvatar_patches() -> None:
         return
     _patches_applied = True
 
+    patch_clamp_position()
     patch_legacy_gpu_gate()
 
 
