@@ -62,7 +62,17 @@ _ATTN_BACKEND_MAP = {
     "mthreads": "fa3",
     "enflame": "fa3",
     "thead": "fa3",
-    "kunlunxin": "kunlunxin",
+    # torch_native rather than the vendor backend: the latter calls
+    # sgl_kernel's klx_attention_* ops, which exist only in a vendor-compiled
+    # sgl_kernel build (not on any index we publish, and not something the
+    # import-face shim can satisfy — torch.ops lookups go through the
+    # dispatcher, not Python module attributes). The triton backend is not an
+    # alternative here either: the XPU compiler fails on flash-style attention
+    # kernels (see packaging/vllm/docs/handoffs/kunlunxin-xpu-triton-attention-
+    # compiler-bug.md), which torch_native reaches too — flag_gems hijacks
+    # aten::_scaled_dot_product_flash_attention — hence the SDPA entries in
+    # kunlunxin.yaml's flagos_blacklist.
+    "kunlunxin": "torch_native",
     "iluvatar": "triton",
     "hygon": "hcu",
 }

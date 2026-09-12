@@ -59,16 +59,16 @@ def patch_clamp_position():
     if _applied:
         return
 
-    from sglang.srt.managers import overlap_utils
     from sglang.srt.model_executor import forward_batch_info
 
-    overlap_utils._resolve_future_token_ids = (
-        overlap_utils._resolve_future_token_ids_native
-    )
+    # 0.5.18 dropped overlap_utils._resolve_future_token_ids (and its _native
+    # twin) — that rebind used to live here and now raises AttributeError at
+    # plugin-import time, which aborted every kunlunxin patch behind it. Only
+    # the clamp_position seam survives the API drift.
     forward_batch_info.clamp_position = forward_batch_info._clamp_position_native
 
     _applied = True
     logger.info(
         "patched JIT-CUDA plumbing kernels -> torch-native "
-        "(resolve_future_token_ids, clamp_position; avoids nvcc -std=c++20 on Kunlunxin)"
+        "(clamp_position; avoids nvcc -std=c++20 on Kunlunxin)"
     )

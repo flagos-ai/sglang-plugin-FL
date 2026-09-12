@@ -23,6 +23,7 @@ import logging
 from .patches.attention_backend_choice import patch_attention_backend_choice
 from .patches.causal_conv1d import patch_causal_conv1d
 from .patches.clamp_position import patch_clamp_position
+from .patches.jit_kernels import patch_jit_kernel_predicates
 from .patches.pp_send_first import patch_pp_send_recv_and_preprocess_output_tensors
 from .patches.suppress_pynccl import patch_suppress_pynccl
 
@@ -31,17 +32,30 @@ _patches_applied = False
 
 
 def apply_kunlunxin_patches():
-    """Apply all kunlunxin-specific patches."""
+    """Apply all kunlunxin-specific patches.
+
+    Each patch is isolated: one that no longer matches sglang's API must not
+    take the rest down with it. That is not hypothetical — a rebind left over
+    from an older sglang raised AttributeError here and silently disabled every
+    patch behind it, including the ones this backend needs to run at all.
+    """
     global _patches_applied
     if _patches_applied:
         return
     _patches_applied = True
 
-    patch_clamp_position()
-    patch_causal_conv1d()
-    patch_suppress_pynccl()
-    patch_pp_send_recv_and_preprocess_output_tensors()
-    patch_attention_backend_choice()
+    for name, patch in (
+        ("clamp_position", patch_clamp_position),
+        ("causal_conv1d", patch_causal_conv1d),
+        ("jit_kernels", patch_jit_kernel_predicates),
+        ("suppress_pynccl", patch_suppress_pynccl),
+        ("pp_send_recv", patch_pp_send_recv_and_preprocess_output_tensors),
+        ("attention_backend_choice", patch_attention_backend_choice),
+    ):
+        try:
+            patch()
+        except Exception as e:
+            logger.warning("kunlunxin patch %s failed (continuing): %r", name, e)
 
 
 apply_kunlunxin_patches()

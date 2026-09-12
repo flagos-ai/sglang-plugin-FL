@@ -50,6 +50,16 @@ flagos_blacklist:
   - to_copy
   - nonzero
   - argmax
+  # SDPA family: torch_native routes attention through
+  # torch.nn.functional.scaled_dot_product_attention, and flag_gems hijacks
+  # aten::_scaled_dot_product_* — its flash kernel then hits the XPU
+  # compiler's flash-attention failure (pass pipeline aborts, surfaced as the
+  # placeholder OutOfResources 'uni_sram'). Blacklisting the family keeps the
+  # native torch path, which is what runs here.
+  - _scaled_dot_product_flash_attention
+  - _scaled_dot_product_attention_math
+  - _scaled_dot_product_efficient_attention
+  - _scaled_dot_product_cudnn_attention
 
 # Per-op backend order (overrides `prefer` for the listed op only).
 #   silu_and_mul : route to the kunlunxin VENDOR impl (sgl_kernel klx build),
