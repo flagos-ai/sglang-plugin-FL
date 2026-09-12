@@ -1,0 +1,16 @@
+[project]
+name = "torch-compat-shim"
+version = "0.1.0"
+description = "Give a torch < 2.8 build the two surfaces sglang 0.5.18 imports at startup"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+# Import name is `sitecustomize` on purpose: `site` imports it at interpreter
+# startup, which is the only point early enough for the spawned scheduler
+# worker (see the module docstring).
+[tool.setuptools]
+py-modules = ["sitecustomize"]
