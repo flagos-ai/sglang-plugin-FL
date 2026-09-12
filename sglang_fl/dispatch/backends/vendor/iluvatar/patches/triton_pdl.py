@@ -47,6 +47,19 @@ def _noop(*args, **kwargs):
     return None
 
 
+# triton's dependency pass only accepts a call it recognises as triton-side:
+# `func.__module__.startswith("triton")`. Vendor triton 3.1.0 (corex 4.4.0)
+# *asserts* on that during the AST pre-pass and aborts the compile:
+#
+#     AssertionError: Function "_noop" is being called from a Triton function
+#     but is not a Triton function itself. Decorate it with @triton.jit
+#
+# 3.2.0 (corex 4.5.0) runs the same test without asserting, which is why the
+# plain function was enough there. The function is installed *into*
+# triton.language.extra.cuda, so answering for that namespace is truthful.
+_noop.__module__ = "triton.language.extra.cuda"
+
+
 def patch_triton_pdl_intrinsics():
     """Add no-op PDL intrinsics to triton.language.extra.cuda when absent."""
     global _applied
