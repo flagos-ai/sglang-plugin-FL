@@ -46,33 +46,31 @@ _CONFIG_DIR = Path(__file__).parent
 
 
 def get_platform_name() -> str:
-    """
-    Detect the current hardware platform.
+    """Vendor name for configuration lookup, e.g. 'kunlunxin', 'ascend'.
 
-    Returns:
-        Platform name string: 'ascend', 'musa', 'iluvatar', 'nvidia', or 'unknown'
+    Delegates to the FlagGems-backed detector (``sglang_fl.utils.get_device_info``)
+    rather than re-deriving the vendor from torch attributes here. The two used
+    to disagree: a hand-rolled chain returned 'nvidia' for every CUDA-alias
+    vendor (kunlunxin, and any future one), because it only knew about torch's
+    own device namespaces — so kunlunxin.yaml, with its bisected operator
+    blacklist and per-op routing, was never loaded and the platform silently ran
+    on nvidia.yaml.
+
+    The environment override stays here: it is a config-loader concern, not a
+    device fact.
     """
+    override = os.environ.get("SGLANG_FL_PLATFORM", "").strip().lower()
+    if override:
+        return override
+
     try:
-        import torch
-        if hasattr(torch, "txda") and torch.txda.is_available():
-            return "tsingmicro"
-        if hasattr(torch, "npu") and torch.npu.is_available():
-            return "ascend"
-        if hasattr(torch, "musa") and torch.musa.is_available():
-            return "musa"
-        if hasattr(torch, "gcu") and torch.gcu.is_available():
-            return "gcu"
-        if hasattr(torch, "corex") and torch.cuda.is_available():
-            return "iluvatar"
-        if torch.cuda.is_available():
-            return "nvidia"
-    except ImportError:
-        pass
+        from sglang_fl.utils import get_device_info
 
-    # Check environment variable override
-    platform_override = os.environ.get("SGLANG_FL_PLATFORM", "").strip().lower()
-    if platform_override:
-        return platform_override
+        info = get_device_info()
+        if info is not None:
+            return info.vendor_name
+    except Exception:
+        pass
 
     return "unknown"
 

@@ -57,6 +57,9 @@ class KunlunxinBackend(AttentionBackend):
         self.device = model_runner.device
         self.max_context_len = model_runner.model_config.context_len
         self.req_to_token = model_runner.req_to_token_pool.req_to_token
+        # 0.5.18 moved the KV pool off ForwardBatch and onto the runner;
+        # capture it here like sglang's own attention backends do.
+        self.token_to_kv_pool = model_runner.token_to_kv_pool
         self.kv_cache_dtype = model_runner.kv_cache_dtype
         self.page_size = model_runner.page_size
         self.forward_metadata: Optional[KunlunxinForwardMetadata] = None
@@ -142,8 +145,8 @@ class KunlunxinBackend(AttentionBackend):
 
         # KV shared layer: k/v are None -> read from paged KV cache.
         if k is None and v is None:
-            k_buf = forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id)
-            v_buf = forward_batch.token_to_kv_pool.get_value_buffer(layer.layer_id)
+            k_buf = self.token_to_kv_pool.get_key_buffer(layer.layer_id)
+            v_buf = self.token_to_kv_pool.get_value_buffer(layer.layer_id)
             page_ids = forward_batch.out_cache_loc // self.page_size
             offsets = forward_batch.out_cache_loc % self.page_size
             k = k_buf[page_ids, :, offsets, :]
@@ -155,7 +158,7 @@ class KunlunxinBackend(AttentionBackend):
             o = torch.empty_like(q)
 
         if save_kv_cache:
-            forward_batch.token_to_kv_pool.set_kv_buffer(
+            self.token_to_kv_pool.set_kv_buffer(
                 layer, forward_batch.out_cache_loc, k, v
             )
 
@@ -174,10 +177,10 @@ class KunlunxinBackend(AttentionBackend):
         )
 
         if use_kv_cache:
-            k_cache = forward_batch.token_to_kv_pool.get_key_buffer(
+            k_cache = self.token_to_kv_pool.get_key_buffer(
                 layer.layer_id
             ).contiguous()
-            v_cache = forward_batch.token_to_kv_pool.get_value_buffer(
+            v_cache = self.token_to_kv_pool.get_value_buffer(
                 layer.layer_id
             ).contiguous()
             k_cache_max, v_cache_max = None, None
@@ -237,8 +240,8 @@ class KunlunxinBackend(AttentionBackend):
             sinks = sinks.float().contiguous()
 
         if k is None and v is None:
-            k_buf = forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id)
-            v_buf = forward_batch.token_to_kv_pool.get_value_buffer(layer.layer_id)
+            k_buf = self.token_to_kv_pool.get_key_buffer(layer.layer_id)
+            v_buf = self.token_to_kv_pool.get_value_buffer(layer.layer_id)
             page_ids = forward_batch.out_cache_loc // self.page_size
             offsets = forward_batch.out_cache_loc % self.page_size
             k = k_buf[page_ids, :, offsets, :]
@@ -247,14 +250,14 @@ class KunlunxinBackend(AttentionBackend):
         assert self.forward_metadata is not None
 
         if save_kv_cache:
-            forward_batch.token_to_kv_pool.set_kv_buffer(
+            self.token_to_kv_pool.set_kv_buffer(
                 layer, forward_batch.out_cache_loc, k, v
             )
 
-        k_cache = forward_batch.token_to_kv_pool.get_key_buffer(
+        k_cache = self.token_to_kv_pool.get_key_buffer(
             layer.layer_id
         ).contiguous()
-        v_cache = forward_batch.token_to_kv_pool.get_value_buffer(
+        v_cache = self.token_to_kv_pool.get_value_buffer(
             layer.layer_id
         ).contiguous()
 
