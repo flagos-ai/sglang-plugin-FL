@@ -1,0 +1,43 @@
+# THROWAWAY workflow — populate the thead (zw810e) runner model store.
+#
+# This PR exists ONLY to download the 4 Qwen models the thead e2e cases
+# reference onto the thead pool's model store
+# (/mnt/airs-business/cicd/models, mounted in CI containers as
+# /data/models/Qwen). It is NOT meant to be merged: ci.yml is deleted on
+# this branch so no other platform runs; close the PR once the store is
+# populated ("下完就关").
+#
+# Runs in the same container setup as the thead test jobs (image + volume
+# mount, --user root) but needs no device. The script is idempotent
+# (.cache_ready markers), so failed/re-run jobs resume instead of
+# restarting the ~130 GB transfer.
+#
+# If the job hits the known thead docker authZ dice ("authorization denied
+# by plugin authZ"), just re-run it — that failure happens before any
+# download starts.
+name: thead model download
+
+on:
+  push:
+    branches: [chore/thead-model-download]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  download:
+    runs-on: [self-hosted, flagcicd-810e]
+    timeout-minutes: 300
+    container:
+      image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-thead-ci
+      options: >-
+        --user root
+        -v /mnt/airs-business/cicd/models:/data/models/Qwen
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Download models into the thead store
+        run: bash .github/scripts/thead/download_models.sh
+
+      - name: Final listing
+        run: ls -la /data/models/Qwen/
