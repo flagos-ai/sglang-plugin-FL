@@ -10,8 +10,10 @@
 #
 # This job runs in the SAME container setup as the thead test jobs (image +
 # volume mount, --user root, no device needed), so writes land on the real
-# store, not an ephemeral overlay. Idempotent: per-model .cache_ready markers
-# make re-runs skip completed models.
+# store, not an ephemeral overlay. Idempotent: completed model directories are
+# detected by config.json (and marked with .cache_ready for future runs), so
+# re-runs skip models that are already present even if an older run did not
+# create the marker.
 #
 # All four are public (Apache-2.0) and identical on ModelScope and HF.
 #
@@ -34,28 +36,6 @@ SOURCE="${SOURCE:-modelscope}"   # modelscope | huggingface
 LOCAL_ROOTS="${LOCAL_ROOTS:-/data/models/Qwen /data /data/models}"
 
 command -v python3 >/dev/null || { echo "python3 is required"; exit 1; }
-
-# Pre-install the download backend WHILE THE CI PROXY IS STILL ACTIVE — pip
-# needs the proxy to reach pypi, but the modelscope download itself must
-# bypass it (see below). Installing first avoids a proxy-less pip fallback
-# later inside py_download.
-if [[ "$SOURCE" == "modelscope" ]]; then
-  python3 -c "import modelscope" 2>/dev/null || \
-    pip install -q modelscope
-else
-  python3 -c "import huggingface_hub" 2>/dev/null || \
-    pip install -q huggingface_hub
-fi
-
-# ModelScope is a domestic (CN) source. The CI container routes egress through
-# an HTTP proxy that returns 500 on the CONNECT tunnel to modelscope.cn,
-# breaking the download ("Unable to connect to proxy ... 500"). Bypass the
-# proxy for ModelScope (direct domestic egress). Hugging Face (foreign) keeps
-# the proxy, since it usually needs it.
-if [[ "$SOURCE" == "modelscope" ]]; then
-  unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy 2>/dev/null || true
-  export NO_PROXY="*" no_proxy="*"
-fi
 
 # local_dir_name -> repo_id (identical on ModelScope and Hugging Face)
 ALL_MODELS=(
@@ -146,17 +126,41 @@ find_local_copy() {
   return 1
 }
 
+backend_ready=false
+ensure_backend() {
+  [[ "$backend_ready" == true ]] && return
+
+  # Install while the CI proxy is still active. ModelScope downloads bypass
+  # the proxy below because the proxy's CONNECT tunnel returns HTTP 500 for
+  # modelscope.cn, while pip can use the proxy to reach PyPI.
+  case "$SOURCE" in
+    modelscope)
+      python3 -c "import modelscope" 2>/dev/null || pip install -q modelscope
+      ;;
+    huggingface)
+      python3 -c "import huggingface_hub" 2>/dev/null || pip install -q huggingface_hub
+      ;;
+    *)
+      echo "Unknown SOURCE='$SOURCE' (use modelscope|huggingface)"
+      exit 1
+      ;;
+  esac
+  backend_ready=true
+}
+
 for entry in "${ALL_MODELS[@]}"; do
   local_name="${entry%%:*}"
   repo="${entry#*:}"
   out="$DEST/$local_name"
   marker="$out/.cache_ready"
 
-  # Skip only on a completion marker we write after a fully successful download.
-  # (Checking for "any file present" would falsely skip a directory left behind
-  # by an interrupted/timed-out run, serving a half-downloaded model.)
-  if [[ -f "$marker" ]]; then
-    echo "==> [skip]    $local_name already complete (.cache_ready present, $(du -sh "$out" 2>/dev/null | cut -f1))"
+  # A model directory containing config.json is considered present. This also
+  # handles stores populated by an earlier job/version that did not write the
+  # marker. A marker without config.json is not trusted, so interrupted
+  # downloads are resumed instead of being served as complete models.
+  if [[ -f "$out/config.json" ]]; then
+    [[ -f "$marker" ]] || touch "$marker"
+    echo "==> [skip]    $local_name already exists ($(du -sh "$out" 2>/dev/null | cut -f1))"
     continue
   fi
 
@@ -180,10 +184,16 @@ for entry in "${ALL_MODELS[@]}"; do
   fi
 
   echo "==> [get]     $local_name  <-  $repo"
+  ensure_backend
+  # ModelScope is a domestic (CN) source. Bypass the proxy only after the
+  # optional dependency installation above; Hugging Face keeps the proxy.
+  if [[ "$SOURCE" == "modelscope" ]]; then
+    unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy 2>/dev/null || true
+    export NO_PROXY="*" no_proxy="*"
+  fi
   case "$SOURCE" in
     modelscope)  py_download modelscope  "$repo" "$out" ;;
     huggingface) py_download huggingface "$repo" "$out" ;;
-    *) echo "Unknown SOURCE='$SOURCE' (use modelscope|huggingface)"; exit 1 ;;
   esac
   # Mark complete only after the download above succeeded (set -e aborts on failure).
   touch "$marker"

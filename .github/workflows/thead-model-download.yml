@@ -8,9 +8,10 @@
 # populated ("下完就关").
 #
 # Runs in the same container setup as the thead test jobs (image + volume
-# mount, --user root) but needs no device. The script is idempotent
-# (.cache_ready markers), so failed/re-run jobs resume instead of
-# restarting the ~130 GB transfer.
+# mount, --user root) but needs no device. Four matrix jobs are dispatched
+# concurrently so every online runner in the thead pool gets populated.
+# The script is idempotent, so failed/re-run jobs resume instead of restarting
+# the ~130 GB transfer.
 #
 # If the job hits the known thead docker authZ dice ("authorization denied
 # by plugin authZ"), just re-run it — that failure happens before any
@@ -25,6 +26,16 @@ on:
 
 jobs:
   download:
+    name: download (thead-${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      # The thead pool currently has four online runners with this label.
+      # The matrix value is intentionally only a unique job slot; scheduling
+      # still uses the shared label below and GitHub assigns each slot to an
+      # available runner.
+      matrix:
+        runner: [1, 2, 3, 4]
+      max-parallel: 4
     runs-on: [self-hosted, flagcicd-810e]
     timeout-minutes: 300
     container:
