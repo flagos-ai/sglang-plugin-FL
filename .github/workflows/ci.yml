@@ -1,5 +1,5 @@
 # CI workflow for the SGLang 0.5.18 development line.
-# NVIDIA and MUSA are enabled; the other backends remain temporarily disabled.
+# NVIDIA is enabled; the other backends remain temporarily disabled.
 name: CI
 
 on:
