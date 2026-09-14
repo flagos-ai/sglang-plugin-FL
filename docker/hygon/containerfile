@@ -220,7 +220,11 @@ RUN DTK_HOME="" && \
 # librocm_smi64.so.2 from the host driver userspace (/opt/hyhal), bind-mounted
 # at RUNTIME only (see .github/configs/hygon.yml container_volumes); importing
 # torch at build time can never succeed. CI exercises the wrapper instead.
-ENV FLAGCX_PATH=/opt/FlagCX
+# SGLANG_FL_DIST_BACKEND mirrors thead's image env: explicit is better
+# than the FLAGCX_PATH implicit (and one-line overridable for experiments);
+# no behavior change either way.
+ENV FLAGCX_PATH=/opt/FlagCX \
+    SGLANG_FL_DIST_BACKEND=flagcx
 
 # ---------------------------------------------------------------------------
 # Test & dev tools (mirrors docker/cuda/containerfile)
