@@ -73,10 +73,26 @@ def register_builtins(registry) -> None:
             priority=BackendPriority.DEFAULT,
         ),
         OpImpl(
+            op_name="fused_moe",
+            impl_id="default.flagos",
+            kind=BackendImplKind.DEFAULT,
+            fn=_bind_is_available(backend.fused_moe, is_avail),
+            vendor=None,
+            priority=BackendPriority.DEFAULT,
+        ),
+        OpImpl(
             op_name="mrotary_embedding",
             impl_id="default.flagos",
             kind=BackendImplKind.DEFAULT,
             fn=_bind_is_available(backend.mrotary_embedding, is_avail),
+            vendor=None,
+            priority=BackendPriority.DEFAULT,
+        ),
+        OpImpl(
+            op_name="chunk_gated_delta_rule",
+            impl_id="default.flagos",
+            kind=BackendImplKind.DEFAULT,
+            fn=_bind_is_available(backend.chunk_gated_delta_rule, is_avail),
             vendor=None,
             priority=BackendPriority.DEFAULT,
         ),
@@ -88,6 +104,16 @@ def register_builtins(registry) -> None:
             vendor=None,
             priority=BackendPriority.DEFAULT,
         ),
+        OpImpl(
+            op_name="fused_recurrent_gated_delta_rule_packed_decode",
+            impl_id="default.flagos",
+            kind=BackendImplKind.DEFAULT,
+            fn=_bind_is_available(
+                backend.fused_recurrent_gated_delta_rule_packed_decode, is_avail
+            ),
+            vendor=None,
+            priority=BackendPriority.DEFAULT,
+         ),
     ]
 
     registry.register_many(impls)
