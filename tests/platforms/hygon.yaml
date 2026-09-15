@@ -1,0 +1,115 @@
+# Hygon DCU Platform Configuration (BW1000 / DTK 26.04, HIP-based).
+# Flexible test selection mechanism for Hygon DCU environments.
+#
+# DCU is HIP-based: torch.cuda.is_available() is True, so get_platform_name()
+# reports "nvidia" and dispatch/config/nvidia.yaml would be the auto-loaded
+# config — dispatch/config/hygon.yaml (universal-ops subset) is for
+# standalone plugin users on DCU, loaded manually via SGLANG_FL_CONFIG.
+# It cannot be pinned in CI: run.py applies env_defaults to the unit scope
+# and image ENV reaches the unit job identically, and a preset config file
+# wholesale-outranks the SGLANG_FL_* env vars in PolicyManager — proven by
+# run 34335805046 (2026-09-09): test_env_policy failed with
+# "assert 'flagos' == 'vendor'". CI rides the FULL env blacklist below
+# instead (it REPLACES, not merges with, yaml flagos_blacklist).
+# FlagGems detects its hygon backend without any env (verified on BW1000).
+# The e2e/functional/unit/benchmark case sets are intentionally IDENTICAL to
+# cuda.yaml / thead.yaml / ascend.yaml.
+#
+# Users can modify:
+# - e2e: Add/remove model cases in inference and serving support lists
+# - benchmark: Enable/disable throughput, latency, and serve smoke tests
+# - unit: Add/remove paths in include and exclude lists
+# - functional: Adjust include/exclude patterns for component (ops/compilation/distributed) tests
+# - tolerance: Adjust numerical comparison tolerance for result validation
+# - unsupported_features: Exclude test cases matching specific feature tags
+# - env_defaults: Set CUDA/HIP/SGLang environment defaults before tests start
+#
+# ---- Platform-level settings ------------------------------------------------
+platform: hygon
+vendor: hygon
+
+device_types:
+  bw1000:
+    compute_capability: "8.0"
+    memory_gb: 64
+    tags: [dcu, hip, bf16, fp16, fp32]
+
+# Default numerical tolerance for result comparison.
+tolerance:
+  inference:
+    default: {exact: true}
+
+# Device-level overrides for specific devices or categories.
+device_overrides: {}
+
+# hcu attention (#35, the hygon default) only starts under its controlled
+# server config. The shared case yamls already set disable_piecewise_cuda_graph;
+# disable_radix_cache and page_size=64 diverge from sglang defaults, so they
+# are injected per model/case instead of the platform-neutral shared files
+# (tests/models/**). Benchmark smokes (qwen3/06b_tp1) are covered.
+engine_overrides:
+  qwen3:
+    06b_tp1: {disable_radix_cache: true, page_size: 64}
+    4b_tp2: {disable_radix_cache: true, page_size: 64}
+  qwen3_6:
+    27b_tp4_nograph: {disable_radix_cache: true, page_size: 64}
+    35b_a3b_tp4_nograph: {disable_radix_cache: true, page_size: 64}
+
+# Features not supported on this platform.
+# Test cases whose model name contains any of these strings will be skipped.
+# Example: ["flaggems"] would skip "qwen3_flaggems" cases.
+unsupported_features: []
+
+# Default environment variables for this platform.
+# tests/run.py applies these before invoking pytest (setdefault — a
+# user-exported value always wins).
+#
+# SGLANG_FL_FLAGOS_BLACKLIST carries the FULL op set: the env REPLACES (not
+# merges with) yaml flagos_blacklist, so a partial list here would silently
+# drop the yaml's universal ops (cat/cumsum/cumsum_out) in every scope.
+# Universal ops + model-specific ones:
+# - cat, cumsum, cumsum_out: every case's scheduler/serving paths (also the
+#   yaml's universal subset — see dispatch/config/hygon.yaml for root causes)
+# - pow family, scaled_dot_product_attention, flash_attention_forward,
+#   count_nonzero: exercised by the qwen3 dense (4b/06b) cases — wrong
+#   numerics on DCU (pow/cat: validated vLLM-on-DCU recipe), DTK triton
+#   make_ttgir compile abort on the torch_native attention warmup shape
+#   (SDPA + aten flash_attention_forward, observed 2026-08-24), eplb
+#   expert_location dim-order mismatch (count_nonzero, observed 2026-08-24)
+# SGLANG_FL_CONFIG pins dispatch/config/hygon.yaml for standalone use
+# (detection reports "nvidia" on DCU, so it cannot auto-load); it is
+# deliberately NOT set in CI — see the header note.
+env_defaults:
+  SGLANG_FL_FLAGOS_BLACKLIST: "pow_scalar,pow_tensor_scalar,pow_tensor_tensor,pow_tensor_scalar_,pow_tensor_tensor_,cat,cumsum,cumsum_out,scaled_dot_product_attention,flash_attention_forward,count_nonzero"
+
+# ---- Device-specific test configurations ------------------------------------
+bw1000:
+  name: "bw1000"
+  tests:
+    e2e:
+      # Add or remove test cases per model.
+      # Each case points to tests/models/<model>/<case>.yaml.
+      concurrent:
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      inference:
+        qwen3: ["4b_tp2", "06b_tp1"]
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      serving:
+        qwen3: ["4b_tp2"]
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+
+    # Functional tests (ops correctness, graph capture, collective ops).
+    # Consumed by tests/run.py --scope functional; include/exclude work like unit.
+    functional:
+      include: "*"
+      exclude: []
+
+    unit:
+      # Include patterns: "*" for all, or list specific paths.
+      include: "*"
+      # Exclude patterns: empty list or list paths to exclude.
+      exclude: []
+
+    benchmark:
+      enabled: true
+      smoke: ["throughput", "latency", "serve"]
