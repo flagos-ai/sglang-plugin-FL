@@ -210,6 +210,82 @@ USE_FLAGGEMS=0 python -m sglang.launch_server \
     --port 30000 --disable-piecewise-cuda-graph
 ```
 
+## Runtime Operator Profiling
+
+`tools/operator_profiling/run_operator_profile.py` uses `torch.profiler` to collect the
+operators executed by a real SGLang workload. The supported report is an
+operator inventory for development and prioritization: API and physical kernel
+names, input shapes and dtypes, execution counts, cumulative device time, and
+implementation provenance.
+
+Collection uses the plugin's `platform_profile` mode. It disables FlagGems ATen
+replacement and the current FlagOS fused implementations, keeps vendor dispatch
+active, and runs with global Torch Compile and CUDA Graph disabled. The warmup
+batch finishes before profiling begins. Framework-local compiled kernels that
+are actually executed remain visible as `torch_fused`.
+
+Register the current checkout without replacing the platform software stack,
+then run the built-in preflight:
+
+```bash
+python -m pip install -e . --no-deps
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+python tools/operator_profiling/check_environment.py \
+  --model-path /models/Qwen3.6-27B \
+  --tp-size 4 \
+  --require-validated-versions
+```
+
+Run a small smoke collection first:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+python -u tools/operator_profiling/run_operator_profile.py \
+  --model-path /models/Qwen3.6-27B \
+  --tp-size 4 \
+  --input-tokens 16 \
+  --output-tokens 4 \
+  --concurrency 2 \
+  --mem-fraction-static 0.80 \
+  --chunked-prefill-size 8192 \
+  --attention-backend triton \
+  --require-validated-versions \
+  --output-dir tools/operator_profiling/runs/smoke
+```
+
+Only a fully validated workload receives a `COMPLETED` marker. Its supported
+all-ranks package contains exactly three files:
+
+```text
+results/operator_list.csv
+results/kernel_details_report.csv
+results/summary.json
+```
+
+A compact, real Qwen3.6-27B TP4 result is committed under
+[`tools/operator_profiling/examples/qwen3_6_27b_tp4_smoke/`](tools/operator_profiling/examples/qwen3_6_27b_tp4_smoke/).
+It can be inspected without running a model and validated with:
+
+```bash
+python tools/operator_profiling/validate_operator_inventory.py \
+  tools/operator_profiling/examples/qwen3_6_27b_tp4_smoke/results
+```
+
+FlagGems-SGLang is not integrated into the current execution path. Therefore
+this version deliberately does not infer fused-operator equivalence or publish
+FlagGems-SGLang coverage. The integration, explicit mapping, runtime evidence,
+and coverage calculation are tracked as follow-up work in the profiling guide.
+
+The workflow has been exercised on NVIDIA H20 with SGLang 0.5.11, Torch
+2.11.0+cu130, and FlagTree 0.6.2a1 for Qwen3.6-27B and Qwen3.6-35B-A3B at TP4.
+The validated workload matrix and generated artifact inventory are recorded in
+the profiling guide.
+
+See [the profiling guide](tools/operator_profiling/README.md) for formal 27B/35B commands,
+report regeneration, validation, and TODOs. See [the artifact
+reference](tools/operator_profiling/MATERIAL_GUIDE.md) for aggregation rules and every
+published field.
+
 ## Advanced Configuration
 
 For most use cases, the defaults work out of the box. When you need to customize, use a YAML config file.

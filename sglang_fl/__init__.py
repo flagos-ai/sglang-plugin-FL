@@ -33,6 +33,7 @@ This plugin registers:
   Layer 4: FlagCX PD-disaggregation KV transfer backend (opt-out via env)
 
 Environment variables:
+  SGLANG_FL_MODE=adapt|platform_profile Runtime mode (default: adapt)
   USE_FLAGGEMS=1|0                    Master switch for Layer 1 (default: 1)
   SGLANG_FL_FLAGOS_WHITELIST=op1,op2  Only these ATen ops use FlagGems
   SGLANG_FL_FLAGOS_BLACKLIST=op1,op2  These ATen ops don't use FlagGems
@@ -252,6 +253,17 @@ def _init_dispatch(config: dict) -> None:
 # ─── Dispatch AROUND hook ────────────────────────────────────────────────────
 
 
+def _framework_forward(op):
+    """Return SGLang's original method for the active device type."""
+
+    from sglang.srt.platforms import current_platform
+
+    raw_device_type = current_platform.device_type
+    device_type = str(getattr(raw_device_type, "value", raw_device_type))
+    method = getattr(op, f"forward_{device_type}", None)
+    return method if callable(method) else op.forward_native
+
+
 def _make_dispatch_hook(config: dict = None):
     """Build the AROUND hook for MultiPlatformOp.dispatch_forward.
 
@@ -303,17 +315,17 @@ def _make_dispatch_hook(config: dict = None):
 
     # Map SGLang op classes to their bridge functions (via MRO inheritance)
     _BRIDGE_MAP = {
-        SiluAndMul: silu_and_mul_bridge,
-        RMSNorm: rms_norm_bridge,
-        GemmaRMSNorm: gemma_rms_norm_bridge,
-        RotaryEmbedding: rotary_embedding_bridge,
-        MRotaryEmbedding: mrotary_embedding_bridge,
-        TopK: topk_bridge,
-        UnquantizedFusedMoEMethod: fused_moe_bridge,
+        SiluAndMul: ("silu_and_mul", silu_and_mul_bridge),
+        RMSNorm: ("rms_norm", rms_norm_bridge),
+        GemmaRMSNorm: ("gemma_rms_norm", gemma_rms_norm_bridge),
+        RotaryEmbedding: ("rotary_embedding", rotary_embedding_bridge),
+        MRotaryEmbedding: ("mrotary_embedding", mrotary_embedding_bridge),
+        TopK: ("topk", topk_bridge),
+        UnquantizedFusedMoEMethod: ("fused_moe", fused_moe_bridge),
     }
 
     def _find_bridge(cls):
-        """Walk MRO to find a bridge function for the given class."""
+        """Walk MRO to find the logical op name and bridge for a class."""
         for parent in cls.__mro__:
             if parent in _BRIDGE_MAP:
                 return _BRIDGE_MAP[parent]
@@ -328,21 +340,34 @@ def _make_dispatch_hook(config: dict = None):
         op_cls = type(self)
         op_name = op_cls.__name__
 
-        # P1: Whitelist/blacklist gate
-        if whitelist and op_name not in whitelist:
-            return original_fn(self)
-        if blacklist and op_name in blacklist:
-            return original_fn(self)
+        # Resolve the logical name before applying policy so both the public
+        # dispatch name (``topk``) and the historical class name (``TopK``)
+        # are accepted by whitelist/blacklist configuration.
+        bridge = _find_bridge(op_cls)
+        logical_op_name = bridge[0] if bridge is not None else None
 
-        # Find bridge function for this op (supports subclasses via MRO)
-        bridge_fn = _find_bridge(op_cls)
-        if bridge_fn is None:
-            # No bridge registered: return forward_cuda directly to bypass dispatch_forward.
-            # This allows unregistered OOT ops (e.g., MoE before bridge is added) to use
-            # their native CUDA implementation instead of falling into forward_native.
-            result = self.forward_cuda
+        # P1: Whitelist/blacklist gate
+        if whitelist and op_name not in whitelist and logical_op_name not in whitelist:
+            return _framework_forward(self)
+        if blacklist and (op_name in blacklist or logical_op_name in blacklist):
+            return _framework_forward(self)
+
+        if bridge is None:
+            result = _framework_forward(self)
             self._fl_cached_fn = result
             return result
+
+        logical_op_name, bridge_fn = bridge
+
+        from sglang_fl.mode import is_platform_profile_mode
+
+        if is_platform_profile_mode():
+            from sglang_fl.dispatch import get_default_manager
+
+            if not get_default_manager().has_available_vendor(logical_op_name):
+                result = _framework_forward(self)
+                self._fl_cached_fn = result
+                return result
 
         if _log_file:
             _log_file.write(f"[OOT-DISPATCH] {op_name} → dispatch\n")
@@ -714,7 +739,9 @@ def activate_platform() -> str | None:
 
     info = get_device_info()
     if info is None:
-        logger.warning("sglang_fl platform activation failed: DeviceDetector unavailable")
+        logger.warning(
+            "sglang_fl platform activation failed: DeviceDetector unavailable"
+        )
         return None
     logger.info(
         "sglang_fl platform activating: vendor=%s, device=%s",
@@ -733,6 +760,7 @@ _plugin_active = False
 def is_plugin_loaded() -> bool:
     """Return whether SGLang invoked the general plugin entry point."""
     return _plugin_loaded
+
 
 def is_plugin_active() -> bool:
     """Return whether the general plugin completed its initialization."""
@@ -755,13 +783,42 @@ def load_plugin():
     if not _is_rank0():
         logger.setLevel(logging.WARNING)
 
+    from sglang_fl.mode import is_platform_profile_mode
+
+    platform_profile = is_platform_profile_mode()
+    if platform_profile:
+        from sglang_fl.profiling_hooks import setup_operator_profile_hooks
+
+        setup_operator_profile_hooks()
+
     from sglang.srt.plugins.hook_registry import HookRegistry, HookType
 
     # 0. Build unified config (YAML + env vars)
     config = _build_config()
+    if platform_profile:
+        # An inventory run must not silently select a self-developed fused
+        # implementation or fall back after a vendor implementation fails.
+        # OpManager also filters DEFAULT candidates as a second invariant.
+        config.update(
+            prefer="vendor",
+            op_backends={},
+            # A failed vendor call must remain visible in the inventory run;
+            # strict mode disables implementation fallback.
+            strict=True,
+            deny_vendors=set(),
+            allow_vendors=None,
+            oot_blacklist=[],
+            oot_whitelist=[],
+        )
 
     # 1. FlagGems ATen ops
-    _setup_flaggems(config)
+    if platform_profile:
+        logger.info(
+            "sglang_fl platform_profile: FlagGems/FlagOS compute replacements "
+            "disabled; vendor dispatch remains active"
+        )
+    else:
+        _setup_flaggems(config)
 
     # 2. Initialize dispatch system (OpManager + backends + policy)
     _init_dispatch(config)
@@ -779,7 +836,7 @@ def load_plugin():
         # Patch FLA functions to use dispatch mechanism
         from sglang_fl.dispatch.fla_patch import patch_fla_functions
 
-        patch_fla_functions()
+        patch_fla_functions(vendor_only=platform_profile)
 
         # Patch RotaryEmbedding.__init__ to restore bridge after MUSA _forward_method stomp
         # Must be called after the AROUND hook on dispatch_forward is registered (above).
@@ -811,7 +868,11 @@ def load_plugin():
 
     # 7. Summary banner — confirm plugin is active (rank 0 only)
     if _is_rank0():
-        use_fg = _parse_bool(os.environ.get("USE_FLAGGEMS", "1"), default=True)
+        use_fg = (
+            False
+            if platform_profile
+            else _parse_bool(os.environ.get("USE_FLAGGEMS", "1"), default=True)
+        )
         aten_status = "OFF" if not use_fg else "ON"
         oot_status = f"prefer={config['prefer']}" if oot_enabled else "OFF"
         # Reflects env-var configuration only; vendor-specific defaults (e.g. hccl

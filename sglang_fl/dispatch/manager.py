@@ -146,6 +146,50 @@ class OpManager:
             return False
         return True
 
+    @staticmethod
+    def _filter_profile_candidates(candidates: list[OpImpl]) -> list[OpImpl]:
+        """Exclude self-developed fused implementations from inventory runs."""
+
+        from sglang_fl.mode import is_platform_profile_mode
+
+        if not is_platform_profile_mode():
+            return candidates
+        # A platform inventory either executes an available vendor adapter
+        # or stays on SGLang's own platform implementation.  Plugin reference
+        # implementations are a third execution path and must not be selected.
+        return [impl for impl in candidates if impl.kind == BackendImplKind.VENDOR]
+
+    @staticmethod
+    def _selection_order(op_name: str, policy: SelectionPolicy) -> list[str]:
+        from sglang_fl.mode import is_platform_profile_mode
+
+        if is_platform_profile_mode():
+            return ["vendor"]
+        return policy.per_op_order_dict.get(op_name) or policy.get_default_order()
+
+    def has_available_vendor(self, op_name: str) -> bool:
+        """Return whether the current platform can execute a vendor OpImpl.
+
+        Platform profiling uses this before installing a bridge.  A false
+        result means the caller must retain SGLang's original platform method;
+        it must not substitute the plugin's PyTorch reference implementation.
+        """
+
+        self.ensure_initialized()
+        policy = get_policy()
+        snap = self._registry.snapshot()
+        for impl in snap.impls_by_op.get(op_name, []):
+            if impl.kind != BackendImplKind.VENDOR:
+                continue
+            if not self._matches_vendor_filters(impl, policy):
+                continue
+            try:
+                if impl.is_available():
+                    return True
+            except Exception:
+                continue
+        return False
+
     def resolve(self, op_name: str) -> Callable:
         """
         Resolve the best implementation for an operator.
@@ -168,6 +212,7 @@ class OpManager:
 
         # Filter by vendor policy
         candidates = [c for c in candidates if self._matches_vendor_filters(c, policy)]
+        candidates = self._filter_profile_candidates(candidates)
 
         # Filter by availability
         available = []
@@ -186,7 +231,7 @@ class OpManager:
             )
 
         # Get selection order
-        order = policy.per_op_order_dict.get(op_name) or policy.get_default_order()
+        order = self._selection_order(op_name, policy)
 
         # Select best
         chosen: Optional[OpImpl] = None
@@ -222,6 +267,7 @@ class OpManager:
         snap = self._registry.snapshot()
         candidates = list(snap.impls_by_op.get(op_name, []))
         candidates = [c for c in candidates if self._matches_vendor_filters(c, policy)]
+        candidates = self._filter_profile_candidates(candidates)
 
         available = []
         for c in candidates:
@@ -235,7 +281,7 @@ class OpManager:
         if not candidates:
             raise RuntimeError(f"No available implementation for op='{op_name}'.")
 
-        order = policy.per_op_order_dict.get(op_name) or policy.get_default_order()
+        order = self._selection_order(op_name, policy)
 
         sorted_candidates = []
         for token in order:
@@ -265,9 +311,10 @@ class OpManager:
 
         if not enable_fallback:
             fn = self.resolve(op_name)
-            impl_id = self._get_impl_id_for_fn(op_name, fn)
+            impl = self._get_impl_for_fn(op_name, fn)
+            impl_id = impl.impl_id if impl is not None else "unknown"
             self._log_first_call(op_name, impl_id, mode="direct")
-            return fn(*args, **kwargs)
+            return self._invoke_impl(impl, fn, *args, **kwargs)
 
         # Fallback mode: check cache first (same cache as resolve())
         policy_fp = policy.fingerprint()
@@ -275,7 +322,8 @@ class OpManager:
         cache_key = (op_name, policy_fp, epoch)
         cached_fn = self._dispatch_cache.get(cache_key)
         if cached_fn is not None:
-            return cached_fn(*args, **kwargs)
+            cached_impl = self._get_impl_for_fn(op_name, cached_fn)
+            return self._invoke_impl(cached_impl, cached_fn, *args, **kwargs)
 
         # Cache miss: full resolve with fallback
         candidates = self.resolve_candidates(op_name)
@@ -301,7 +349,7 @@ class OpManager:
                         f"(kind={impl.kind.value}, vendor={impl.vendor})"
                     )
 
-                result = impl.fn(*args, **kwargs)
+                result = self._invoke_impl(impl, impl.fn, *args, **kwargs)
 
                 # Cache the successful impl for future calls
                 self._dispatch_cache[cache_key] = impl.fn
@@ -328,11 +376,32 @@ class OpManager:
         ) from last_error
 
     def _get_impl_id_for_fn(self, op_name: str, fn: Callable) -> str:
+        impl = self._get_impl_for_fn(op_name, fn)
+        return impl.impl_id if impl is not None else "unknown"
+
+    def _get_impl_for_fn(self, op_name: str, fn: Callable) -> OpImpl | None:
         snap = self._registry.snapshot()
         for impl in snap.impls_by_op.get(op_name, []):
             if impl.fn is fn:
-                return impl.impl_id
-        return "unknown"
+                return impl
+        return None
+
+    @staticmethod
+    def _invoke_impl(impl: OpImpl | None, fn: Callable, *args, **kwargs):
+        from sglang_fl.mode import is_platform_profile_mode
+
+        if is_platform_profile_mode():
+            if impl is None:
+                raise RuntimeError(
+                    "platform_profile could not identify the selected OpImpl; "
+                    "refusing to emit unauditable operator inventory data"
+                )
+            from sglang_fl.profiling_hooks import (
+                profile_dispatch_impl_call,
+            )
+
+            return profile_dispatch_impl_call(impl, *args, **kwargs)
+        return fn(*args, **kwargs)
 
     def _log_first_call(
         self, op_name: str, impl_id: str, mode: str = "default"
