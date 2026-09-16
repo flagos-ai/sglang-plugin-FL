@@ -5,7 +5,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import Mock
+from types import SimpleNamespace
+from unittest.mock import Mock, call
 
 import pytest
 import torch
@@ -109,6 +110,27 @@ def test_disabled_all_gather_returns_early() -> None:
     comm = _disabled_comm()
 
     assert comm.all_gather(torch.empty(4), torch.ones(2)) is None
+
+
+def test_all_gather_waits_for_flagcx_completion() -> None:
+    from sglang_fl.distributed.device_communicators.flagcx import FlagCXCommunicator
+
+    events = Mock()
+    comm = FlagCXCommunicator.__new__(FlagCXCommunicator)
+    comm.disabled = False
+    comm.device = torch.device("cpu")
+    comm.comm = object()
+    comm.flagcx = SimpleNamespace(
+        flagcxAllGather=lambda *args: events("all_gather")
+    )
+    comm._buffer_type = lambda ptr: ptr
+    comm._dtype_enum = SimpleNamespace(from_torch=lambda dtype: dtype)
+    comm._get_stream = lambda: object()
+    comm._sync_current_stream = lambda: events("synchronize")
+
+    comm.all_gather(torch.empty(4), torch.ones(2))
+
+    assert events.call_args_list == [call("all_gather"), call("synchronize")]
 
 
 def test_disabled_reduce_scatterv_returns_early() -> None:
