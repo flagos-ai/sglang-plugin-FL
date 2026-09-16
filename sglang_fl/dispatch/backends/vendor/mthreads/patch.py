@@ -304,6 +304,45 @@ def _patch_vision_flash_attention() -> None:
         logger.info("MUSA vision FA3 varlen entry point installed")
 
 
+def _patch_gdn_packed_decode_precision() -> None:
+    """Backport SGLang's FP32 packed GDN beta calculation on MUSA."""
+    from importlib.metadata import version
+
+    from .runtime_config import (
+        install_gdn_packed_decode_backport,
+        needs_gdn_packed_decode_backport,
+    )
+
+    sglang_version = version("sglang")
+    if not needs_gdn_packed_decode_backport(sglang_version):
+        return
+
+    try:
+        from sglang.kernels.ops.attention.fla import fused_recurrent
+
+        from .impl.gdn_precision import (
+            fused_recurrent_gated_delta_rule_packed_decode_kernel_musa,
+        )
+    except ImportError as e:
+        logger.warning("MUSA packed GDN precision backport skipped: %s", e)
+        return
+
+    if install_gdn_packed_decode_backport(
+        fused_recurrent,
+        fused_recurrent_gated_delta_rule_packed_decode_kernel_musa,
+        sglang_version,
+    ):
+        logger.warning(
+            "MUSA backported SGLang's FP32 beta fix for GDN packed decode; "
+            "the packed fast path remains enabled"
+        )
+    else:
+        logger.warning(
+            "MUSA did not apply the SGLang 0.5.18 GDN precision backport "
+            "because the installed packed kernel source did not match"
+        )
+
+
 def apply_musa_patches() -> None:
     global _patches_applied
     if _patches_applied:
@@ -313,6 +352,7 @@ def apply_musa_patches() -> None:
     from .lifecycle import apply_musa_lifecycle_patches
 
     patch_triton_pdl_symbols()
+    _patch_gdn_packed_decode_precision()
     _patch_vision_flash_attention()
     _patch_pp_send_recv_order()
     _patch_pp_launch_batch_add_sync()

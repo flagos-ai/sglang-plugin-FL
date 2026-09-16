@@ -12,6 +12,42 @@ _QWEN35_ARCHS = {
 }
 
 
+_BUGGY_GDN_BETA_EXPRESSION = (
+    "beta_val = tl.sigmoid(b_val).to(b.dtype.element_ty).to(tl.float32)"
+)
+
+
+def needs_gdn_packed_decode_backport(sglang_version: str) -> bool:
+    """Return whether this SGLang release needs the packed GDN kernel backport."""
+    return sglang_version.split("+", maxsplit=1)[0] == "0.5.18"
+
+
+def install_gdn_packed_decode_backport(
+    kernel_module, fixed_kernel, sglang_version: str
+) -> bool:
+    """Replace the lossy 0.5.18 packed kernel while retaining its fast path.
+
+    The packed kernel rounds ``sigmoid(beta)`` through BF16 before updating the
+    persistent FP32 SSM state. That error accumulates one token at a time and
+    makes normal decode diverge from MTP target verification, whose generic
+    recurrent kernel keeps beta in FP32. Upstream tracks the same defect in
+    sgl-project/sglang#38975 and fixes it in #38977.
+
+    Check both the pinned release and the exact defective source so a backported
+    or future SGLang build keeps its own implementation.
+    """
+    if not needs_gdn_packed_decode_backport(sglang_version):
+        return False
+
+    name = "fused_recurrent_gated_delta_rule_packed_decode_kernel"
+    installed_kernel = getattr(kernel_module, name, None)
+    if _BUGGY_GDN_BETA_EXPRESSION not in getattr(installed_kernel, "src", ""):
+        return False
+
+    setattr(kernel_module, name, fixed_kernel)
+    return True
+
+
 def apply_musa_runtime_defaults(server_args) -> None:
     # Older SGLang does not expose this hybrid-cache configuration.
     if not hasattr(server_args, "mamba_radix_cache_strategy"):
