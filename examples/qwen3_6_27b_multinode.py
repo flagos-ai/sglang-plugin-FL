@@ -96,6 +96,8 @@ import urllib.request
 from pathlib import Path
 import torch
 
+from _multinode_worker import run_sglang_worker
+
 # ─── Platform detection ──────────────────────────────────────────────────────
 
 _is_txda = hasattr(torch, "txda") and torch.txda.is_available()
@@ -714,9 +716,13 @@ def run_worker(args):
 
     print("Starting worker node... (will block until master shuts down)\n")
     try:
-        result = subprocess.run(cmd)
+        local_scheduler_count, remainder = divmod(args.tp * args.pp, args.nnodes)
+        if remainder:
+            # An invalid topology must never match the known clean-shutdown path.
+            local_scheduler_count = 0
+        returncode = run_sglang_worker(cmd, local_scheduler_count)
         print("Worker node exited.")
-        sys.exit(result.returncode)
+        sys.exit(returncode)
     except KeyboardInterrupt:
         print("\nWorker interrupted.")
         sys.exit(0)
