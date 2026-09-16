@@ -100,6 +100,9 @@ _is_musa = hasattr(torch, "musa") and torch.musa.is_available()
 _is_npu = hasattr(torch, "npu") and torch.npu.is_available()
 _is_corex = hasattr(torch, "corex") and torch.cuda.is_available()
 _is_hcu = hasattr(torch, "__hcu_version__") and torch.cuda.is_available()
+_is_nvidia = torch.cuda.is_available() and not any(
+    (_is_txda, _is_musa, _is_npu, _is_corex, _is_hcu)
+)
 
 if _is_txda:
     os.environ.setdefault("SGLANG_FL_TIMER_ENABLE", "1")
@@ -116,6 +119,8 @@ elif _is_musa:
 # Extra launch_server flags per platform.
 # - MUSA: page_size=1 works around a sglang platform bug.
 # - Ascend NPU: requires ascend attention backend, bfloat16, radix cache off.
+# - NVIDIA: SGLang 0.5.18 overlap scheduling can corrupt concurrent TP=4
+#   decoding, while single-request inference remains valid.
 if _is_musa:
     _PLATFORM_SERVER_ARGS: list = ["--page-size", "1"]
 elif _is_npu:
@@ -137,6 +142,8 @@ elif _is_hcu:
         "--disable-radix-cache",
         "--page-size", "64",
     ]
+elif _is_nvidia:
+    _PLATFORM_SERVER_ARGS = ["--disable-overlap-schedule"]
 else:
     _PLATFORM_SERVER_ARGS = []
 
