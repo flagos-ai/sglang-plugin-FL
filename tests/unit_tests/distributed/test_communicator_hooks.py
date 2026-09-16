@@ -10,6 +10,7 @@ from sglang_fl.distributed.communicator import CommunicatorFL
 
 
 _GC_TARGET = "sglang.srt.distributed.parallel_state.GroupCoordinator"
+_SCHEDULER_TARGET = "sglang.srt.managers.scheduler.Scheduler"
 
 
 @pytest.fixture
@@ -228,3 +229,49 @@ def test_active_flagcx_all_gatherv_with_output_uses_sglang_native_path(
         coordinator, input_, sizes=sizes, output=output
     )
     comm.all_gatherv.assert_not_called()
+
+
+def test_pp_shutdown_waits_for_forwarded_request_then_exits(
+    communicator_hooks,
+) -> None:
+    hook = communicator_hooks[f"{_SCHEDULER_TARGET}.get_next_batch_to_run"]
+    original = Mock(return_value="plan")
+    pending_work = [object()]
+    commit_work = Mock(side_effect=lambda work: work.clear())
+    scheduler = SimpleNamespace(
+        gracefully_exit=True,
+        ps=SimpleNamespace(pp_size=2),
+        send_req_work=pending_work,
+        _pp_commit_comm_work=commit_work,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        hook(original, scheduler, running_batch=None, last_batch=None)
+
+    assert exc_info.value.code == 0
+    commit_work.assert_called_once_with(pending_work)
+    assert pending_work == []
+    original.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("gracefully_exit", "pp_size"),
+    [(False, 2), (True, 1)],
+)
+def test_pp_shutdown_hook_preserves_non_pp_scheduling(
+    communicator_hooks, gracefully_exit, pp_size
+) -> None:
+    hook = communicator_hooks[f"{_SCHEDULER_TARGET}.get_next_batch_to_run"]
+    original = Mock(return_value="plan")
+    scheduler = SimpleNamespace(
+        gracefully_exit=gracefully_exit,
+        ps=SimpleNamespace(pp_size=pp_size),
+        send_req_work=[],
+        _pp_commit_comm_work=Mock(),
+    )
+
+    assert hook(original, scheduler, running_batch="running", last_batch="last") == "plan"
+    original.assert_called_once_with(
+        scheduler, running_batch="running", last_batch="last"
+    )
+    scheduler._pp_commit_comm_work.assert_not_called()

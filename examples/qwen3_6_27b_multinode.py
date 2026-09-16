@@ -96,6 +96,8 @@ import urllib.request
 from pathlib import Path
 import torch
 
+from _multinode_worker import run_sglang_worker
+
 # ─── Platform detection ──────────────────────────────────────────────────────
 
 _is_txda = hasattr(torch, "txda") and torch.txda.is_available()
@@ -103,6 +105,9 @@ _is_musa = hasattr(torch, "musa") and torch.musa.is_available()
 _is_npu = hasattr(torch, "npu") and torch.npu.is_available()
 _is_corex = hasattr(torch, "corex") and torch.cuda.is_available()
 _is_hcu = hasattr(torch, "__hcu_version__") and torch.cuda.is_available()
+_is_nvidia = torch.cuda.is_available() and not any(
+    (_is_txda, _is_musa, _is_npu, _is_corex, _is_hcu)
+)
 
 # Must be set before launching sglang. Subprocesses inherit os.environ.
 if _is_txda:
@@ -120,6 +125,8 @@ elif _is_musa:
 # Extra launch_server flags per platform.
 # - MUSA: page_size=1 works around a sglang platform bug.
 # - Ascend NPU: requires ascend attention backend, bfloat16, radix cache off.
+# - NVIDIA: SGLang 0.5.18 overlap scheduling can corrupt concurrent TP=4
+#   decoding, while single-request inference remains valid.
 if _is_musa:
     _PLATFORM_SERVER_ARGS: list = ["--page-size", "1"]
 elif _is_npu:
@@ -141,6 +148,8 @@ elif _is_hcu:
         "--disable-radix-cache",
         "--page-size", "64",
     ]
+elif _is_nvidia:
+    _PLATFORM_SERVER_ARGS = ["--disable-overlap-schedule"]
 else:
     _PLATFORM_SERVER_ARGS = []
 
@@ -707,9 +716,13 @@ def run_worker(args):
 
     print("Starting worker node... (will block until master shuts down)\n")
     try:
-        result = subprocess.run(cmd)
+        local_scheduler_count, remainder = divmod(args.tp * args.pp, args.nnodes)
+        if remainder:
+            # An invalid topology must never match the known clean-shutdown path.
+            local_scheduler_count = 0
+        returncode = run_sglang_worker(cmd, local_scheduler_count)
         print("Worker node exited.")
-        sys.exit(result.returncode)
+        sys.exit(returncode)
     except KeyboardInterrupt:
         print("\nWorker interrupted.")
         sys.exit(0)

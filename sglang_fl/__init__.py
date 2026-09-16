@@ -623,13 +623,15 @@ def _setup_communicator_hooks():
     routes through CommunicatorFL; otherwise hooks preserve SGLang's native
     collective selection.
 
-    Hooks (12 total):
+    Hooks (13 total):
       - __init__: inject self.fl_communicator, suppress PyNccl when FlagCX active
       - all_reduce, _reduce_scatter_tensor, _all_gather_into_tensor,
         reduce_scatterv, all_gatherv, send, recv, broadcast: delegate to an active
         fl_communicator
       - broadcast_tensor_dict, send_tensor_dict, recv_tensor_dict:
         full method intercept for FlagCX coverage on composite operations
+      - Scheduler.get_next_batch_to_run: make v0.5.18 PP shutdown terminate
+        after the ShutdownReq has been forwarded to the next stage
     """
     from sglang.srt.plugins.hook_registry import HookRegistry, HookType
 
@@ -816,6 +818,26 @@ def _setup_communicator_hooks():
             )
         return original_fn(self, src=src, all_gather_group=all_gather_group)
 
+    # ── SGLang 0.5.18 PP graceful-shutdown compatibility ──
+
+    def _pp_get_next_batch_hook(original_fn, self, *args, **kwargs):
+        """Let a propagated ShutdownReq terminate the v0.5.18 PP loop.
+
+        The regular scheduler loop checks ``gracefully_exit`` itself, but the
+        v0.5.18 pipeline loop does not.  This hook runs after PP stage 0 has
+        forwarded the request to the next stage.  Complete that asynchronous
+        CPU send before unwinding with ``SystemExit``; the scheduler launcher
+        intentionally catches ``Exception`` rather than ``BaseException``, so
+        the child exits cleanly instead of reporting a scheduler crash.
+        """
+        pp_size = getattr(getattr(self, "ps", None), "pp_size", 1)
+        if getattr(self, "gracefully_exit", False) and pp_size > 1:
+            send_req_work = getattr(self, "send_req_work", None)
+            if send_req_work:
+                self._pp_commit_comm_work(send_req_work)
+            raise SystemExit(0)
+        return original_fn(self, *args, **kwargs)
+
     # ── Register all hooks ──
 
     HookRegistry.register(f"{_GC_TARGET}.__init__", _init_hook, HookType.AROUND)
@@ -850,10 +872,15 @@ def _setup_communicator_hooks():
     HookRegistry.register(
         f"{_GC_TARGET}.recv_tensor_dict", _recv_tensor_dict_hook, HookType.AROUND
     )
+    HookRegistry.register(
+        "sglang.srt.managers.scheduler.Scheduler.get_next_batch_to_run",
+        _pp_get_next_batch_hook,
+        HookType.AROUND,
+    )
 
     logger.info(
         "CommunicatorFL AROUND hooks registered on GroupCoordinator "
-        "(12 hooks: init + 8 collectives + broadcast_tensor_dict + send/recv_tensor_dict)"
+        "(12 communication hooks plus PP shutdown compatibility)"
     )
 
 

@@ -281,6 +281,13 @@ class FlagCXCommunicator:
             self.comm,
             flagcx_stream,
         )
+        # SGLang's multi-image path releases the padded per-rank input as soon
+        # as all_gather returns.  FlagCX only enqueues the operation, and unlike
+        # c10d it does not return a Work object that keeps the input alive.  A
+        # completion boundary here prevents the caching allocator from reusing
+        # that storage while FlagCX is still reading it (notably when vision
+        # work and model execution use different streams).
+        self._sync_current_stream()
 
     def reduce_scatterv(
         self,
