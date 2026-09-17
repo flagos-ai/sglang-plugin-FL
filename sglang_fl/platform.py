@@ -387,10 +387,10 @@ class PlatformFL(SRTPlatform):
         overridden by sglang-plugin-FL retain their native CUDA implementation;
         registered FL bridges still take precedence in the OOT registry.
 
-        Other vendors keep the legacy ``oot`` key until their individual
-        SGLang upgrades are completed.
+        MUSA likewise retains its native vendor path for operators outside
+        the FL bridge set. Other vendors keep the legacy ``oot`` key.
         """
-        return "cuda" if self._vendor_name == "nvidia" else "oot"
+        return {"nvidia": "cuda", "mthreads": "musa"}.get(self._vendor_name, "oot")
 
     # ------------------------------------------------------------------
     # Configuration lifecycle
@@ -402,6 +402,12 @@ class PlatformFL(SRTPlatform):
         NVIDIA is skipped — sglang's own defaulting handles it. For other vendors,
         if the user didn't pick an attention backend, fill from _ATTN_BACKEND_MAP.
         """
+        if self._vendor_name == "mthreads":
+            from sglang_fl.dispatch.backends.vendor.mthreads.runtime_config import (
+                apply_musa_runtime_defaults,
+            )
+
+            apply_musa_runtime_defaults(server_args)
         if self._vendor_name == "kunlunxin":
             server_args.mm_attention_backend = "sdpa"
             server_args.disable_cuda_graph = False

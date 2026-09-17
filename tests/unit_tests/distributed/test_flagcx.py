@@ -126,11 +126,34 @@ def test_all_gather_waits_for_flagcx_completion() -> None:
     comm._buffer_type = lambda ptr: ptr
     comm._dtype_enum = SimpleNamespace(from_torch=lambda dtype: dtype)
     comm._get_stream = lambda: object()
+    comm._is_current_stream_capturing = lambda: False
     comm._sync_current_stream = lambda: events("synchronize")
 
     comm.all_gather(torch.empty(4), torch.ones(2))
 
     assert events.call_args_list == [call("all_gather"), call("synchronize")]
+
+
+def test_all_gather_does_not_synchronize_during_graph_capture() -> None:
+    from sglang_fl.distributed.device_communicators.flagcx import FlagCXCommunicator
+
+    events = Mock()
+    comm = FlagCXCommunicator.__new__(FlagCXCommunicator)
+    comm.disabled = False
+    comm.device = torch.device("cpu")
+    comm.comm = object()
+    comm.flagcx = SimpleNamespace(
+        flagcxAllGather=lambda *args: events("all_gather")
+    )
+    comm._buffer_type = lambda ptr: ptr
+    comm._dtype_enum = SimpleNamespace(from_torch=lambda dtype: dtype)
+    comm._get_stream = lambda: object()
+    comm._is_current_stream_capturing = lambda: True
+    comm._sync_current_stream = lambda: events("synchronize")
+
+    comm.all_gather(torch.empty(4), torch.ones(2))
+
+    assert events.call_args_list == [call("all_gather")]
 
 
 def test_disabled_reduce_scatterv_returns_early() -> None:

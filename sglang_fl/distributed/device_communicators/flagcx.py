@@ -200,6 +200,14 @@ class FlagCXCommunicator:
             )
             raise
 
+    def _is_current_stream_capturing(self) -> bool:
+        """Return whether the communicator's device is capturing a graph."""
+        device_module = getattr(torch, self.device.type, None)
+        is_capturing = getattr(
+            device_module, "is_current_stream_capturing", None
+        )
+        return bool(is_capturing()) if callable(is_capturing) else False
+
     def _get_stream(self):
         """Bind a FlagCX stream onto the current vendor stream, with per-handle cache."""
         handle = self._get_raw_stream_handle()
@@ -286,8 +294,11 @@ class FlagCXCommunicator:
         # c10d it does not return a Work object that keeps the input alive.  A
         # completion boundary here prevents the caching allocator from reusing
         # that storage while FlagCX is still reading it (notably when vision
-        # work and model execution use different streams).
-        self._sync_current_stream()
+        # work and model execution use different streams). Explicit stream
+        # synchronization is forbidden inside CUDA/MUSA graph capture; graph
+        # pools retain their captured allocations until replay completes.
+        if not self._is_current_stream_capturing():
+            self._sync_current_stream()
 
     def reduce_scatterv(
         self,

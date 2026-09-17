@@ -31,15 +31,19 @@ from sglang_fl.dispatch.policy import (
     reset_global_policy,
     with_denied_vendors,
     with_preference,
-    with_strict_mode,
     PREFER_VENDOR,
     PREFER_REFERENCE,
 )
 
 
 @pytest.fixture
-def populated_manager():
+def populated_manager(monkeypatch):
     """Manager with pre-registered implementations (bypasses builtin_ops)."""
+    # Platform images may define a real per-op policy. These tests exercise
+    # policy_context itself, so isolate them from that process-wide override.
+    monkeypatch.delenv("SGLANG_FL_PER_OP", raising=False)
+    reset_global_policy()
+
     registry = OpRegistry()
     manager = OpManager(registry=registry)
 
@@ -83,7 +87,8 @@ def populated_manager():
             ),
         ]
     )
-    return manager
+    yield manager
+    reset_global_policy()
 
 
 class TestOpManagerResolve:

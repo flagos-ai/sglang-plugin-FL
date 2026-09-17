@@ -19,9 +19,12 @@
 
 from __future__ import annotations
 
+import inspect
+from functools import lru_cache
 from typing import Optional, Tuple
 
 import torch
+
 
 def _original(fn_name: str):
     from sglang_fl.dispatch.fla_patch import get_original
@@ -32,6 +35,12 @@ def _original(fn_name: str):
             f"FLA original '{fn_name}' not available — fla_patch not applied yet"
         )
     return fn
+
+
+@lru_cache(maxsize=None)
+def _recurrent_parameters(fn):
+    return inspect.signature(fn).parameters
+
 
 def chunk_gated_delta_rule_musa(
     q: torch.Tensor,
@@ -48,10 +57,16 @@ def chunk_gated_delta_rule_musa(
 ):
     """chunk_gated_delta_rule — not yet implemented on MUSA. Current behavior: SGLang's original triton kernels."""
     return _original("chunk_gated_delta_rule")(
-        q=q, k=k, v=v, g=g, beta=beta, scale=scale,
+        q=q,
+        k=k,
+        v=v,
+        g=g,
+        beta=beta,
+        scale=scale,
         initial_state=initial_state,
         initial_state_indices=initial_state_indices,
-        cu_seqlens=cu_seqlens, head_first=head_first,
+        cu_seqlens=cu_seqlens,
+        head_first=head_first,
         use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
     )
 
@@ -71,14 +86,34 @@ def fused_recurrent_gated_delta_rule_musa(
     use_qk_l2norm_in_kernel: bool = False,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     """fused_recurrent_gated_delta_rule — not yet implemented on MUSA. Current behavior: SGLang's original triton kernels."""
-    return _original("fused_recurrent_gated_delta_rule")(
-        q=q, k=k, v=v, g=g, beta=beta, scale=scale,
+    native_op = _original("fused_recurrent_gated_delta_rule")
+    # 0.5.18 removed these scheduling arguments from the public recurrent
+    # kernel. Keep forwarding them on the older MUSA stack, but never silently
+    # discard an actual state-indexing request on the new one.
+    scheduling = {}
+    parameters = _recurrent_parameters(native_op)
+    for name, value in (
+        ("ssm_state_indices", ssm_state_indices),
+        ("num_accepted_tokens", num_accepted_tokens),
+    ):
+        if name in parameters:
+            scheduling[name] = value
+        elif value is not None:
+            raise NotImplementedError(
+                f"The installed SGLang recurrent FLA kernel does not support {name}"
+            )
+    return native_op(
+        q=q,
+        k=k,
+        v=v,
+        g=g,
+        beta=beta,
+        scale=scale,
         initial_state=initial_state,
         output_final_state=output_final_state,
         cu_seqlens=cu_seqlens,
-        ssm_state_indices=ssm_state_indices,
-        num_accepted_tokens=num_accepted_tokens,
         use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
+        **scheduling,
     )
 
 
@@ -96,9 +131,14 @@ def fused_recurrent_gated_delta_rule_packed_decode_musa(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """fused_recurrent_gated_delta_rule_packed_decode — not yet implemented on MUSA. Current behavior: SGLang's original triton kernels."""
     return _original("fused_recurrent_gated_delta_rule_packed_decode")(
-        mixed_qkv=mixed_qkv, a=a, b=b, A_log=A_log,
-        dt_bias=dt_bias, scale=scale,
-        initial_state=initial_state, out=out,
+        mixed_qkv=mixed_qkv,
+        a=a,
+        b=b,
+        A_log=A_log,
+        dt_bias=dt_bias,
+        scale=scale,
+        initial_state=initial_state,
+        out=out,
         ssm_state_indices=ssm_state_indices,
         use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
     )
