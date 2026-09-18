@@ -167,6 +167,9 @@ def _kunlun_causal_conv1d_fn(
     # (gdn_backend does .transpose(0, 1)[:seq_len] on the return value).
     return out_flat.transpose(0, 1)
 
+import torch
+import torch.nn.functional as F
+from typing import Optional
 
 def _kunlun_causal_conv1d_update(
     x: torch.Tensor,
@@ -179,81 +182,83 @@ def _kunlun_causal_conv1d_update(
     intermediate_conv_window: Optional[torch.Tensor] = None,
     pad_slot_id: Optional[int] = None,
 ):
-    """GDN decode causal_conv1d_update -> klx-native sgl_kernel.
+    """Decode causal_conv1d_update — pure PyTorch, CUDA-graph safe.
 
-    Mirrors the prefill patch's motivation: the stock cuda-path
-    ``causal_conv1d_update`` binds sglang's Triton kernel, which the Kunlun XPU
-    Triton backend cannot compile (uni_sram OutOfResources). Route to the klx
-    ``sgl_kernel.causal_conv1d_update`` instead.
-
-    The klx kernel needs the extra trailing ``is_ncw`` / ``pad_slot_id`` args and
-    a seqlen axis on ``x``. Decode is single-token: SGLang passes ``x`` as 2D
-    ``(batch, dim)``; add the NCW seqlen axis (``-> (batch, dim, 1)``) to match
-    the ``is_ncw=True`` layout the prefill path uses on the shared conv_states
-    buffer, then squeeze it back. The kernel updates ``x`` and ``conv_state`` in
-    place and we return ``x`` (SGLang consumes the return value).
+    Avoids boolean indexing (``x[valid]``) which breaks Graph capture on Kunlun
+    (FlagGems / XPU advanced-index path tried to allocate terabytes).
     """
     from sglang.srt.layers.attention.mamba.causal_conv1d_triton import PAD_SLOT_ID
-
-    # Deferred, kunlunxin-local side-effect import (registers torch.ops.sgl_kernel.*).
-    import sgl_kernel  # noqa: F401
 
     if pad_slot_id is None:
         pad_slot_id = PAD_SLOT_ID
     if activation not in [None, "silu", "swish"]:
         raise NotImplementedError("activation must be None, silu, or swish")
+    if cache_seqlens is not None:
+        raise NotImplementedError(
+            "cache_seqlens circular buffer not needed for GDN decode"
+        )
+    if intermediate_conv_window is not None:
+        raise NotImplementedError(
+            "intermediate_conv_window (speculative) not supported"
+        )
 
-    # Layout + dtype bridging between stock SGLang's conv cache and the klx
-    # kernel. Verified empirically (tests/test_kunlunxin_kernel.py): the klx
-    # causal_conv1d_update kernel accepts ONLY:
-    #   * dtype float32 — fp16/bf16 raise "expected scalar type Float but
-    #     found Half/BFloat16"; and
-    #   * is_ncw=False (NWC layout) — x as (batch, seqlen, dim), conv_state as
-    #     (num_cache_lines, state_len, dim). is_ncw=True hits an internal
-    #     transpose that faults even in fp32.
-    # Stock SGLang allocates the cache as (num_cache_lines, dim, state_len) in
-    # the model's bf16 dtype and passes x as 2D (batch, dim) fp16. So we build a
-    # transposed fp32 shadow of the cache, run the kernel, and write the updated
-    # state back. The reference xSGL fork instead allocates the cache transposed
-    # via XSGL_TRANSPOSE_CONV_STATE, which we cannot do without touching the
-    # common memory-pool code.
-    run_dtype = torch.float32
-    out_dtype = x.dtype
-
+    dtype_in = x.dtype
     unsqueeze = x.dim() == 2
     if unsqueeze:
-        x = x.unsqueeze(1)  # (batch, dim) -> (batch, seqlen=1, dim) NWC
+        x = x.unsqueeze(-1)  # (B, D, 1) NCW
+    batch, dim, seqlen = x.shape
+    width = weight.shape[1]
+    state_len = conv_state.shape[-1]
+    assert weight.shape == (dim, width)
 
-    x = x.to(run_dtype).contiguous()
-    weight = weight.to(run_dtype)
-    if bias is not None:
-        bias = bias.to(run_dtype)
+    if conv_state_indices is not None:
+        idx = conv_state_indices.to(dtype=torch.long)
+        valid = idx != pad_slot_id  # [B], stay on device — no .any()/.item()
+        safe_idx = torch.where(valid, idx, torch.zeros_like(idx))
+        cs_gathered = conv_state[safe_idx]  # [B, D, state_len]
+    else:
+        valid = None
+        safe_idx = None
+        cs_gathered = conv_state
 
-    # (num_cache_lines, dim, state_len) -> NWC (num_cache_lines, state_len, dim)
-    cs = conv_state.transpose(1, 2).to(run_dtype).contiguous()
+    # Process the full batch (fixed shape → Graph-friendly).
+    x_new = torch.cat([cs_gathered, x], dim=-1)  # (B, D, state_len + seqlen)
+    cs_updated = x_new[:, :, -state_len:]
+    w = weight.to(dtype=x_new.dtype)
 
-    klx_causal_conv1d_update = torch.ops.sgl_kernel.causal_conv1d_update.default
-    klx_causal_conv1d_update(
-        x,
-        cs,
-        weight,
-        bias,
-        activation in ["silu", "swish"],
-        cache_seqlens,
-        conv_state_indices,
-        intermediate_conv_window,
-        False,  # is_ncw: klx update kernel needs NWC layout
-        pad_slot_id,
-    )
+    if seqlen > 1:
+        out = F.conv1d(
+            x_new.to(w.dtype),
+            w.unsqueeze(1),
+            bias.to(w.dtype) if bias is not None else None,
+            padding=0,
+            groups=dim,
+        )[:, :, -seqlen:]
+    else:
+        window = x_new[:, :, -width:]  # (B, D, width)
+        out = (window * w.unsqueeze(0)).sum(dim=-1, keepdim=True)  # (B, D, 1)
+        if bias is not None:
+            out = out + bias.to(out.dtype).view(1, -1, 1)
 
-    # Write the updated NWC state back into the stock (dim, state_len) cache.
-    conv_state.copy_(cs.transpose(1, 2).to(conv_state.dtype))
+    if activation in ("silu", "swish"):
+        out = F.silu(out)
+    out = out.to(dtype=dtype_in)
+
+    if conv_state_indices is not None:
+        # Identity writeback for pad rows so clamped index 0 is not corrupted
+        # when a pad slot and a real request both map to the same safe_idx.
+        valid_b = valid.view(batch, 1, 1)
+        cs_store = torch.where(
+            valid_b, cs_updated.to(dtype=conv_state.dtype), cs_gathered
+        )
+        conv_state.index_copy_(0, safe_idx, cs_store)
+        out = out * valid_b.to(dtype=out.dtype)
+    else:
+        conv_state.copy_(cs_updated.to(dtype=conv_state.dtype))
 
     if unsqueeze:
-        x = x.squeeze(1)
-    if x.dtype != out_dtype:
-        x = x.to(out_dtype)
-    return x
+        out = out.squeeze(-1)
+    return out
 
 
 def patch_causal_conv1d():

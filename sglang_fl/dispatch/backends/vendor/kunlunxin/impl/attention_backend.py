@@ -12,15 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Kunlunxin OOT attention backend."""
+"""Kunlunxin OOT attention backend (PyTorch, no sgl_kernel)."""
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 import torch
+from torch.nn.functional import scaled_dot_product_attention
 
 from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
 from sglang.srt.layers.radix_attention import AttentionType
@@ -49,8 +49,153 @@ def create_kv_indices_native(
     block_kv_indices.copy_(block_indices)
 
 
+def _as_paged_cache(cache: torch.Tensor, page_size: int, num_heads: int, head_dim: int):
+    """View flat ``[tokens, heads, dim]`` KV as FA-style paged layout.
+
+    Returns ``[num_pages, page_size, heads, dim]``.
+    """
+    if cache.ndim == 4:
+        if cache.shape[1] == page_size:
+            return cache
+        if cache.shape[2] == page_size:
+            return cache.transpose(1, 2).contiguous()
+        return cache
+    return cache.view(-1, page_size, num_heads, head_dim)
+
+
+def _paged_attention_decode_torch(
+    query: torch.Tensor,
+    output: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    block_table: torch.Tensor,
+    context_lens: torch.Tensor,
+    *,
+    block_size: int,
+    scale: float,
+    num_kv_heads: int,
+    sinks: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """CUDA-graph-safe paged attention decode (batched, no CPU sync).
+
+    Replaces ``torch.ops.sgl_kernel.klx_attention_decode``.
+
+    Single gather + masked attention (few CUDA launches → fast Graph capture).
+    ``context_lens`` masks pad tokens / unused ``block_table`` entries (``-1``).
+    """
+    B, Hq, Dk = query.shape
+    Dv = output.shape[-1]
+    max_blocks = block_table.shape[1]
+    max_seq = max_blocks * block_size
+
+    k_paged = _as_paged_cache(k_cache, block_size, num_kv_heads, Dk)
+    v_paged = _as_paged_cache(v_cache, block_size, num_kv_heads, Dv)
+
+    safe_bt = block_table.clamp(min=0).to(dtype=torch.long)
+    # [B, max_blocks, page_size, Hkv, D] -> [B, max_seq, Hkv, D]
+    k = k_paged[safe_bt].reshape(B, max_seq, num_kv_heads, Dk)
+    v = v_paged[safe_bt].reshape(B, max_seq, num_kv_heads, Dv)
+
+    if Hq != num_kv_heads:
+        if Hq % num_kv_heads != 0:
+            raise ValueError(
+                f"GQA requires Hq % Hkv == 0 (got Hq={Hq}, Hkv={num_kv_heads})."
+            )
+        rep = Hq // num_kv_heads
+        k = k.repeat_interleave(rep, dim=2)
+        v = v.repeat_interleave(rep, dim=2)
+
+    # [B, H, S, D]
+    q_h = query.unsqueeze(2).float()  # [B, Hq, 1, Dk]
+    k_h = k.transpose(1, 2).float()  # [B, Hq, max_seq, Dk]
+    v_h = v.transpose(1, 2).float()
+
+    pos = torch.arange(max_seq, device=query.device, dtype=context_lens.dtype)
+    key_mask = pos.unsqueeze(0) < context_lens.unsqueeze(1)  # [B, max_seq]
+
+    scores = torch.matmul(q_h, k_h.transpose(-1, -2)) * scale  # [B, Hq, 1, S]
+    scores = scores.masked_fill(~key_mask[:, None, None, :], -1.0e9)
+
+    if sinks is not None:
+        sink = sinks.float().view(1, Hq, 1, 1)
+        row_max = torch.maximum(scores.amax(dim=-1, keepdim=True), sink)
+        exp_scores = torch.exp(scores - row_max)
+        exp_scores = exp_scores * key_mask[:, None, None, :].to(exp_scores.dtype)
+        denom = exp_scores.sum(dim=-1, keepdim=True) + torch.exp(sink - row_max)
+        attn = exp_scores / denom
+    else:
+        attn = torch.softmax(scores, dim=-1)
+        # Fully-masked rows → nan from softmax; zero them.
+        attn = torch.nan_to_num(attn, nan=0.0)
+
+    out = torch.matmul(attn, v_h).squeeze(2)  # [B, Hq, Dv]
+    output.copy_(out.to(dtype=output.dtype))
+    return output
+
+
+def _sdpa_forward_extend_torch(
+    query: torch.Tensor,
+    output: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    req_to_token: torch.Tensor,
+    req_pool_indices: torch.Tensor,
+    seq_lens: torch.Tensor,
+    extend_prefix_lens: torch.Tensor,
+    extend_seq_lens: torch.Tensor,
+    scaling=None,
+    enable_gqa=False,
+    causal=False,
+):
+    """Varlen extend via per-sequence SDPA (TorchNativeAttnBackend contract)."""
+    if k_cache.ndim == 4:
+        k_cache = k_cache.reshape(-1, k_cache.shape[-2], k_cache.shape[-1])
+        v_cache = v_cache.reshape(-1, v_cache.shape[-2], v_cache.shape[-1])
+
+    query = query.movedim(0, query.dim() - 2)
+    start_q = 0
+    for seq_idx in range(int(seq_lens.shape[0])):
+        extend_seq_len_q = int(extend_seq_lens[seq_idx])
+        prefill_seq_len_q = int(extend_prefix_lens[seq_idx])
+        seq_len_kv = int(seq_lens[seq_idx])
+        end_q = start_q + extend_seq_len_q
+
+        per_req_query = query[:, start_q:end_q, :]
+        per_req_query_redundant = torch.empty(
+            (per_req_query.shape[0], seq_len_kv, per_req_query.shape[2]),
+            dtype=per_req_query.dtype,
+            device=per_req_query.device,
+        )
+        per_req_query_redundant[:, prefill_seq_len_q:, :] = per_req_query
+
+        req_pool_idx = req_pool_indices[seq_idx]
+        per_req_tokens = req_to_token[req_pool_idx, :seq_len_kv]
+        per_req_key = k_cache[per_req_tokens].movedim(0, query.dim() - 2)
+        per_req_value = v_cache[per_req_tokens].movedim(0, query.dim() - 2)
+
+        if not (per_req_query.dtype == per_req_key.dtype == per_req_value.dtype):
+            per_req_key = per_req_key.to(dtype=per_req_query.dtype)
+            per_req_value = per_req_value.to(dtype=per_req_query.dtype)
+
+        per_req_out_redundant = (
+            scaled_dot_product_attention(
+                per_req_query_redundant.unsqueeze(0),
+                per_req_key.unsqueeze(0),
+                per_req_value.unsqueeze(0),
+                enable_gqa=enable_gqa,
+                scale=scaling,
+                is_causal=causal,
+            )
+            .squeeze(0)
+            .movedim(query.dim() - 2, 0)
+        )
+        output[start_q:end_q, :, :] = per_req_out_redundant[prefill_seq_len_q:, :, :]
+        start_q = end_q
+    return output
+
+
 class KunlunxinBackend(AttentionBackend):
-    """Kunlunxin (klx) full-attention backend for GDN-hybrid full layers."""
+    """Kunlunxin full-attention backend for GDN-hybrid full layers (PyTorch)."""
 
     def __init__(self, model_runner: "ModelRunner"):
         super().__init__()
@@ -61,7 +206,7 @@ class KunlunxinBackend(AttentionBackend):
         self.page_size = model_runner.page_size
         self.forward_metadata: Optional[KunlunxinForwardMetadata] = None
 
-        # Cumulative LODs, filled per prefill/extend forward.
+        # Kept for API compatibility with the previous klx backend.
         self.cum_q_lod = None
         self.cum_q_lod_cpu = None
         self.cum_kv_lod = None
@@ -93,7 +238,6 @@ class KunlunxinBackend(AttentionBackend):
                 context_len_tensor=adjusted_seq_lens.int().contiguous(),
             )
         else:
-            # Prefill / Extend
             self.cum_q_lod = torch.zeros(
                 (bs + 1,), dtype=torch.int32, device=self.device
             )
@@ -133,21 +277,22 @@ class KunlunxinBackend(AttentionBackend):
     def forward_extend(
         self, q, k, v, layer, forward_batch, save_kv_cache=True, sinks=None
     ):
-        import sgl_kernel  # noqa: F401  (registers torch.ops.sgl_kernel.* on klx)
-
         if not forward_batch.out_cache_loc.is_contiguous():
             forward_batch.out_cache_loc = forward_batch.out_cache_loc.contiguous()
-        if sinks is not None:
-            sinks = sinks.float().contiguous()
 
-        # KV shared layer: k/v are None -> read from paged KV cache.
         if k is None and v is None:
             k_buf = forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id)
             v_buf = forward_batch.token_to_kv_pool.get_value_buffer(layer.layer_id)
             page_ids = forward_batch.out_cache_loc // self.page_size
             offsets = forward_batch.out_cache_loc % self.page_size
-            k = k_buf[page_ids, :, offsets, :]
-            v = v_buf[page_ids, :, offsets, :]
+            k_paged = _as_paged_cache(
+                k_buf, self.page_size, layer.tp_k_head_num, layer.qk_head_dim
+            )
+            v_paged = _as_paged_cache(
+                v_buf, self.page_size, layer.tp_v_head_num, layer.v_head_dim
+            )
+            k = k_paged[page_ids, offsets, :, :]
+            v = v_paged[page_ids, offsets, :, :]
 
         if layer.qk_head_dim != layer.v_head_dim:
             o = q.new_empty((q.shape[0], layer.tp_q_head_num * layer.v_head_dim))
@@ -162,75 +307,30 @@ class KunlunxinBackend(AttentionBackend):
         q_ = q.view(-1, layer.tp_q_head_num, layer.qk_head_dim)
         o_ = o.view(-1, layer.tp_q_head_num, layer.v_head_dim)
 
-        is_causal_mask = not (
+        causal = not (
             layer.is_cross_attention or layer.attn_type == AttentionType.ENCODER_ONLY
         )
-        if q_.shape[0] != self.cum_q_lod_cpu[-1]:
-            o_.fill_(0)
+        use_gqa = layer.tp_q_head_num != layer.tp_k_head_num
 
-        use_kv_cache = (
-            forward_batch.extend_prefix_lens_cpu is not None
-            and sum(forward_batch.extend_prefix_lens_cpu) > 0
-        )
-
-        if use_kv_cache:
-            k_cache = forward_batch.token_to_kv_pool.get_key_buffer(
-                layer.layer_id
-            ).contiguous()
-            v_cache = forward_batch.token_to_kv_pool.get_value_buffer(
-                layer.layer_id
-            ).contiguous()
-            k_cache_max, v_cache_max = None, None
-            block_tables = self.forward_metadata.block_kv_indices
-            eff_max_seq_kv = (
-                self.max_seq_kv
-                if self.max_seq_kv is not None
-                else block_tables.shape[1] * self.page_size
-            )
-            max_blocks_per_seq = (eff_max_seq_kv + self.page_size - 1) // self.page_size
-            prefill_len = self.max_seq_q
-        else:
-            k_cache = v_cache = k_cache_max = v_cache_max = block_tables = None
-            max_blocks_per_seq = -1
-            prefill_len = -1
-
-        torch.ops.sgl_kernel.klx_attention_extend.default(
-            out_tensor=o_,
-            q_tensor=q_.contiguous(),
-            k_tensor=k.contiguous(),
-            v_tensor=v.contiguous(),
-            k_cache=k_cache,
-            v_cache=v_cache,
-            k_cache_maxptr=k_cache_max,
-            v_cache_maxptr=v_cache_max,
-            block_tables=block_tables,
-            batch_num=forward_batch.batch_size,
-            max_seq_q=self.max_seq_q,
-            max_seq_kv=self.max_seq_kv,
-            head_num=layer.tp_q_head_num,
-            head_dim=layer.head_dim,
-            kv_head_num=layer.tp_k_head_num,
-            cum_q_lod=self.cum_q_lod,
-            cum_q_lod_cpu=self.cum_q_lod_cpu,
-            cum_kv_lod=self.cum_kv_lod,
-            cum_kv_lod_cpu=self.cum_kv_lod_cpu,
-            is_causal_mask=is_causal_mask,
-            vo_head_dim=layer.v_head_dim,
-            block_size=self.page_size,
-            alpha=layer.scaling * math.sqrt(layer.head_dim),
-            max_blocks_per_seq=max_blocks_per_seq,
-            prefill_len=prefill_len,
-            attn_sink_tensor=sinks,
-            swa_left_size=-1,
-            swa_right_size=-1,
+        _sdpa_forward_extend_torch(
+            q_,
+            o_,
+            forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id),
+            forward_batch.token_to_kv_pool.get_value_buffer(layer.layer_id),
+            forward_batch.req_to_token_pool.req_to_token,
+            forward_batch.req_pool_indices,
+            forward_batch.seq_lens,
+            forward_batch.extend_prefix_lens,
+            forward_batch.extend_seq_lens,
+            scaling=layer.scaling,
+            enable_gqa=use_gqa,
+            causal=causal,
         )
         return o
 
     def forward_decode(
         self, q, k, v, layer, forward_batch, save_kv_cache=True, sinks=None
     ):
-        import sgl_kernel  # noqa: F401
-
         if not forward_batch.out_cache_loc.is_contiguous():
             forward_batch.out_cache_loc = forward_batch.out_cache_loc.contiguous()
         if sinks is not None:
@@ -241,22 +341,23 @@ class KunlunxinBackend(AttentionBackend):
             v_buf = forward_batch.token_to_kv_pool.get_value_buffer(layer.layer_id)
             page_ids = forward_batch.out_cache_loc // self.page_size
             offsets = forward_batch.out_cache_loc % self.page_size
-            k = k_buf[page_ids, :, offsets, :]
-            v = v_buf[page_ids, :, offsets, :]
+            k_paged = _as_paged_cache(
+                k_buf, self.page_size, layer.tp_k_head_num, layer.qk_head_dim
+            )
+            v_paged = _as_paged_cache(
+                v_buf, self.page_size, layer.tp_v_head_num, layer.v_head_dim
+            )
+            k = k_paged[page_ids, offsets, :, :]
+            v = v_paged[page_ids, offsets, :, :]
 
         assert self.forward_metadata is not None
+        assert self.forward_metadata.block_kv_indices is not None
+        assert self.forward_metadata.context_len_tensor is not None
 
         if save_kv_cache:
             forward_batch.token_to_kv_pool.set_kv_buffer(
                 layer, forward_batch.out_cache_loc, k, v
             )
-
-        k_cache = forward_batch.token_to_kv_pool.get_key_buffer(
-            layer.layer_id
-        ).contiguous()
-        v_cache = forward_batch.token_to_kv_pool.get_value_buffer(
-            layer.layer_id
-        ).contiguous()
 
         q = q.reshape(-1, layer.tp_q_head_num * layer.qk_head_dim)
         q_ = q.view(-1, layer.tp_q_head_num, layer.qk_head_dim)
@@ -269,44 +370,46 @@ class KunlunxinBackend(AttentionBackend):
             )
         else:
             o = torch.empty_like(q)
-        o_4d = o.view(-1, layer.tp_q_head_num, layer.v_head_dim)
+        o_ = o.view(-1, layer.tp_q_head_num, layer.v_head_dim)
 
-        k_cache_max, v_cache_max = None, None
         bs = min(
             forward_batch.batch_size,
             self.forward_metadata.context_len_tensor.shape[0],
+            q_.shape[0],
         )
         block_table = self.forward_metadata.block_kv_indices[:bs]
-        max_num_blocks_per_seq = self.forward_metadata.block_kv_indices.stride(0)
+        context_lens = self.forward_metadata.context_len_tensor[:bs]
 
-        torch.ops.sgl_kernel.klx_attention_decode.default(
-            out_tensor=o_4d,
-            q_tensor=q_.contiguous(),
-            k_cache_tensor=k_cache,
-            v_cache_tensor=v_cache,
-            num_kv_heads=layer.tp_k_head_num,
-            scale=layer.scaling,
-            block_table_tensor=block_table,
-            context_len_tensor=self.forward_metadata.context_len_tensor[:bs],
+        _paged_attention_decode_torch(
+            query=q_[:bs],
+            output=o_[:bs],
+            k_cache=forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id),
+            v_cache=forward_batch.token_to_kv_pool.get_value_buffer(layer.layer_id),
+            block_table=block_table,
+            context_lens=context_lens,
             block_size=self.page_size,
-            max_context_len=self.max_context_len,
-            batch_num=bs,
-            head_num=layer.tp_q_head_num,
-            head_dim=layer.head_dim,
-            max_num_blocks_per_seq=max_num_blocks_per_seq,
-            v_head_dim=layer.v_head_dim,
-            k_cache_max_tensor=k_cache_max,
-            v_cache_max_tensor=v_cache_max,
-            attn_sink_tensor=sinks,
-            max_window_size=-1,
+            scale=layer.scaling,
+            num_kv_heads=layer.tp_k_head_num,
+            sinks=sinks,
         )
+        if bs < o_.shape[0]:
+            o_[bs:].zero_()
         return o
 
     def init_cuda_graph_state(self, max_bs, max_num_tokens, kv_indices_buf=None):
-        max_num_blocks = self.req_to_token.shape[1] // self.page_size
+        # Cap Graph block-table width so one-shot PyTorch decode stays tractable
+        # during capture. Eager decode still uses exact-sized tables.
+        # 512 tokens is enough for short offline prompts while keeping capture fast
+        # on Kunlun (FlagGems + large gathers are extremely slow to capture).
+        _MAX_GRAPH_TOKENS = 512
+        full_blocks = self.req_to_token.shape[1] // self.page_size
+        max_num_blocks = min(
+            full_blocks,
+            max(1, (_MAX_GRAPH_TOKENS + self.page_size - 1) // self.page_size),
+        )
         if kv_indices_buf is None:
             self.cuda_graph_kv_indices = torch.full(
-                (max_bs, max_num_blocks), 1, dtype=torch.int32, device=self.device
+                (max_bs, max_num_blocks), -1, dtype=torch.int32, device=self.device
             )
         else:
             self.cuda_graph_kv_indices = kv_indices_buf
@@ -324,7 +427,10 @@ class KunlunxinBackend(AttentionBackend):
         forward_mode,
         spec_info,
     ):
+        # Keep full storage width so the Python page-loop trip count is fixed
+        # for CUDA Graph capture / replay.
         max_seqlen_pad = self.cuda_graph_kv_indices.stride(0)
+        self.cuda_graph_kv_indices[:bs].fill_(-1)
         create_kv_indices_native(
             self.req_to_token,
             req_pool_indices,
@@ -351,10 +457,9 @@ class KunlunxinBackend(AttentionBackend):
         out_cache_loc=None,
     ):
         seq_lens = seq_lens[:bs]
-        seq_lens_cpu = seq_lens_cpu[:bs]
-        max_seqlen_pad = (
-            seq_lens_cpu.max().item() + self.page_size - 1
-        ) // self.page_size
+        # Same full width as capture — context_lens mask drops unused pages.
+        max_seqlen_pad = self.cuda_graph_kv_indices.stride(0)
+        self.cuda_graph_kv_indices[:bs].fill_(-1)
         create_kv_indices_native(
             self.req_to_token,
             req_pool_indices[:bs],
