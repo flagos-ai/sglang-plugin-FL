@@ -72,6 +72,8 @@ def test_real_topk_guard_launch_and_refreshed_replay(musa_device, monkeypatch, t
         eager_weights, eager_ids = weights.clone(), ids.clone()
         before_replay = len(calls)
         for _ in range(3):
+            weights.fill_(float("nan"))
+            ids.fill_(-1)
             graph.replay()
             synchronize()
             torch.testing.assert_close(ids, expected_ids, rtol=0, atol=0)
@@ -118,10 +120,14 @@ def test_real_combine_hit_fallback_and_refreshed_replay(
         token = moe_combine._ACTIVE_CONTEXT.set(context)
         try:
             if dual_stream:
-                alternate.wait_stream(primary)
+                # graph() selects a capture stream; fork from that current
+                # stream, rather than the pre-capture default stream.
+                current = torch.musa.current_stream()
+                context.shared_stream = current
+                alternate.wait_stream(current)
                 with torch.musa.stream(alternate):
                     reduction(routed, output, 1.0)
-                primary.wait_stream(alternate)
+                current.wait_stream(alternate)
             else:
                 reduction(routed, output, 1.0)
         finally:
@@ -158,6 +164,8 @@ def test_real_combine_hit_fallback_and_refreshed_replay(
         torch.testing.assert_close(output, expected, rtol=0, atol=0)
         eager = output.clone()
         for _ in range(3):
+            # An empty graph must fail even when eager computed the right value.
+            output.fill_(float("nan"))
             graph.replay()
             synchronize()
             torch.testing.assert_close(output, eager, rtol=0, atol=0)
