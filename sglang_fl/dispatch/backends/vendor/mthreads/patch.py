@@ -262,6 +262,9 @@ def apply_musa_patches() -> None:
     from .patches.custom_allreduce_rmsnorm import apply_musa_custom_allreduce_rmsnorm_patch
 
     apply_musa_custom_allreduce_rmsnorm_patch()
+    from .patches.eventfd_completion import apply_musa_eventfd_completion_patch
+
+    apply_musa_eventfd_completion_patch()
     from .patches.fmha_schedule import apply_musa_fmha_schedule_patch
     from .patches.moe_schedule import apply_musa_moe_schedule_patch
     from .patches.moe_combine import apply_musa_deterministic_moe_combine_patch

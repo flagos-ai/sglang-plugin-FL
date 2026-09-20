@@ -55,6 +55,10 @@ def _accept_fake_contract_tensors(monkeypatch):
     real ``isinstance`` check, so the rejection path stays testable.
     """
 
+    if not hasattr(torch, "musa"):
+        monkeypatch.setattr(torch, "musa", SimpleNamespace(
+            current_stream=lambda: None, stream=lambda _: nullcontext()
+        ), raising=False)
     real_is_tensor = moe_combine._is_tensor
 
     def is_tensor(value):
@@ -811,7 +815,7 @@ def test_decode_graph_reduce_joins_shared_tail_before_launch(monkeypatch):
     launch_calls = []
     original_calls = []
     monkeypatch.setattr(
-        moe_combine.torch.cuda, "current_stream", lambda: consumer_stream
+        moe_combine.torch.musa, "current_stream", lambda: consumer_stream
     )
     monkeypatch.setattr(
         moe_combine,
@@ -848,7 +852,7 @@ def test_decode_graph_launch_failure_falls_back_without_disabling_eager(monkeypa
     context.shared_stream = producer_stream
     original_calls = []
     monkeypatch.setattr(
-        moe_combine.torch.cuda, "current_stream", lambda: consumer_stream
+        moe_combine.torch.musa, "current_stream", lambda: consumer_stream
     )
     monkeypatch.setattr(
         moe_combine,
@@ -890,9 +894,9 @@ def test_decode_graph_forward_preserves_dual_stream_fork_and_join(monkeypatch):
 
     block._forward_router_experts = router
     monkeypatch.setattr(
-        moe_combine.torch.cuda, "current_stream", lambda: primary_stream
+        moe_combine.torch.musa, "current_stream", lambda: primary_stream
     )
-    monkeypatch.setattr(moe_combine.torch.cuda, "stream", lambda stream: nullcontext())
+    monkeypatch.setattr(moe_combine.torch.musa, "stream", lambda stream: nullcontext())
 
     result = moe_combine._forward_decode_graph_combine(
         qwen_module,

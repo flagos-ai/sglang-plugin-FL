@@ -616,7 +616,7 @@ def _wrap_moe_sum_reduce(original: Callable[..., Any]) -> Callable[..., Any]:
                 # enqueued earlier on the primary stream, so this tail wait
                 # preserves overlap and joins the two producers immediately
                 # before their fused consumer.
-                consumer_stream = torch.cuda.current_stream()
+                consumer_stream = torch.musa.current_stream()
                 if (
                     context.shared_stream is None
                     or consumer_stream == context.shared_stream
@@ -801,7 +801,7 @@ def _forward_decode_graph_combine(
 
     num_tokens, hidden_dim = hidden_states.shape
     flat_hidden_states = hidden_states.view(-1, hidden_dim)
-    current_stream = torch.cuda.current_stream()
+    current_stream = torch.musa.current_stream()
 
     # Match Qwen2MoeSparseMoeBlock.forward_normal_dual_stream: fork the
     # alternate stream before enqueuing the shared branch, and use one cloned
@@ -826,7 +826,7 @@ def _forward_decode_graph_combine(
 
     token = _ACTIVE_CONTEXT.set(context)
     try:
-        with torch.cuda.stream(module.alt_stream):
+        with torch.musa.stream(module.alt_stream):
             final_hidden_states = module._forward_router_experts(flat_hidden_states)
 
         # This is the original alternate-to-primary join.  On a candidate

@@ -43,6 +43,8 @@ include = ["sglang_fl*"]
 "sglang_fl.dispatch.backends.vendor.mthreads.jit_custom_ar.csrc.norm" = ["*.mu"]
 "sglang_fl.dispatch.backends.vendor.mthreads.moe" = ["README.md"]
 
+"sglang_fl.dispatch.backends.vendor.mthreads.eventfd_completion.csrc" = ["*.cpp"]
+
 [tool.ruff]
 # Folders excluded from lint + format. These hold pre-existing issues that are
 # out of scope for turning the lint gate back on (third-party vendor SDK code,
