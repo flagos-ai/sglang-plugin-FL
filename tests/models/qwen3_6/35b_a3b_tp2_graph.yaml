@@ -1,0 +1,58 @@
+# MUSA Qwen3.6 candidate smoke case. Opt-in features are supplied by the
+# validation command, not by platform-wide env_defaults. See tests/musa/README.md.
+llm:
+  model: "/data/models/Qwen/Qwen3.6-35B-A3B"
+  tp_size: 2
+  pp_size: 1
+  dtype: "bfloat16"
+  context_length: 32768
+  mem_fraction_static: 0.90
+  page_size: 1
+  chunked_prefill_size: 16384
+  disable_radix_cache: true
+  disable_cuda_graph: false
+  disable_piecewise_cuda_graph: true
+  cuda_graph_bs: [1, 2, 4, 8, 12, 16, 24, 32, 40, 48, 56, 64]
+  disable_custom_all_reduce: false
+  trust_remote_code: true
+  log_level: "info"
+
+generate:
+  prompts:
+    - text: "The capital of France is"
+      expected: "Paris"
+    - text: "What is 17 multiplied by 13?"
+      expected: "221"
+  sampling:
+    max_new_tokens: 32
+    temperature: 0.0
+
+serve:
+  served_model_name: "qwen"
+  startup_retries: 240
+  endpoints: ["chat"]
+  stream: false
+  max_tokens: 32
+  chat_messages:
+    - role: "user"
+      content: "Introduce yourself briefly."
+  sampling:
+    temperature: 0.0
+
+concurrent:
+  modes: ["text"]
+  concurrent_n: 4
+  text:
+    prompts:
+      - text: "The capital of France is"
+        expected: ["paris"]
+      - text: "What is 17 multiplied by 13?"
+        expected: ["221"]
+      - text: "What is the largest planet in the solar system?"
+        expected: ["jupiter"]
+      - text: "How many states are there in the United States?"
+        expected: ["50"]
+  sampling:
+    text:
+      max_new_tokens: 32
+      temperature: 0.0
