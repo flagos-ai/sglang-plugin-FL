@@ -7,6 +7,11 @@ These commands validate the current checkout; the historical `b6995b4` results
 do not validate later fixes. Save the command, full logs, installed plugin commit,
 model revision, MATE revision and image digest alongside each result.
 
+The current S5000 acceptance requires the isolated MATE GDN H-ready patch
+described [below](#mate-gdn-prefill-synchronization-check). Both tested MATE
+versions exhibit C4 drift without it. Installing this plugin alone does not
+apply that dependency patch; retain its source hash with the runtime identity.
+
 ## Install and run regression checks
 
 ```bash
@@ -127,6 +132,50 @@ arms exhibit the same drift; it does not establish candidate equivalence.
 Keep failed C4 records. Formal model accuracy, the full fixed-work matrix and
 final-image performance acceptance remain separate gates.
 
+## MATE GDN prefill synchronization check
+
+The unpatched pinned MATE 0.2.4 compatibility kernel and official MATE 0.2.7
+both exhibit C4 nondeterminism on the tested S5000 stack. A dependency upgrade
+alone does not resolve it. See [the acceptance record](acceptance_20260920.md)
+for controlled experiments, source hashes and the current acceptance status.
+
+[mate-gdn-h-ready.patch](mate-gdn-h-ready.patch) separates consecutive H-ready
+publications across two physical barriers. Both consumers can otherwise wait
+on different phases of the same physical barrier. The patch preserves the
+shared-state buffer and computation; it does not add a compute rendezvous.
+It is a MATE source patch, not an automatic plugin monkeypatch.
+
+Apply it only to an isolated copy of one of the recorded MATE sources, using
+that source's matching TileLang/TVM-FFI dependencies. The parent directory below
+must contain `mate/gdn_kernels/tilelang/gdn_prefill.py`. Verify the source hash
+against the acceptance record before applying it, and retain the patched hash
+and package import origins with the test output.
+
+```bash
+MATE_PACKAGE_PARENT=/path/to/isolated/mate-copy
+MATE_PATCH_PATH="$(realpath tests/musa/mate-gdn-h-ready.patch)"
+(
+  cd "$MATE_PACKAGE_PARENT"
+  git apply --check "$MATE_PATCH_PATH"
+  git apply "$MATE_PATCH_PATH"
+  sha256sum mate/gdn_kernels/tilelang/gdn_prefill.py
+)
+
+PYTHONPATH="$MATE_PACKAGE_PARENT" \
+TILELANG_CACHE_DIR=/path/to/fresh/tilelang-cache \
+python tests/musa/repro_mate_gdn_prefill.py --output /tmp/mate-gdn-patched.json
+```
+
+The reproducer uses seeded synthetic inputs and an independent CPU FP32
+recurrence. It covers chunk boundaries, variable lengths, split-QKV layouts,
+initial states and 100 repeats per case after a 128 MiB device fill. It checks
+output/state repeatability, untouched inputs and complete overwrite of poisoned
+outputs. `--smoke` selects C4/I1024; `--kernel-file` selects a standalone
+candidate without changing the installed package. Existing result files are
+refused. This is a correctness probe, and its elapsed time is not a benchmark.
+The full-model and matched performance gates must still pass with the exact
+dependency source that will be delivered.
+
 ## Local pre-push checks (2026-09-20)
 
 On macOS with Python 3.12, Torch 2.11 and pytest 9.1:
@@ -140,6 +189,39 @@ On macOS with Python 3.12, Torch 2.11 and pytest 9.1:
 - Python compilation, changed-file syntax/import lint (repository E731
   exemption), YAML case discovery and `git diff --check` pass.
 
-No S5000 kernel, model, graph replay or performance result is claimed by these
-local checks. The GPU tests and record commands above still need to be run on
-the target machine.
+Those local checks do not provide S5000 kernel, model, graph replay or
+performance evidence. Subsequent target-machine results and their dependency
+requirements are recorded in [the integration acceptance](acceptance_20260920.md).
+
+## Historical optimized performance profile
+
+The conservative smoke case above does not reproduce the campaign's performance
+configuration. For that comparison, source `tests/musa/qwen36_perf.env` before
+launching the pinned runtime. Set the model path, device visibility, communication
+interface and pinned MATE compatibility path for the target machine separately.
+The explicit blacklist in this profile includes native `index`, `copy_` and
+`index_put` paths; an environment blacklist replaces the YAML list.
+
+Use BF16 TP2/PP1/DP1, context 262144, page size 64, full decode graph buckets
+`1,2,4,8,12,16,24,32,40,48,56,64`, no piecewise graphs, no radix cache,
+`mamba-scheduler-strategy=no_buffer`, max-running-requests 64, max-prefill-tokens
+16384, chunked-prefill-size 16384, flashinfer sampling and FA3 attention.
+First validate startup and all graph captures at memory fraction `.970`.
+The retained September-17 measurements used `.965`; a separate matched `.965`
+run reproduces that historical comparison and must be labelled separately.
+
+The historical client sends direct integer token IDs to `/v1/completions`, with
+streaming disabled, temperature 0, ignore-EOS enabled, output length 1024,
+256 requests, concurrency 64 and seed 0. Input lengths are 1024, 4096, 16384 and
+65536. Reuse the retained prompt generator and compare its prompt digests;
+decoding and retokenizing IDs changes the workload. Exclude tokenizer loading,
+workload construction and warmup from timing. Validate every response's usage
+and finish reason, retain five measured rounds and concurrent telemetry, and
+report the median output token rate. This is an engineering reproduction
+protocol, separate from streaming FlagRelease measurements and dataset accuracy.
+
+The release/perf integration retains the release-side scheduling guards, MATE
+loader, MoE workspace and test layout. It restores eventfd completion and
+FlagCX in-place self-copy avoidance from the perf branch. The standalone GPU
+combine test uses native MUSA streams and forks from the actual capture stream;
+each replay must overwrite poisoned output, so an empty capture cannot pass.
