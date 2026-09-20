@@ -125,6 +125,11 @@ must not be read as post-refactor validation or as a new performance claim.
 
 ## Required validation before release
 
+For the current checkout, use the [S5000 validation handoff](../../../../../../tests/musa/README.md)
+for CPU regression checks, real TopK/combine refresh tests, the TP2 full-graph
+smoke case and separate C1/C4 repeatability records. These are validation tools;
+adding them does not change the historical acceptance status below.
+
 Validated code snapshot: `b6995b4d72df142291fe00537055a55ab9f1a3bd`.
 
 - Local full platform suite: 200 passed, one pinned-image API check skipped;
