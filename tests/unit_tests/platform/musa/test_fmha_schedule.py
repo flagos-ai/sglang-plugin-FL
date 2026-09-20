@@ -14,8 +14,9 @@
 
 from types import SimpleNamespace
 
-from sglang_fl.dispatch.backends.vendor.mthreads.patches import fmha_schedule
+import pytest
 
+from sglang_fl.dispatch.backends.vendor.mthreads.patches import fmha_schedule
 
 CURRENT_CONFIG = (192, 64, 1, 1, 256, 256, 3, 3, False)
 
@@ -73,3 +74,52 @@ def test_apply_patches_all_mate_aliases_and_is_idempotent(monkeypatch):
     # Applying again must not re-wrap the already-patched aliases.
     assert fmha_schedule.apply_musa_fmha_schedule_patch()
     assert getattr(utils._get_fwd_kernel_config, fmha_schedule._PATCH_MARKER)
+
+
+def test_legacy_selector_keeps_its_eight_argument_contract(monkeypatch):
+    monkeypatch.setattr(fmha_schedule, "_device_name", lambda: "MTT S5000")
+    monkeypatch.delenv("SGLANG_MUSA_FMHA_PREFILL_PACK_GQA", raising=False)
+    calls = []
+
+    def legacy(m, ratio, dim, dim_v, size, pack=None, qv=False, fp8=False):
+        calls.append((m, ratio, dim, dim_v, size, pack, qv, fp8))
+        return CURRENT_CONFIG
+
+    wrapped = fmha_schedule._wrap_get_fwd_kernel_config(legacy)
+    assert wrapped(8192, 8, 256, 256, 2)[-1] is True
+    assert calls == [(8192, 8, 256, 256, 2, None, False, False)]
+
+
+@pytest.mark.parametrize("keyword", [False, True])
+@pytest.mark.parametrize("high_pressure", [False, True])
+def test_mate027_argument_is_forwarded_and_high_pressure_is_untuned(
+    monkeypatch, keyword, high_pressure
+):
+    monkeypatch.setattr(fmha_schedule, "_device_name", lambda: "MTT S5000")
+    monkeypatch.delenv("SGLANG_MUSA_FMHA_PREFILL_PACK_GQA", raising=False)
+    calls = []
+    config = CURRENT_CONFIG[:-1] + (0, False)
+
+    def upgraded(
+        m,
+        ratio,
+        dim,
+        dim_v,
+        size,
+        pack=None,
+        qv=False,
+        fp8=False,
+        is_high_regpressure=False,
+    ):
+        calls.append(is_high_regpressure)
+        return config
+
+    wrapped = fmha_schedule._wrap_get_fwd_kernel_config(upgraded)
+    args = (8192, 8, 256, 256, 2, None, False, False)
+    if keyword:
+        result = wrapped(*args, is_high_regpressure=high_pressure)
+    else:
+        result = wrapped(*args, high_pressure)
+    assert calls == [high_pressure]
+    assert result[:-1] == config[:-1]
+    assert result[-1] is (not high_pressure)

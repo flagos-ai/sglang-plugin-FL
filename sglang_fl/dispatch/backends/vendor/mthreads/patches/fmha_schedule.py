@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 _ENV_NAME = "SGLANG_MUSA_FMHA_PREFILL_PACK_GQA"
 _PATCH_MARKER = "_sglang_fl_musa_fmha_prefill_pack_gqa"
+_UNSET = object()
 _match_logged = False
 
 
@@ -91,8 +92,12 @@ def _wrap_get_fwd_kernel_config(original: Callable[..., Any]):
         enable_packgqa=None,
         has_qv=False,
         is_fp8=False,
+        is_high_regpressure=_UNSET,
     ):
         global _match_logged
+        # MATE 0.2.7 adds this argument. Leave omitted arguments to the
+        # original selector so older MATE versions still receive eight.
+        extra = () if is_high_regpressure is _UNSET else (is_high_regpressure,)
         config = original(
             m,
             head_ratio,
@@ -102,7 +107,10 @@ def _wrap_get_fwd_kernel_config(original: Callable[..., Any]):
             enable_packgqa,
             has_qv,
             is_fp8,
+            *extra,
         )
+        if is_high_regpressure is not _UNSET and is_high_regpressure:
+            return config
         if not _matches_s5000_prefill(
             m,
             head_ratio,
@@ -139,9 +147,7 @@ def apply_musa_fmha_schedule_patch() -> bool:
         return False
 
     try:
-        fmha_utils = importlib.import_module(
-            "mate.jit.attention.fmha.fmha_utils"
-        )
+        fmha_utils = importlib.import_module("mate.jit.attention.fmha.fmha_utils")
         fmha_fwd = importlib.import_module("mate.jit.attention.fmha.fmha_fwd")
         fmha_metadata = importlib.import_module(
             "mate.jit.attention.fmha.fmha_get_metadata"
