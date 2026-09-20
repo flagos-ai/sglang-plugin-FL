@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pytest
+
 from sglang_fl.dispatch.backends.vendor.mthreads.patches import moe_schedule
 
 
@@ -56,6 +58,55 @@ def test_non_target_shape_delegates(monkeypatch):
 
     wrapped = moe_schedule._wrap_try_get_optimal_moe_config(original)
     assert wrapped(W1_SHAPE, W2_SHAPE, 8, None, 32) is sentinel
+
+
+@pytest.mark.parametrize("disabled", [True, False])
+def test_ineligible_runtime_does_not_inspect_shapes(monkeypatch, disabled):
+    monkeypatch.setenv(moe_schedule._ENV_NAME, "off" if disabled else "auto")
+    monkeypatch.setenv(moe_schedule._PREFILL_ENV_NAME, "off" if disabled else "auto")
+    monkeypatch.setenv(moe_schedule._R2_M4_BASELINE_ENV, "0")
+
+    def device_name():
+        assert not disabled, "disabled schedules must not probe the device"
+        return "MTT S4000"
+
+    monkeypatch.setattr(moe_schedule, "_device_name", device_name)
+
+    class UnreadableShape:
+        def __len__(self):
+            pytest.fail("ineligible schedules must not inspect shapes")
+
+    shapes = (UnreadableShape(), UnreadableShape())
+    sentinel = object()
+    calls = []
+
+    def original(*args, **kwargs):
+        calls.append((args, kwargs))
+        return sentinel
+
+    wrapped = moe_schedule._wrap_try_get_optimal_moe_config(original)
+    options = dict(
+        is_marlin=True,
+        block_shape=[128, 128],
+        per_channel_quant=True,
+        return_down_config=True,
+    )
+    assert wrapped(*shapes, 8, None, 64, **options) is sentinel
+    assert calls == [((*shapes, 8, None, 64), options)]
+
+
+def test_installed_wrapper_keeps_independent_m4_switch_live(monkeypatch):
+    monkeypatch.setenv(moe_schedule._ENV_NAME, "off")
+    monkeypatch.setenv(moe_schedule._PREFILL_ENV_NAME, "off")
+    monkeypatch.setenv(moe_schedule._R2_M4_BASELINE_ENV, "0")
+    monkeypatch.setattr(moe_schedule, "_device_name", lambda: "MTT S5000")
+    sentinel = object()
+    wrapped = moe_schedule._wrap_try_get_optimal_moe_config(lambda *a, **kw: sentinel)
+    assert wrapped(W1_SHAPE, W2_SHAPE, 8, None, 4) is sentinel
+    monkeypatch.setenv(moe_schedule._R2_M4_BASELINE_ENV, "1")
+    assert wrapped(W1_SHAPE, W2_SHAPE, 8, None, 4) == moe_schedule._R2_M4_BASELINE_CONFIG
+    monkeypatch.setenv(moe_schedule._R2_M4_BASELINE_ENV, "0")
+    assert wrapped(W1_SHAPE, W2_SHAPE, 8, None, 4) is sentinel
 
 
 def test_s5000_long_prefill_uses_tuned_schedule(monkeypatch):

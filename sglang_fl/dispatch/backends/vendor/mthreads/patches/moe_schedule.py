@@ -191,12 +191,18 @@ def _select_musa_moe_schedule(
 
     Each branch returns ``(base_config, additions, baseline_down)`` where
     ``additions`` holds only its own options.  The caller copies ``base_config``
-    and applies ``additions``, so branches never mutate or leak `module-level
+    and applies ``additions``, so branches never mutate or leak module-level
     constants.  No branch matches -> ``(None, {}, False)``.
     """
 
     global _decode_match_logged, _prefill_match_logged, _prefill_m16k_match_logged
     global _r2_m4_match_logged
+    # Disabled or non-target calls must reach the original resolver without
+    # inspecting its shape objects. Keep these checks per call: the runtime
+    # switches can change after installation, including the independent M4 opt-in.
+    m4_enabled = os.environ.get(_R2_M4_BASELINE_ENV, "0") == "1"
+    if not (m4_enabled or _enabled() or _prefill_enabled()) or not _on_s5000():
+        return None, {}, False
     if not _matches_common_weight_contract(
         w1_shape,
         w2_shape,
@@ -208,8 +214,7 @@ def _select_musa_moe_schedule(
         return None, {}, False
 
     if (
-        os.environ.get(_R2_M4_BASELINE_ENV, "0") == "1"
-        and _on_s5000()
+        m4_enabled
         and w2_shape[2] == 256
         and M == 4
         and not is_marlin
@@ -223,7 +228,7 @@ def _select_musa_moe_schedule(
         # R2 baseline has no independent down schedule. The core uses the
         # unchanged baseline config for W2, and copies W13 for BN64.
         return _R2_M4_BASELINE_CONFIG, {}, True
-    if _enabled() and _on_s5000() and w2_shape[2] in (256, 512) and M == 64:
+    if _enabled() and w2_shape[2] in (256, 512) and M == 64:
         backend_opt = w2_shape[2] == 256 and _backend_opt_enabled()
         additions = {"enable_backend_opt": True} if backend_opt else {}
         if not _decode_match_logged:
@@ -238,7 +243,7 @@ def _select_musa_moe_schedule(
             )
             _decode_match_logged = True
         return _S5000_DECODE_CONFIG, additions, False
-    if _prefill_enabled() and _on_s5000() and w2_shape[2] == 256 and 2048 <= M <= 8192:
+    if _prefill_enabled() and w2_shape[2] == 256 and 2048 <= M <= 8192:
         if not _prefill_match_logged:
             logger.info(
                 "MUSA S5000 MoE prefill schedule selected for "
@@ -250,7 +255,7 @@ def _select_musa_moe_schedule(
             )
             _prefill_match_logged = True
         return _S5000_PREFILL_CONFIG, {}, False
-    if _prefill_enabled() and _on_s5000() and w2_shape[2] == 256 and M == 16384:
+    if _prefill_enabled() and w2_shape[2] == 256 and M == 16384:
         if not _prefill_m16k_match_logged:
             logger.info(
                 "MUSA S5000 MoE exact M=16384 prefill schedule selected for "
