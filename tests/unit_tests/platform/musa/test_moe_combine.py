@@ -454,11 +454,22 @@ def test_env_off_forces_combine_fallback(monkeypatch):
     assert not context.used
 
 
-def test_non_tensor_reduction_inputs_keep_original_path(monkeypatch):
+@pytest.mark.parametrize("invalid_input", ["routed", "output", "shared", "gate"])
+def test_non_tensor_reduction_inputs_keep_original_path(monkeypatch, invalid_input):
     monkeypatch.setattr(moe_combine, "_CANDIDATE_DISABLED", False)
+    monkeypatch.setenv(moe_combine._ENV_NAME, "auto")
     monkeypatch.setattr(moe_combine, "_device_name", lambda tensor: "MTT S5000")
-    context, _ = _context()
+    context, (routed, output, shared, gate) = _context()
+    assert moe_combine._contract_matches(routed, output, 1.0, context)
+    inputs = dict(routed=routed, output=output, shared=shared, gate=gate)
+    inputs[invalid_input] = SimpleNamespace()
+    context.shared_unweighted = inputs["shared"]
+    context.gate_logits = inputs["gate"]
     original_calls = []
+    launch_calls = []
+    monkeypatch.setattr(
+        moe_combine, "_launch_candidate", lambda *a: launch_calls.append(a)
+    )
 
     def original(*args, **kwargs):
         original_calls.append((args, kwargs))
@@ -469,13 +480,15 @@ def test_non_tensor_reduction_inputs_keep_original_path(monkeypatch):
     try:
         # Objects with no tensor attributes must not raise from the contract
         # read that sits outside the launch guard.
-        result = wrapped(SimpleNamespace(), SimpleNamespace(), 1.0)
+        result = wrapped(inputs["routed"], inputs["output"], 1.0)
     finally:
         moe_combine._ACTIVE_CONTEXT.reset(token)
 
     assert result == "baseline"
-    assert original_calls
+    assert original_calls == [((inputs["routed"], inputs["output"], 1.0), {})]
+    assert not launch_calls
     assert not context.used
+    assert not moe_combine._CANDIDATE_DISABLED
 
 
 def test_non_tensor_hidden_states_do_not_enter_optimization(monkeypatch):
