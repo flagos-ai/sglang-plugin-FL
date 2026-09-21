@@ -83,3 +83,8 @@ class TestInitBackendVendorAutoImport:
             p.init_backend()
             p.init_backend()
         assert caplog.text.count("vendor_module=loaded") == 3
+
+
+def test_pin_memory_signature_accepts_device():
+    platform = _make_platform_stub("ascend", device_type="npu")
+    assert platform.is_pin_memory_available("npu:0") is True
