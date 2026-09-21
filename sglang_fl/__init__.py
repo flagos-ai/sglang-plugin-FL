@@ -360,6 +360,39 @@ def _make_dispatch_hook(config: dict = None):
 # ─── FlagGems setup ───────────────────────────────────────────────────────────
 
 
+def _bridge_flaggems_vendor_loggers(flag_gems, handlers) -> set:
+    """Attach FlagGems-owned handlers to underscored vendor logger roots.
+
+    Some vendor packages live outside the ``flag_gems`` namespace (for
+    example ``_ascend.ops``), so their records do not propagate to the
+    handler installed by FlagGems. Discover those namespaces from the active
+    registrar instead of hard-coding a vendor name.
+    """
+    if not handlers:
+        return set()
+
+    registrar = getattr(flag_gems, "current_work_registrar", None)
+    configs = getattr(registrar, "config", ()) or ()
+    roots = set()
+
+    for config in configs:
+        candidates = config if isinstance(config, (tuple, list)) else (config,)
+        for candidate in candidates:
+            module_name = getattr(candidate, "__module__", "")
+            if module_name.startswith("_") and ".ops." in module_name:
+                roots.add(module_name.split(".ops.", 1)[0] + ".ops")
+
+    for root in roots:
+        vendor_logger = logging.getLogger(root)
+        vendor_logger.setLevel(logging.DEBUG)
+        vendor_logger.propagate = False
+        for handler in handlers:
+            if handler not in vendor_logger.handlers:
+                vendor_logger.addHandler(handler)
+
+    return roots
+
+
 def _setup_flaggems(config: dict = None):
     use_fg = _parse_bool(os.environ.get("USE_FLAGGEMS", "1"), default=True)
 
@@ -427,10 +460,19 @@ def _setup_flaggems(config: dict = None):
                 name = record.name
                 return name.startswith("flag_gems.ops") or ".ops." in name
 
+        _AtenOnlyFilter._sglang_fl_aten_only = True
+
         fg_logger = _logging.getLogger("flag_gems")
-        for h in fg_logger.handlers:
-            if getattr(h, "_flaggems_owned", False):
+        owned_handlers = [
+            h for h in fg_logger.handlers if getattr(h, "_flaggems_owned", False)
+        ]
+        for h in owned_handlers:
+            if not any(
+                getattr(filter_, "_sglang_fl_aten_only", False)
+                for filter_ in h.filters
+            ):
                 h.addFilter(_AtenOnlyFilter())
+        _bridge_flaggems_vendor_loggers(flag_gems, owned_handlers)
 
 
 # ─── Vendor-specific sglang patches ───────────────────────────────────────────
