@@ -16,6 +16,7 @@
 
 import logging
 import os
+import threading
 
 _LOG_LEVEL_MAP = {
     "DEBUG": logging.DEBUG,
@@ -52,7 +53,18 @@ def set_log_level(level: str, name: str = "sglang_fl.dispatch") -> None:
 # --- Execution-level proof markers ---
 # Unlike [OOT-DISPATCH] (which logs selection), [EXEC] proves the function body ran.
 
-_exec_logged: set = set()
+_exec_counts: dict = {}
+_exec_lock = threading.Lock()
+
+
+def _reset_exec_state_after_fork() -> None:
+    global _exec_lock
+    _exec_counts.clear()
+    _exec_lock = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_exec_state_after_fork)
 
 
 def log_exec(op_name: str, backend: str) -> None:
@@ -60,18 +72,29 @@ def log_exec(op_name: str, backend: str) -> None:
     Write an execution marker to the dispatch log file.
 
     Called inside backend function bodies to prove actual execution
-    (not just dispatch selection). Only logs once per (op, backend) pair.
+    (not just dispatch selection). ``[EXEC]`` is written once per pair, while
+    ``[STAT]`` is sampled at powers of two so hot paths remain inexpensive.
     """
-    key = (op_name, backend)
-    if key in _exec_logged:
-        return
-    _exec_logged.add(key)
-
     log_path = os.environ.get("SGLANG_FL_DISPATCH_LOG", "").strip()
-    if log_path:
-        try:
-            with open(log_path, "a") as f:
+    if not log_path:
+        return
+
+    key = (op_name, backend)
+    with _exec_lock:
+        count = _exec_counts.get(key, 0) + 1
+        _exec_counts[key] = count
+        first_call = count == 1
+        emit_stat = count & (count - 1) == 0
+
+    if not first_call and not emit_stat:
+        return
+
+    try:
+        with open(log_path, "a") as f:
+            if first_call:
                 f.write(f"[EXEC] {op_name} → {backend}\n")
-                f.flush()
-        except Exception:
-            pass
+            if emit_stat:
+                f.write(f"[STAT] {op_name} → {backend} count={count}\n")
+            f.flush()
+    except Exception:
+        pass
