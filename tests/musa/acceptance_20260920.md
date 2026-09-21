@@ -7,6 +7,10 @@ short-input gains and a slight 64K regression; cross-version dataset accuracy
 has not been established. The runtime dependency requirements below are part
 of this acceptance.
 
+This is a historical snapshot of the commits listed below, which included
+eventfd completion. The current code and performance profile remove eventfd;
+these measurements do not validate that subsequent change.
+
 ## Code and runtime
 
 - Release parent: `690168f0f39e0a4ea0284c23b4bd95326aef6d8f`.
@@ -27,7 +31,8 @@ supersede older duplicate perf tests; additional behavioral tests live under
 
 The pinned vendor SGLang core was unchanged for acceptance. Its Python tree digest was
 `1c9296f69f8c72867538c4a6cb74b90e60f8b333fdcd501dfa45c4ba0eec1fc4`.
-The exact historical environment is captured by `qwen36_perf.env`; explicit
+The exact historical environment is captured by `qwen36_perf.env` at commit
+`b3cd3b1d099d0a2e315680d43ab63f2cbae4a2ea`; explicit
 environment blacklists override YAML, including the native `index` selection.
 
 ## Completed gates

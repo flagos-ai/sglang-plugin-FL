@@ -221,7 +221,8 @@ report the median output token rate. This is an engineering reproduction
 protocol, separate from streaming FlagRelease measurements and dataset accuracy.
 
 The release/perf integration retains the release-side scheduling guards, MATE
-loader, MoE workspace and test layout. It restores eventfd completion and
-FlagCX in-place self-copy avoidance from the perf branch. The standalone GPU
+loader, MoE workspace and test layout. It retains FlagCX in-place self-copy
+avoidance from the perf branch. Output completion uses the core Event path;
+the plugin eventfd provider, patch and native callback have been removed. The standalone GPU
 combine test uses native MUSA streams and forks from the actual capture stream;
 each replay must overwrite poisoned output, so an empty capture cannot pass.
