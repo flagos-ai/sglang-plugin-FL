@@ -30,12 +30,17 @@ on:
         required: false
         type: string
         default: ""
+      timeout:
+        description: "Timeout for the job in minutes"
+        required: false
+        type: number
+        default: 30
 
 jobs:
   unit-tests:
     name: "Unit (${{ inputs.platform }})"
     runs-on: ${{ fromJson(inputs.runner_labels) }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.timeout }}
     container:
       image: ${{ inputs.ci_image }}
       volumes: ${{ fromJson(inputs.container_volumes) }}

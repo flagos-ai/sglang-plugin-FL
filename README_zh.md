@@ -64,8 +64,9 @@ SGLang 的推理引擎依赖 NVIDIA 专有组件：flashinfer 用于 attention�
 | Python | 3.12 |
 | CUDA runtime | 13.0 |
 
-上表是当前 **NVIDIA CUDA** 目标环境。MUSA 与 Ascend 镜像暂时分别固定在
-SGLang v0.5.12 和 v0.5.11，等待各自的专项升级。
+上表是当前 **NVIDIA CUDA** 目标环境。MUSA CI 使用 SGLang v0.5.18 和厂商
+Torch 2.9.0，构建方式见 [MUSA empty 容器配置](docker/mthreads/empty-0.5.18.containerfile)。
+Ascend 镜像仍固定在 v0.5.11。
 
 已验证的 H100 环境会卸载随 PyTorch 安装的 Triton 包，改用 FlagTree 0.6.2a1
 提供 Triton 3.6 兼容编译器；已验证的 FlagGems master 快照可以在 H100 上接管

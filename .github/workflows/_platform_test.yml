@@ -60,6 +60,9 @@ jobs:
         run: pip install pyyaml
       - id: load
         run: python .github/scripts/load_config.py --platform ${{ inputs.platform }}
+      - name: Check MUSA GPU selector
+        if: inputs.platform == 'musa'
+        run: python -m unittest discover -s .github/scripts/musa -p 'test_*.py'
       - id: changes
         name: Detect changed files (PR only)
         run: |
@@ -88,6 +91,8 @@ jobs:
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
+      # Include cold initialization of the vendor image in the job timeout.
+      timeout: ${{ inputs.platform == 'musa' && 180 || 30 }}
 
   functional:
     needs: [setup, unit]
@@ -98,12 +103,15 @@ jobs:
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
+      timeout: ${{ inputs.platform == 'musa' && 180 || 15 }}
 
   e2e:
     needs: [setup, functional]
     if: needs.setup.outputs.e2e_matrix != '[]'
     strategy:
       fail-fast: false
+      # MUSA model groups share the TP4 runner pool; keep their allocation serial.
+      max-parallel: ${{ inputs.platform == 'musa' && 1 || 256 }}
       matrix:
         test: ${{ fromJson(needs.setup.outputs.e2e_matrix) }}
     uses: ./.github/workflows/_e2e_test.yml
@@ -116,7 +124,7 @@ jobs:
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
-      timeout: ${{ matrix.test.timeout || 60 }}
+      timeout: ${{ inputs.platform == 'musa' && 180 || matrix.test.timeout || 60 }}
 
   benchmark:
     needs: [setup, e2e]
@@ -127,7 +135,7 @@ jobs:
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
-      timeout: 30
+      timeout: ${{ inputs.platform == 'musa' && 180 || 30 }}
 
   notify:
     needs: [unit, functional, e2e, benchmark]

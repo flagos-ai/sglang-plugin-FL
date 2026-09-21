@@ -33,6 +33,8 @@ engine_overrides:
       page_size: 1
     4b_tp2:
       page_size: 1
+      # Keep non-greedy smoke sampling reproducible across fresh engines.
+      random_seed: 42
   qwen3_6:
     27b_tp4_nograph:
       page_size: 1
@@ -56,22 +58,10 @@ device_overrides: {}
 # Test cases whose model name contains any of these strings will be skipped.
 unsupported_features: []
 
-# Default environment variables for this platform.
-# tests/run.py applies these before invoking pytest, but existing user-provided
-# environment variables are preserved.
-#
-# TORCH_COMPILE_DISABLE=1 and SGLANG_USE_MUSA_FUSED_KERNEL=1 are already set in the
-# image (docker/mthreads/containerfile): torch_musa's inductor backend is incompatible
-# with torch 2.7.1, so MUSA runs enforce_eager. SGLANG_FL_FLAGOS_BLACKLIST: FlagGems v5.3.1's
-# `mul` op recurses infinitely on MUSA (mul -> mul_broadcast_func -> mul), mirroring the
-# ascend blacklist; blacklisting it falls back to torch_musa's native mul. FlagGems v5.3.1's
-# `sort` op deadlocks under TP2 in the non-greedy (top_p) sampling path -- torch.sort
-# desyncs the two TP ranks so the following collective (token broadcast / next-layer
-# all-reduce) hangs; blacklisting it falls back to torch_musa's native sort. TP1 is
-# unaffected (no inter-rank collective), as is greedy/argmax decode (no sort). Add more
-# ops here if other FlagGems ops misbehave on MUSA during bring-up.
-env_defaults:
-  SGLANG_FL_FLAGOS_BLACKLIST: "mul,sort"
+# Keep test-specific environment overrides empty so CI exercises the same MUSA
+# FlagGems blacklist as users. The authoritative list lives in
+# sglang_fl/dispatch/config/musa.yaml.
+env_defaults: {}
 
 # ---- Device-specific test configurations ------------------------------------
 s5000:
