@@ -81,6 +81,22 @@ def register_builtins(registry) -> None:
             priority=BackendPriority.DEFAULT,
         ),
         OpImpl(
+            op_name="mhc_pre",
+            impl_id="default.flagos",
+            kind=BackendImplKind.DEFAULT,
+            fn=_bind_is_available(backend.mhc_pre, backend.is_mhc_available),
+            vendor=None,
+            priority=BackendPriority.DEFAULT,
+        ),
+        OpImpl(
+            op_name="mhc_post",
+            impl_id="default.flagos",
+            kind=BackendImplKind.DEFAULT,
+            fn=_bind_is_available(backend.mhc_post, backend.is_mhc_available),
+            vendor=None,
+            priority=BackendPriority.DEFAULT,
+        ),
+        OpImpl(
             op_name="fused_recurrent_gated_delta_rule",
             impl_id="default.flagos",
             kind=BackendImplKind.DEFAULT,

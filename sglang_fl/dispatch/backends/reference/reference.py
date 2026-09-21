@@ -127,3 +127,13 @@ class ReferenceBackend(Backend):
         from .impl.mrotary_embedding import mrotary_embedding_torch
 
         return mrotary_embedding_torch(obj, positions, query, key)
+
+    def mhc_pre(self, *args, **kwargs):
+        from .impl.mhc import mhc_pre_torch
+
+        return mhc_pre_torch(*args, **kwargs)
+
+    def mhc_post(self, *args, **kwargs):
+        from .impl.mhc import mhc_post_torch
+
+        return mhc_post_torch(*args, **kwargs)
