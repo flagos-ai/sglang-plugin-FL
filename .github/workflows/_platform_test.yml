@@ -92,7 +92,7 @@ jobs:
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
       # Include cold initialization of the vendor image in the job timeout.
-      timeout: ${{ inputs.platform == 'musa' && 180 || 30 }}
+      timeout: ${{ inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 90 || 30 }}
 
   functional:
     needs: [setup, unit]
@@ -103,15 +103,16 @@ jobs:
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
-      timeout: ${{ inputs.platform == 'musa' && 180 || 15 }}
+      timeout: ${{ inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 60 || 15 }}
 
   e2e:
     needs: [setup, functional]
     if: needs.setup.outputs.e2e_matrix != '[]'
     strategy:
       fail-fast: false
-      # MUSA model groups share the TP4 runner pool; keep their allocation serial.
-      max-parallel: ${{ inputs.platform == 'musa' && 1 || 256 }}
+      # MUSA and Ascend model groups use fixed TP4 device allocations on their
+      # self-hosted pools; keep each platform's E2E groups serial.
+      max-parallel: ${{ inputs.platform == 'musa' && 1 || inputs.platform == 'ascend' && 1 || 256 }}
       matrix:
         test: ${{ fromJson(needs.setup.outputs.e2e_matrix) }}
     uses: ./.github/workflows/_e2e_test.yml
@@ -124,7 +125,7 @@ jobs:
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
-      timeout: ${{ inputs.platform == 'musa' && 180 || matrix.test.timeout || 60 }}
+      timeout: ${{ inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 120 || matrix.test.timeout || 60 }}
 
   benchmark:
     needs: [setup, e2e]
@@ -135,7 +136,7 @@ jobs:
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
-      timeout: ${{ inputs.platform == 'musa' && 180 || 30 }}
+      timeout: ${{ inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 60 || 30 }}
 
   notify:
     needs: [unit, functional, e2e, benchmark]

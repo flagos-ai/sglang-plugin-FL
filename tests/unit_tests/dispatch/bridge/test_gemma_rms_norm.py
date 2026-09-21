@@ -49,3 +49,19 @@ def test_gemma_rms_norm_bridge_merges_post_residual_addition(monkeypatch) -> Non
     assert op_obj is obj
     assert op_x is x
     torch.testing.assert_close(op_residual, residual + post)
+
+
+def test_gemma_rms_norm_bridge_ignores_post_without_residual(monkeypatch) -> None:
+    obj = SimpleNamespace()
+    x = torch.randn(2, 4)
+    post = torch.randn(2, 4)
+    calls = []
+
+    monkeypatch.setattr(
+        bridge,
+        "call_op",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or "ok",
+    )
+
+    assert bridge.gemma_rms_norm_bridge(obj, x, post_residual_addition=post) == "ok"
+    assert calls == [(("gemma_rms_norm", obj, x, None), {})]

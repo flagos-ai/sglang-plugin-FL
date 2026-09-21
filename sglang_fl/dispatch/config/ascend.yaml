@@ -15,7 +15,21 @@
 # SGLang-FL Dispatch Configuration for Ascend NPU
 prefer: flagos
 
-# FlagGems tag: v5.3.0 (host image docker/ascend/containerfile builds v5.3.0)
+# Qwen3.6 policy validated for the SGLang 0.5.18 / CANN 8.5 runtime. Native
+# SGLang NPU implementations are exposed through the vendor adapters for the
+# version-sensitive routing, norm, and MoE contracts. Qwen3.6 decode uses the
+# native fused-sigmoid update. The generic fused-recurrent function is left on
+# SGLang's native path because FlagGems v5.3.0 exposes a different inplace KxV
+# state contract and cannot safely implement SGLang v0.5.18's VxK API.
+op_backends:
+  silu_and_mul: [flagos, vendor, reference]
+  mrotary_embedding: [flagos, vendor, reference]
+  topk: [vendor, flagos, reference]
+  gemma_rms_norm: [vendor, flagos, reference]
+  fused_moe: [vendor, flagos, reference]
+  chunk_gated_delta_rule: [vendor, flagos, reference]
+
+# FlagGems tag: v5.3.0 (see docker/ascend/empty-0.5.18.containerfile)
 #
 # ADDITIVE over the #55 baseline (origin/main flagos_blacklist): every op main
 # blacklists is kept; we only ADD on top. Nothing is removed relative to main,
@@ -45,10 +59,9 @@ flagos_blacklist:
   - true_divide_
   - addmm
 
-# OOT dispatch blacklist (sglang op CLASS names, not ATen op names): none needed.
-# MRotaryEmbedding was listed pre-verification but confirmed UNNECESSARY: with
-# attention_backend="ascend", the flagos mrotary path produces correct output
-# (Qwen3.6-27B verified 2026-08-07: "50"/"Paris" + VL all correct). The earlier
-# "5254" was caused by the missing attention_backend, NOT by flagos mrotary.
-# Do NOT re-add MRotaryEmbedding here without first re-checking attention_backend.
-# (When this key is absent the plugin defaults to oot_blacklist = [].)
+# OOT dispatch blacklist (SGLang op class names, not ATen op names): none by
+# default. Keep MRotaryEmbedding enabled so the 0.5.18 acceptance matrix tests
+# the configured FlagGems-first path together with attention_backend="ascend".
+# Any rollback discovered during 910C validation must be recorded as an explicit
+# policy change rather than silently skipped here. When this key is absent the
+# plugin defaults to oot_blacklist = [].

@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Ascend TopK operator implementation.
-# Delegates to sglang's fused_topk_npu (hardware_backend/npu/moe/topk.py).
+"""SGLang 0.5.18 Ascend TopK adapter."""
 
 from __future__ import annotations
 
@@ -30,14 +29,16 @@ def topk_ascend(
     num_token_non_padded: Optional[torch.Tensor] = None,
     expert_location_dispatch_info=None,
 ):
-    
-    from sglang.srt.hardware_backend.npu.moe.topk import fused_topk_npu
+    """Delegate to the native NPU method to retain 0.5.18 routing semantics."""
 
-    return fused_topk_npu(
-        hidden_states=hidden_states,
-        router_logits=router_logits,
-        topk_config=obj.topk_config,
+    forward_npu = getattr(obj, "forward_npu", None)
+    if forward_npu is None:
+        raise RuntimeError(
+            "SGLang 0.5.18 TopK.forward_npu is required by the Ascend adapter"
+        )
+    return forward_npu(
+        hidden_states,
+        router_logits,
         num_token_non_padded=num_token_non_padded,
         expert_location_dispatch_info=expert_location_dispatch_info,
-        layer_id=obj.layer_id,
     )

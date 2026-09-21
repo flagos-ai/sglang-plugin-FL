@@ -9,7 +9,8 @@ platforms:
   cuda:
     enabled: true
   ascend:
-    # Temporarily disabled until the dedicated SGLang 0.5.18 adaptation is merged.
+    # Enable only after empty-0.5.18.containerfile has been built on ARM64,
+    # validated on 910C, pushed, and ascend.yml is pinned to its real digest.
     enabled: false
   musa:
     enabled: true

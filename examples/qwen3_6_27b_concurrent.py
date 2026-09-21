@@ -16,7 +16,7 @@ Modes:
 
 Environment variables:
   MODEL_PATH       Model path (default: /models/Qwen3.6-27B)
-  TP_SIZE          Tensor parallelism (default: 1)
+  TP_SIZE          Tensor parallelism (default: 4 on Ascend/TXDA, otherwise 1)
   MAX_TOKENS       Max generation tokens for text (default: 256)
   CONCURRENT_N     Concurrent request count (default: 16)
   IMAGE_DIR        Test image directory (default: examples/test_images/)
@@ -74,7 +74,10 @@ elif _is_npu:
 elif _is_txda:
     # ─── Early stub-module injection ─────────────────────────────────────────
     try:
-        from sglang_fl.dispatch.backends.vendor.tsingmicro.patches.platform_stubs import patch as _patch_stubs
+        from sglang_fl.dispatch.backends.vendor.tsingmicro.patches.platform_stubs import (
+            patch as _patch_stubs,
+        )
+
         _patch_stubs()
     except Exception:
         pass
@@ -411,12 +414,12 @@ def _check_images():
         str(IMAGE_DIR / c["image"])
         for c in VL_CASES
         if not (IMAGE_DIR / c["image"]).is_file()
+        or (IMAGE_DIR / c["image"]).stat().st_size == 0
     ]
     if missing:
-        print("ERROR: Missing test images:")
+        print("ERROR: Missing or empty test images:")
         for m in missing:
             print(f"  - {m}")
-        print(f"\nRun: python {IMAGE_DIR / 'generate.py'}")
         sys.exit(1)
 
 

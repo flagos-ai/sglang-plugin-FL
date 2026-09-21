@@ -67,10 +67,10 @@ unsupported_features: []
 # Default environment variables for this platform.
 # tests/run.py applies these before invoking pytest (os.environ.setdefault).
 #
-# The op/OOT blacklists are intentionally NOT set here. The authoritative lists
-# live in sglang_fl/dispatch/config/ascend.yaml (auto-loaded by the plugin when
-# torch.npu.is_available()); setting them as env would override that file, since
-# run.py setdefault lets a non-empty env win. Keep this empty so the config applies.
+# The op policy and blacklists are intentionally NOT set here. The authoritative
+# 0.5.18 Qwen3.6 policy lives in sglang_fl/dispatch/config/ascend.yaml
+# (auto-loaded when torch.npu.is_available()); environment values would override
+# that file. Keep this empty so CI exercises the shipped defaults.
 env_defaults:
   # NOTE: do NOT re-add ASCEND_LAUNCH_BLOCKING=1 casually. Sync mode forces eager
   # kernel compile and triggers "ParseDynamicKernels fail /

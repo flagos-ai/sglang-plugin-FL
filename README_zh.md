@@ -66,7 +66,10 @@ SGLang 的推理引擎依赖 NVIDIA 专有组件：flashinfer 用于 attention�
 
 上表是当前 **NVIDIA CUDA** 目标环境。MUSA CI 使用 SGLang v0.5.18 和厂商
 Torch 2.9.0，构建方式见 [MUSA empty 容器配置](docker/mthreads/empty-0.5.18.containerfile)。
-Ascend 镜像仍固定在 v0.5.11。
+Ascend 目标也已升级到 CANN 8.5 / torch_npu 2.8 empty runtime 上的 SGLang
+v0.5.18；安装、运行和验收步骤见
+[Ascend 910C v0.5.18 使用与验收指南](docs/ascend-910c-sglang-0.5.18.md)，
+最终真机验收状态以该指南中的记录为准。
 
 已验证的 H100 环境会卸载随 PyTorch 安装的 Triton 包，改用 FlagTree 0.6.2a1
 提供 Triton 3.6 兼容编译器；已验证的 FlagGems master 快照可以在 H100 上接管

@@ -973,7 +973,32 @@ def load_plugin():
         # Patch FLA functions to use dispatch mechanism
         from sglang_fl.dispatch.fla_patch import patch_fla_functions
 
-        patch_fla_functions()
+        fla_excluded_ops = ()
+        fla_excluded_gdn_ops = ()
+        from sglang_fl.utils import get_device_info
+
+        device_info = get_device_info()
+        if device_info is not None and device_info.vendor_name == "ascend":
+            # FlagGems v5.3.0's generic recurrent kernel uses a vLLM-style
+            # inplace KxV state contract.  SGLang v0.5.18 exposes a VxK public
+            # contract, while its actual Ascend GDN decode path uses the native
+            # fused-sigmoid update.  Keep both recurrent entry points native.
+            fla_excluded_ops = (
+                "fused_recurrent_gated_delta_rule",
+                "fused_recurrent_gated_delta_rule_packed_decode",
+            )
+            # gdn_triton's NPU chunk alias deliberately returns the final state
+            # so AscendGDNAttnBackend can write it back to the cache.  Its public
+            # counterpart returns None in that tuple slot.  Do not collapse
+            # these two contracts by overwriting the internal aliases.
+            fla_excluded_gdn_ops = (
+                "chunk_gated_delta_rule",
+                "fused_recurrent_gated_delta_rule_packed_decode",
+            )
+        patch_fla_functions(
+            excluded_ops=fla_excluded_ops,
+            excluded_gdn_ops=fla_excluded_gdn_ops,
+        )
 
         if legacy_fused_op_dispatch:
             # MUSA's pinned SGLang rewrites RotaryEmbedding._forward_method after

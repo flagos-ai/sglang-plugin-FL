@@ -1,5 +1,6 @@
 # CI workflow for the SGLang 0.5.18 development line.
-# NVIDIA and MUSA are enabled; the other backends remain temporarily disabled.
+# NVIDIA and MUSA are enabled. Ascend wiring is staged behind the image-release
+# gate in platforms.yml; T-Head remains temporarily disabled.
 name: CI
 
 on:
@@ -12,7 +13,6 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
-      - "examples/**"
       - "LICENSE"
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/PULL_REQUEST_TEMPLATE.md"
@@ -79,7 +79,8 @@ jobs:
       platform: cuda
     secrets: inherit
 
-  # Retained for the upcoming Ascend 0.5.18 adaptation.
+  # Ascend uses the CANN 8.5 / torch_npu 2.8 empty runtime upgraded to SGLang
+  # 0.5.18. Discovery enables this job only after its published image is pinned.
   test-ascend:
     needs: discover
     if: contains(fromJson(needs.discover.outputs.platforms), 'ascend')

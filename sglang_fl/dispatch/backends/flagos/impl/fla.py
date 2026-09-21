@@ -13,7 +13,7 @@ def fused_recurrent_gated_delta_rule_flagos(
     beta: torch.Tensor,
     scale: float,
     initial_state: Optional[torch.Tensor] = None,
-    output_final_state: bool = True,
+    output_final_state: bool = False,
     cu_seqlens: Optional[torch.LongTensor] = None,
     ssm_state_indices: Optional[torch.Tensor] = None,
     num_accepted_tokens: Optional[torch.Tensor] = None,

@@ -14,7 +14,7 @@ Usage:
 
 Environment variables:
   MODEL_PATH    Model path (default: /models/Qwen3.6-27B)
-  TP_SIZE       Tensor parallelism (default: 1)
+  TP_SIZE       Tensor parallelism (default: 4 on Ascend/TXDA, otherwise 1)
   MAX_TOKENS    Max generation tokens (default: 256)
 """
 
@@ -26,10 +26,30 @@ import time
 
 import torch
 
+# ─── Platform detection ───────────────────────────────────────────────────────
+
+_is_musa = hasattr(torch, "musa") and torch.musa.is_available()
+_is_npu = hasattr(torch, "npu") and torch.npu.is_available()
+_is_txda = hasattr(torch, "txda") and torch.txda.is_available()
+_is_corex = hasattr(torch, "corex") and torch.cuda.is_available()
+_is_hcu = hasattr(torch, "__hcu_version__") and torch.cuda.is_available()
+
+# These settings must be present before importing sglang.
+if _is_npu:
+    os.environ.setdefault("SGLANG_ENABLE_OVERLAP_PLAN_STREAM", "0")
+    os.environ.setdefault("SGLANG_ENABLE_SPEC_V2", "1")
+    os.environ.setdefault("HCCL_BUFFSIZE", "2400")
+    os.environ.setdefault("SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK", "128")
+
+if _is_txda:
+    os.environ.setdefault("SGLANG_FL_TIMER_ENABLE", "1")
+    os.environ.setdefault("SGLANG_REQ_WAITING_TIMEOUT", "-1")
+    os.environ.setdefault("SGLANG_REQ_RUNNING_TIMEOUT", "-1")
+
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-27B")
-TP_SIZE = int(os.environ.get("TP_SIZE", "1"))
+TP_SIZE = int(os.environ.get("TP_SIZE", "4" if _is_npu or _is_txda else "1"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "256"))
 
 # ─── Diverse prompt set (covers different generation patterns) ────────────────
@@ -142,6 +162,63 @@ def _piecewise_graph_kwargs(disabled: bool):
     return {"disable_piecewise_cuda_graph": True}
 
 
+def _platform_engine_kwargs() -> dict:
+    """Return device-specific Engine arguments without CUDA assumptions."""
+    if _is_musa:
+        return {"page_size": 1}
+    if _is_npu:
+        return {
+            "attention_backend": "ascend",
+            "device": "npu",
+            "dtype": "bfloat16",
+        }
+    if _is_txda:
+        try:
+            from sglang_fl.dispatch.backends.vendor.tsingmicro.patches.platform_stubs import (
+                patch as patch_platform_stubs,
+            )
+
+            patch_platform_stubs()
+        except Exception:
+            pass
+        return {
+            "device": "txda",
+            "dtype": "bfloat16",
+            "watchdog_timeout": 3600,
+            "mm_attention_backend": "triton_attn",
+            "disable_fast_image_processor": True,
+            "context_length": 8192,
+            "chunked_prefill_size": 256,
+        }
+    if _is_corex:
+        return {
+            "attention_backend": "triton",
+            "watchdog_timeout": 3600,
+            "cuda_graph_max_bs": 16,
+        }
+    if _is_hcu:
+        return {
+            "dtype": "bfloat16",
+            "kv_cache_dtype": "bfloat16",
+            "page_size": 64,
+            "enable_breakable_cuda_graph": False,
+        }
+    return {}
+
+
+def _empty_device_cache() -> None:
+    """Release cached accelerator memory using the active torch backend."""
+    for backend_name in ("npu", "musa", "txda", "cuda"):
+        backend = getattr(torch, backend_name, None)
+        if backend is None or not hasattr(backend, "empty_cache"):
+            continue
+        is_available = getattr(backend, "is_available", None)
+        if callable(is_available) and not is_available():
+            continue
+        backend.empty_cache()
+        return
+
+
 def _make_mtp_engine(
     disable_cuda_graph=False,
     disable_piecewise_cuda_graph=False,
@@ -162,6 +239,7 @@ def _make_mtp_engine(
         speculative_num_steps=3,
         speculative_eagle_topk=1,
         speculative_num_draft_tokens=4,
+        **_platform_engine_kwargs(),
         **_piecewise_graph_kwargs(disable_piecewise_cuda_graph),
     )
 
@@ -174,12 +252,6 @@ def _make_baseline_engine(
     """Create engine without MTP (standard autoregressive)."""
     from sglang.srt.entrypoints.engine import Engine
 
-    # Match the MUSA offline examples. With synchronous scheduling, the
-    # hybrid Mamba cache requires page_size=1 when its extra buffer is off.
-    platform_kwargs = {}
-    if hasattr(torch, "musa") and torch.musa.is_available():
-        platform_kwargs["page_size"] = 1
-
     return Engine(
         model_path=MODEL_PATH,
         tp_size=TP_SIZE,
@@ -190,7 +262,7 @@ def _make_baseline_engine(
         # MTP uses fresh prefixes. Reusing hybrid states only in the baseline
         # changes prefill shapes and rounding, confounding greedy comparison.
         disable_radix_cache=True,
-        **platform_kwargs,
+        **_platform_engine_kwargs(),
         **_piecewise_graph_kwargs(disable_piecewise_cuda_graph),
     )
 
@@ -265,7 +337,11 @@ def main():
     max_tokens = args.max_tokens
     disable_cg = args.disable_cuda_graph
     disable_pcg = args.disable_piecewise_cuda_graph
-    mode_str = "eager" if disable_cg else ("cuda_graph" if not disable_pcg else "cuda_graph(no piecewise)")
+    mode_str = (
+        "eager"
+        if disable_cg
+        else ("cuda_graph" if not disable_pcg else "cuda_graph(no piecewise)")
+    )
     print("=" * 70)
     print("  Qwen3.6-27B MTP (Speculative Decoding) Validation")
     print("=" * 70)
@@ -330,7 +406,7 @@ def main():
 
     mtp_engine.shutdown()
     del mtp_engine
-    torch.cuda.empty_cache()
+    _empty_device_cache()
 
     # ─── Phase 2: Baseline (optional) ────────────────────────────────────────
     baseline_results = None
@@ -363,7 +439,7 @@ def main():
 
         baseline_engine.shutdown()
         del baseline_engine
-        torch.cuda.empty_cache()
+        _empty_device_cache()
 
     # ─── Phase 3: Validation ──────────────────────────────────────────────────
     print("\nPhase 3: Validation")

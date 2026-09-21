@@ -10,7 +10,7 @@ Usage:
 
 Environment variables:
   MODEL_PATH    Model path (default: /models/Qwen3.6-27B)
-  TP_SIZE       Tensor parallelism (default: 1)
+  TP_SIZE       Tensor parallelism (default: 4 on Ascend/TXDA, otherwise 1)
   MAX_TOKENS    Max generation tokens (default: 10)
   IMAGE_DIR     Test image directory (default: examples/test_images/ next to this file)
 """
@@ -64,7 +64,10 @@ elif _is_npu:
 elif _is_txda:
     # ─── Early stub-module injection ─────────────────────────────────────────────
     try:
-        from sglang_fl.dispatch.backends.vendor.tsingmicro.patches.platform_stubs import patch as _patch_stubs
+        from sglang_fl.dispatch.backends.vendor.tsingmicro.patches.platform_stubs import (
+            patch as _patch_stubs,
+        )
+
         _patch_stubs()
     except Exception:
         pass
@@ -220,10 +223,10 @@ def run_engine():
     vl_outputs = []
     for case in VL_CASES:
         img_path = IMAGE_DIR / case["image"]
-        if not img_path.is_file():
-            print(f"  SKIP (missing image): {img_path}")
-            vl_outputs.append(None)
-            continue
+        if not img_path.is_file() or img_path.stat().st_size == 0:
+            raise FileNotFoundError(
+                f"Required test image is missing or empty: {img_path}"
+            )
         uri = _image_uri(case["image"])
         result = engine.generate(
             prompt=_vl_prompt(case["question"], uri),
@@ -255,8 +258,6 @@ def validate(text_outputs, vl_outputs):
 
     # VL validation
     for case, text in zip(VL_CASES, vl_outputs):
-        if text is None:
-            continue
         assert len(text) > 0, f"Empty output for VL case: {case['image']}"
         lower = text.lower()
         matched = any(pat.lower() in lower for pat in case["expected"])
@@ -268,6 +269,20 @@ def validate(text_outputs, vl_outputs):
     print("\nAll validations passed.")
 
 
+def _check_images():
+    missing = [
+        str(IMAGE_DIR / case["image"])
+        for case in VL_CASES
+        if not (IMAGE_DIR / case["image"]).is_file()
+        or (IMAGE_DIR / case["image"]).stat().st_size == 0
+    ]
+    if missing:
+        print("ERROR: Missing or empty test images:")
+        for path in missing:
+            print(f"  - {path}")
+        sys.exit(1)
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -276,5 +291,6 @@ if __name__ == "__main__":
         print("Set MODEL_PATH to the correct path.")
         sys.exit(1)
 
+    _check_images()
     text_outputs, vl_outputs = run_engine()
     validate(text_outputs, vl_outputs)

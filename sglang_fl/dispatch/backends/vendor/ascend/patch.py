@@ -1,16 +1,15 @@
 """Vendor monkey-patches on sglang internals for Ascend / NPU — entrypoint.
 
-These replace direct edits to sglang source that were previously required on
-Huawei NPU:
+These replace the one scheduler source edit still required on Huawei NPU:
   - scheduler_pp: PP send/recv ordering + stream syncs (HCCL deadlock fix)
-  - attention_registry: defer CUDA-only linear-attn backend imports on NPU
-  - qwen_vl_processor: transformers-version-compatible Qwen-VL preprocess
+
+SGLang v0.5.18 already contains the current NPU attention-wrapper and Qwen-VL
+processor implementations. Keeping the old plugin replacements would discard
+new v0.5.18 behavior, so those replacements are intentionally not applied.
 """
 
 import logging
 
-from .patches.attention_registry import patch_attn_backend_wrapper
-from .patches.qwen_vl_processor import patch_qwen_vl_processor
 from .patches.scheduler_pp import (
     patch_pp_launch_batch_sync,
     patch_pp_send_recv_order,
@@ -25,11 +24,9 @@ def apply_ascend_patches() -> None:
     global _patches_applied
     if _patches_applied:
         return
-    _patches_applied = True
-
     patch_pp_send_recv_order()
     patch_pp_launch_batch_sync()
-    patch_attn_backend_wrapper()
-    patch_qwen_vl_processor()
+    _patches_applied = True
+
 
 apply_ascend_patches()

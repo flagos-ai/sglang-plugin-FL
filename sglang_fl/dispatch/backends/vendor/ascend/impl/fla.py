@@ -19,7 +19,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 
@@ -51,6 +51,10 @@ def chunk_gated_delta_rule_ascend(
         beta=beta,
         scale=scale,
         initial_state=initial_state,
+        # SGLang 0.5.18's public chunk function always returns ``None`` for
+        # the final state. The 2026.5.1 NPU wheel defaults this flag to True,
+        # so it must be explicit to preserve the upstream return contract.
+        output_final_state=False,
         cu_seqlens=cu_seqlens,
         head_first=head_first,
         use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
