@@ -25,3 +25,14 @@ flagos_blacklist:
   - _unique2
   - unique_dim
   - unique_consecutive
+  # On MTT S5000, FlagGems' rank-specialized pointwise copy kernels dominate
+  # long-prefill traces.  The native MUSA path is faster after its one-time
+  # shape specialization and also improves the graph-captured decode path.
+  - copy_
+  # FlagGems' generated index-put kernel is especially slow for the large
+  # prefill KV-cache writes used by Qwen3.6 on S5000.  Keep all three ATen
+  # entry points on the native MUSA implementation so indexing syntax,
+  # index_put_(), and the internal unsafe overload follow one policy.
+  - index_put
+  - index_put_
+  - _index_put_impl_

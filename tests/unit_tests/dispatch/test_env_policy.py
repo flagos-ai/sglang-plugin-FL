@@ -99,16 +99,14 @@ class TestEnvVarStrict:
             policy = pm.get_policy()
             assert policy.strict is False
 
-    def test_strict_empty_uses_platform_default(self):
-        """When SGLANG_FL_STRICT is not set, strict comes from platform config or code default."""
+    def test_strict_empty_uses_code_default(self):
+        """When SGLANG_FL_STRICT is not set, strict falls back to the code default."""
         env = {k: v for k, v in os.environ.items() if k != "SGLANG_FL_STRICT"}
         with patch.dict(os.environ, env, clear=True):
             pm = PolicyManager.get_instance()
             pm.reset_global_policy()
             policy = pm.get_policy()
-            # strict value depends on platform config (nvidia.yaml has no strict → False)
-            # Just verify it's a bool and doesn't crash
-            assert isinstance(policy.strict, bool)
+            assert policy.strict is False
 
 
 class TestEnvVarDenyVendors:

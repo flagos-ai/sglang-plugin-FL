@@ -186,8 +186,8 @@ class TestBuiltinOpsRegistration:
         with patch("importlib.import_module", side_effect=ImportError("no module")):
             # Should not raise
             _register_vendor_backends(registry)
-        # Registry may be empty but no crash
-        assert isinstance(registry.list_operators(), list)
+        # Every vendor import failed, so nothing was registered.
+        assert registry.list_operators() == []
 
 
 class TestFullPipeline:

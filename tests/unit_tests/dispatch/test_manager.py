@@ -286,8 +286,9 @@ class TestOpManagerCall:
 class TestOpManagerForkSafety:
     def test_reset_after_fork(self, populated_manager):
         # Simulate fork by calling _reset_after_fork
-        populated_manager.resolve("silu_and_mul")  # Populate cache
+        populated_manager.call("silu_and_mul")  # Populate cache and _called_ops
         assert len(populated_manager._dispatch_cache) > 0
+        assert populated_manager._called_ops
 
         populated_manager._reset_after_fork()
 

@@ -1,0 +1,38 @@
+--- a/mate/gdn_kernels/tilelang/gdn_prefill.py
++++ b/mate/gdn_kernels/tilelang/gdn_prefill.py
+@@ -201,7 +201,7 @@
+             scaled_k_is_ready = T.alloc_barrier(arrive_count=512)
+             vd_is_ready = T.alloc_barrier(arrive_count=128)
+             vd_is_free = T.alloc_barrier(arrive_count=512)
+-            h_is_ready = T.alloc_barrier(arrive_count=512)
++            h_is_ready = T.alloc_barrier(arrive_count=[512] * 2)
+             h_is_free = T.alloc_barrier(arrive_count=256)
+
+             b_bytes = 4 if b_dtype in (torch.float32, "float32") else 2
+@@ -215,7 +215,7 @@
+             with T.ws(0):
+                 w_local = T.alloc_local([4], accum_dtype)
+                 for i_s in T.serial(num_iters):
+-                    T.barrier_wait(h_is_ready, i_s % 2)
++                    T.barrier_wait(h_is_ready[i_s % 2], (i_s // 2) % 2)
+                     T.barrier_wait(k_is_ready[i_s % 2], consumer_phase(i_s))
+                     # U = K @ S
+                     T.gemm(
+@@ -286,7 +286,7 @@
+                     valid_seqs = T.min(seq_end_idx - store_left, block_S)
+
+                     T.barrier_wait(q_is_ready[i_s % 2], consumer_phase(i_s))
+-                    T.barrier_wait(h_is_ready, i_s % 2)
++                    T.barrier_wait(h_is_ready[i_s % 2], (i_s // 2) % 2)
+                     T.gemm(
+                         q_shared[i_s % 2, :, :],
+                         h_shared,
+@@ -344,7 +344,7 @@
+                     for j_k, j_v in T.Parallel(DK, DV):
+                         h_shared[j_k, j_v] = h_fragment[j_k, j_v]
+                     T.lma_wait()
+-                    T.barrier_arrive(h_is_ready)
++                    T.barrier_arrive(h_is_ready[i_s % 2])
+
+                     T.barrier_wait(q_is_ready[i_s % 2], consumer_phase(i_s))
+                     T.barrier_wait(k_is_ready[i_s % 2], consumer_phase(i_s))

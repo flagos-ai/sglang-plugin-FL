@@ -43,7 +43,7 @@ def mock_device_detector(monkeypatch):
             from sglang_fl.utils import get_device_info
 
             get_device_info.cache_clear()
-        except Exception:
+        except ImportError:
             pass
 
         fake_mod = types.ModuleType("flag_gems.runtime.backend.device")

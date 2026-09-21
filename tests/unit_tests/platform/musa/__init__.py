@@ -11,22 +11,3 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-# MUSA FusedMoE operator implementation.
-
-from __future__ import annotations
-
-import torch
-
-
-def fused_moe_musa(
-    obj,
-    layer: torch.nn.Module,
-    dispatch_output,
-):
-    from ..moe.dispatch import maybe_forward
-
-    candidate = maybe_forward(obj, layer, dispatch_output)
-    if candidate is not None:
-        return candidate
-    return obj.forward_musa(layer, dispatch_output)
