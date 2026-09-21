@@ -309,6 +309,7 @@ class OpManager:
                 if idx > 0:
                     with self._lock:
                         self._called_ops[op_name] = impl.impl_id
+                    self._write_dispatch_log(op_name, impl.impl_id)
                 return result
 
             except Exception as e:
