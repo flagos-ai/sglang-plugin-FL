@@ -14,6 +14,9 @@ import pytest
 _DRIVER_PATH = (
     Path(__file__).parents[2] / "benchmarks" / "benchmark_throughput_serve.py"
 )
+_SINGLE_NODE_SCRIPT = (
+    Path(__file__).parents[2] / "scripts" / "ascend" / "run_single_node_benchmark.sh"
+)
 _SPEC = importlib.util.spec_from_file_location(
     "ascend_benchmark_throughput_serve", _DRIVER_PATH
 )
@@ -73,3 +76,29 @@ def test_partial_or_inexact_run_fails(field: str, value: object) -> None:
 
     with pytest.raises(RuntimeError):
         _DRIVER.extract_and_validate_metrics(record, (1024, 1024, 64, 64))
+
+
+def test_single_node_entrypoint_preserves_fixed_benchmark_contract() -> None:
+    script = _SINGLE_NODE_SCRIPT.read_text(encoding="utf-8")
+
+    assert _DRIVER.RUNS == 4
+    assert _DRIVER.SKIP_FIRST == 1
+    assert _DRIVER.TEST_CASES == [
+        (1024, 1024, 64, 64),
+        (4096, 1024, 64, 64),
+        (16384, 1024, 64, 64),
+    ]
+    assert 'source "${SCRIPT_DIR}/acceptance_common.sh"' in script
+    assert "configure_performance_mode" in script
+    assert "require_npus 4" in script
+    assert "--tp-size 4" in script
+    assert "--pp-size 1" in script
+    assert "--nnodes 1" in script
+    assert '"${REPO_ROOT}/benchmarks/benchmark_throughput_serve.py"' in script
+    assert "setsid" in script
+    assert "trap stop_server EXIT" in script
+    assert 'kill -TERM -- "-${SERVER_PGID}"' in script
+    assert 'kill -KILL -- "-${SERVER_PGID}"' in script
+    assert 'run_benchmark_model qwen3_6_27b "${MODEL_27B_PATH}" 0' in script
+    assert 'run_benchmark_model qwen3_6_35b_a3b "${MODEL_35B_PATH}" 10' in script
+    assert "PASS: single-node TP=4 benchmark matrix completed" in script
