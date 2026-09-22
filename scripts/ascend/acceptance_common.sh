@@ -65,8 +65,15 @@ configure_ascend_common() {
   export USE_FLAGTUNE="${USE_FLAGTUNE:-0}"
   export SGLANG_SET_CPU_AFFINITY="${SGLANG_SET_CPU_AFFINITY:-1}"
   export GLOO_SOCKET_IFNAME="${GLOO_SOCKET_IFNAME:-lo}"
-  unset HCCL_HOST_SOCKET_PORT_RANGE || true
-  export HCCL_IF_BASE_PORT="${HCCL_IF_BASE_PORT:-52000}"
+  # Follow the upstream Ascend runner when the caller has not selected a
+  # HCCL port policy.  HOST/NPU ranges must be configured as a pair; an
+  # explicit range or legacy base port is job-owned and is never overwritten.
+  if [[ -z "${HCCL_HOST_SOCKET_PORT_RANGE+x}" \
+    && -z "${HCCL_NPU_SOCKET_PORT_RANGE+x}" \
+    && -z "${HCCL_IF_BASE_PORT+x}" ]]; then
+    export HCCL_HOST_SOCKET_PORT_RANGE=auto
+    export HCCL_NPU_SOCKET_PORT_RANGE=auto
+  fi
   export SGLANG_FL_WATCHDOG_DIAG="${SGLANG_FL_WATCHDOG_DIAG:-1}"
   export SGLANG_FL_DIST_BACKEND="${SGLANG_FL_DIST_BACKEND:-flagcx}"
   export FLAGCX_PATH="${FLAGCX_PATH:-/opt/FlagCX}"
@@ -185,6 +192,7 @@ write_environment_manifest() {
     printf 'HCCL_SOCKET_IFNAME=%s\n' "${HCCL_SOCKET_IFNAME:-<unset>}"
     printf 'GLOO_SOCKET_IFNAME=%s\n' "${GLOO_SOCKET_IFNAME:-<unset>}"
     printf 'HCCL_HOST_SOCKET_PORT_RANGE=%s\n' "${HCCL_HOST_SOCKET_PORT_RANGE:-<unset>}"
+    printf 'HCCL_NPU_SOCKET_PORT_RANGE=%s\n' "${HCCL_NPU_SOCKET_PORT_RANGE:-<unset>}"
     printf 'HCCL_IF_BASE_PORT=%s\n' "${HCCL_IF_BASE_PORT:-<unset>}"
     printf 'NCCL_SOCKET_IFNAME=%s\n' "${NCCL_SOCKET_IFNAME:-<unset>}"
     "${PYTHON_BIN}" -V

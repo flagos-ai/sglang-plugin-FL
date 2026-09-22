@@ -162,25 +162,33 @@ def test_ascend_single_node_entrypoints_default_gloo_to_loopback() -> None:
 
     for entrypoint in single_node_entrypoints:
         source = entrypoint.read_text(encoding="utf-8")
-        assert 'os.environ.pop("HCCL_HOST_SOCKET_PORT_RANGE", None)' in source
         assert 'os.environ.setdefault("GLOO_SOCKET_IFNAME", "lo")' in source
-        assert 'os.environ.setdefault("HCCL_IF_BASE_PORT", "52000")' in source
+        assert 'os.environ["HCCL_HOST_SOCKET_PORT_RANGE"] = "auto"' in source
+        assert 'os.environ["HCCL_NPU_SOCKET_PORT_RANGE"] = "auto"' in source
+        assert 'os.environ.pop("HCCL_HOST_SOCKET_PORT_RANGE", None)' not in source
+        assert 'os.environ.setdefault("HCCL_IF_BASE_PORT"' not in source
 
     common = (root / "scripts" / "ascend" / "acceptance_common.sh").read_text(
         encoding="utf-8"
     )
-    assert "unset HCCL_HOST_SOCKET_PORT_RANGE" in common
     assert 'GLOO_SOCKET_IFNAME="${GLOO_SOCKET_IFNAME:-lo}"' in common
-    assert 'HCCL_IF_BASE_PORT="${HCCL_IF_BASE_PORT:-52000}"' in common
+    assert "-z \"${HCCL_HOST_SOCKET_PORT_RANGE+x}\"" in common
+    assert "-z \"${HCCL_NPU_SOCKET_PORT_RANGE+x}\"" in common
+    assert "-z \"${HCCL_IF_BASE_PORT+x}\"" in common
+    assert "export HCCL_HOST_SOCKET_PORT_RANGE=auto" in common
+    assert "export HCCL_NPU_SOCKET_PORT_RANGE=auto" in common
     assert "HCCL_HOST_SOCKET_PORT_RANGE=%s" in common
+    assert "HCCL_NPU_SOCKET_PORT_RANGE=%s" in common
     assert 'export GLOO_SOCKET_IFNAME="${interface}"' in common
 
     for model in ("27b", "35b_a3b"):
         multinode = (examples / f"qwen3_6_{model}_multinode.py").read_text(
             encoding="utf-8"
         )
-        assert 'os.environ.pop("HCCL_HOST_SOCKET_PORT_RANGE", None)' in multinode
-        assert 'os.environ.setdefault("HCCL_IF_BASE_PORT", "52000")' in multinode
+        assert 'os.environ["HCCL_HOST_SOCKET_PORT_RANGE"] = "auto"' in multinode
+        assert 'os.environ["HCCL_NPU_SOCKET_PORT_RANGE"] = "auto"' in multinode
+        assert 'os.environ.pop("HCCL_HOST_SOCKET_PORT_RANGE", None)' not in multinode
+        assert 'os.environ.setdefault("HCCL_IF_BASE_PORT"' not in multinode
 
 
 def test_ascend_fla_patch_preserves_native_gdn_state_contract(monkeypatch) -> None:

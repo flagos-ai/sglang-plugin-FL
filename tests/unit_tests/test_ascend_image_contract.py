@@ -120,7 +120,9 @@ def test_ci_uses_the_ascend_runtime_without_privileged_mode() -> None:
     assert "ASCEND_VISIBLE_DEVICES=0,1,2,3" in options
     assert "ASCEND_RT_VISIBLE_DEVICES=0,1,2,3" in options
     assert "GLOO_SOCKET_IFNAME=lo" in options
-    assert "HCCL_IF_BASE_PORT=52000" in options
+    assert "HCCL_HOST_SOCKET_PORT_RANGE=auto" in options
+    assert "HCCL_NPU_SOCKET_PORT_RANGE=auto" in options
+    assert "HCCL_IF_BASE_PORT=" not in options
     assert "--privileged" not in options
     assert "--device /dev/" not in options
 
