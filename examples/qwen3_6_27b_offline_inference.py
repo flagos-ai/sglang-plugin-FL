@@ -31,7 +31,6 @@ _is_hcu = hasattr(torch, "__hcu_version__") and torch.cuda.is_available()
 # Must be set before importing sglang.
 if _is_npu:
     os.environ.setdefault("SGLANG_ENABLE_OVERLAP_PLAN_STREAM", "0")
-    os.environ.setdefault("SGLANG_ENABLE_SPEC_V2", "1")
     os.environ.setdefault("HCCL_BUFFSIZE", "2400")
     os.environ.setdefault("SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK", "128")
 

@@ -136,6 +136,19 @@ def test_ascend_qwen36_policy_uses_0518_native_contracts() -> None:
     assert "sum" not in config["flagos_blacklist"]
 
 
+def test_ascend_entrypoints_do_not_export_removed_spec_v2_toggle() -> None:
+    root = Path(__file__).parents[3]
+    entrypoints = [
+        root / "scripts" / "ascend" / "acceptance_common.sh",
+        *sorted((root / "examples").glob("qwen3_6_*.py")),
+    ]
+
+    for entrypoint in entrypoints:
+        assert "SGLANG_ENABLE_SPEC_V2" not in entrypoint.read_text(encoding="utf-8"), (
+            f"{entrypoint.relative_to(root)} exports the toggle removed by SGLang 0.5.18"
+        )
+
+
 def test_ascend_fla_patch_preserves_native_gdn_state_contract(monkeypatch) -> None:
     from sglang_fl.dispatch import fla_patch
     from sglang_fl.dispatch.bridge.fla_chunk import chunk_gated_delta_rule_bridge

@@ -69,7 +69,6 @@ configure_ascend_common() {
   export FLAGCX_PATH="${FLAGCX_PATH:-/opt/FlagCX}"
   export ASCEND_VISIBLE_DEVICES="${ASCEND_VISIBLE_DEVICES:-${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3}}"
   export ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-${ASCEND_VISIBLE_DEVICES}}"
-  export SGLANG_ENABLE_SPEC_V2="${SGLANG_ENABLE_SPEC_V2:-1}"
   export SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK="${SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK:-128}"
   export SGLANG_FL_PER_OP="${SGLANG_FL_PER_OP:-silu_and_mul=flagos;mrotary_embedding=flagos;topk=vendor;gemma_rms_norm=vendor;fused_moe=vendor;chunk_gated_delta_rule=vendor}"
   unset ASCEND_LAUNCH_BLOCKING || true

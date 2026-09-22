@@ -112,7 +112,6 @@ if _is_txda:
     os.environ.setdefault("SGLANG_REQ_RUNNING_TIMEOUT", "-1")
 if _is_npu:
     os.environ.setdefault("SGLANG_ENABLE_OVERLAP_PLAN_STREAM", "0")
-    os.environ.setdefault("SGLANG_ENABLE_SPEC_V2", "1")
     os.environ.setdefault("HCCL_BUFFSIZE", "2400")
     os.environ.setdefault("SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK", "128")
 elif _is_musa:
