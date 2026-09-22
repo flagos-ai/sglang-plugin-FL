@@ -12,6 +12,10 @@ Tests include:
 Usage:
   python qwen3_6_27b_mtp_inference.py [--skip-baseline] [--max-tokens N]
 
+On Ascend, the validated MTP path always uses eager, synchronous execution. The
+script therefore forces CUDA graph, piecewise CUDA graph, and overlap scheduling
+off even when the corresponding command-line switches are omitted.
+
 Environment variables:
   MODEL_PATH    Model path (default: /models/Qwen3.6-27B)
   TP_SIZE       Tensor parallelism (default: 4 on Ascend/TXDA, otherwise 1)
@@ -248,6 +252,25 @@ def _empty_device_cache() -> None:
             continue
         backend.empty_cache()
         return
+
+
+def _enforce_ascend_mtp_runtime_mode(args) -> None:
+    """Keep Ascend MTP inside the eager mode covered by the correctness gate."""
+    if not _is_npu:
+        return
+
+    if not (
+        args.disable_cuda_graph
+        and args.disable_piecewise_cuda_graph
+        and args.disable_overlap_schedule
+    ):
+        print(
+            "Ascend MTP requires the validated eager runtime mode; forcing "
+            "CUDA graphs and overlap scheduling off."
+        )
+    args.disable_cuda_graph = True
+    args.disable_piecewise_cuda_graph = True
+    args.disable_overlap_schedule = True
 
 
 def _make_mtp_engine(
@@ -740,19 +763,20 @@ def main():
     parser.add_argument(
         "--disable-cuda-graph",
         action="store_true",
-        help="Disable CUDA graph capture (default: enabled)",
+        help="Disable CUDA graph capture (always forced on Ascend MTP)",
     )
     parser.add_argument(
         "--disable-piecewise-cuda-graph",
         action="store_true",
-        help="Disable piecewise CUDA graph (default: enabled)",
+        help="Disable piecewise CUDA graph (always forced on Ascend MTP)",
     )
     parser.add_argument(
         "--disable-overlap-schedule",
         action="store_true",
-        help="Use synchronous scheduling for both MTP and baseline",
+        help="Use synchronous scheduling (always forced on Ascend MTP)",
     )
     args = parser.parse_args()
+    _enforce_ascend_mtp_runtime_mode(args)
 
     if not os.path.exists(MODEL_PATH):
         print(f"Model not found: {MODEL_PATH}")

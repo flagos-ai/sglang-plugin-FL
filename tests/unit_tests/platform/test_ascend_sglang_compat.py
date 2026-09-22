@@ -163,6 +163,25 @@ def test_ascend_mtp_correctness_uses_strict_semantic_gate() -> None:
     assert 'print("    SKIP: stats not available")' not in source
 
 
+def test_ascend_mtp_forces_validated_eager_runtime_mode(capsys) -> None:
+    root = Path(__file__).parents[3]
+    namespace = runpy.run_path(root / "examples" / "qwen3_6_27b_mtp_inference.py")
+    enforce = namespace["_enforce_ascend_mtp_runtime_mode"]
+    enforce.__globals__["_is_npu"] = True
+    args = SimpleNamespace(
+        disable_cuda_graph=False,
+        disable_piecewise_cuda_graph=False,
+        disable_overlap_schedule=False,
+    )
+
+    enforce(args)
+
+    assert args.disable_cuda_graph is True
+    assert args.disable_piecewise_cuda_graph is True
+    assert args.disable_overlap_schedule is True
+    assert "forcing CUDA graphs and overlap scheduling off" in capsys.readouterr().out
+
+
 def test_ascend_mtp_semantic_contracts_reject_superficial_matches() -> None:
     root = Path(__file__).parents[3]
     namespace = runpy.run_path(root / "examples" / "qwen3_6_27b_mtp_inference.py")
