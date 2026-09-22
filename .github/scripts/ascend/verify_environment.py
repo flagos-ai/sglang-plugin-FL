@@ -252,7 +252,7 @@ def _require_deep_ep_layout() -> None:
     extension = extensions[0]
     if not extension.is_symlink() or not extension.resolve().is_file():
         raise RuntimeError(
-            "deep-ep top-level extension must be a valid symlink: " f"{extension}"
+            f"deep-ep top-level extension must be a valid symlink: {extension}"
         )
     print(f"[ascend-env] deep-ep-extension={extension} -> {extension.resolve()}")
 
