@@ -59,5 +59,6 @@ container_options: >-
   --user root
   -e ASCEND_VISIBLE_DEVICES=0,1,2,3
   -e ASCEND_RT_VISIBLE_DEVICES=0,1,2,3
+  -e GLOO_SOCKET_IFNAME=lo
   -e HCCL_IF_BASE_PORT=52000
   --init

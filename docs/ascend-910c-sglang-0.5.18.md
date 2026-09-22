@@ -304,6 +304,12 @@ export SGLANG_FL_PER_OP='silu_and_mul=flagos;mrotary_embedding=flagos;topk=vendo
 [CANN 8.5 HCCL 文档](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/850/commlib/hcclug/hcclug_000090.html)
 预留所选范围，避免被临时端口分配占用。
 
+CANN 8.5 的 `HCCL_HOST_SOCKET_PORT_RANGE` 优先级高于
+`HCCL_IF_BASE_PORT`。为保证验收端口策略可复现，本文提供的 Ascend examples
+和验收入口会明确清除继承的 `HCCL_HOST_SOCKET_PORT_RANGE`，并在
+`environment.txt` 中将其记录为 `<unset>`。不要依赖父进程中的该变量覆盖验收
+端口；需要调整时应在同一拓扑的所有节点显式设置 `HCCL_IF_BASE_PORT`。
+
 ### 6.1 正确性模式
 
 单机和双机 examples 使用正确性模式：
@@ -314,8 +320,10 @@ HCCL_BUFFSIZE=2400
 HCCL_IF_BASE_PORT=52000
 ```
 
-单机入口还默认设置 `GLOO_SOCKET_IFNAME=lo`，避免容器 hostname 无法解析时的
-重复重试；双机总入口会用 `--business-iface` 指定的业务网卡覆盖该值。
+单机入口和 Ascend CI 容器还默认设置 `GLOO_SOCKET_IFNAME=lo`，将 Gloo
+数据面固定到回环接口；双机总入口会用 `--business-iface` 指定的业务网卡覆盖
+该值。PyTorch TCPStore 仍可能打印容器 hostname 反向解析告警；只要随后完成
+Gloo 连接且请求正常，该告警本身不代表验收失败。
 
 不要设置 `ASCEND_LAUNCH_BLOCKING=1`。同步 launch 会改变编译时机，并可能
 触发动态 kernel 编译失败。

@@ -791,6 +791,7 @@ if __name__ == "__main__":
     # Ensure network interfaces are set
     os.environ.setdefault("GLOO_SOCKET_IFNAME", "eth0")
     os.environ.setdefault("NCCL_SOCKET_IFNAME", "eth0")
+    os.environ.pop("HCCL_HOST_SOCKET_PORT_RANGE", None)
     os.environ.setdefault("HCCL_IF_BASE_PORT", "52000")
 
     if args.role == "master":
