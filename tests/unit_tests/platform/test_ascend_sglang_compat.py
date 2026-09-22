@@ -149,6 +149,28 @@ def test_ascend_entrypoints_do_not_export_removed_spec_v2_toggle() -> None:
         )
 
 
+def test_ascend_single_node_entrypoints_default_gloo_to_loopback() -> None:
+    root = Path(__file__).parents[3]
+    examples = root / "examples"
+    single_node_entrypoints = [
+        examples / "qwen3_6_27b_concurrent.py",
+        examples / "qwen3_6_27b_mtp_inference.py",
+        examples / "qwen3_6_27b_offline_inference.py",
+        examples / "qwen3_6_35b_a3b_concurrent.py",
+        examples / "qwen3_6_35b_a3b_offline_inference.py",
+    ]
+
+    for entrypoint in single_node_entrypoints:
+        source = entrypoint.read_text(encoding="utf-8")
+        assert 'os.environ.setdefault("GLOO_SOCKET_IFNAME", "lo")' in source
+
+    common = (root / "scripts" / "ascend" / "acceptance_common.sh").read_text(
+        encoding="utf-8"
+    )
+    assert 'GLOO_SOCKET_IFNAME="${GLOO_SOCKET_IFNAME:-lo}"' in common
+    assert 'export GLOO_SOCKET_IFNAME="${interface}"' in common
+
+
 def test_ascend_fla_patch_preserves_native_gdn_state_contract(monkeypatch) -> None:
     from sglang_fl.dispatch import fla_patch
     from sglang_fl.dispatch.bridge.fla_chunk import chunk_gated_delta_rule_bridge
