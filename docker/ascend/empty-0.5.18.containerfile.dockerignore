@@ -8,9 +8,6 @@
 !.github/scripts/
 !.github/scripts/ascend/
 !.github/scripts/ascend/verify_environment.py
-!scripts/
-!scripts/ascend/
-!scripts/ascend/patch_sgl_kernel_npu.py
 !docker/
 !docker/ascend/
 !docker/ascend/empty-0.5.18.containerfile

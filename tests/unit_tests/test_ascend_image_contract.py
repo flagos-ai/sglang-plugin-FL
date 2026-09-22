@@ -9,6 +9,7 @@ import hashlib
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -62,15 +63,33 @@ def test_image_contract_checks_survive_python_optimized_mode() -> None:
     assert "sys.exit(" in dockerfile
 
 
-def test_kernel_patcher_is_part_of_the_image_context_and_build() -> None:
+def test_official_kernel_release_is_pinned_without_source_patching() -> None:
     dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
     dockerignore = _DOCKERIGNORE.read_text(encoding="utf-8")
 
-    assert "COPY scripts/ascend/patch_sgl_kernel_npu.py" in dockerfile
-    assert "python3 /usr/local/bin/patch-sgl-kernel-npu" in dockerfile
+    assert "ARG SGL_KERNEL_NPU_RELEASE=2026.8.10" in dockerfile
+    assert (
+        "ARG SGL_KERNEL_NPU_COMMIT=e05fc90e85041d6080431c8ce543ab112c56e16d"
+        in dockerfile
+    )
+    assert "ARG SGL_KERNEL_NPU_VERSION=2026.6.1" in dockerfile
+    assert (
+        "ARG SGL_KERNEL_NPU_SHA256="
+        "fa4ad5afa6bb748d683da5ee8a9cc702c13d0398d3db53651b4bb79e3f8d0e95"
+        in dockerfile
+    )
+    assert (
+        "sgl-kernel-npu-2026.8.10-torch2.8.0-py311-cann8.5.0-a3-aarch64.zip"
+        in dockerfile
+    )
+    assert "deep_ep-${DEEP_EP_VERSION}-cp311-cp311-linux_aarch64.whl" in dockerfile
+    assert "sgl_kernel_npu-${SGL_KERNEL_NPU_VERSION}" in dockerfile
+    assert "torch_memory_saver-0.0.8" in dockerfile
+    assert "ln -sf deep_ep/deep_ep_cpp*.so" in dockerfile
+    assert "patch_sgl_kernel_npu" not in dockerfile
+    assert "patch_sgl_kernel_npu" not in dockerignore
     assert "not hasattr(tl, 'insert_slice')" in dockerfile
     assert "sys.exit('triton-ascend insert_slice API mismatch')" in dockerfile
-    assert "!scripts/ascend/patch_sgl_kernel_npu.py" in dockerignore
 
 
 def test_source_trees_are_recreated_instead_of_overlaid() -> None:
@@ -81,11 +100,16 @@ def test_source_trees_are_recreated_instead_of_overlaid() -> None:
     assert "rm -rf /opt/sglang-plugin-fl" in dockerfile
 
 
-def test_kernel_patch_provenance_is_labeled() -> None:
+def test_kernel_release_provenance_is_labeled() -> None:
     dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
 
     assert _VERIFIER.EXPECTED_SOLVE_TRIL_SHA256 in dockerfile
+    assert "ai.flagos.sgl-kernel-npu.release" in dockerfile
+    assert "ai.flagos.sgl-kernel-npu.revision" in dockerfile
+    assert "ai.flagos.sgl-kernel-npu.version" in dockerfile
+    assert "ai.flagos.sgl-kernel-npu.archive.sha256" in dockerfile
     assert "ai.flagos.sgl-kernel-npu.solve-tril.sha256" in dockerfile
+    assert "ai.flagos.deep-ep.version" in dockerfile
 
 
 def test_ci_uses_the_ascend_runtime_without_privileged_mode() -> None:
@@ -102,7 +126,7 @@ def test_ci_uses_the_ascend_runtime_without_privileged_mode() -> None:
 class _Distribution:
     def __init__(self, root: Path):
         self.root = root
-        self.files = [Path("sgl_kernel_npu-2026.5.1.dist-info/RECORD")]
+        self.files = [Path("sgl_kernel_npu-2026.6.1.dist-info/RECORD")]
 
     def locate_file(self, relative_path: Path) -> Path:
         return self.root / relative_path
@@ -120,7 +144,7 @@ def _write_kernel_installation(tmp_path: Path, *, old: int, new: int) -> Path:
     path.parent.mkdir(parents=True)
     content = _solve_tril_source(old=old, new=new).encode()
     path.write_bytes(content)
-    record = tmp_path / "sgl_kernel_npu-2026.5.1.dist-info" / "RECORD"
+    record = tmp_path / "sgl_kernel_npu-2026.6.1.dist-info" / "RECORD"
     record.parent.mkdir()
     digest = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=")
     record.write_text(
@@ -131,7 +155,7 @@ def _write_kernel_installation(tmp_path: Path, *, old: int, new: int) -> Path:
     return path
 
 
-def test_verifier_accepts_the_fully_patched_kernel(
+def test_verifier_accepts_the_official_kernel_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = _write_kernel_installation(tmp_path, old=0, new=15)
@@ -146,10 +170,10 @@ def test_verifier_accepts_the_fully_patched_kernel(
         lambda name: _Distribution(tmp_path),
     )
 
-    _VERIFIER._require_solve_tril_patch()
+    _VERIFIER._require_solve_tril_source()
 
 
-def test_verifier_rejects_unexpected_patched_source_digest(
+def test_verifier_rejects_unexpected_kernel_source_digest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_kernel_installation(tmp_path, old=0, new=15)
@@ -160,7 +184,7 @@ def test_verifier_rejects_unexpected_patched_source_digest(
     )
 
     with pytest.raises(RuntimeError, match="digest mismatch"):
-        _VERIFIER._require_solve_tril_patch()
+        _VERIFIER._require_solve_tril_source()
 
 
 def test_verifier_rejects_stale_record(
@@ -172,7 +196,7 @@ def test_verifier_rejects_stale_record(
         "EXPECTED_SOLVE_TRIL_SHA256",
         hashlib.sha256(path.read_bytes()).hexdigest(),
     )
-    record = tmp_path / "sgl_kernel_npu-2026.5.1.dist-info" / "RECORD"
+    record = tmp_path / "sgl_kernel_npu-2026.6.1.dist-info" / "RECORD"
     record.write_text(
         f"{_VERIFIER.SOLVE_TRIL_RELATIVE_PATH.as_posix()},sha256=stale,1\n",
         encoding="utf-8",
@@ -184,7 +208,7 @@ def test_verifier_rejects_stale_record(
     )
 
     with pytest.raises(RuntimeError, match="RECORD does not describe"):
-        _VERIFIER._require_solve_tril_patch()
+        _VERIFIER._require_solve_tril_source()
 
 
 @pytest.mark.parametrize(("old", "new"), [(1, 15), (0, 14), (0, 16)])
@@ -201,5 +225,48 @@ def test_verifier_rejects_any_other_kernel_call_counts(
         lambda name: _Distribution(tmp_path),
     )
 
-    with pytest.raises(RuntimeError, match="patch mismatch"):
-        _VERIFIER._require_solve_tril_patch()
+    with pytest.raises(RuntimeError, match="source mismatch"):
+        _VERIFIER._require_solve_tril_source()
+
+
+class _Schema:
+    def __init__(self, value: str):
+        self.value = value
+
+    def __str__(self) -> str:
+        return self.value
+
+
+def _torch_with_causal_conv1d_schema(schema: str) -> SimpleNamespace:
+    default = SimpleNamespace(_schema=_Schema(schema))
+    causal_conv1d = SimpleNamespace(default=default)
+    return SimpleNamespace(
+        ops=SimpleNamespace(npu=SimpleNamespace(causal_conv1d=causal_conv1d))
+    )
+
+
+def test_verifier_accepts_the_sglang_0_5_18_causal_conv1d_abi() -> None:
+    torch = _torch_with_causal_conv1d_schema(
+        _VERIFIER.EXPECTED_CAUSAL_CONV1D_SCHEMA
+    )
+
+    _VERIFIER._require_causal_conv1d_abi(torch)
+
+
+def test_verifier_rejects_the_legacy_causal_conv1d_abi() -> None:
+    legacy = (
+        "npu::causal_conv1d(Tensor x, Tensor weight, Tensor conv_states, "
+        "Tensor query_start_loc, Tensor cache_indices, Tensor has_initial_state, "
+        "Tensor? bias=None, bool activation_mode=False, int pad_slot_id=-1) -> Tensor"
+    )
+    torch = _torch_with_causal_conv1d_schema(legacy)
+
+    with pytest.raises(RuntimeError, match="ABI mismatch"):
+        _VERIFIER._require_causal_conv1d_abi(torch)
+
+
+def test_verifier_rejects_a_missing_causal_conv1d_op() -> None:
+    torch = SimpleNamespace(ops=SimpleNamespace(npu=SimpleNamespace()))
+
+    with pytest.raises(RuntimeError, match="is not registered"):
+        _VERIFIER._require_causal_conv1d_abi(torch)

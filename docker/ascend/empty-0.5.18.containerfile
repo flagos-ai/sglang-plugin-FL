@@ -8,11 +8,13 @@ ARG SGLANG_VERSION=0.5.18
 ARG FLAGGEMS_COMMIT=98fae44cdf2898f39c7f24f080d7c88b83d7c593
 ARG FLAGGEMS_VERSION=5.3.0
 ARG FLAGCX_COMMIT=68f069fe4ff2af9e8017b74aee8dee60c59e3b1d
-ARG SGL_KERNEL_NPU_RELEASE=2026.05.01.post2
-ARG SGL_KERNEL_NPU_VERSION=2026.5.1
-ARG SGL_KERNEL_NPU_SHA256=1c446e04b23497b97089591713637d512ed16135d0d97d71b6cf5c7db6787fc5
-ARG SGL_KERNEL_NPU_SOLVE_TRIL_SHA256=5f789360b98cae0f9021f0e8729063d0f1ad7a4ace17d47822ee0382adcfdde3
-ARG SGL_KERNEL_NPU_ARCHIVE=sgl-kernel-npu-2026.05.01.post2-torch2.8.0-py311-cann8.5.0-a3-aarch64.zip
+ARG SGL_KERNEL_NPU_RELEASE=2026.8.10
+ARG SGL_KERNEL_NPU_COMMIT=e05fc90e85041d6080431c8ce543ab112c56e16d
+ARG SGL_KERNEL_NPU_VERSION=2026.6.1
+ARG SGL_KERNEL_NPU_SHA256=fa4ad5afa6bb748d683da5ee8a9cc702c13d0398d3db53651b4bb79e3f8d0e95
+ARG SGL_KERNEL_NPU_SOLVE_TRIL_SHA256=d5aaeef310dae31c1cdfad0776c379a852b3e955c469b75cd53b783cfa192a37
+ARG SGL_KERNEL_NPU_ARCHIVE=sgl-kernel-npu-2026.8.10-torch2.8.0-py311-cann8.5.0-a3-aarch64.zip
+ARG DEEP_EP_VERSION=1.0.0+e05fc90e.cann.8.5.0.b232
 
 ENV SGLANG_BUILD_RUST_EXTS=none \
     FLAGCX_PATH=/opt/FlagCX \
@@ -79,24 +81,27 @@ RUN python3 -m pip install --no-cache-dir \
     python3 -c "import importlib.metadata as m,sys; actual=m.version('flag-gems'); sys.exit(f'flag-gems must be ${FLAGGEMS_VERSION}, found {actual}') if actual != '${FLAGGEMS_VERSION}' else print('flag-gems', actual)" && \
     rm -f /tmp/flaggems.tar.gz
 
-# Keep the real CANN 8.5 / torch 2.8 NPU kernel wheel. SGLang 0.5.18 modules
-# are checked explicitly below; unsupported kernel surfaces fail the image build
-# instead of being hidden by an import shim.
-COPY scripts/ascend/patch_sgl_kernel_npu.py /usr/local/bin/patch-sgl-kernel-npu
+# Install the official SGLang 0.5.18 NPU kernel release, selecting its real
+# CANN 8.5 / torch 2.8 / A3 / aarch64 build for this vendor runtime. The
+# release tag intentionally differs from the wheel version embedded in it.
 RUN curl --fail --location --retry 5 --retry-delay 5 \
         "https://github.com/sgl-project/sgl-kernel-npu/releases/download/${SGL_KERNEL_NPU_RELEASE}/${SGL_KERNEL_NPU_ARCHIVE}" \
         --output "/tmp/${SGL_KERNEL_NPU_ARCHIVE}" && \
     echo "${SGL_KERNEL_NPU_SHA256}  /tmp/${SGL_KERNEL_NPU_ARCHIVE}" | sha256sum --check - && \
     mkdir -p /tmp/sgl-kernel-npu-wheels && \
     unzip -j "/tmp/${SGL_KERNEL_NPU_ARCHIVE}" '*.whl' -d /tmp/sgl-kernel-npu-wheels && \
-    test -f /tmp/sgl-kernel-npu-wheels/attentions-0.2-cp311-cp311-linux_aarch64.whl && \
+    test -f "/tmp/sgl-kernel-npu-wheels/deep_ep-${DEEP_EP_VERSION}-cp311-cp311-linux_aarch64.whl" && \
     test -f /tmp/sgl-kernel-npu-wheels/torch_memory_saver-0.0.8-cp311-cp311-linux_aarch64.whl && \
     test -f "/tmp/sgl-kernel-npu-wheels/sgl_kernel_npu-${SGL_KERNEL_NPU_VERSION}-cp311-cp311-linux_aarch64.whl" && \
     python3 -m pip install --no-cache-dir --no-deps --force-reinstall \
-        /tmp/sgl-kernel-npu-wheels/attentions-0.2-cp311-cp311-linux_aarch64.whl \
+        "/tmp/sgl-kernel-npu-wheels/deep_ep-${DEEP_EP_VERSION}-cp311-cp311-linux_aarch64.whl" \
         /tmp/sgl-kernel-npu-wheels/torch_memory_saver-0.0.8-cp311-cp311-linux_aarch64.whl \
         "/tmp/sgl-kernel-npu-wheels/sgl_kernel_npu-${SGL_KERNEL_NPU_VERSION}-cp311-cp311-linux_aarch64.whl" && \
-    python3 /usr/local/bin/patch-sgl-kernel-npu && \
+    deep_ep_site="$(python3 -m pip show deep-ep | awk '/^Location:/ {print $2}')" && \
+    test -n "${deep_ep_site}" && \
+    cd "${deep_ep_site}" && \
+    rm -f ./deep_ep_cpp*.so && \
+    ln -sf deep_ep/deep_ep_cpp*.so && \
     TORCH_DEVICE_BACKEND_AUTOLOAD=0 python3 -c "import sys; import triton.language as tl; import triton.language.extra.cann.extension as al; ok=not hasattr(tl, 'insert_slice') and hasattr(al, 'insert_slice'); sys.exit('triton-ascend insert_slice API mismatch') if not ok else print('triton-ascend insert_slice API OK')" && \
     rm -rf "/tmp/${SGL_KERNEL_NPU_ARCHIVE}" /tmp/sgl-kernel-npu-wheels
 
@@ -146,7 +151,12 @@ LABEL ai.flagos.sglang.version="${SGLANG_VERSION}" \
       ai.flagos.sglang-plugin-fl.version="0.1.0" \
       ai.flagos.flaggems.revision="${FLAGGEMS_COMMIT}" \
       ai.flagos.flagcx.revision="${FLAGCX_COMMIT}" \
+      ai.flagos.sgl-kernel-npu.release="${SGL_KERNEL_NPU_RELEASE}" \
+      ai.flagos.sgl-kernel-npu.revision="${SGL_KERNEL_NPU_COMMIT}" \
+      ai.flagos.sgl-kernel-npu.version="${SGL_KERNEL_NPU_VERSION}" \
+      ai.flagos.sgl-kernel-npu.archive.sha256="${SGL_KERNEL_NPU_SHA256}" \
       ai.flagos.sgl-kernel-npu.solve-tril.sha256="${SGL_KERNEL_NPU_SOLVE_TRIL_SHA256}" \
+      ai.flagos.deep-ep.version="${DEEP_EP_VERSION}" \
       ai.flagos.cann.version="8.5.0" \
       ai.flagos.torch-npu.version="2.8.0.post2"
 

@@ -1,7 +1,9 @@
 """Vendor monkey-patches on sglang internals for Ascend / NPU — entrypoint.
 
-These replace the one scheduler source edit still required on Huawei NPU:
+These replace the compatibility edits still required on Huawei NPU:
   - scheduler_pp: PP send/recv ordering + stream syncs (HCCL deadlock fix)
+  - vision: use SGLang's SDPA fallback when CANN 8.5 fused attention cannot
+    accept an unaligned head dimension
 
 SGLang v0.5.18 already contains the current NPU attention-wrapper and Qwen-VL
 processor implementations. Keeping the old plugin replacements would discard
@@ -14,6 +16,7 @@ from .patches.scheduler_pp import (
     patch_pp_launch_batch_sync,
     patch_pp_send_recv_order,
 )
+from .patches.vision import patch_vision_ascend_attention
 
 logger = logging.getLogger(__name__)
 _patches_applied = False
@@ -26,6 +29,7 @@ def apply_ascend_patches() -> None:
         return
     patch_pp_send_recv_order()
     patch_pp_launch_batch_sync()
+    patch_vision_ascend_attention()
     _patches_applied = True
 
 

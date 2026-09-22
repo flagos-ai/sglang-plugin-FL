@@ -32,9 +32,10 @@ Qwen3.6-35B-A3B。本版本为基于官方 v0.5.18 和用户提供的 910C 环�
 | triton-ascend | 3.2.1 |
 | FlagGems | 5.3.0，commit `98fae44cdf2898f39c7f24f080d7c88b83d7c593` |
 | FlagCX | commit `68f069fe4ff2af9e8017b74aee8dee60c59e3b1d` |
-| sgl-kernel-npu | 2026.5.1，release `2026.05.01.post2` |
-| sgl-kernel-npu 压缩包 SHA-256 | `1c446e04b23497b97089591713637d512ed16135d0d97d71b6cf5c7db6787fc5` |
-| `solve_tril.py` 补丁后 SHA-256 | `5f789360b98cae0f9021f0e8729063d0f1ad7a4ace17d47822ee0382adcfdde3` |
+| sgl-kernel-npu | distribution `2026.6.1`，official release `2026.8.10`，commit `e05fc90e85041d6080431c8ce543ab112c56e16d` |
+| sgl-kernel-npu 压缩包 SHA-256 | `fa4ad5afa6bb748d683da5ee8a9cc702c13d0398d3db53651b4bb79e3f8d0e95` |
+| 原生 `solve_tril.py` SHA-256 | `d5aaeef310dae31c1cdfad0776c379a852b3e955c469b75cd53b783cfa192a37` |
+| deep-ep | `1.0.0+e05fc90e.cann.8.5.0.b232` |
 | 插件代码 | `flagos-ai/sglang-plugin-FL` 的 `dev/0.5.18` 分支 |
 
 基础 empty 镜像为：
@@ -122,11 +123,13 @@ unset GIT_PROXY
 3. 安装固定版本的 transformers、xgrammar 和 compressed-tensors；
 4. 安装固定 FlagGems commit，并将该 release 源码中遗留的 `5.3.0rc2`
    包元数据受控修正为 tag 对应的 `5.3.0`；
-5. 校验 NPU kernel 压缩包 SHA-256，安装其中三个 aarch64 wheel，并针对
-   `triton-ascend 3.2.1` 原子修正 `solve_tril.py` 中恰好 6 处旧
-   `tl.insert_slice` 调用；补丁同时同步 wheel `RECORD`、删除可能命中同秒
-   mtime/同尺寸的旧 `solve_tril.pyc`，并校验补丁后精确 SHA-256；源码形状
-   或 provenance 不匹配时镜像构建会直接失败；
+5. 校验官方 NPU kernel 压缩包 SHA-256，安装其中的
+   `sgl-kernel-npu`、`deep-ep` 和 `torch-memory-saver` aarch64 wheel。该
+   `2026.8.10` release 已原生适配 `triton-ascend 3.2.1`：
+   `solve_tril.py` 必须是旧 `tl.insert_slice` 0 处、新 `al.insert_slice`
+   15 处并命中表中固定 SHA-256，不再对已安装 wheel 打本地补丁；
+   同时刷新 `deep_ep_cpp` 顶层链接，避免 empty 基础镜像的旧
+   extension 抢占新 wheel；
 6. 从固定 commit 构建 FlagCX；
 7. 安装本仓库插件并执行不依赖真实 NPU 的静态环境校验；
 8. 在 `ci` stage 安装固定 pytest 及 CI 工具。
@@ -226,9 +229,11 @@ python3 .github/scripts/ascend/verify_environment.py \
 - SGLang、FlagGems、FlagCX 的源码 commit marker；
 - CANN 8.5；
 - SGLang 是否仍被旧 `/sgl-workspace/sglang` editable 安装遮蔽；
-- `sgl-kernel-npu` 是否具有 v0.5.18 所需模块；
-- `solve_tril.py` 是否达到旧调用 0 处、新调用 15 处、固定补丁 SHA-256，
-  wheel `RECORD` 是否同步且不再登记已失效的预编译 bytecode；
+- `sgl-kernel-npu` 是否具有 v0.5.18 所需模块，以及
+  `npu::causal_conv1d` 是否包含 v0.5.18 传入的 `run_mode` ABI；
+- 官方 `solve_tril.py` 是否达到旧调用 0 处、新调用 15 处、
+  固定 SHA-256，且 wheel `RECORD` 是否和原生源文件一致；
+- `deep_ep_cpp` 顶层链接是否指向当前 `deep-ep` wheel 中的 extension；
 - FlagCX 动态库和 Python wrapper；
 - `torch.npu` 可用性、可见卡数和实际 NPU tensor 运算；
 - 当前 `sglang_fl` 是否确实从挂载的 checkout 导入。
@@ -263,6 +268,16 @@ recurrent update。GDN prefill 的内部 `gdn_triton.chunk_gated_delta_rule` 别
 v5.3.0 实现采用 vLLM 风格的 inplace K×V state，而 SGLang v0.5.18 公共函数
 采用 V×K/output-final-state 契约；仅替换关键字会造成错误。该函数因此保持
 SGLang 原生实现，不能仅为了匹配旧配置而强制通用 FlagGems kernel。
+
+SGLang v0.5.18 在 NPU 上默认使用 `VisionAscendAttention`。本项目要求的
+CANN 8.5 `npu_fused_infer_attention_score` 在 BF16/FP16 下接受的
+head size 为 64/128/192，而 Qwen3.6-27B 的视觉 head size 为 72。插件将
+Q/K/V 末维补零到 128，仍使用原始 `1/sqrt(72)` scale，融合计算后切回
+72；该变换在数学上与未填充 attention 等价，并保留了融合路径。其他
+CANN 8.5 未支持的 head size 才调用上游类已有的
+`VisionSdpaAttention` fallback。这是 CANN 8.5 的兼容层，不是对官方
+CANN 9.0 默认路径的修改。当前验收要求关闭
+`SGLANG_VIT_ENABLE_CUDA_GRAPH`。
 
 通常无需设置 `SGLANG_FL_PER_OP`。需要复现实验或定位问题时，可显式覆盖：
 
@@ -689,6 +704,17 @@ collective 端口没有被占用或防火墙阻断。
 
 四张 fixture 都必须存在且非空。总验收脚本会在创建引擎前检查，因此应修复
 `IMAGE_DIR` 或挂载路径，不应修改脚本让用例跳过。
+
+如果日志在 `npu_fused_infer_attention_score` 报错 561002 且提示 D 需要
+head size 不支持，先确认当前 checkout 已包含 Ascend vision 兼容层，并确认
+`SGLANG_VIT_ENABLE_CUDA_GRAPH` 未开启。不要把整个多模态后端全局强制为
+SDPA；插件会对 Qwen3.6 的 D=72 使用补零融合路径，只对其他未支持
+head size 回退，以保留其他模型的融合性能。
+
+如果日志在首个文本 forward 报 `npu::causal_conv1d` 参数数量不匹配，
+说明仍在使用旧 kernel wheel。重建镜像并确认环境校验器打印的 schema
+含有 `pad_slot_id` 和 `run_mode`；不应在 Python 层截断 v0.5.18 的第 10
+个参数来迁就旧 ABI。
 
 ### 13.7 TP=2 文本并发偶发错误
 

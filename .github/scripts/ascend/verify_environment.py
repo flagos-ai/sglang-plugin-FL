@@ -29,7 +29,8 @@ EXPECTED_RUNTIME_DISTRIBUTIONS = {
     "flag-gems": "5.3.0",
     "xgrammar": "0.2.1",
     "compressed-tensors": "0.15.0",
-    "sgl-kernel-npu": "2026.5.1",
+    "sgl-kernel-npu": "2026.6.1",
+    "deep-ep": "1.0.0+e05fc90e.cann.8.5.0.b232",
     "attentions": "0.2",
     "torch-memory-saver": "0.0.8",
 }
@@ -83,7 +84,13 @@ SOLVE_TRIL_STALE_CALL = "tl.insert_slice("
 SOLVE_TRIL_ASCEND_CALL = "al.insert_slice("
 EXPECTED_SOLVE_TRIL_ASCEND_CALLS = 15
 EXPECTED_SOLVE_TRIL_SHA256 = (
-    "5f789360b98cae0f9021f0e8729063d0f1ad7a4ace17d47822ee0382adcfdde3"
+    "d5aaeef310dae31c1cdfad0776c379a852b3e955c469b75cd53b783cfa192a37"
+)
+EXPECTED_CAUSAL_CONV1D_SCHEMA = (
+    "npu::causal_conv1d(Tensor x, Tensor weight, Tensor conv_states, "
+    "Tensor? bias=None, Tensor? query_start_loc=None, Tensor? cache_indices=None, "
+    "Tensor? has_initial_state=None, Tensor? num_accepted_tokens=None, "
+    "int activation_mode=0, int pad_slot_id=-1, int run_mode=0) -> Tensor"
 )
 
 
@@ -164,7 +171,7 @@ def _require_npu_kernel_surface() -> None:
     )
 
 
-def _require_solve_tril_patch() -> None:
+def _require_solve_tril_source() -> None:
     try:
         distribution = metadata.distribution("sgl-kernel-npu")
     except metadata.PackageNotFoundError as exc:
@@ -174,9 +181,9 @@ def _require_solve_tril_patch() -> None:
         content = path.read_bytes()
         source = content.decode("utf-8")
     except OSError as exc:
-        raise RuntimeError(f"cannot read patched NPU kernel source: {path}") from exc
+        raise RuntimeError(f"cannot read NPU kernel source: {path}") from exc
     except UnicodeDecodeError as exc:
-        raise RuntimeError(f"patched NPU kernel source is not UTF-8: {path}") from exc
+        raise RuntimeError(f"NPU kernel source is not UTF-8: {path}") from exc
 
     stale_count = source.count(SOLVE_TRIL_STALE_CALL)
     ascend_count = source.count(SOLVE_TRIL_ASCEND_CALL)
@@ -184,7 +191,7 @@ def _require_solve_tril_patch() -> None:
         raise RuntimeError(f"patched NPU kernel is missing the al import: {path}")
     if stale_count != 0 or ascend_count != EXPECTED_SOLVE_TRIL_ASCEND_CALLS:
         raise RuntimeError(
-            "sgl-kernel-npu solve_tril patch mismatch: "
+            "sgl-kernel-npu solve_tril source mismatch: "
             f"expected old=0/new={EXPECTED_SOLVE_TRIL_ASCEND_CALLS}, "
             f"found old={stale_count}/new={ascend_count} in {path}"
         )
@@ -221,33 +228,46 @@ def _require_solve_tril_patch() -> None:
     ]
     if matching != [expected_record]:
         raise RuntimeError(
-            "sgl-kernel-npu RECORD does not describe patched solve_tril.py: "
+            "sgl-kernel-npu RECORD does not describe solve_tril.py: "
             f"expected {expected_record}, found {matching} in {record_path}"
         )
-    bytecode_prefix = f"{SOLVE_TRIL_RELATIVE_PATH.parent.as_posix()}/__pycache__/"
-    legacy_bytecode = SOLVE_TRIL_RELATIVE_PATH.with_suffix(".pyc").as_posix()
-    recorded_bytecode = [
-        row[0]
-        for row in rows
-        if row
-        and (
-            (
-                row[0].startswith(bytecode_prefix)
-                and Path(row[0]).name.startswith(f"{SOLVE_TRIL_RELATIVE_PATH.stem}.")
-                and row[0].endswith(".pyc")
-            )
-            or row[0] == legacy_bytecode
-        )
-    ]
-    if recorded_bytecode:
-        raise RuntimeError(
-            "sgl-kernel-npu RECORD still contains invalidated solve_tril bytecode: "
-            + ", ".join(recorded_bytecode)
-        )
     print(
-        "[ascend-env] sgl-kernel-npu solve_tril patch OK "
+        "[ascend-env] sgl-kernel-npu solve_tril source OK "
         f"(old={stale_count}, new={ascend_count}, sha256={digest})"
     )
+
+
+def _require_deep_ep_layout() -> None:
+    try:
+        distribution = metadata.distribution("deep-ep")
+    except metadata.PackageNotFoundError as exc:
+        raise RuntimeError("deep-ep is not installed") from exc
+    site_root = Path(distribution.locate_file(""))
+    extensions = sorted(site_root.glob("deep_ep_cpp*.so"))
+    if len(extensions) != 1:
+        raise RuntimeError(
+            "deep-ep must expose exactly one top-level deep_ep_cpp extension, "
+            f"found {len(extensions)} under {site_root}"
+        )
+    extension = extensions[0]
+    if not extension.is_symlink() or not extension.resolve().is_file():
+        raise RuntimeError(
+            "deep-ep top-level extension must be a valid symlink: " f"{extension}"
+        )
+    print(f"[ascend-env] deep-ep-extension={extension} -> {extension.resolve()}")
+
+
+def _require_causal_conv1d_abi(torch: object) -> None:
+    try:
+        schema = str(torch.ops.npu.causal_conv1d.default._schema)
+    except (AttributeError, RuntimeError) as exc:
+        raise RuntimeError("npu::causal_conv1d is not registered") from exc
+    if schema != EXPECTED_CAUSAL_CONV1D_SCHEMA:
+        raise RuntimeError(
+            "npu::causal_conv1d ABI mismatch: "
+            f"expected {EXPECTED_CAUSAL_CONV1D_SCHEMA}, found {schema}"
+        )
+    print(f"[ascend-env] causal-conv1d-schema={schema}")
 
 
 def _require_flagcx_layout() -> Path:
@@ -370,6 +390,7 @@ def _require_npu(min_npus: int, flagcx_library: Path) -> None:
 
     for module_name in REQUIRED_NPU_KERNEL_MODULES:
         _require_import(module_name)
+    _require_causal_conv1d_abi(torch)
     flag_gems = _require_import("flag_gems")
     flag_gems_path = Path(flag_gems.__file__).resolve()
     flag_gems_root = Path("/opt/FlagGems")
@@ -444,7 +465,8 @@ def verify(
     _require_source_markers()
     _require_cann()
     _require_npu_kernel_surface()
-    _require_solve_tril_patch()
+    _require_solve_tril_source()
+    _require_deep_ep_layout()
     flagcx_library = _require_flagcx_layout()
 
     _require_sglang_import()
