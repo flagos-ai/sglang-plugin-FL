@@ -17,6 +17,9 @@ _DRIVER_PATH = (
 _SINGLE_NODE_SCRIPT = (
     Path(__file__).parents[2] / "scripts" / "ascend" / "run_single_node_benchmark.sh"
 )
+_COMMON_SCRIPT = (
+    Path(__file__).parents[2] / "scripts" / "ascend" / "acceptance_common.sh"
+)
 _SPEC = importlib.util.spec_from_file_location(
     "ascend_benchmark_throughput_serve", _DRIVER_PATH
 )
@@ -102,3 +105,13 @@ def test_single_node_entrypoint_preserves_fixed_benchmark_contract() -> None:
     assert 'run_benchmark_model qwen3_6_27b "${MODEL_27B_PATH}" 0' in script
     assert 'run_benchmark_model qwen3_6_35b_a3b "${MODEL_35B_PATH}" 10' in script
     assert "PASS: single-node TP=4 benchmark matrix completed" in script
+
+
+def test_environment_manifest_records_source_identity() -> None:
+    script = _COMMON_SCRIPT.read_text(encoding="utf-8")
+
+    assert "${REPO_ROOT}/.source-commit" in script
+    assert 'git -C "${REPO_ROOT}" rev-parse HEAD' in script
+    assert "source_revision=%s" in script
+    assert "source_state=%s" in script
+    assert "source_status=" in script

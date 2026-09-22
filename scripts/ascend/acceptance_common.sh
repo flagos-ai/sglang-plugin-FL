@@ -173,10 +173,33 @@ PY
 
 write_environment_manifest() {
   local manifest="${RESULT_DIR}/environment.txt"
+  local source_revision="unavailable"
+  local source_state="not-a-git-checkout"
+  local git_status=""
+
+  if [[ -s "${REPO_ROOT}/.source-commit" ]]; then
+    source_revision="$(tr -d '\r\n' < "${REPO_ROOT}/.source-commit")"
+    source_state="source-archive"
+  elif command -v git >/dev/null 2>&1 \
+    && git -C "${REPO_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    source_revision="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
+    git_status="$(git -C "${REPO_ROOT}" status --short)"
+    if [[ -z "${git_status}" ]]; then
+      source_state="clean"
+    else
+      source_state="dirty"
+    fi
+  fi
+
   {
     printf 'date=%s\n' "$(date --iso-8601=seconds)"
     printf 'hostname=%s\n' "$(hostname)"
     printf 'repo_root=%s\n' "${REPO_ROOT}"
+    printf 'source_revision=%s\n' "${source_revision}"
+    printf 'source_state=%s\n' "${source_state}"
+    if [[ -n "${git_status}" ]]; then
+      printf '%s\n' "${git_status}" | sed 's/^/source_status=/'
+    fi
     printf 'python=%s\n' "${PYTHON_BIN}"
     printf 'ASCEND_VISIBLE_DEVICES=%s\n' "${ASCEND_VISIBLE_DEVICES}"
     printf 'ASCEND_RT_VISIBLE_DEVICES=%s\n' "${ASCEND_RT_VISIBLE_DEVICES}"
