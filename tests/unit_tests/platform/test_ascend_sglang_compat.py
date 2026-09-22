@@ -132,6 +132,8 @@ def test_ascend_qwen36_policy_uses_0518_native_contracts() -> None:
     assert backends["silu_and_mul"][0] == "flagos"
     assert backends["mrotary_embedding"][0] == "flagos"
     assert "fused_recurrent_gated_delta_rule" not in backends
+    assert "masked_scatter_" in config["flagos_blacklist"]
+    assert "sum" not in config["flagos_blacklist"]
 
 
 def test_ascend_fla_patch_preserves_native_gdn_state_contract(monkeypatch) -> None:

@@ -270,6 +270,126 @@ def _require_causal_conv1d_abi(torch: object) -> None:
     print(f"[ascend-env] causal-conv1d-schema={schema}")
 
 
+def _require_vision_padding_numerics(torch: object) -> None:
+    """Validate the CANN 8.5 D=72 -> 128 fused-attention compatibility path."""
+
+    from sglang.srt.layers.attention.vision import (
+        VisionAscendAttention,
+        prepare_vision_attention_metadata,
+    )
+
+    patch_marker = "_sglang_fl_unaligned_head_fallback"
+    if not getattr(VisionAscendAttention.forward, patch_marker, False):
+        raise RuntimeError(
+            "Ascend VisionAscendAttention compatibility patch is not active"
+        )
+
+    head_size = 72
+    num_heads = 4
+    num_kv_heads = 2
+    sequence_ends = (3, 8)
+    total_tokens = sequence_ends[-1]
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(518)
+
+    def _quantized_randn(*shape: int):
+        return torch.randn(
+            *shape,
+            generator=generator,
+            device="cpu",
+            dtype=torch.float32,
+        ).to(torch.bfloat16)
+
+    q_cpu = _quantized_randn(total_tokens, num_heads, head_size)
+    k_cpu = _quantized_randn(total_tokens, num_kv_heads, head_size)
+    v_cpu = _quantized_randn(total_tokens, num_kv_heads, head_size)
+    q = q_cpu.to("npu")
+    k = k_cpu.to("npu")
+    v = v_cpu.to("npu")
+    cu_seqlens = torch.tensor(
+        (0, *sequence_ends),
+        dtype=torch.int32,
+        device="cpu",
+    )
+    forward_metadata = prepare_vision_attention_metadata(
+        cu_seqlens,
+        device=torch.device("npu"),
+    )
+
+    attention = VisionAscendAttention(
+        head_dim=head_size,
+        num_heads=num_heads,
+        num_kv_heads=num_kv_heads,
+        flatten_batch=True,
+    )
+    with torch.inference_mode():
+        output = attention(
+            q=q,
+            k=k,
+            v=v,
+            cu_seqlens=cu_seqlens,
+            bsz=1,
+            seq_len=total_tokens,
+            forward_metadata=forward_metadata,
+        )
+        torch.npu.synchronize()
+
+    expected_shape = (total_tokens, num_heads, head_size)
+    if tuple(output.shape) != expected_shape:
+        raise RuntimeError(
+            "Ascend vision padding output shape mismatch: "
+            f"expected {expected_shape}, found {tuple(output.shape)}"
+        )
+    output_cpu = output.float().cpu()
+    if not torch.isfinite(output_cpu).all():
+        raise RuntimeError("Ascend vision padding output contains non-finite values")
+
+    references = []
+    start = 0
+    scale = head_size**-0.5
+    kv_repeat = num_heads // num_kv_heads
+    for end in sequence_ends:
+        query = q_cpu[start:end].float().permute(1, 0, 2).unsqueeze(0)
+        key = (
+            k_cpu[start:end]
+            .float()
+            .permute(1, 0, 2)
+            .repeat_interleave(kv_repeat, dim=0)
+            .unsqueeze(0)
+        )
+        value = (
+            v_cpu[start:end]
+            .float()
+            .permute(1, 0, 2)
+            .repeat_interleave(kv_repeat, dim=0)
+            .unsqueeze(0)
+        )
+        reference = torch.nn.functional.scaled_dot_product_attention(
+            query,
+            key,
+            value,
+            dropout_p=0.0,
+            is_causal=False,
+            scale=scale,
+        )
+        references.append(reference.squeeze(0).permute(1, 0, 2))
+        start = end
+    reference_cpu = torch.cat(references, dim=0)
+    error = (output_cpu - reference_cpu).abs()
+    max_error = error.max().item()
+    mean_error = error.mean().item()
+    if max_error > 0.02 or mean_error > 0.002:
+        raise RuntimeError(
+            "Ascend vision D=72 padding numerical mismatch: "
+            f"max_abs={max_error:.8f}, mean_abs={mean_error:.8f}"
+        )
+    print(
+        "[ascend-env] vision-padding-numerics passed "
+        f"(packed={sequence_ends}, max_abs={max_error:.8f}, "
+        f"mean_abs={mean_error:.8f})"
+    )
+
+
 def _require_flagcx_layout() -> Path:
     root = Path(os.environ.get("FLAGCX_PATH", "/opt/FlagCX"))
     library = root / "build" / "lib" / "libflagcx.so"
@@ -391,6 +511,14 @@ def _require_npu(min_npus: int, flagcx_library: Path) -> None:
     for module_name in REQUIRED_NPU_KERNEL_MODULES:
         _require_import(module_name)
     _require_causal_conv1d_abi(torch)
+    from sglang.srt.plugins import load_plugins
+
+    load_plugins()
+    plugin = _require_import("sglang_fl")
+    if not plugin.is_plugin_active():
+        raise RuntimeError("sglang_fl general plugin did not become active")
+    print("[ascend-env] sglang_fl general plugin active")
+    _require_vision_padding_numerics(torch)
     flag_gems = _require_import("flag_gems")
     flag_gems_path = Path(flag_gems.__file__).resolve()
     flag_gems_root = Path("/opt/FlagGems")

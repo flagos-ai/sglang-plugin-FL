@@ -236,6 +236,8 @@ python3 .github/scripts/ascend/verify_environment.py \
 - `deep_ep_cpp` 顶层链接是否指向当前 `deep-ep` wheel 中的 extension；
 - FlagCX 动态库和 Python wrapper；
 - `torch.npu` 可用性、可见卡数和实际 NPU tensor 运算；
+- 插件 general entry point 是否激活，以及真实 NPU 上两段 packed sequence 的
+  D=72→128 视觉融合路径是否在固定数值误差内与 CPU FP32 reference 一致；
 - 当前 `sglang_fl` 是否确实从挂载的 checkout 导入。
 
 最后必须出现：
@@ -278,6 +280,12 @@ CANN 8.5 未支持的 head size 才调用上游类已有的
 `VisionSdpaAttention` fallback。这是 CANN 8.5 的兼容层，不是对官方
 CANN 9.0 默认路径的修改。当前验收要求关闭
 `SGLANG_VIT_ENABLE_CUDA_GRAPH`。
+
+Qwen3.6-VL 的 deep-stack embedding 写回保持原生 torch-npu
+`masked_scatter_`。FlagGems v5.3.0 的 Ascend 实现会先用 Triton `sum`
+统计展开 mask，该形状在 CANN 8.5 四个 TP rank 上都会以
+`coreDim=0` 拒绝启动。策略只将 `masked_scatter_` 加入 Ascend
+FlagGems blacklist，不全局禁用 `sum`。
 
 通常无需设置 `SGLANG_FL_PER_OP`。需要复现实验或定位问题时，可显式覆盖：
 
@@ -705,11 +713,16 @@ collective 端口没有被占用或防火墙阻断。
 四张 fixture 都必须存在且非空。总验收脚本会在创建引擎前检查，因此应修复
 `IMAGE_DIR` 或挂载路径，不应修改脚本让用例跳过。
 
-如果日志在 `npu_fused_infer_attention_score` 报错 561002 且提示 D 需要
+如果日志在 `npu_fused_infer_attention_score` 报错 561002 且提示
 head size 不支持，先确认当前 checkout 已包含 Ascend vision 兼容层，并确认
 `SGLANG_VIT_ENABLE_CUDA_GRAPH` 未开启。不要把整个多模态后端全局强制为
 SDPA；插件会对 Qwen3.6 的 D=72 使用补零融合路径，只对其他未支持
 head size 回退，以保留其他模型的融合性能。
+
+如果四个 rank 都在 `mm_utils._scatter` 中经 FlagGems
+`masked_scatter_ -> sum_kernel_1` 报 `coreDim=0`，检查 Ascend 策略是否已将
+`masked_scatter_` 加入 `flagos_blacklist`。不应设置全局 `USE_FLAGGEMS=0`，
+也不应禁用全部 `sum`；真机定向回退后的四张图片断言应全部通过。
 
 如果日志在首个文本 forward 报 `npu::causal_conv1d` 参数数量不匹配，
 说明仍在使用旧 kernel wheel。重建镜像并确认环境校验器打印的 schema

@@ -32,13 +32,17 @@ op_backends:
 # FlagGems tag: v5.3.0 (see docker/ascend/empty-0.5.18.containerfile)
 #
 # ADDITIVE over the #55 baseline (origin/main flagos_blacklist): every op main
-# blacklists is kept; we only ADD on top. Nothing is removed relative to main,
-# so the diff vs main is purely additive (+mul, +linear, +addmm, +concat):
+# blacklists is kept; we only ADD on top. Nothing is removed relative to main.
 #   addmm  : F.linear with bias decomposes to aten.addmm even when "linear" is
 #            blacklisted. FlagGems v5.3.0's Ascend addmm kernel masks only K, not
 #            the M/N tail tiles; Qwen3-VL vision projection therefore triggers an
 #            AICore MTE DDR out-of-range fault during autotuning. Route addmm to
 #            torch_npu until the upstream kernel adds complete boundary masks.
+#   masked_scatter_: Qwen3.6-VL writes deep-stack vision embeddings with
+#            masked_scatter_. FlagGems v5.3.0 first reduces the expanded boolean
+#            mask with its Triton sum kernel; CANN 8.5 rejects that launch with
+#            coreDim=0 on every TP rank. Keep this one composite op on torch_npu;
+#            do not blacklist sum globally because validated text kernels use it.
 # conv1d was already in main's list (it stays); it is needed because the flag_gems
 # triton conv1d/conv2d autotuner crashes (aicore exception) on Qwen3.6-35B-A3B
 # causal_conv1d shapes.
@@ -58,6 +62,7 @@ flagos_blacklist:
   - floor_divide
   - true_divide_
   - addmm
+  - masked_scatter_
 
 # OOT dispatch blacklist (SGLang op class names, not ATen op names): none by
 # default. Keep MRotaryEmbedding enabled so the 0.5.18 acceptance matrix tests

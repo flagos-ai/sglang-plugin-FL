@@ -270,3 +270,13 @@ def test_verifier_rejects_a_missing_causal_conv1d_op() -> None:
 
     with pytest.raises(RuntimeError, match="is not registered"):
         _VERIFIER._require_causal_conv1d_abi(torch)
+
+
+def test_verifier_blocks_on_the_real_packed_vision_padding_probe() -> None:
+    source = _VERIFIER_PATH.read_text(encoding="utf-8")
+
+    assert "_sglang_fl_unaligned_head_fallback" in source
+    assert "VisionAscendAttention" in source
+    assert "sequence_ends = (3, 8)" in source
+    assert "max_error > 0.02 or mean_error > 0.002" in source
+    assert "_require_vision_padding_numerics(torch)" in source
