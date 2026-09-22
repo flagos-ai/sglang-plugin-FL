@@ -5,6 +5,7 @@ FROM ${BASE_IMAGE} AS runtime
 
 ARG SGLANG_COMMIT=71de97b264b04dcd514cf904003028aefe9775c8
 ARG SGLANG_VERSION=0.5.18
+ARG SGLANG_FL_REVISION
 ARG FLAGGEMS_COMMIT=98fae44cdf2898f39c7f24f080d7c88b83d7c593
 ARG FLAGGEMS_VERSION=5.3.0
 ARG FLAGCX_COMMIT=68f069fe4ff2af9e8017b74aee8dee60c59e3b1d
@@ -134,7 +135,11 @@ RUN --mount=type=secret,id=git_proxy,required=false \
 
 # Bake the matching plugin into the deployable runtime. CI later overlays the
 # checked-out source with an editable --no-deps install.
-RUN rm -rf /opt/sglang-plugin-fl && mkdir -p /opt/sglang-plugin-fl
+RUN test -n "${SGLANG_FL_REVISION}" && \
+    rm -rf /opt/sglang-plugin-fl && \
+    mkdir -p /opt/sglang-plugin-fl && \
+    printf '%s\n' "${SGLANG_FL_REVISION}" \
+        > /opt/sglang-plugin-fl/.flagos-source-commit
 COPY pyproject.toml /opt/sglang-plugin-fl/pyproject.toml
 COPY sglang_fl /opt/sglang-plugin-fl/sglang_fl
 RUN python3 -m pip uninstall -y sglang-fl >/dev/null 2>&1 || true && \
@@ -149,6 +154,7 @@ RUN chmod 0755 /usr/local/bin/verify-sglang-fl-ascend && \
 LABEL ai.flagos.sglang.version="${SGLANG_VERSION}" \
       ai.flagos.sglang.revision="${SGLANG_COMMIT}" \
       ai.flagos.sglang-plugin-fl.version="0.1.0" \
+      ai.flagos.sglang-plugin-fl.revision="${SGLANG_FL_REVISION}" \
       ai.flagos.flaggems.revision="${FLAGGEMS_COMMIT}" \
       ai.flagos.flagcx.revision="${FLAGCX_COMMIT}" \
       ai.flagos.sgl-kernel-npu.release="${SGL_KERNEL_NPU_RELEASE}" \
@@ -180,6 +186,7 @@ WORKDIR /workspace
 
 # Build from the repository root so the plugin and verifier are in context:
 #   docker build --platform linux/arm64 --target ci \
+#     --build-arg SGLANG_FL_REVISION="$(git rev-parse HEAD)" \
 #     --secret id=git_proxy,env=GIT_PROXY \
 #     -f docker/ascend/empty-0.5.18.containerfile \
 #     -t harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-ascend-sglang0.5.18-ci .

@@ -104,6 +104,16 @@ def test_source_trees_are_recreated_instead_of_overlaid() -> None:
     assert "rm -rf /opt/sglang-plugin-fl" in dockerfile
 
 
+def test_plugin_source_revision_is_required_and_labeled() -> None:
+    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "ARG SGLANG_FL_REVISION" in dockerfile
+    assert 'test -n "${SGLANG_FL_REVISION}"' in dockerfile
+    assert "/opt/sglang-plugin-fl/.flagos-source-commit" in dockerfile
+    assert "ai.flagos.sglang-plugin-fl.revision" in dockerfile
+    assert '--build-arg SGLANG_FL_REVISION="$(git rev-parse HEAD)"' in dockerfile
+
+
 def test_kernel_release_provenance_is_labeled() -> None:
     dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
 
