@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.7
-
 # Upgrade the validated 910C empty runtime to SGLang 0.5.18 while preserving
 # its CANN 8.5 / torch 2.8 / torch_npu 2.8 vendor stack.
 ARG BASE_IMAGE=harbor.baai.ac.cn/flagos-inner-models-release/flagrelease-qwen3.6-ascend-empty-tree_none-gems_5.3.0rc2-sgl_0.5.11-plugin_0.1.0-cx_0.13.0-python_3.11.14-torch_npu_2.8.0.post2-pcp_cann8.5.0-gpu_a3-arc_arm64-driver_25.5.0:202608291915
