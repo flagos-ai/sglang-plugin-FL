@@ -15,6 +15,7 @@
 """Regression tests for the independent SGLang 0.5.18 Ascend adaptation."""
 
 from pathlib import Path
+import runpy
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -149,16 +150,175 @@ def test_ascend_entrypoints_do_not_export_removed_spec_v2_toggle() -> None:
         )
 
 
-def test_ascend_mtp_correctness_gates_are_not_warnings() -> None:
+def test_ascend_mtp_correctness_uses_strict_semantic_gate() -> None:
     root = Path(__file__).parents[3]
     source = (root / "examples" / "qwen3_6_27b_mtp_inference.py").read_text(
         encoding="utf-8"
     )
 
-    assert 'print("    FAIL: <90% match")' in source
+    assert 'print("    FAIL: <100% semantic contract agreement")' in source
+    assert '"    FAIL: speculative decode/target prefill mismatch "' in source
     assert 'print("    FAIL: stats not available")' in source
-    assert 'print("    WARN: <90% match' not in source
+    assert 'print("    WARN: <90% exact match;' in source
     assert 'print("    SKIP: stats not available")' not in source
+
+
+def test_ascend_mtp_semantic_contracts_reject_superficial_matches() -> None:
+    root = Path(__file__).parents[3]
+    namespace = runpy.run_path(root / "examples" / "qwen3_6_27b_mtp_inference.py")
+    validate = namespace["_validate_output"]
+
+    assert validate({"expected_number": 50}, "50")[0] is True
+    assert validate({"expected_number": 50}, "There are not 50 but 51.")[0] is False
+    assert validate({"expected_exact": ["paris"]}, "**Paris.**")[0] is True
+    assert validate({"expected_exact": ["paris"]}, "Paris, France")[0] is False
+    assert (
+        validate(
+            {"expected_number_sequence": [2, 3, 5, 7, 11]},
+            "2, 3, 5, 7, 11",
+        )[0]
+        is True
+    )
+    assert (
+        validate(
+            {"expected_number_sequence": [2, 3, 5, 7, 11]},
+            "The first 5 are 2, 3, 5, 7, 11",
+        )[0]
+        is False
+    )
+
+    recursive_spec = {
+        "python_function": "factorial",
+        "python_contract": "recursive",
+    }
+    assert (
+        validate(
+            recursive_spec,
+            "def factorial(n):\n    return 1 if n < 2 else n * factorial(n - 1)",
+        )[0]
+        is True
+    )
+    assert (
+        validate(recursive_spec, "def factorial(n):\n    return factorial(n - 1)")[0]
+        is False
+    )
+    assert (
+        validate(
+            recursive_spec,
+            "def factorial(n):\n    return 1 if n < 2 else 120",
+        )[0]
+        is False
+    )
+
+    palindrome_spec = {
+        "python_function": "is_palindrome",
+        "python_contract": "reverse_slice_comparison",
+    }
+    assert (
+        validate(
+            palindrome_spec,
+            "def is_palindrome(s):\n    return s == s[::-1]",
+        )[0]
+        is True
+    )
+    assert (
+        validate(palindrome_spec, "def is_palindrome(s):\n    return True")[0] is False
+    )
+    assert (
+        validate(
+            palindrome_spec,
+            "def is_palindrome(s):\n    return s != 'abc'",
+        )[0]
+        is False
+    )
+
+
+def test_ascend_mtp_logprob_conformance_rejects_false_positives() -> None:
+    root = Path(__file__).parents[3]
+    namespace = runpy.run_path(root / "examples" / "qwen3_6_27b_mtp_inference.py")
+    check = namespace["run_logprob_conformance"]
+    check.__globals__["_text_prompt"] = lambda prompt: prompt
+
+    class FakeEngine:
+        def __init__(self, mode: str):
+            self.mode = mode
+
+        def generate(
+            self,
+            prompt=None,
+            sampling_params=None,
+            input_ids=None,
+            **_kwargs,
+        ):
+            del sampling_params
+            if prompt is not None:
+                value = -0.03 if self.mode == "all_near_ties" else -0.1
+                return {
+                    "meta_info": {
+                        "prompt_tokens": 3,
+                        "input_token_logprobs": [
+                            (-0.2, 1, None),
+                            (-0.2, 2, None),
+                            (-0.2, 3, None),
+                        ],
+                        "output_token_logprobs": [
+                            (value, token_id, None) for token_id in range(100, 132)
+                        ],
+                        "output_top_logprobs": [
+                            [(value, token_id, None), (-1.0, 999, None)]
+                            for token_id in range(100, 132)
+                        ],
+                    }
+                }
+
+            assert input_ids is not None
+            output_ids = input_ids[-32:]
+            value = -0.03 if self.mode == "all_near_ties" else -0.1
+            score_ids = list(output_ids)
+            if self.mode == "token_mismatch":
+                score_ids[0] += 1
+
+            top_logprobs = []
+            for token_id in output_ids:
+                if self.mode == "nan_top":
+                    top_logprobs.append(
+                        [(float("nan"), token_id, None), (-1.0, 999, None)]
+                    )
+                elif self.mode == "all_near_ties":
+                    top_logprobs.append([(0.0, 999, None), (value, token_id, None)])
+                else:
+                    top_logprobs.append([(value, token_id, None), (-1.0, 999, None)])
+
+            return {
+                "meta_info": {
+                    "prompt_tokens": len(input_ids),
+                    "input_token_logprobs": [
+                        *[(-0.2, token_id, None) for token_id in input_ids[:-32]],
+                        *[(value, token_id, None) for token_id in score_ids],
+                    ],
+                    "input_top_logprobs": [
+                        *[[] for _ in input_ids[:-32]],
+                        *top_logprobs,
+                    ],
+                }
+            }
+
+    good = check(FakeEngine("good"))
+    assert good["passed"] is True
+    assert good["scored_tokens"] == 64
+    assert good["near_ties"] == 0
+
+    token_mismatch = check(FakeEngine("token_mismatch"))
+    assert token_mismatch["passed"] is False
+    assert any("token-id mismatch" in error for error in token_mismatch["errors"])
+
+    nan_top = check(FakeEngine("nan_top"))
+    assert nan_top["passed"] is False
+    assert any("non-finite top-logprob" in error for error in nan_top["errors"])
+
+    systematic_second_best = check(FakeEngine("all_near_ties"))
+    assert systematic_second_best["passed"] is False
+    assert systematic_second_best["near_ties"] == 64
 
 
 def test_ascend_mamba_state_update_disables_multibuffer(monkeypatch) -> None:
@@ -179,9 +339,11 @@ def test_ascend_mamba_state_update_disables_multibuffer(monkeypatch) -> None:
     monkeypatch.setattr(
         mamba_state_update.importlib,
         "import_module",
-        lambda name: module
-        if name == mamba_state_update._KERNEL_MODULE
-        else pytest.fail(f"unexpected import: {name}"),
+        lambda name: (
+            module
+            if name == mamba_state_update._KERNEL_MODULE
+            else pytest.fail(f"unexpected import: {name}")
+        ),
     )
 
     assert mamba_state_update.patch_mamba_state_update_multibuffer() is True
@@ -268,9 +430,9 @@ def test_ascend_single_node_entrypoints_default_gloo_to_loopback() -> None:
         encoding="utf-8"
     )
     assert 'GLOO_SOCKET_IFNAME="${GLOO_SOCKET_IFNAME:-lo}"' in common
-    assert "-z \"${HCCL_HOST_SOCKET_PORT_RANGE+x}\"" in common
-    assert "-z \"${HCCL_NPU_SOCKET_PORT_RANGE+x}\"" in common
-    assert "-z \"${HCCL_IF_BASE_PORT+x}\"" in common
+    assert '-z "${HCCL_HOST_SOCKET_PORT_RANGE+x}"' in common
+    assert '-z "${HCCL_NPU_SOCKET_PORT_RANGE+x}"' in common
+    assert '-z "${HCCL_IF_BASE_PORT+x}"' in common
     assert "export HCCL_HOST_SOCKET_PORT_RANGE=auto" in common
     assert "export HCCL_NPU_SOCKET_PORT_RANGE=auto" in common
     assert "HCCL_HOST_SOCKET_PORT_RANGE=%s" in common

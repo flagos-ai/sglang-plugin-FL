@@ -4,7 +4,7 @@
 
 Validates that speculative decoding (EAGLE/MTP) works correctly with the OOT plugin.
 Tests include:
-  1. Correctness: MTP output matches baseline (greedy, temperature=0)
+  1. Correctness: MTP and baseline outputs satisfy the same semantic contracts
   2. Accept length: avg_spec_accept_length > threshold
   3. Throughput: single-request token generation speed
   4. Diverse prompts: code, math, reasoning, factual Q&A, long-form
@@ -19,8 +19,11 @@ Environment variables:
 """
 
 import argparse
+import ast
 import inspect
+import math
 import os
+import re
 import sys
 import time
 
@@ -67,63 +70,81 @@ MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "256"))
 PROMPTS = [
     # Factual Q&A (short answers)
     {
-        "prompt": "How many states are there in the United States?",
-        "expected_contains": ["50"],
+        "prompt": "How many states are there in the United States? Give only the integer.",
+        "expected_number": 50,
         "category": "factual",
     },
     {
-        "prompt": "The capital of France is",
-        "expected_contains": ["paris"],
+        "prompt": "What is the capital of France? Give only the city name.",
+        "expected_exact": ["paris"],
         "category": "factual",
     },
     {
-        "prompt": "What is the largest planet in the solar system?",
-        "expected_contains": ["jupiter"],
+        "prompt": (
+            "What is the largest planet in the solar system? Give only the planet name."
+        ),
+        "expected_exact": ["jupiter"],
         "category": "factual",
     },
     # Math / reasoning
     {
         "prompt": "What is 17 multiplied by 13? Give only the number.",
-        "expected_contains": ["221"],
+        "expected_number": 221,
         "category": "math",
     },
     {
-        "prompt": "If a train travels at 60 km/h for 2.5 hours, how far does it travel? Answer with the number in km.",
-        "expected_contains": ["150"],
+        "prompt": (
+            "If a train travels at 60 km/h for 2.5 hours, how far does it travel? "
+            "Give only the number, without a unit."
+        ),
+        "expected_number": 150,
         "category": "math",
     },
     # Code generation (tests repetitive token patterns — good for MTP)
     {
-        "prompt": "Write a Python function that computes the factorial of n recursively.",
-        "expected_contains": ["def", "factorial", "return"],
+        "prompt": (
+            "Write only a concise Python function named factorial that computes the "
+            "factorial of n recursively. Do not add a docstring, comments, or explanation."
+        ),
+        "python_function": "factorial",
+        "python_contract": "recursive",
         "category": "code",
     },
     {
-        "prompt": "Write a Python function to check if a string is a palindrome.",
-        "expected_contains": ["def", "return"],
+        "prompt": (
+            "Write only a concise Python function named is_palindrome that checks whether "
+            "a string is a palindrome by comparing it with its [::-1] slice. Do not add "
+            "a docstring, comments, or explanation."
+        ),
+        "python_function": "is_palindrome",
+        "python_contract": "reverse_slice_comparison",
         "category": "code",
     },
     # Long-form explanation
     {
         "prompt": "Explain the concept of gravity in three sentences.",
-        "expected_contains": ["mass"],
+        "expected_terms": ["mass"],
         "category": "explanation",
     },
     {
         "prompt": "What are the three states of matter? Explain each briefly.",
-        "expected_contains": ["solid", "liquid", "gas"],
+        "expected_terms": ["solid", "liquid", "gas"],
         "category": "explanation",
     },
     # Structured output
     {
-        "prompt": "List the first 5 prime numbers, separated by commas.",
-        "expected_contains": ["2", "3", "5", "7", "11"],
+        "prompt": (
+            "Give only the first 5 prime numbers separated by commas, with no other text."
+        ),
+        "expected_number_sequence": [2, 3, 5, 7, 11],
         "category": "structured",
     },
     # Translation / multilingual
     {
-        "prompt": 'Translate "hello world" to French.',
-        "expected_contains": ["bonjour"],
+        "prompt": (
+            'Translate "hello world" to French. Give only the French translation.'
+        ),
+        "expected_exact": ["bonjour le monde", "bonjour tout le monde"],
         "category": "translation",
     },
     # Longer generation (good for measuring sustained MTP performance)
@@ -314,6 +335,399 @@ def run_long_generation(engine, prompt, max_tokens=512):
     return text, tokens, elapsed
 
 
+def _extract_python_source(text: str) -> str:
+    """Remove one Markdown code fence without accepting surrounding prose."""
+    source = text.strip()
+    if not source.startswith("```"):
+        return source
+
+    lines = source.splitlines()
+    if not lines or not lines[0].startswith("```"):
+        return source
+    lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines.pop()
+    return "\n".join(lines).strip()
+
+
+_SAFE_PYTHON_NODES = (
+    ast.Module,
+    ast.FunctionDef,
+    ast.arguments,
+    ast.arg,
+    ast.Return,
+    ast.If,
+    ast.IfExp,
+    ast.Compare,
+    ast.BinOp,
+    ast.BoolOp,
+    ast.UnaryOp,
+    ast.Subscript,
+    ast.Slice,
+    ast.Constant,
+    ast.Name,
+    ast.Load,
+    ast.Call,
+    ast.Mult,
+    ast.Sub,
+    ast.Add,
+    ast.Mod,
+    ast.FloorDiv,
+    ast.And,
+    ast.Or,
+    ast.Not,
+    ast.USub,
+    ast.Eq,
+    ast.NotEq,
+    ast.Lt,
+    ast.LtE,
+    ast.Gt,
+    ast.GtE,
+)
+
+
+def _run_restricted_python_contract(tree, function_name: str, contract: str):
+    """Execute a single tiny function after rejecting side-effecting syntax."""
+    if len(tree.body) != 1 or not isinstance(tree.body[0], ast.FunctionDef):
+        return False, "expected exactly one synchronous function"
+    function_node = tree.body[0]
+    if function_node.name != function_name or function_node.decorator_list:
+        return False, f"unexpected function definition for {function_name}"
+    args = function_node.args
+    if (
+        len(args.posonlyargs) + len(args.args) != 1
+        or args.vararg is not None
+        or args.kwarg is not None
+        or args.kwonlyargs
+        or args.defaults
+        or args.kw_defaults
+    ):
+        return False, f"function {function_name} must accept exactly one argument"
+
+    for node in ast.walk(tree):
+        if not isinstance(node, _SAFE_PYTHON_NODES):
+            return False, f"unsafe or unsupported Python node: {type(node).__name__}"
+        if isinstance(node, ast.Call) and not (
+            isinstance(node.func, ast.Name) and node.func.id == function_name
+        ):
+            return False, "only direct recursion is allowed"
+
+    argument_name = (args.posonlyargs + args.args)[0].arg
+    if contract == "recursive":
+        has_branch = any(
+            isinstance(node, (ast.If, ast.IfExp)) for node in ast.walk(function_node)
+        )
+        has_decrementing_recursive_call = any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == function_name
+            and len(node.args) == 1
+            and not node.keywords
+            and isinstance(node.args[0], ast.BinOp)
+            and isinstance(node.args[0].left, ast.Name)
+            and node.args[0].left.id == argument_name
+            and isinstance(node.args[0].op, ast.Sub)
+            and isinstance(node.args[0].right, ast.Constant)
+            and node.args[0].right.value == 1
+            for node in ast.walk(function_node)
+        )
+        if not has_branch or not has_decrementing_recursive_call:
+            return (
+                False,
+                "factorial contract requires a branch and direct n - 1 recursion",
+            )
+    elif contract == "reverse_slice_comparison":
+
+        def is_reverse_slice(node):
+            return (
+                isinstance(node, ast.Subscript)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == argument_name
+                and isinstance(node.slice, ast.Slice)
+                and node.slice.lower is None
+                and node.slice.upper is None
+                and isinstance(node.slice.step, ast.UnaryOp)
+                and isinstance(node.slice.step.op, ast.USub)
+                and isinstance(node.slice.step.operand, ast.Constant)
+                and node.slice.step.operand.value == 1
+            )
+
+        has_reverse_slice_comparison = any(
+            isinstance(node, ast.Compare)
+            and (
+                (
+                    isinstance(node.left, ast.Name)
+                    and node.left.id == argument_name
+                    and any(is_reverse_slice(item) for item in node.comparators)
+                )
+                or (
+                    is_reverse_slice(node.left)
+                    and any(
+                        isinstance(item, ast.Name) and item.id == argument_name
+                        for item in node.comparators
+                    )
+                )
+            )
+            for node in ast.walk(function_node)
+        )
+        if not has_reverse_slice_comparison:
+            return (
+                False,
+                "palindrome contract requires comparison with the s[::-1] slice",
+            )
+
+    try:
+        namespace = {"__builtins__": {}, "bool": bool, "int": int, "str": str}
+        exec(compile(tree, "<generated-contract>", "exec"), namespace)
+        function = namespace[function_name]
+        if contract == "recursive":
+            cases = [(0, 1), (1, 1), (5, 120)]
+        elif contract == "reverse_slice_comparison":
+            cases = [("", True), ("abba", True), ("abc", False)]
+        else:
+            return False, f"unknown Python contract: {contract}"
+        for value, expected in cases:
+            actual = function(value)
+            if actual != expected or type(actual) is not type(expected):
+                return False, (
+                    f"{function_name}({value!r}) returned {actual!r}, "
+                    f"expected {expected!r}"
+                )
+    except Exception as exc:
+        return False, f"function execution failed: {type(exc).__name__}: {exc}"
+    return True, f"passed {len(cases)} restricted execution cases"
+
+
+def _validate_output(prompt_spec: dict, text: str) -> tuple[bool, str]:
+    """Validate one response with a deterministic, prompt-specific contract."""
+    function_name = prompt_spec.get("python_function")
+    if function_name:
+        try:
+            tree = ast.parse(_extract_python_source(text))
+        except SyntaxError as exc:
+            return False, f"invalid Python: {exc.msg}"
+
+        return _run_restricted_python_contract(
+            tree, function_name, prompt_spec.get("python_contract")
+        )
+
+    expected_number = prompt_spec.get("expected_number")
+    if expected_number is not None:
+        match = re.fullmatch(r"\s*(?:\*\*)?(-?\d+(?:\.\d+)?)(?:\*\*)?[.!]?\s*", text)
+        if match and float(match.group(1)) == float(expected_number):
+            return True, f"exact numeric answer {expected_number}"
+        return False, f"expected only numeric answer {expected_number}"
+
+    expected_sequence = prompt_spec.get("expected_number_sequence")
+    if expected_sequence:
+        numbers = [int(match) for match in re.findall(r"(?<!\w)-?\d+(?!\w)", text)]
+        if numbers == expected_sequence:
+            return True, f"exact numeric sequence {expected_sequence}"
+        return False, f"expected only numeric sequence {expected_sequence}"
+
+    expected_exact = prompt_spec.get("expected_exact", [])
+    if expected_exact:
+        normalized = re.sub(r"\s+", " ", text.strip().lower())
+        normalized = normalized.strip("`*_\"' .!?。！")
+        if normalized in expected_exact:
+            return True, f"exact normalized answer {normalized!r}"
+        return False, f"expected one of {expected_exact}, got {normalized!r}"
+
+    expected_terms = prompt_spec.get("expected_terms", [])
+    if expected_terms:
+        lower = text.lower()
+        missing = [
+            item
+            for item in expected_terms
+            if re.search(rf"(?<!\w){re.escape(item.lower())}(?!\w)", lower) is None
+        ]
+        if not missing:
+            return True, f"contains terms {expected_terms}"
+        return False, f"missing {missing}"
+
+    min_length = prompt_spec.get("min_length")
+    if min_length is not None:
+        if len(text) >= min_length:
+            return True, f"length={len(text)} >= {min_length}"
+        return False, f"length={len(text)} < {min_length}"
+
+    if text.strip():
+        return True, "non-empty response"
+    return False, "empty response"
+
+
+def run_logprob_conformance(engine) -> dict:
+    """Compare speculative decode logprobs with target-model prefill scores.
+
+    This follows SGLang's speculative decoding conformance test: generate on the
+    speculative path, then teacher-force the exact generated token ids through
+    prefill scoring in the same engine. Free-form text equality is not a sound
+    oracle after a near-tied BF16 token diverges, but target logprobs under the
+    identical prefix are.
+    """
+    prompts = [
+        "The capital of France is",
+        "Explain quantum computing in simple terms:",
+    ]
+    logprob_delta_limit = 0.5
+    choice_gap_limit = 0.05
+    expected_tokens = len(prompts) * 32
+    near_tie_limit = max(1, expected_tokens // 100)
+    max_delta = 0.0
+    large_gap_violations = 0
+    near_ties = 0
+    scored_tokens = 0
+    errors = []
+
+    for prompt in prompts:
+        generated = engine.generate(
+            prompt=_text_prompt(prompt),
+            sampling_params={
+                "temperature": 0,
+                "max_new_tokens": 32,
+                "ignore_eos": True,
+            },
+            return_logprob=True,
+            top_logprobs_num=5,
+            logprob_start_len=0,
+        )
+        meta = generated.get("meta_info", {})
+        decode_logprobs = meta.get("output_token_logprobs") or []
+        decode_top_logprobs = meta.get("output_top_logprobs") or []
+        input_logprobs = meta.get("input_token_logprobs") or []
+        input_token_ids = [entry[1] for entry in input_logprobs]
+        output_token_ids = [entry[1] for entry in decode_logprobs]
+        prompt_tokens = meta.get("prompt_tokens")
+        if not decode_logprobs or not input_token_ids or prompt_tokens is None:
+            errors.append(f"missing generation logprobs for {prompt!r}")
+            continue
+        if len(decode_top_logprobs) != len(decode_logprobs):
+            errors.append(f"missing decode top-logprobs for {prompt!r}")
+            continue
+        if len(input_token_ids) != prompt_tokens:
+            errors.append(
+                f"generation prompt-token mismatch for {prompt!r}: "
+                f"ids={len(input_token_ids)}, metadata={prompt_tokens}"
+            )
+            continue
+
+        scored = engine.generate(
+            input_ids=input_token_ids + output_token_ids,
+            sampling_params={"temperature": 0, "max_new_tokens": 0},
+            return_logprob=True,
+            top_logprobs_num=5,
+            logprob_start_len=0,
+        )
+        score_meta = scored.get("meta_info", {})
+        score_prompt_tokens = score_meta.get("prompt_tokens")
+        expected_score_tokens = len(input_token_ids) + len(output_token_ids)
+        if score_prompt_tokens != expected_score_tokens:
+            errors.append(
+                f"score prompt-token mismatch for {prompt!r}: "
+                f"metadata={score_prompt_tokens}, expected={expected_score_tokens}"
+            )
+            continue
+        score_logprobs = (score_meta.get("input_token_logprobs") or [])[prompt_tokens:]
+        score_top_logprobs = (score_meta.get("input_top_logprobs") or [])[
+            prompt_tokens:
+        ]
+        if len(decode_logprobs) != len(score_logprobs):
+            errors.append(
+                f"logprob length mismatch for {prompt!r}: "
+                f"decode={len(decode_logprobs)}, prefill={len(score_logprobs)}"
+            )
+            continue
+        if len(score_top_logprobs) != len(score_logprobs):
+            errors.append(f"missing prefill top-logprobs for {prompt!r}")
+            continue
+
+        for decode_entry, decode_top_entries, score_entry, top_entries in zip(
+            decode_logprobs,
+            decode_top_logprobs,
+            score_logprobs,
+            score_top_logprobs,
+        ):
+            decode_value = decode_entry[0]
+            score_value = score_entry[0]
+            chosen_id = decode_entry[1]
+            if score_entry[1] != chosen_id:
+                errors.append(
+                    f"teacher-force token-id mismatch for {prompt!r}: "
+                    f"decode={chosen_id}, prefill={score_entry[1]}"
+                )
+                continue
+            if decode_value is None or score_value is None:
+                errors.append(f"null token logprob for {prompt!r}")
+                continue
+            decode_value = float(decode_value)
+            score_value = float(score_value)
+            if not math.isfinite(decode_value) or not math.isfinite(score_value):
+                errors.append(f"non-finite token logprob for {prompt!r}")
+                continue
+            delta = abs(decode_value - score_value)
+            max_delta = max(max_delta, delta)
+            scored_tokens += 1
+
+            available_decode_top = [
+                entry for entry in (decode_top_entries or []) if entry[0] is not None
+            ]
+            if not available_decode_top or any(
+                not math.isfinite(float(entry[0])) for entry in available_decode_top
+            ):
+                errors.append(f"invalid decode top-logprobs for {prompt!r}")
+                continue
+            decode_chosen = [
+                entry for entry in available_decode_top if entry[1] == chosen_id
+            ]
+            if not decode_chosen:
+                errors.append(
+                    f"chosen token missing from decode top-logprobs for {prompt!r}"
+                )
+                continue
+            decode_top_value = max(float(entry[0]) for entry in available_decode_top)
+            decode_chosen_value = max(float(entry[0]) for entry in decode_chosen)
+            if decode_top_value - decode_chosen_value > 1e-6:
+                errors.append(
+                    f"temperature-0 decode did not choose top1 for {prompt!r}"
+                )
+                continue
+
+            available_top = [
+                entry for entry in (top_entries or []) if entry[0] is not None
+            ]
+            if not available_top:
+                errors.append(f"empty top-logprobs for {prompt!r}")
+                continue
+            if any(not math.isfinite(float(entry[0])) for entry in available_top):
+                errors.append(f"non-finite top-logprob for {prompt!r}")
+                continue
+            top_value, top_id = max(available_top, key=lambda entry: entry[0])[:2]
+            if top_id != chosen_id:
+                gap = float(top_value) - score_value
+                if not math.isfinite(gap) or gap < 0:
+                    errors.append(f"invalid target choice gap for {prompt!r}: {gap}")
+                elif gap > choice_gap_limit:
+                    large_gap_violations += 1
+                else:
+                    near_ties += 1
+
+    return {
+        "passed": not errors
+        and scored_tokens == expected_tokens
+        and max_delta < logprob_delta_limit
+        and large_gap_violations == 0
+        and near_ties <= near_tie_limit,
+        "max_delta": max_delta,
+        "logprob_delta_limit": logprob_delta_limit,
+        "choice_gap_limit": choice_gap_limit,
+        "large_gap_violations": large_gap_violations,
+        "near_ties": near_ties,
+        "near_tie_limit": near_tie_limit,
+        "scored_tokens": scored_tokens,
+        "errors": errors,
+    }
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 
@@ -380,6 +794,19 @@ def main():
     print(f"  Effective overlap schedule: {not effective_disable_overlap}")
 
     mtp_results = run_inference(mtp_engine, PROMPTS, max_tokens)
+
+    print("\n  Target-token logprob conformance (decode vs prefill):")
+    logprob_conformance = run_logprob_conformance(mtp_engine)
+    print(
+        "    "
+        f"tokens={logprob_conformance['scored_tokens']}, "
+        f"max_delta={logprob_conformance['max_delta']:.6f}, "
+        f"near_ties={logprob_conformance['near_ties']}/"
+        f"{logprob_conformance['near_tie_limit']}, "
+        f"large_gap_violations={logprob_conformance['large_gap_violations']}"
+    )
+    for error in logprob_conformance["errors"]:
+        print(f"    ERROR: {error}")
 
     print(f"\n  Results ({len(PROMPTS)} prompts):")
     for p, (text, meta, lat) in zip(PROMPTS, mtp_results):
@@ -461,38 +888,23 @@ def main():
 
     # 3a. Content correctness
     print("\n  [Content Correctness]")
+    mtp_validity = []
     for p, (text, _, _) in zip(PROMPTS, mtp_results):
-        lower = text.lower()
-        if p["expected_contains"]:
-            matched = all(exp.lower() in lower for exp in p["expected_contains"])
-            if matched:
-                print(f"    PASS [{p['category']:12}] {p['prompt'][:45]}")
-                passed += 1
-            else:
-                print(f"    FAIL [{p['category']:12}] {p['prompt'][:45]}")
-                print(f"         expected: {p['expected_contains']}")
-                print(f"         got: {text[:100]}")
-                failed += 1
-        elif p.get("min_length"):
-            if len(text) >= p["min_length"]:
-                print(
-                    f"    PASS [{p['category']:12}] length={len(text)} >= {p['min_length']}"
-                )
-                passed += 1
-            else:
-                print(
-                    f"    FAIL [{p['category']:12}] length={len(text)} < {p['min_length']}"
-                )
-                failed += 1
+        valid, detail = _validate_output(p, text)
+        mtp_validity.append(valid)
+        if valid:
+            print(f"    PASS [{p['category']:12}] {p['prompt'][:45]} ({detail})")
+            passed += 1
         else:
-            if len(text.strip()) > 0:
-                passed += 1
-            else:
-                failed += 1
+            print(f"    FAIL [{p['category']:12}] {p['prompt'][:45]} ({detail})")
+            print(f"         got: {text[:100]}")
+            failed += 1
 
-    # 3b. MTP vs Baseline comparison
+    # 3b. MTP vs baseline comparison. Full free-form text may diverge on BF16
+    # hardware even with greedy decoding, so exact equality is diagnostic. The
+    # strict gate requires both engines to satisfy the same semantic contract.
     if baseline_results:
-        print("\n  [MTP vs Baseline Match (greedy, temp=0)]")
+        print("\n  [MTP vs Baseline Exact Match (greedy, temp=0; diagnostic)]")
         match_count = 0
         for p, (mtp_text, _, _), (base_text, _, _) in zip(
             PROMPTS, mtp_results, baseline_results
@@ -509,8 +921,53 @@ def main():
             print("    PASS: >=90% match")
             passed += 1
         else:
-            print("    FAIL: <90% match")
+            print("    WARN: <90% exact match; applying strict semantic contracts")
+            warnings += 1
+
+        print("\n  [MTP and Baseline Semantic Contract Agreement]")
+        semantic_match_count = 0
+        for p, mtp_valid, (base_text, _, _) in zip(
+            PROMPTS, mtp_validity, baseline_results
+        ):
+            base_valid, base_detail = _validate_output(p, base_text)
+            if mtp_valid and base_valid:
+                semantic_match_count += 1
+                print(f"    PASS [{p['category']:12}] both outputs satisfy contract")
+            else:
+                print(f"    FAIL [{p['category']:12}] semantic contract disagreement")
+                print(f"         MTP valid: {mtp_valid}")
+                print(f"         Base: {base_detail}")
+        semantic_match_pct = semantic_match_count / len(PROMPTS) * 100
+        print(
+            "    Agreement: "
+            f"{semantic_match_count}/{len(PROMPTS)} ({semantic_match_pct:.0f}%)"
+        )
+        if semantic_match_count == len(PROMPTS):
+            print("    PASS: 100% semantic contract agreement")
+            passed += 1
+        else:
+            print("    FAIL: <100% semantic contract agreement")
             failed += 1
+
+    print("\n  [Target-Token Logprob Conformance]")
+    if logprob_conformance["passed"]:
+        print(
+            "    PASS: speculative decode matches target prefill scoring "
+            f"({logprob_conformance['scored_tokens']} tokens, "
+            f"max delta {logprob_conformance['max_delta']:.6f})"
+        )
+        passed += 1
+    else:
+        print(
+            "    FAIL: speculative decode/target prefill mismatch "
+            f"(tokens={logprob_conformance['scored_tokens']}, "
+            f"max delta={logprob_conformance['max_delta']:.6f}, "
+            f"near ties={logprob_conformance['near_ties']}/"
+            f"{logprob_conformance['near_tie_limit']}, "
+            "large-gap violations="
+            f"{logprob_conformance['large_gap_violations']})"
+        )
+        failed += 1
 
     # 3c. Accept length check
     print("\n  [Speculative Accept Length]")
