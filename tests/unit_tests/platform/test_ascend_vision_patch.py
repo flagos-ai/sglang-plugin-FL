@@ -161,7 +161,9 @@ def test_qwen36_masked_attention_keeps_unpadded_sdpa_fallback(monkeypatch) -> No
     assert instance.sdpa_calls[0]["attention_mask"] == "mask"
 
 
-def test_aligned_head_keeps_fused_attention_and_patch_is_idempotent(monkeypatch) -> None:
+def test_aligned_head_keeps_fused_attention_and_patch_is_idempotent(
+    monkeypatch,
+) -> None:
     from sglang_fl.dispatch.backends.vendor.ascend.patches.vision import (
         patch_vision_ascend_attention,
     )
