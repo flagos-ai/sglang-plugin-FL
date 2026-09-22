@@ -1,52 +1,73 @@
 """CANN 8.5 compatibility for SGLang's fused logprob top-k kernel.
 
-On 910C, BiSheng IR compilation of ``_row_logsumexp_topk_kernel`` can
-segfault when Triton Ascend enables automatic multi-buffering.  This path is
-used by ``return_logprob`` with ``top_logprobs_num`` and is also SGLang's
-speculative decode-vs-prefill conformance oracle.  Disable multi-buffering
-only for this fused top-k kernel; the ordinary row-logsumexp kernel and all
-other Triton launches retain their compiler defaults.
+On 910C, BiSheng IR cannot compile ``_row_logsumexp_topk_kernel``.  The
+failure remains when automatic multi-buffering is disabled, so changing a
+compiler option is not a sufficient workaround.
+
+Replace only the public fused helper with a split implementation: SGLang's
+ordinary single-pass ``row_logsumexp`` kernel still computes the fp32 row
+normalizer, while ``torch.topk`` selects the raw logits.  This retains the
+low-memory normalizer and avoids materializing a full-vocabulary log-softmax
+tensor.  It also matches SGLang's existing non-fused top-k behavior.
 """
 
 from __future__ import annotations
 
-from functools import wraps
 import importlib
 import logging
-from typing import Any
+from functools import wraps
+
+import torch
 
 
 logger = logging.getLogger(__name__)
 
 _KERNEL_MODULE = "sglang.srt.layers.logsumexp"
-_KERNEL_NAME = "_row_logsumexp_topk_kernel"
-_PATCH_MARKER = "_sglang_fl_cann85_multibuffer_disabled"
+_TOPK_NAME = "row_logsumexp_topk"
+_ROW_LSE_NAME = "row_logsumexp"
+_FUSED_LIMIT_NAME = "FUSED_TOPK_MAX_K"
+_PATCH_MARKER = "_sglang_fl_ascend_split_topk"
 
 
-def patch_logsumexp_topk_multibuffer() -> bool:
-    """Force ``multibuffer=False`` for the fused logprob top-k kernel."""
+def patch_logsumexp_topk_fallback() -> bool:
+    """Replace the fused helper with row-logsumexp plus ``torch.topk``."""
 
     try:
         module = importlib.import_module(_KERNEL_MODULE)
-        kernel = getattr(module, _KERNEL_NAME)
-        original_run = kernel.run
+        original_topk = getattr(module, _TOPK_NAME)
+        row_logsumexp = getattr(module, _ROW_LSE_NAME)
+        fused_max_k = getattr(module, _FUSED_LIMIT_NAME)
     except (AttributeError, ImportError):
-        logger.debug("SGLang fused logprob top-k kernel is unavailable", exc_info=True)
+        logger.debug("SGLang logprob top-k helpers are unavailable", exc_info=True)
         return False
 
-    if getattr(original_run, _PATCH_MARKER, False):
+    if getattr(original_topk, _PATCH_MARKER, False):
         return True
 
-    @wraps(original_run)
-    def run_without_multibuffer(*args: Any, **kwargs: Any) -> Any:
-        kwargs["multibuffer"] = False
-        return original_run(*args, **kwargs)
+    @wraps(original_topk)
+    def split_row_logsumexp_topk(
+        x: torch.Tensor, k: int
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        assert x.ndim == 2
+        assert x.dtype in (torch.float16, torch.bfloat16, torch.float32)
+        num_cols = x.shape[1]
+        assert 1 <= k <= min(fused_max_k, num_cols), (k, num_cols)
 
-    setattr(run_without_multibuffer, _PATCH_MARKER, True)
-    kernel.run = run_without_multibuffer
+        row_max, row_log_sum = row_logsumexp(x)
+        top_vals, top_idx = torch.topk(
+            x,
+            k,
+            dim=-1,
+            largest=True,
+            sorted=True,
+        )
+        return row_max, row_log_sum, top_vals.float(), top_idx
+
+    setattr(split_row_logsumexp_topk, _PATCH_MARKER, True)
+    setattr(module, _TOPK_NAME, split_row_logsumexp_topk)
     logger.info(
-        "Disabled Triton auto multi-buffering for %s.%s",
+        "Replaced %s.%s with row-logsumexp plus PyTorch top-k",
         _KERNEL_MODULE,
-        _KERNEL_NAME,
+        _TOPK_NAME,
     )
     return True

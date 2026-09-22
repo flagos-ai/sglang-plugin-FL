@@ -407,21 +407,30 @@ def test_ascend_mamba_state_update_patch_is_optional(monkeypatch) -> None:
     assert mamba_state_update.patch_mamba_state_update_multibuffer() is False
 
 
-def test_ascend_logsumexp_topk_disables_multibuffer(monkeypatch) -> None:
+def test_ascend_logsumexp_topk_uses_sglang_fallback(monkeypatch) -> None:
+    import torch
+
     from sglang_fl.dispatch.backends.vendor.ascend.patches import logsumexp
 
-    calls = []
+    fused_calls = []
+    row_lse_calls = []
 
-    class FakeKernel:
-        def __getitem__(self, grid):
-            return lambda *args, **kwargs: self.run(*args, grid=grid, **kwargs)
+    def fused_topk(*_args, **_kwargs):
+        fused_calls.append(True)
+        pytest.fail("the fused top-k helper must not be called")
 
-        def run(self, *args, **kwargs):
-            calls.append((args, kwargs))
-            return "result"
+    def row_lse(x):
+        row_lse_calls.append(x)
+        x32 = x.float()
+        row_max = x32.amax(dim=-1)
+        row_log_sum = torch.logsumexp(x32 - row_max[:, None], dim=-1)
+        return row_max, row_log_sum
 
-    kernel = FakeKernel()
-    module = SimpleNamespace(_row_logsumexp_topk_kernel=kernel)
+    module = SimpleNamespace(
+        FUSED_TOPK_MAX_K=8,
+        row_logsumexp=row_lse,
+        row_logsumexp_topk=fused_topk,
+    )
     monkeypatch.setattr(
         logsumexp.importlib,
         "import_module",
@@ -432,32 +441,29 @@ def test_ascend_logsumexp_topk_disables_multibuffer(monkeypatch) -> None:
         ),
     )
 
-    assert logsumexp.patch_logsumexp_topk_multibuffer() is True
-    patched_run = kernel.run
-    assert logsumexp.patch_logsumexp_topk_multibuffer() is True
-    assert kernel.run is patched_run
-    assert (
-        kernel[(32,)](
-            "logits",
-            K=5,
-            K_PAD=8,
-            BLOCK_N=16384,
-            multibuffer=True,
-        )
-        == "result"
+    assert logsumexp.patch_logsumexp_topk_fallback() is True
+    patched_topk = module.row_logsumexp_topk
+    assert module.FUSED_TOPK_MAX_K == 8
+
+    logits = torch.tensor(
+        [[1.0, 7.0, -2.0, 4.0], [3.0, -1.0, 9.0, 2.0]],
+        dtype=torch.bfloat16,
     )
-    assert calls == [
-        (
-            ("logits",),
-            {
-                "grid": (32,),
-                "K": 5,
-                "K_PAD": 8,
-                "BLOCK_N": 16384,
-                "multibuffer": False,
-            },
-        )
-    ]
+    row_max, row_log_sum, top_vals, top_idx = patched_topk(logits, 2)
+    expected_vals, expected_idx = torch.topk(logits, 2, dim=-1)
+
+    assert row_lse_calls == [logits]
+    assert fused_calls == []
+    assert row_max.dtype == torch.float32
+    assert row_log_sum.dtype == torch.float32
+    assert top_vals.dtype == torch.float32
+    assert top_idx.dtype == torch.int64
+    assert torch.equal(top_vals, expected_vals.float())
+    assert torch.equal(top_idx, expected_idx)
+
+    # Re-applying the patch is a no-op and preserves the split helper.
+    assert logsumexp.patch_logsumexp_topk_fallback() is True
+    assert module.row_logsumexp_topk is patched_topk
 
 
 def test_ascend_logsumexp_topk_patch_is_optional(monkeypatch) -> None:
@@ -467,7 +473,7 @@ def test_ascend_logsumexp_topk_patch_is_optional(monkeypatch) -> None:
         raise ImportError("SGLang logsumexp module is unavailable")
 
     monkeypatch.setattr(logsumexp.importlib, "import_module", missing)
-    assert logsumexp.patch_logsumexp_topk_multibuffer() is False
+    assert logsumexp.patch_logsumexp_topk_fallback() is False
 
 
 def test_ascend_single_node_entrypoints_default_gloo_to_loopback() -> None:

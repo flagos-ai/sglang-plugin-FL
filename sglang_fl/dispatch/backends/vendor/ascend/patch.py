@@ -6,8 +6,8 @@ These replace the compatibility edits still required on Huawei NPU:
     accept an unaligned head dimension
   - mamba_state_update: disable auto multi-buffering for the Qwen3.6 MTP
     state-copy tile that exceeds the 910C unified-buffer budget
-  - logsumexp: disable auto multi-buffering for SGLang's fused logprob top-k
-    kernel, which otherwise crashes the CANN 8.5 BiSheng compiler on 910C
+  - logsumexp: split logprob top-k into SGLang's ordinary row normalizer and
+    PyTorch top-k because CANN 8.5 cannot compile the fused kernel on 910C
 
 SGLang v0.5.18 already contains the current NPU attention-wrapper and Qwen-VL
 processor implementations. Keeping the old plugin replacements would discard
@@ -16,7 +16,7 @@ new v0.5.18 behavior, so those replacements are intentionally not applied.
 
 import logging
 
-from .patches.logsumexp import patch_logsumexp_topk_multibuffer
+from .patches.logsumexp import patch_logsumexp_topk_fallback
 from .patches.scheduler_pp import (
     patch_pp_launch_batch_sync,
     patch_pp_send_recv_order,
@@ -37,7 +37,7 @@ def apply_ascend_patches() -> None:
     patch_pp_launch_batch_sync()
     patch_vision_ascend_attention()
     patch_mamba_state_update_multibuffer()
-    patch_logsumexp_topk_multibuffer()
+    patch_logsumexp_topk_fallback()
     _patches_applied = True
 
 
