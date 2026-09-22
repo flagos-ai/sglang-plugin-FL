@@ -11,6 +11,7 @@ ARG FLAGCX_COMMIT=68f069fe4ff2af9e8017b74aee8dee60c59e3b1d
 ARG SGL_KERNEL_NPU_RELEASE=2026.05.01.post2
 ARG SGL_KERNEL_NPU_VERSION=2026.5.1
 ARG SGL_KERNEL_NPU_SHA256=1c446e04b23497b97089591713637d512ed16135d0d97d71b6cf5c7db6787fc5
+ARG SGL_KERNEL_NPU_SOLVE_TRIL_SHA256=5f789360b98cae0f9021f0e8729063d0f1ad7a4ace17d47822ee0382adcfdde3
 ARG SGL_KERNEL_NPU_ARCHIVE=sgl-kernel-npu-2026.05.01.post2-torch2.8.0-py311-cann8.5.0-a3-aarch64.zip
 
 ENV SGLANG_BUILD_RUST_EXTS=none \
@@ -22,10 +23,15 @@ RUN command -v curl >/dev/null && \
     command -v make >/dev/null && \
     command -v unzip >/dev/null
 
+# The validated empty image deliberately combines the CPU-tagged PyTorch wheel
+# with torch_npu. Fail before mutating the image if the vendor base drifts.
+RUN python3 -c "import importlib.metadata as m,sys; expected={'torch':'2.8.0+cpu','triton-ascend':'3.2.1'}; actual={name:m.version(name) for name in expected}; sys.exit(f'expected {expected}, found {actual}') if actual != expected else print(actual)"
+
 # Install the official SGLang v0.5.18 source through its torch-free empty extra.
 # Constraints are defensive: no transitive dependency may replace the vendor
 # torch, torch_npu, or Ascend Triton packages supplied by the base image.
-RUN mkdir -p /opt/sglang-0.5.18 && \
+RUN rm -rf /opt/sglang-0.5.18 && \
+    mkdir -p /opt/sglang-0.5.18 && \
     python3 -m pip uninstall -y sglang && \
     rm -rf /sgl-workspace/sglang && \
     curl --fail --location --retry 5 --retry-delay 5 \
@@ -36,14 +42,15 @@ RUN mkdir -p /opt/sglang-0.5.18 && \
     cd /opt/sglang-0.5.18/python && \
     cp pyproject_other.toml pyproject.toml && \
     printf '%s\n' \
-        'torch==2.8.0' \
+        'torch==2.8.0+cpu' \
         'torch-npu==2.8.0.post2' \
         'triton==3.5.0' \
-        'triton-ascend==3.2.0' \
+        'triton-ascend==3.2.1' \
         > /tmp/ascend-constraints.txt && \
     SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SGLANG=${SGLANG_VERSION} \
         python3 -m pip install --no-cache-dir \
         -c /tmp/ascend-constraints.txt '.[srt_empty]' && \
+    python3 -c "import importlib.metadata as m,sys; actual=m.version('sglang'); sys.exit(f'sglang must be ${SGLANG_VERSION}, found {actual}') if actual != '${SGLANG_VERSION}' else print('sglang', actual)" && \
     python3 -m pip install --no-cache-dir --no-deps \
         xgrammar==0.2.1 compressed-tensors==0.15.0 && \
     rm -f /tmp/sglang.tar.gz
@@ -59,20 +66,23 @@ RUN python3 -m pip install --no-cache-dir \
         'cmake>=3.20,<4.0' \
         ninja==1.13.0 \
         wheel && \
+    rm -rf /opt/FlagGems && \
     mkdir -p /opt/FlagGems && \
     curl --fail --location --retry 5 --retry-delay 5 \
         "https://codeload.github.com/flagos-ai/FlagGems/tar.gz/${FLAGGEMS_COMMIT}" \
         --output /tmp/flaggems.tar.gz && \
     tar -xzf /tmp/flaggems.tar.gz --strip-components=1 -C /opt/FlagGems && \
+    python3 -c "from pathlib import Path; import sys; p=Path('/opt/FlagGems/pyproject.toml'); s=p.read_text(); old='version = \"5.3.0rc2\"'; new='version = \"${FLAGGEMS_VERSION}\"'; count=s.count(old); sys.exit(f'expected one FlagGems version anchor, found {count}') if count != 1 else p.write_text(s.replace(old, new))" && \
     printf '%s\n' "${FLAGGEMS_COMMIT}" > /opt/FlagGems/.flagos-source-commit && \
-    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_FLAG_GEMS=${FLAGGEMS_VERSION} \
-        python3 -m pip install --no-cache-dir --no-deps --no-build-isolation \
+    python3 -m pip install --no-cache-dir --no-deps --no-build-isolation \
         -e /opt/FlagGems && \
+    python3 -c "import importlib.metadata as m,sys; actual=m.version('flag-gems'); sys.exit(f'flag-gems must be ${FLAGGEMS_VERSION}, found {actual}') if actual != '${FLAGGEMS_VERSION}' else print('flag-gems', actual)" && \
     rm -f /tmp/flaggems.tar.gz
 
 # Keep the real CANN 8.5 / torch 2.8 NPU kernel wheel. SGLang 0.5.18 modules
 # are checked explicitly below; unsupported kernel surfaces fail the image build
 # instead of being hidden by an import shim.
+COPY scripts/ascend/patch_sgl_kernel_npu.py /usr/local/bin/patch-sgl-kernel-npu
 RUN curl --fail --location --retry 5 --retry-delay 5 \
         "https://github.com/sgl-project/sgl-kernel-npu/releases/download/${SGL_KERNEL_NPU_RELEASE}/${SGL_KERNEL_NPU_ARCHIVE}" \
         --output "/tmp/${SGL_KERNEL_NPU_ARCHIVE}" && \
@@ -86,6 +96,8 @@ RUN curl --fail --location --retry 5 --retry-delay 5 \
         /tmp/sgl-kernel-npu-wheels/attentions-0.2-cp311-cp311-linux_aarch64.whl \
         /tmp/sgl-kernel-npu-wheels/torch_memory_saver-0.0.8-cp311-cp311-linux_aarch64.whl \
         "/tmp/sgl-kernel-npu-wheels/sgl_kernel_npu-${SGL_KERNEL_NPU_VERSION}-cp311-cp311-linux_aarch64.whl" && \
+    python3 /usr/local/bin/patch-sgl-kernel-npu && \
+    TORCH_DEVICE_BACKEND_AUTOLOAD=0 python3 -c "import sys; import triton.language as tl; import triton.language.extra.cann.extension as al; ok=not hasattr(tl, 'insert_slice') and hasattr(al, 'insert_slice'); sys.exit('triton-ascend insert_slice API mismatch') if not ok else print('triton-ascend insert_slice API OK')" && \
     rm -rf "/tmp/${SGL_KERNEL_NPU_ARCHIVE}" /tmp/sgl-kernel-npu-wheels
 
 # Build FlagCX at the exact post-v0.13.0 revision required by the 910C setup.
@@ -117,6 +129,7 @@ RUN --mount=type=secret,id=git_proxy,required=false \
 
 # Bake the matching plugin into the deployable runtime. CI later overlays the
 # checked-out source with an editable --no-deps install.
+RUN rm -rf /opt/sglang-plugin-fl && mkdir -p /opt/sglang-plugin-fl
 COPY pyproject.toml /opt/sglang-plugin-fl/pyproject.toml
 COPY sglang_fl /opt/sglang-plugin-fl/sglang_fl
 RUN python3 -m pip uninstall -y sglang-fl >/dev/null 2>&1 || true && \
@@ -130,8 +143,10 @@ RUN chmod 0755 /usr/local/bin/verify-sglang-fl-ascend && \
 
 LABEL ai.flagos.sglang.version="${SGLANG_VERSION}" \
       ai.flagos.sglang.revision="${SGLANG_COMMIT}" \
+      ai.flagos.sglang-plugin-fl.version="0.1.0" \
       ai.flagos.flaggems.revision="${FLAGGEMS_COMMIT}" \
       ai.flagos.flagcx.revision="${FLAGCX_COMMIT}" \
+      ai.flagos.sgl-kernel-npu.solve-tril.sha256="${SGL_KERNEL_NPU_SOLVE_TRIL_SHA256}" \
       ai.flagos.cann.version="8.5.0" \
       ai.flagos.torch-npu.version="2.8.0.post2"
 

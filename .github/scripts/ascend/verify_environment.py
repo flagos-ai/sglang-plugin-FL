@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import csv
 import ctypes
+import hashlib
 import importlib
 import importlib.util
 import os
@@ -18,11 +21,11 @@ from pathlib import Path
 EXPECTED_RUNTIME_DISTRIBUTIONS = {
     "sglang": "0.5.18",
     "sglang-fl": "0.1.0",
-    "torch": "2.8.0",
+    "torch": "2.8.0+cpu",
     "torch-npu": "2.8.0.post2",
     "transformers": "5.12.1",
     "triton": "3.5.0",
-    "triton-ascend": "3.2.0",
+    "triton-ascend": "3.2.1",
     "flag-gems": "5.3.0",
     "xgrammar": "0.2.1",
     "compressed-tensors": "0.15.0",
@@ -74,6 +77,14 @@ REQUIRED_NPU_KERNEL_MODULES = (
 CANN_VERSION = "8.5.0"
 SGLANG_SOURCE_ROOT = Path("/opt/sglang-0.5.18/python/sglang")
 STALE_SGLANG_ROOT = Path("/sgl-workspace/sglang")
+SOLVE_TRIL_RELATIVE_PATH = Path("sgl_kernel_npu/fla/solve_tril.py")
+SOLVE_TRIL_AL_IMPORT = "import triton.language.extra.cann.extension as al"
+SOLVE_TRIL_STALE_CALL = "tl.insert_slice("
+SOLVE_TRIL_ASCEND_CALL = "al.insert_slice("
+EXPECTED_SOLVE_TRIL_ASCEND_CALLS = 15
+EXPECTED_SOLVE_TRIL_SHA256 = (
+    "5f789360b98cae0f9021f0e8729063d0f1ad7a4ace17d47822ee0382adcfdde3"
+)
 
 
 def _require_distribution(name: str, expected: str) -> None:
@@ -150,6 +161,92 @@ def _require_npu_kernel_surface() -> None:
     print(
         "[ascend-env] sgl-kernel-npu module surface OK "
         f"({len(REQUIRED_NPU_KERNEL_MODULES)} modules)"
+    )
+
+
+def _require_solve_tril_patch() -> None:
+    try:
+        distribution = metadata.distribution("sgl-kernel-npu")
+    except metadata.PackageNotFoundError as exc:
+        raise RuntimeError("sgl-kernel-npu is not installed") from exc
+    path = Path(distribution.locate_file(SOLVE_TRIL_RELATIVE_PATH))
+    try:
+        content = path.read_bytes()
+        source = content.decode("utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"cannot read patched NPU kernel source: {path}") from exc
+    except UnicodeDecodeError as exc:
+        raise RuntimeError(f"patched NPU kernel source is not UTF-8: {path}") from exc
+
+    stale_count = source.count(SOLVE_TRIL_STALE_CALL)
+    ascend_count = source.count(SOLVE_TRIL_ASCEND_CALL)
+    if SOLVE_TRIL_AL_IMPORT not in source:
+        raise RuntimeError(f"patched NPU kernel is missing the al import: {path}")
+    if stale_count != 0 or ascend_count != EXPECTED_SOLVE_TRIL_ASCEND_CALLS:
+        raise RuntimeError(
+            "sgl-kernel-npu solve_tril patch mismatch: "
+            f"expected old=0/new={EXPECTED_SOLVE_TRIL_ASCEND_CALLS}, "
+            f"found old={stale_count}/new={ascend_count} in {path}"
+        )
+    digest = hashlib.sha256(content).hexdigest()
+    if digest != EXPECTED_SOLVE_TRIL_SHA256:
+        raise RuntimeError(
+            "sgl-kernel-npu solve_tril digest mismatch: "
+            f"expected {EXPECTED_SOLVE_TRIL_SHA256}, found {digest} in {path}"
+        )
+
+    record_candidates = [
+        entry
+        for entry in distribution.files or ()
+        if str(entry).replace("\\", "/").endswith(".dist-info/RECORD")
+    ]
+    if len(record_candidates) != 1:
+        raise RuntimeError(
+            "sgl-kernel-npu must contain exactly one dist-info/RECORD, "
+            f"found {len(record_candidates)}"
+        )
+    record_path = Path(distribution.locate_file(record_candidates[0]))
+    try:
+        with record_path.open(newline="", encoding="utf-8") as record_file:
+            rows = list(csv.reader(record_file))
+    except OSError as exc:
+        raise RuntimeError(f"cannot read sgl-kernel-npu RECORD: {record_path}") from exc
+    relative_name = SOLVE_TRIL_RELATIVE_PATH.as_posix()
+    matching = [row for row in rows if row and row[0] == relative_name]
+    encoded_digest = base64.urlsafe_b64encode(bytes.fromhex(digest)).rstrip(b"=")
+    expected_record = [
+        relative_name,
+        f"sha256={encoded_digest.decode('ascii')}",
+        str(len(content)),
+    ]
+    if matching != [expected_record]:
+        raise RuntimeError(
+            "sgl-kernel-npu RECORD does not describe patched solve_tril.py: "
+            f"expected {expected_record}, found {matching} in {record_path}"
+        )
+    bytecode_prefix = f"{SOLVE_TRIL_RELATIVE_PATH.parent.as_posix()}/__pycache__/"
+    legacy_bytecode = SOLVE_TRIL_RELATIVE_PATH.with_suffix(".pyc").as_posix()
+    recorded_bytecode = [
+        row[0]
+        for row in rows
+        if row
+        and (
+            (
+                row[0].startswith(bytecode_prefix)
+                and Path(row[0]).name.startswith(f"{SOLVE_TRIL_RELATIVE_PATH.stem}.")
+                and row[0].endswith(".pyc")
+            )
+            or row[0] == legacy_bytecode
+        )
+    ]
+    if recorded_bytecode:
+        raise RuntimeError(
+            "sgl-kernel-npu RECORD still contains invalidated solve_tril bytecode: "
+            + ", ".join(recorded_bytecode)
+        )
+    print(
+        "[ascend-env] sgl-kernel-npu solve_tril patch OK "
+        f"(old={stale_count}, new={ascend_count}, sha256={digest})"
     )
 
 
@@ -347,6 +444,7 @@ def verify(
     _require_source_markers()
     _require_cann()
     _require_npu_kernel_surface()
+    _require_solve_tril_patch()
     flagcx_library = _require_flagcx_layout()
 
     _require_sglang_import()

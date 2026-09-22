@@ -6,10 +6,10 @@ SGLang v0.5.18 源码为基线，当前验收模型为 Qwen3.6-27B 和
 Qwen3.6-35B-A3B。本版本为基于官方 v0.5.18 和用户提供的 910C 环境说明
 完成的独立适配，不依赖其它实验实现。
 
-> **验收状态（2026-09-21）：待真机验收。** 当前开发机没有 910C，也没有
-> 可用的 Docker 环境，因此本文没有填写或沿用任何 0.5.18 性能数字。
-> 镜像构建、环境校验、examples 和压测入口已经固化；必须在 910C 上完成
-> 本文的验收矩阵并保存原始产物后，才能将状态改为“通过”。
+> **验收状态（2026-09-22）：真机验收进行中。** `910C_174` 已完成 4 卡
+> `torch.npu` tensor probe 和 SGLang v0.5.18 CLI 启动校验；examples、固定
+> 矩阵压测、双机和最终镜像仍以第 14 节的实际记录为准。本文不会沿用旧版本
+> 性能数字，也不会把尚未执行的项目标成通过。
 
 ## 1. 适用范围与版本矩阵
 
@@ -19,21 +19,22 @@ Qwen3.6-35B-A3B。本版本为基于官方 v0.5.18 和用户提供的 910C 环�
 | 项目 | 固定版本或配置 |
 | --- | --- |
 | 架构 | Linux aarch64 |
-| 操作系统参考 | Ubuntu 22.04.5 LTS，kernel 4.19.90-2102.2.0.0068.3.ctl2.aarch64 |
+| 已验证宿主 | openEuler 22.03 LTS-SP4，kernel 5.10，aarch64 |
 | NPU | Ascend 910C；单机 4 卡，双机共 8 卡 |
 | 驱动 | 25.5.0 |
 | CANN | 8.5.0 |
 | Python | 3.11.14（校验器要求 Python 3.11） |
-| PyTorch | 2.8.0 |
+| PyTorch | 2.8.0+cpu（由 torch-npu 提供 NPU backend） |
 | torch-npu | 2.8.0.post2 |
 | SGLang | v0.5.18，commit `71de97b264b04dcd514cf904003028aefe9775c8` |
 | transformers | 5.12.1 |
 | Triton | 3.5.0 |
-| triton-ascend | 3.2.0 |
+| triton-ascend | 3.2.1 |
 | FlagGems | 5.3.0，commit `98fae44cdf2898f39c7f24f080d7c88b83d7c593` |
 | FlagCX | commit `68f069fe4ff2af9e8017b74aee8dee60c59e3b1d` |
 | sgl-kernel-npu | 2026.5.1，release `2026.05.01.post2` |
 | sgl-kernel-npu 压缩包 SHA-256 | `1c446e04b23497b97089591713637d512ed16135d0d97d71b6cf5c7db6787fc5` |
+| `solve_tril.py` 补丁后 SHA-256 | `5f789360b98cae0f9021f0e8729063d0f1ad7a4ace17d47822ee0382adcfdde3` |
 | 插件代码 | `flagos-ai/sglang-plugin-FL` 的 `dev/0.5.18` 分支 |
 
 基础 empty 镜像为：
@@ -48,7 +49,9 @@ harbor.baai.ac.cn/flagos-inner-models-release/flagrelease-qwen3.6-ascend-empty-t
 harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-ascend-sglang0.5.18-ci
 ```
 
-该标签是 CI 配置使用的发布目标，不代表本次本地开发已经完成构建或推送。
+标签中的 `0.2.0` 是仓库 CI 镜像系列名；镜像内当前插件 distribution 版本仍为
+`sglang-fl==0.1.0`，并通过 OCI label 明确记录。该标签是 CI 配置使用的发布
+目标，不代表本次本地开发已经完成构建或推送。
 首次启用 CI 前，镜像维护者必须实际构建、在 910C 上校验、推送，并将
 CI 配置改成仓库返回的真实 digest；不得手写或猜测 digest。
 
@@ -112,11 +115,18 @@ unset GIT_PROXY
 
 镜像构建会完成以下工作：
 
-1. 从固定 empty 基础镜像保留 CANN 8.5、torch 2.8 和 torch-npu；
+1. 从固定 empty 基础镜像保留 CANN 8.5、`torch 2.8.0+cpu` 和
+   `torch-npu 2.8.0.post2`；这里的 `+cpu` 是 Ascend 官方组合的 PyTorch
+   基础 wheel 标记，NPU backend 由 `torch-npu` 注册，不表示运行在 CPU；
 2. 卸载旧 SGLang，并从官方 commit 安装 v0.5.18 的 `srt_empty`；
 3. 安装固定版本的 transformers、xgrammar 和 compressed-tensors；
-4. 安装固定 FlagGems commit；
-5. 校验 NPU kernel 压缩包 SHA-256，并安装其中三个 aarch64 wheel；
+4. 安装固定 FlagGems commit，并将该 release 源码中遗留的 `5.3.0rc2`
+   包元数据受控修正为 tag 对应的 `5.3.0`；
+5. 校验 NPU kernel 压缩包 SHA-256，安装其中三个 aarch64 wheel，并针对
+   `triton-ascend 3.2.1` 原子修正 `solve_tril.py` 中恰好 6 处旧
+   `tl.insert_slice` 调用；补丁同时同步 wheel `RECORD`、删除可能命中同秒
+   mtime/同尺寸的旧 `solve_tril.pyc`，并校验补丁后精确 SHA-256；源码形状
+   或 provenance 不匹配时镜像构建会直接失败；
 6. 从固定 commit 构建 FlagCX；
 7. 安装本仓库插件并执行不依赖真实 NPU 的静态环境校验；
 8. 在 `ci` stage 安装固定 pytest 及 CI 工具。
@@ -152,16 +162,12 @@ mkdir -p "${RESULT_DIR}"
 docker run --rm -it \
   --name sglang-fl-ascend-0518 \
   --init \
+  --runtime=ascend \
   --network=host \
   --ipc=host \
   --shm-size=512g \
-  --device=/dev/davinci0 \
-  --device=/dev/davinci1 \
-  --device=/dev/davinci2 \
-  --device=/dev/davinci3 \
-  --device=/dev/davinci_manager \
-  --device=/dev/devmm_svm \
-  --device=/dev/hisi_hdc \
+  -e ASCEND_VISIBLE_DEVICES=0,1,2,3 \
+  -e ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 \
   -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \
   -v /usr/local/Ascend/firmware:/usr/local/Ascend/firmware:ro \
   -v /etc/ascend_install.info:/etc/ascend_install.info:ro \
@@ -174,9 +180,16 @@ docker run --rm -it \
   "${ASCEND_CI_IMAGE}"
 ```
 
+`ASCEND_VISIBLE_DEVICES` 由华为 OCI runtime 消费并完成设备/cgroup 注入，
+`ASCEND_RT_VISIBLE_DEVICES` 由容器内 torch-npu/SGLang 消费；二者缺一不可。
 如果现场设备节点或驱动安装路径不同，应按实际情况调整，但四张
 `davinciN`、管理节点、驱动库和 queue scheduler 都必须在容器内可用。
-不要通过隐藏缺失节点来绕过校验。
+
+`910C_174` 上安装的 Ascend Docker Runtime v7.3.0 虽能注入节点，但
+非 privileged 容器的真实 tensor probe 返回 `drvErr=87`；本次人工验收因此
+仅在该专用任务容器中使用 `--privileged`。这不是共享 CI 的默认方案：升级/
+修复 runner runtime 后应继续使用上面的最小权限命令；若确需在共享 runner
+启用 `--privileged`，必须先由管理员单独批准其宿主访问风险。
 
 ## 5. 安装当前插件与环境校验
 
@@ -214,6 +227,8 @@ python3 .github/scripts/ascend/verify_environment.py \
 - CANN 8.5；
 - SGLang 是否仍被旧 `/sgl-workspace/sglang` editable 安装遮蔽；
 - `sgl-kernel-npu` 是否具有 v0.5.18 所需模块；
+- `solve_tril.py` 是否达到旧调用 0 处、新调用 15 处、固定补丁 SHA-256，
+  wheel `RECORD` 是否同步且不再登记已失效的预编译 bytecode；
 - FlagCX 动态库和 Python wrapper；
 - `torch.npu` 可用性、可见卡数和实际 NPU tensor 运算；
 - 当前 `sglang_fl` 是否确实从挂载的 checkout 导入。
@@ -582,8 +597,10 @@ ARM64
 flagcicd-910c
 ```
 
-Runner 宿主机必须提供 4 张 NPU、驱动/固件/queue scheduler 挂载，以及预先
-放置在 `/mnt/airs-business/cicd/models` 的离线模型。CI 不下载模型。
+Runner 宿主机必须注册华为 `ascend` Docker runtime，支持
+`ASCEND_VISIBLE_DEVICES=0,1,2,3` 的非 privileged 设备注入，并提供 4 张 NPU、
+驱动/固件/queue scheduler 挂载，以及预先放置在
+`/mnt/airs-business/cicd/models` 的离线模型。CI 不下载模型。
 
 流水线顺序为：
 
@@ -636,9 +653,13 @@ Dockerfile 会先卸载旧包，校验器也会阻止旧 checkout 抢占导入�
 
 ### 13.2 NPU 不可见或少于 4 张
 
-检查容器内 `/dev/davinci0..3`、`/dev/davinci_manager`、`/dev/devmm_svm`、
-`/dev/hisi_hdc`，以及 driver bind mount。`npu-smi` 只是诊断工具；最终以
-`torch.npu.is_available()`、device count 和实际 tensor probe 为准。
+先检查 Docker 已注册 `ascend` runtime，并在**创建容器时**同时传入
+`ASCEND_VISIBLE_DEVICES` 和 `ASCEND_RT_VISIBLE_DEVICES`；仅在容器内后设变量
+不能补做 OCI 设备注入。再检查 `/dev/davinci0..3`、
+`/dev/davinci_manager`、`/dev/devmm_svm`、`/dev/hisi_hdc`、driver mount 和
+runtime 版本。`npu-smi` 只是诊断工具；最终以 `torch.npu.is_available()`、
+device count 和实际 tensor probe 为准。出现 `drvErr=87` 时不要直接把共享 CI
+改为 privileged，应先升级/修复厂商 runtime，或由管理员明确批准例外。
 
 ### 13.3 CANN 或 Python 包版本不一致
 

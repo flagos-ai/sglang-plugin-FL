@@ -16,11 +16,11 @@ runner_labels:
   - ARM64
   - flagcicd-910c
 
-# Container volumes. DooD mode (runner uses the node docker socket) does NOT
-# auto-mount anything - unlike the nvidia-container-toolkit hook CUDA relies on
-# (NVIDIA_VISIBLE_DEVICES), Ascend has no equivalent, so the driver userspace and
-# the model cache must be mounted explicitly from the node. Device nodes are
-# passed via --device in container_options below.
+# Container volumes. The vendor `ascend` OCI runtime injects the selected NPU
+# nodes, driver libraries, npu-smi, and queue scheduler from
+# ASCEND_VISIBLE_DEVICES. The explicit mounts below keep the validated runner
+# layout deterministic and provide the model cache; they do not replace the
+# runtime hook.
 # - /mnt/airs-business/cicd/models -> /data/models/Qwen: model cache. The
 #   flagcicd-910c runners have NO internet, so the e2e models are staged here
 #   out-of-band (SSH/rsync from an internal machine that already has them).
@@ -40,26 +40,23 @@ container_volumes:
   - /etc/ascend_install.info:/etc/ascend_install.info:ro
   - /var/queue_schedule:/var/queue_schedule
 
-# Container options (--device for NPU access; --init reaps orphan zombies).
-# NPU devices are passed via --device (there is no --gpus equivalent for Ascend);
-# adjust the /dev/davinciN list to match the runner's actual NPU count.
+# Container options. The self-hosted runner must register the Huawei `ascend`
+# Docker runtime. ASCEND_VISIBLE_DEVICES is consumed by its OCI hook, while
+# ASCEND_RT_VISIBLE_DEVICES constrains torch_npu/SGLang inside the container.
+# Do not replace this with --privileged on a shared runner: the latter exposes
+# the host broadly and requires a separate security decision.
 # --user root is required: CI images install CANN/torch_npu libs under system paths,
 # and pip install needs write access to /usr/local. This matches org convention.
 # --init: tini as PID 1 reaps orphan zombies from sglang TP workers on shutdown
 # (PID 1 was tail -f /dev/null, never wait()s -> zombies pile up, kill_process_tree times out)
 container_options: >-
   --hostname sglang-plugin-fl
+  --runtime=ascend
   --ipc=host
   --shm-size=64g
   --ulimit memlock=-1
   --ulimit stack=67108864
   --user root
-  --device /dev/davinci0
-  --device /dev/davinci1
-  --device /dev/davinci2
-  --device /dev/davinci3
-  --device /dev/davinci_manager
-  --device /dev/devmm_svm
-  --device /dev/hisi_hdc
+  -e ASCEND_VISIBLE_DEVICES=0,1,2,3
   -e ASCEND_RT_VISIBLE_DEVICES=0,1,2,3
   --init
