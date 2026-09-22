@@ -37,6 +37,7 @@ _is_hcu = hasattr(torch, "__hcu_version__") and torch.cuda.is_available()
 # These settings must be present before importing sglang.
 if _is_npu:
     os.environ.setdefault("GLOO_SOCKET_IFNAME", "lo")
+    os.environ.setdefault("HCCL_IF_BASE_PORT", "52000")
     os.environ.setdefault("SGLANG_ENABLE_OVERLAP_PLAN_STREAM", "0")
     os.environ.setdefault("HCCL_BUFFSIZE", "2400")
     os.environ.setdefault("SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK", "128")

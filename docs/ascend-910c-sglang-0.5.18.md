@@ -297,6 +297,13 @@ export SGLANG_FL_PER_OP='silu_and_mul=flagos;mrotary_embedding=flagos;topk=vendo
 已经显式设置的值。正式提交结果时，应在 `environment.txt` 中同时记录任何
 覆盖，避免不同策略的结果被混在一起。
 
+所有 Ascend 入口默认设置 `HCCL_IF_BASE_PORT=52000`，即为 HCCL 分配
+`52000-52031`。共享宿主上若该范围已被其他任务占用，应在两端启动前显式选择
+另一段连续 32 个空闲端口；验收脚本会把最终值写进 `environment.txt`。
+脚本不会修改宿主机 sysctl。CI/生产节点管理员应按
+[CANN 8.5 HCCL 文档](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/850/commlib/hcclug/hcclug_000090.html)
+预留所选范围，避免被临时端口分配占用。
+
 ### 6.1 正确性模式
 
 单机和双机 examples 使用正确性模式：
@@ -304,7 +311,11 @@ export SGLANG_FL_PER_OP='silu_and_mul=flagos;mrotary_embedding=flagos;topk=vendo
 ```text
 SGLANG_ENABLE_OVERLAP_PLAN_STREAM=0
 HCCL_BUFFSIZE=2400
+HCCL_IF_BASE_PORT=52000
 ```
+
+单机入口还默认设置 `GLOO_SOCKET_IFNAME=lo`，避免容器 hostname 无法解析时的
+重复重试；双机总入口会用 `--business-iface` 指定的业务网卡覆盖该值。
 
 不要设置 `ASCEND_LAUNCH_BLOCKING=1`。同步 launch 会改变编译时机，并可能
 触发动态 kernel 编译失败。
@@ -319,6 +330,7 @@ SGLANG_NPU_USE_MULTI_STREAM=1
 STREAMS_PER_DEVICE=32
 HCCL_BUFFSIZE=1000
 HCCL_OP_EXPANSION_MODE=AIV
+HCCL_IF_BASE_PORT=52000
 ```
 
 这些设置只用于性能验收；不要用性能模式替代前面的正确性矩阵。
@@ -707,6 +719,18 @@ test -f "${FLAGCX_PATH}/plugin/interservice/flagcx_wrapper.py"
 同时确认两台主机的 `HCCL_SOCKET_IFNAME`、`GLOO_SOCKET_IFNAME` 和
 `NCCL_SOCKET_IFNAME` 指向同一条可互通业务网，并检查 rendezvous/API/
 collective 端口没有被占用或防火墙阻断。
+
+如果出现 `Communication_Error_Bind_IP_Port (EJ0003)` 或
+`Failed to bind the IP port`，先检查当前 `HCCL_IF_BASE_PORT` 起始的连续 32
+个端口。共享宿主不要结束不属于本验收的进程；改用一段空闲范围，并在同一
+验收拓扑的所有节点设置相同值。例如：
+
+```bash
+export HCCL_IF_BASE_PORT=52100
+```
+
+随后由宿主管理员按 CANN 文档预留 `52100-52131`；验收脚本本身不执行
+`sysctl`。
 
 ### 13.6 图片用例被跳过或直接失败
 

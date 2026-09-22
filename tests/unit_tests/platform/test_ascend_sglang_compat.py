@@ -163,12 +163,20 @@ def test_ascend_single_node_entrypoints_default_gloo_to_loopback() -> None:
     for entrypoint in single_node_entrypoints:
         source = entrypoint.read_text(encoding="utf-8")
         assert 'os.environ.setdefault("GLOO_SOCKET_IFNAME", "lo")' in source
+        assert 'os.environ.setdefault("HCCL_IF_BASE_PORT", "52000")' in source
 
     common = (root / "scripts" / "ascend" / "acceptance_common.sh").read_text(
         encoding="utf-8"
     )
     assert 'GLOO_SOCKET_IFNAME="${GLOO_SOCKET_IFNAME:-lo}"' in common
+    assert 'HCCL_IF_BASE_PORT="${HCCL_IF_BASE_PORT:-52000}"' in common
     assert 'export GLOO_SOCKET_IFNAME="${interface}"' in common
+
+    for model in ("27b", "35b_a3b"):
+        multinode = (examples / f"qwen3_6_{model}_multinode.py").read_text(
+            encoding="utf-8"
+        )
+        assert 'os.environ.setdefault("HCCL_IF_BASE_PORT", "52000")' in multinode
 
 
 def test_ascend_fla_patch_preserves_native_gdn_state_contract(monkeypatch) -> None:

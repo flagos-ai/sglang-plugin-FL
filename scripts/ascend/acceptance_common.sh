@@ -65,6 +65,7 @@ configure_ascend_common() {
   export USE_FLAGTUNE="${USE_FLAGTUNE:-0}"
   export SGLANG_SET_CPU_AFFINITY="${SGLANG_SET_CPU_AFFINITY:-1}"
   export GLOO_SOCKET_IFNAME="${GLOO_SOCKET_IFNAME:-lo}"
+  export HCCL_IF_BASE_PORT="${HCCL_IF_BASE_PORT:-52000}"
   export SGLANG_FL_WATCHDOG_DIAG="${SGLANG_FL_WATCHDOG_DIAG:-1}"
   export SGLANG_FL_DIST_BACKEND="${SGLANG_FL_DIST_BACKEND:-flagcx}"
   export FLAGCX_PATH="${FLAGCX_PATH:-/opt/FlagCX}"
@@ -182,6 +183,7 @@ write_environment_manifest() {
     printf 'HCCL_OP_EXPANSION_MODE=%s\n' "${HCCL_OP_EXPANSION_MODE:-<unset>}"
     printf 'HCCL_SOCKET_IFNAME=%s\n' "${HCCL_SOCKET_IFNAME:-<unset>}"
     printf 'GLOO_SOCKET_IFNAME=%s\n' "${GLOO_SOCKET_IFNAME:-<unset>}"
+    printf 'HCCL_IF_BASE_PORT=%s\n' "${HCCL_IF_BASE_PORT:-<unset>}"
     printf 'NCCL_SOCKET_IFNAME=%s\n' "${NCCL_SOCKET_IFNAME:-<unset>}"
     "${PYTHON_BIN}" -V
     "${PYTHON_BIN}" - <<'PY'
