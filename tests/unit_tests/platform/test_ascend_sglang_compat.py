@@ -427,8 +427,23 @@ def test_ascend_gdn_target_verify_replays_decode_and_commits_snapshots(
     conv_all[0, 2, -conv_window:] = torch.tensor(
         [[-4.0, -40.0, -400.0], [-3.0, -30.0, -300.0]]
     )
-    ssm_all = torch.zeros(1, slots, 1, 1, 1)
-    intermediate_ssm_all = torch.zeros(1, batch_size + 1, draft_token_num, 1, 1, 1)
+    # The speculative NPU pool is a non-contiguous logical [HV, K, V] view of
+    # V-major physical storage.  Use unequal K/V dimensions so an accidental
+    # raw reinterpretation cannot hide behind Qwen3.6's square 128x128 state.
+    ssm_physical = torch.zeros(1, slots, 1, 3, 2)
+    ssm_physical[0, 1, 0] = torch.tensor([[10.0, 11.0], [12.0, 13.0], [14.0, 15.0]])
+    ssm_physical[0, 2, 0] = torch.tensor([[20.0, 21.0], [22.0, 23.0], [24.0, 25.0]])
+    ssm_all = ssm_physical.transpose(-1, -2)
+    assert not ssm_all.is_contiguous()
+    initial_ssm = ssm_all.clone()
+    intermediate_ssm_all = torch.zeros(
+        1,
+        batch_size + 1,
+        draft_token_num,
+        1,
+        2,
+        3,
+    )
     intermediate_conv_all = torch.zeros(
         1,
         batch_size + 1,
@@ -472,13 +487,19 @@ def test_ascend_gdn_target_verify_replays_decode_and_commits_snapshots(
     monkeypatch.setattr(gdn_target_verify, "_causal_conv1d", fake_causal_conv1d)
 
     decode_calls = []
+    decode_state_contiguity = []
+    decode_initial_states = []
 
     def fake_decode(*, q, ssm_states, cache_indices, query_start_loc, **kwargs):
         del kwargs
         decode_calls.append(query_start_loc.clone())
+        decode_state_contiguity.append(ssm_states.is_contiguous())
+        decode_initial_states.append(ssm_states.clone())
         indices = cache_indices.to(torch.int64)
         ssm_states[indices] += q.reshape(batch_size, 1, 1, 1)
-        return ssm_states.index_select(0, indices).unsqueeze(0)
+        return ssm_states.index_select(0, indices)[:, 0, 0, 0].reshape(
+            1, batch_size, 1, 1
+        )
 
     backend = SimpleNamespace(
         forward_metadata=metadata,
@@ -525,11 +546,14 @@ def test_ascend_gdn_target_verify_replays_decode_and_commits_snapshots(
         torch.zeros(4, 1),
     )
 
-    assert output.flatten().tolist() == [1.0, 3.0, 3.0, 7.0]
+    assert output.flatten().tolist() == [11.0, 13.0, 23.0, 27.0]
     assert all(call.tolist() == [0, 1, 2] for call in conv_calls)
     assert all(call.tolist() == [0, 1, 2] for call in decode_calls)
-    assert intermediate_ssm_all[0, 0, :, 0, 0, 0].tolist() == [1.0, 3.0]
-    assert intermediate_ssm_all[0, 1, :, 0, 0, 0].tolist() == [3.0, 7.0]
+    assert decode_state_contiguity == [True, True]
+    assert torch.equal(decode_initial_states[0], initial_ssm[0, cache_indices])
+    assert intermediate_ssm_all[0, 0, :, 0, 0, 0].tolist() == [11.0, 13.0]
+    assert intermediate_ssm_all[0, 1, :, 0, 0, 0].tolist() == [23.0, 27.0]
+    assert torch.equal(ssm_all, initial_ssm)
     assert intermediate_conv_all[0, 0, 0, 0].tolist() == [-1.0, 1.0]
     assert intermediate_conv_all[0, 0, 1, 0].tolist() == [1.0, 2.0]
     assert intermediate_conv_all[0, 1, 0, 0].tolist() == [-3.0, 3.0]
@@ -543,9 +567,13 @@ def test_ascend_gdn_target_verify_replays_decode_and_commits_snapshots(
         torch.tensor([-1, 0]),
     )
 
-    assert ssm_all[0, 1, 0, 0, 0].item() == 1.0
-    assert ssm_all[0, 2, 0, 0, 0].item() == 7.0
-    assert ssm_all[0, 3, 0, 0, 0].item() == 3.0
+    assert torch.equal(ssm_all[0, 1], initial_ssm[0, 1] + 1.0)
+    assert torch.equal(ssm_all[0, 2], initial_ssm[0, 2] + 7.0)
+    assert torch.equal(ssm_all[0, 3], initial_ssm[0, 2] + 3.0)
+    assert torch.equal(
+        ssm_physical[0, 1, 0],
+        (initial_ssm[0, 1, 0] + 1.0).transpose(-1, -2),
+    )
     assert torch.equal(
         conv_all[0, 1, -conv_window:].transpose(-1, -2),
         intermediate_conv_all[0, 0, 0],
@@ -558,6 +586,20 @@ def test_ascend_gdn_target_verify_replays_decode_and_commits_snapshots(
         conv_all[0, 3, -conv_window:].transpose(-1, -2),
         intermediate_conv_all[0, 1, 0],
     )
+
+    # A -1 main step is a no-op, matching SGLang's native move/rollback
+    # kernels; it must not accidentally select Python's last draft index.
+    ssm_all[0, 1].fill_(42.0)
+    preserved_conv = torch.full_like(conv_all[0, 1, -conv_window:], 43.0)
+    conv_all[0, 1, -conv_window:].copy_(preserved_conv)
+    gdn_target_verify._restore_selected_snapshots(
+        hybrid,
+        torch.tensor([-1]),
+        None,
+        None,
+    )
+    assert torch.equal(ssm_all[0, 1], torch.full_like(ssm_all[0, 1], 42.0))
+    assert torch.equal(conv_all[0, 1, -conv_window:], preserved_conv)
 
 
 def test_ascend_logsumexp_topk_uses_sglang_fallback(monkeypatch) -> None:

@@ -141,26 +141,31 @@ def _sequential_target_verify(
     safe_cache_indices = cache_indices.to(torch.int64).clamp(min=0)
     conv_window = layer.conv_weights.shape[-1] - 1
 
-    # With speculative decoding enabled, the NPU pool has D-1 extra physical
-    # rows and SGLang's verify commit keeps the valid history in the fixed
-    # tail.  Native one-token RunSeq, however, reads and writes the compact
-    # prefix [0:K-1].  Seed that working prefix from the committed tail before
-    # replaying the chain.  SGLang reserves slot 0 as the dummy graph-padding
-    # target, so clamping a possible -1 keeps this operation static-shape and
-    # never aliases a live request slot.
-    conv_states[safe_cache_indices, :conv_window, :] = conv_states[
-        safe_cache_indices, -conv_window:, :
-    ].clone()
+    # Speculative NPU pools deliberately use layouts that the native multi-token
+    # kernels consume as raw storage: conv has D-1 extra rows and temporal is a
+    # transposed view.  Ordinary decode instead expects compact contiguous
+    # [B, K-1, C] conv and [B, HV, K, V] SSM pools.  Materializing logical views
+    # here is essential: passing the speculative pool directly would make the
+    # Triton recurrent kernel reinterpret V-major storage as K-major.
+    work_conv = conv_states.index_select(0, safe_cache_indices)[
+        :, -conv_window:, :
+    ].contiguous()
+    work_ssm = ssm_states.index_select(0, safe_cache_indices).contiguous()
+    work_cache_indices = torch.arange(
+        batch_size,
+        dtype=cache_indices.dtype,
+        device=cache_indices.device,
+    )
     outputs = []
 
     for step in range(draft_token_num):
         step_mixed = _causal_conv1d(
             mixed_by_request[:, step].contiguous(),
             backend._get_conv_weights_t(layer),
-            conv_states=conv_states,
+            conv_states=work_conv,
             bias=layer.bias,
             query_start_loc=one_token_query_start,
-            cache_indices=cache_indices,
+            cache_indices=work_cache_indices,
             activation_mode=1,
             pad_slot_id=-1,
             run_mode=1,
@@ -183,20 +188,17 @@ def _sequential_target_verify(
             b=b_by_request[:, step].contiguous(),
             A_log=layer.A_log,
             dt_bias=layer.dt_bias,
-            ssm_states=ssm_states,
-            cache_indices=cache_indices,
+            ssm_states=work_ssm,
+            cache_indices=work_cache_indices,
             query_start_loc=one_token_query_start,
         )
 
-        # The native decode operators have now crossed exactly the same BF16/
-        # FP32 persistence boundary as normal generation.  Store raw logical
-        # views; this preserves the NPU temporal layout without transposition.
-        intermediate_ssm[:batch_size, step].copy_(
-            ssm_states.index_select(0, safe_cache_indices)
-        )
-        conv_snapshot = conv_states.index_select(0, safe_cache_indices)[
-            :, :conv_window, :
-        ].transpose(-1, -2)
+        # The decode operators have now crossed exactly the same BF16/FP32
+        # persistence boundary as normal generation.  Copy the logical K,V
+        # snapshot back through SGLang's speculative cache view; commit later
+        # handles the inverse logical-to-physical layout conversion.
+        intermediate_ssm[:batch_size, step].copy_(work_ssm)
+        conv_snapshot = work_conv.transpose(-1, -2)
         intermediate_conv[:batch_size, step].copy_(conv_snapshot)
 
         outputs.append(
@@ -256,11 +258,16 @@ def _restore_selected_snapshots(
     if intermediate_ssm is None:
         raise RuntimeError("speculative SSM cache disappeared before MTP commit")
 
-    selected_ssm = intermediate_ssm[:, source_indices, steps]
-    ssm_states[:, state_indices] = selected_ssm
     conv_window = intermediate_conv.shape[-1]
-    selected_conv = intermediate_conv[:, source_indices, steps]
-    conv_states[:, state_indices, -conv_window:, :] = selected_conv.transpose(-1, -2)
+    valid_main = steps >= 0
+    main_sources = source_indices[valid_main]
+    main_steps = steps[valid_main]
+    main_destinations = state_indices[valid_main]
+    if main_destinations.numel() > 0:
+        ssm_states[:, main_destinations] = intermediate_ssm[:, main_sources, main_steps]
+        conv_states[:, main_destinations, -conv_window:, :] = intermediate_conv[
+            :, main_sources, main_steps
+        ].transpose(-1, -2)
 
     if mamba_track_indices is None:
         return
