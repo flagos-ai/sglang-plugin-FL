@@ -509,8 +509,8 @@ def main():
             print("    PASS: >=90% match")
             passed += 1
         else:
-            print("    WARN: <90% match (may be numerical precision issue)")
-            warnings += 1
+            print("    FAIL: <90% match")
+            failed += 1
 
     # 3c. Accept length check
     print("\n  [Speculative Accept Length]")
@@ -527,8 +527,8 @@ def main():
             )
             failed += 1
     else:
-        print("    SKIP: stats not available")
-        warnings += 1
+        print("    FAIL: stats not available")
+        failed += 1
 
     # 3d. Throughput comparison
     print("\n  [Throughput]")

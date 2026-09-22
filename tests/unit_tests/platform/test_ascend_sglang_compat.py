@@ -149,6 +149,62 @@ def test_ascend_entrypoints_do_not_export_removed_spec_v2_toggle() -> None:
         )
 
 
+def test_ascend_mtp_correctness_gates_are_not_warnings() -> None:
+    root = Path(__file__).parents[3]
+    source = (root / "examples" / "qwen3_6_27b_mtp_inference.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'print("    FAIL: <90% match")' in source
+    assert 'print("    FAIL: stats not available")' in source
+    assert 'print("    WARN: <90% match' not in source
+    assert 'print("    SKIP: stats not available")' not in source
+
+
+def test_ascend_mamba_state_update_disables_multibuffer(monkeypatch) -> None:
+    from sglang_fl.dispatch.backends.vendor.ascend.patches import mamba_state_update
+
+    calls = []
+
+    class FakeKernel:
+        def run(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return "result"
+
+    kernel = FakeKernel()
+    module = SimpleNamespace(move_cache_dynamic_last_kernel_h_block=kernel)
+    monkeypatch.setattr(
+        mamba_state_update.importlib,
+        "import_module",
+        lambda name: module
+        if name == mamba_state_update._KERNEL_MODULE
+        else pytest.fail(f"unexpected import: {name}"),
+    )
+
+    assert mamba_state_update.patch_mamba_state_update_multibuffer() is True
+    patched_run = kernel.run
+    assert mamba_state_update.patch_mamba_state_update_multibuffer() is True
+    assert kernel.run is patched_run
+
+    assert kernel.run("payload", multibuffer=True, num_warps=4) == "result"
+    assert calls == [
+        (
+            ("payload",),
+            {"multibuffer": False, "num_warps": 4},
+        )
+    ]
+
+
+def test_ascend_mamba_state_update_patch_is_optional(monkeypatch) -> None:
+    from sglang_fl.dispatch.backends.vendor.ascend.patches import mamba_state_update
+
+    def missing(_name):
+        raise ImportError("kernel wheel is not installed")
+
+    monkeypatch.setattr(mamba_state_update.importlib, "import_module", missing)
+    assert mamba_state_update.patch_mamba_state_update_multibuffer() is False
+
+
 def test_ascend_single_node_entrypoints_default_gloo_to_loopback() -> None:
     root = Path(__file__).parents[3]
     examples = root / "examples"
