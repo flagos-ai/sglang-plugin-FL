@@ -7,17 +7,22 @@ from __future__ import annotations
 import base64
 import hashlib
 import importlib.util
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 
 _ROOT = Path(__file__).parents[2]
 _DOCKERFILE = _ROOT / "docker" / "ascend" / "empty-0.5.18.containerfile"
 _DOCKERIGNORE = Path(f"{_DOCKERFILE}.dockerignore")
 _ASCEND_CONFIG = _ROOT / ".github" / "configs" / "ascend.yml"
+_PLATFORM_REGISTRY = _ROOT / ".github" / "configs" / "platforms.yml"
+_FUNCTIONAL_WORKFLOW = _ROOT / ".github" / "workflows" / "_functional_test.yml"
+_COMPAT_PROBE_PATH = _ROOT / "examples" / "ascend_compat_probe.py"
 _VERIFIER_PATH = _ROOT / ".github" / "scripts" / "ascend" / "verify_environment.py"
 _SPEC = importlib.util.spec_from_file_location(
     "ascend_verify_environment", _VERIFIER_PATH
@@ -75,8 +80,7 @@ def test_official_kernel_release_is_pinned_without_source_patching() -> None:
     assert "ARG SGL_KERNEL_NPU_VERSION=2026.6.1" in dockerfile
     assert (
         "ARG SGL_KERNEL_NPU_SHA256="
-        "fa4ad5afa6bb748d683da5ee8a9cc702c13d0398d3db53651b4bb79e3f8d0e95"
-        in dockerfile
+        "fa4ad5afa6bb748d683da5ee8a9cc702c13d0398d3db53651b4bb79e3f8d0e95" in dockerfile
     )
     assert (
         "sgl-kernel-npu-2026.8.10-torch2.8.0-py311-cann8.5.0-a3-aarch64.zip"
@@ -125,6 +129,44 @@ def test_ci_uses_the_ascend_runtime_without_privileged_mode() -> None:
     assert "HCCL_IF_BASE_PORT=" not in options
     assert "--privileged" not in options
     assert "--device /dev/" not in options
+
+
+def test_ci_mounts_host_models_and_driver_read_only() -> None:
+    config = yaml.safe_load(_ASCEND_CONFIG.read_text(encoding="utf-8"))
+    volumes = config["container_volumes"]
+
+    assert "/mnt/airs-business/cicd/models:/data/models/Qwen:ro" in volumes
+    assert "/usr/local/Ascend/driver:/usr/local/Ascend/driver:ro" in volumes
+    assert "/usr/local/Ascend/firmware:/usr/local/Ascend/firmware:ro" in volumes
+    assert "/etc/ascend_install.info:/etc/ascend_install.info:ro" in volumes
+    assert "/var/queue_schedule:/var/queue_schedule" in volumes
+    assert "/var/queue_schedule:/var/queue_schedule:ro" not in volumes
+
+
+def test_enabled_ascend_ci_requires_an_immutable_image_digest() -> None:
+    registry = yaml.safe_load(_PLATFORM_REGISTRY.read_text(encoding="utf-8"))
+    config = yaml.safe_load(_ASCEND_CONFIG.read_text(encoding="utf-8"))
+    enabled = registry["platforms"]["ascend"]["enabled"]
+    image = config["ci_image"]
+
+    digest_reference = re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", image)
+    assert not enabled or digest_reference is not None, (
+        "Ascend CI may be enabled only after ci_image is pinned to its "
+        "registry-reported sha256 digest"
+    )
+
+
+def test_functional_matrix_runs_the_real_ascend_compatibility_probe() -> None:
+    workflow = _FUNCTIONAL_WORKFLOW.read_text(encoding="utf-8")
+    probe = _COMPAT_PROBE_PATH.read_text(encoding="utf-8")
+
+    assert "- name: Run Ascend compatibility probe" in workflow
+    assert "if: inputs.platform == 'ascend'" in workflow
+    assert "run: python3 examples/ascend_compat_probe.py" in workflow
+    assert "MTP_SOURCE_SHAPE = (1, 1, 2, 2, 128, 128)" in probe
+    assert "LOGSUMEXP_SHAPE = (2, 16384)" in probe
+    assert "kernel_module.move_intermediate_cache(" in probe
+    assert "row_logsumexp_topk(" in probe
 
 
 class _Distribution:
@@ -250,9 +292,7 @@ def _torch_with_causal_conv1d_schema(schema: str) -> SimpleNamespace:
 
 
 def test_verifier_accepts_the_sglang_0_5_18_causal_conv1d_abi() -> None:
-    torch = _torch_with_causal_conv1d_schema(
-        _VERIFIER.EXPECTED_CAUSAL_CONV1D_SCHEMA
-    )
+    torch = _torch_with_causal_conv1d_schema(_VERIFIER.EXPECTED_CAUSAL_CONV1D_SCHEMA)
 
     _VERIFIER._require_causal_conv1d_abi(torch)
 

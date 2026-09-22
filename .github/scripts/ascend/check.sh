@@ -47,7 +47,7 @@ for d in \
 done
 
 # ---------------------------------------------------------------------------
-# 2. Device nodes (passed via --device in ascend.yml)
+# 2. Device nodes (injected by the Ascend OCI runtime configured in ascend.yml)
 # ---------------------------------------------------------------------------
 echo "--- Device nodes ---"
 for dev in \

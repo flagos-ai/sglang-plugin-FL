@@ -34,8 +34,8 @@ runner_labels:
 # - firmware/install metadata/queue scheduler: match the validated 910C empty
 #   runtime and keep host driver/firmware state outside the image.
 container_volumes:
-  - /mnt/airs-business/cicd/models:/data/models/Qwen
-  - /usr/local/Ascend/driver:/usr/local/Ascend/driver
+  - /mnt/airs-business/cicd/models:/data/models/Qwen:ro
+  - /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro
   - /usr/local/Ascend/firmware:/usr/local/Ascend/firmware:ro
   - /etc/ascend_install.info:/etc/ascend_install.info:ro
   - /var/queue_schedule:/var/queue_schedule
