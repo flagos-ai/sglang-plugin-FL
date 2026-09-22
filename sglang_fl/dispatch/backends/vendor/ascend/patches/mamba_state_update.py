@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 _KERNEL_MODULE = "sgl_kernel_npu.mamba.mamba_state_update_triton"
 _KERNEL_NAME = "move_cache_dynamic_last_kernel_h_block"
 _PATCH_MARKER = "_sglang_fl_cann85_multibuffer_disabled"
+_OVERFLOWING_TILE = {
+    "H_BLOCK_SIZE": 2,
+    "BLOCK_V": 128,
+    "BLOCK_K": 128,
+}
 
 
 def patch_mamba_state_update_multibuffer() -> bool:
@@ -39,7 +44,8 @@ def patch_mamba_state_update_multibuffer() -> bool:
 
     @wraps(original_run)
     def run_without_multibuffer(*args: Any, **kwargs: Any) -> Any:
-        kwargs["multibuffer"] = False
+        if all(kwargs.get(name) == value for name, value in _OVERFLOWING_TILE.items()):
+            kwargs["multibuffer"] = False
         return original_run(*args, **kwargs)
 
     setattr(run_without_multibuffer, _PATCH_MARKER, True)
@@ -50,4 +56,3 @@ def patch_mamba_state_update_multibuffer() -> bool:
         _KERNEL_NAME,
     )
     return True
-

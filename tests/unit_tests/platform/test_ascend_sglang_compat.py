@@ -167,6 +167,9 @@ def test_ascend_mamba_state_update_disables_multibuffer(monkeypatch) -> None:
     calls = []
 
     class FakeKernel:
+        def __getitem__(self, grid):
+            return lambda *args, **kwargs: self.run(*args, grid=grid, **kwargs)
+
         def run(self, *args, **kwargs):
             calls.append((args, kwargs))
             return "result"
@@ -186,12 +189,49 @@ def test_ascend_mamba_state_update_disables_multibuffer(monkeypatch) -> None:
     assert mamba_state_update.patch_mamba_state_update_multibuffer() is True
     assert kernel.run is patched_run
 
-    assert kernel.run("payload", multibuffer=True, num_warps=4) == "result"
+    assert (
+        kernel[(1,)](
+            "payload",
+            H_BLOCK_SIZE=2,
+            BLOCK_V=128,
+            BLOCK_K=128,
+            multibuffer=True,
+            num_warps=4,
+        )
+        == "result"
+    )
+    assert (
+        kernel[(2,)](
+            "other-shape",
+            H_BLOCK_SIZE=1,
+            BLOCK_V=128,
+            BLOCK_K=128,
+            multibuffer=True,
+        )
+        == "result"
+    )
     assert calls == [
         (
             ("payload",),
-            {"multibuffer": False, "num_warps": 4},
-        )
+            {
+                "grid": (1,),
+                "H_BLOCK_SIZE": 2,
+                "BLOCK_V": 128,
+                "BLOCK_K": 128,
+                "multibuffer": False,
+                "num_warps": 4,
+            },
+        ),
+        (
+            ("other-shape",),
+            {
+                "grid": (2,),
+                "H_BLOCK_SIZE": 1,
+                "BLOCK_V": 128,
+                "BLOCK_K": 128,
+                "multibuffer": True,
+            },
+        ),
     ]
 
 
