@@ -997,7 +997,10 @@ def main():
             print(f"    PASS: MTP {speedup:.2f}x faster")
             passed += 1
         else:
-            print("    WARN: MTP not faster (may be due to kernel JIT / cold start)")
+            print(
+                "    WARN: MTP not faster; the sequential Ascend correctness "
+                "fallback may trade throughput, so do not claim a speedup"
+            )
             warnings += 1
 
     # ─── Summary ──────────────────────────────────────────────────────────────
