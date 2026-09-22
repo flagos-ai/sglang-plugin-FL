@@ -407,6 +407,159 @@ def test_ascend_mamba_state_update_patch_is_optional(monkeypatch) -> None:
     assert mamba_state_update.patch_mamba_state_update_multibuffer() is False
 
 
+def test_ascend_gdn_target_verify_replays_decode_and_commits_snapshots(
+    monkeypatch,
+) -> None:
+    import torch
+
+    from sglang_fl.dispatch.backends.vendor.ascend.patches import gdn_target_verify
+
+    batch_size = 2
+    draft_token_num = 2
+    channels = 3
+    conv_window = 2
+    slots = 4
+
+    conv_all = torch.zeros(1, slots, draft_token_num + conv_window - 1, channels)
+    conv_all[0, 1, -conv_window:] = torch.tensor(
+        [[-2.0, -20.0, -200.0], [-1.0, -10.0, -100.0]]
+    )
+    conv_all[0, 2, -conv_window:] = torch.tensor(
+        [[-4.0, -40.0, -400.0], [-3.0, -30.0, -300.0]]
+    )
+    ssm_all = torch.zeros(1, slots, 1, 1, 1)
+    intermediate_ssm_all = torch.zeros(1, batch_size + 1, draft_token_num, 1, 1, 1)
+    intermediate_conv_all = torch.zeros(
+        1,
+        batch_size + 1,
+        draft_token_num,
+        channels,
+        conv_window,
+    )
+    per_layer_cache = SimpleNamespace(
+        conv=[conv_all[0]],
+        temporal=ssm_all[0],
+        intermediate_ssm=intermediate_ssm_all[0],
+        intermediate_conv_window=[intermediate_conv_all[0]],
+    )
+    all_layer_cache = SimpleNamespace(
+        conv=[conv_all],
+        temporal=ssm_all,
+        intermediate_ssm=intermediate_ssm_all,
+        intermediate_conv_window=[intermediate_conv_all],
+    )
+    pool = SimpleNamespace(
+        mamba2_layer_cache=lambda _layer_id: per_layer_cache,
+        get_speculative_mamba2_params_all_layers=lambda: all_layer_cache,
+    )
+    cache_indices = torch.tensor([1, 2], dtype=torch.int32)
+    metadata = SimpleNamespace(
+        mamba_cache_indices=cache_indices,
+        query_start_loc=torch.tensor([0, 2, 4], dtype=torch.int32),
+    )
+
+    conv_calls = []
+
+    def fake_causal_conv1d(x, _weight, **kwargs):
+        conv_calls.append(kwargs["query_start_loc"].clone())
+        states = kwargs["conv_states"]
+        indices = kwargs["cache_indices"].to(torch.int64)
+        for row, slot in enumerate(indices.tolist()):
+            states[slot, : conv_window - 1].copy_(states[slot, 1:conv_window].clone())
+            states[slot, conv_window - 1].copy_(x[row])
+        return x
+
+    monkeypatch.setattr(gdn_target_verify, "_causal_conv1d", fake_causal_conv1d)
+
+    decode_calls = []
+
+    def fake_decode(*, q, ssm_states, cache_indices, query_start_loc, **kwargs):
+        del kwargs
+        decode_calls.append(query_start_loc.clone())
+        indices = cache_indices.to(torch.int64)
+        ssm_states[indices] += q.reshape(batch_size, 1, 1, 1)
+        return ssm_states.index_select(0, indices).unsqueeze(0)
+
+    backend = SimpleNamespace(
+        forward_metadata=metadata,
+        graph_mode=False,
+        req_to_token_pool=pool,
+        kernel_dispatcher=SimpleNamespace(decode=fake_decode),
+        _get_conv_weights_t=lambda _layer: torch.empty(0),
+    )
+    layer = SimpleNamespace(
+        layer_id=0,
+        conv_weights=torch.empty(channels, conv_window + 1),
+        bias=None,
+        q_dim=1,
+        k_dim=1,
+        v_dim=1,
+        num_q_heads=1,
+        num_k_heads=1,
+        num_v_heads=1,
+        head_q_dim=1,
+        head_k_dim=1,
+        head_v_dim=1,
+        A_log=torch.empty(0),
+        dt_bias=torch.empty(0),
+    )
+    forward_batch = SimpleNamespace(
+        spec_info=SimpleNamespace(draft_token_num=draft_token_num, topk=1),
+        num_token_non_padded_cpu=batch_size * draft_token_num,
+    )
+    mixed_qkv = torch.tensor(
+        [
+            [1.0, 10.0, 100.0],
+            [2.0, 20.0, 200.0],
+            [3.0, 30.0, 300.0],
+            [4.0, 40.0, 400.0],
+        ]
+    )
+
+    output = gdn_target_verify._sequential_target_verify(
+        backend,
+        layer,
+        forward_batch,
+        mixed_qkv,
+        torch.zeros(4, 1),
+        torch.zeros(4, 1),
+    )
+
+    assert output.flatten().tolist() == [1.0, 3.0, 3.0, 7.0]
+    assert all(call.tolist() == [0, 1, 2] for call in conv_calls)
+    assert all(call.tolist() == [0, 1, 2] for call in decode_calls)
+    assert intermediate_ssm_all[0, 0, :, 0, 0, 0].tolist() == [1.0, 3.0]
+    assert intermediate_ssm_all[0, 1, :, 0, 0, 0].tolist() == [3.0, 7.0]
+    assert intermediate_conv_all[0, 0, 0, 0].tolist() == [-1.0, 1.0]
+    assert intermediate_conv_all[0, 0, 1, 0].tolist() == [1.0, 2.0]
+    assert intermediate_conv_all[0, 1, 0, 0].tolist() == [-3.0, 3.0]
+    assert intermediate_conv_all[0, 1, 1, 0].tolist() == [3.0, 4.0]
+
+    hybrid = SimpleNamespace(linear_attn_backend=backend)
+    gdn_target_verify._restore_selected_snapshots(
+        hybrid,
+        torch.tensor([0, 1]),
+        torch.tensor([3, 3]),
+        torch.tensor([-1, 0]),
+    )
+
+    assert ssm_all[0, 1, 0, 0, 0].item() == 1.0
+    assert ssm_all[0, 2, 0, 0, 0].item() == 7.0
+    assert ssm_all[0, 3, 0, 0, 0].item() == 3.0
+    assert torch.equal(
+        conv_all[0, 1, -conv_window:].transpose(-1, -2),
+        intermediate_conv_all[0, 0, 0],
+    )
+    assert torch.equal(
+        conv_all[0, 2, -conv_window:].transpose(-1, -2),
+        intermediate_conv_all[0, 1, 1],
+    )
+    assert torch.equal(
+        conv_all[0, 3, -conv_window:].transpose(-1, -2),
+        intermediate_conv_all[0, 1, 0],
+    )
+
+
 def test_ascend_logsumexp_topk_uses_sglang_fallback(monkeypatch) -> None:
     import torch
 

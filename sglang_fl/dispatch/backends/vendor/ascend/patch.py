@@ -6,6 +6,8 @@ These replace the compatibility edits still required on Huawei NPU:
     accept an unaligned head dimension
   - mamba_state_update: disable auto multi-buffering for the Qwen3.6 MTP
     state-copy tile that exceeds the 910C unified-buffer budget
+  - gdn_target_verify: make top-k=1 MTP verification share ordinary decode's
+    per-token numerical persistence boundaries
   - logsumexp: split logprob top-k into SGLang's ordinary row normalizer and
     PyTorch top-k because CANN 8.5 cannot compile the fused kernel on 910C
 
@@ -17,6 +19,7 @@ new v0.5.18 behavior, so those replacements are intentionally not applied.
 import logging
 
 from .patches.logsumexp import patch_logsumexp_topk_fallback
+from .patches.gdn_target_verify import patch_gdn_target_verify
 from .patches.scheduler_pp import (
     patch_pp_launch_batch_sync,
     patch_pp_send_recv_order,
@@ -37,6 +40,7 @@ def apply_ascend_patches() -> None:
     patch_pp_launch_batch_sync()
     patch_vision_ascend_attention()
     patch_mamba_state_update_multibuffer()
+    patch_gdn_target_verify()
     patch_logsumexp_topk_fallback()
     _patches_applied = True
 
