@@ -621,6 +621,20 @@ def test_ascend_gdn_target_verify_replays_decode_and_commits_snapshots(
     assert torch.equal(conv_all[0, 1, -conv_window:], preserved_conv)
 
 
+def test_ascend_gdn_target_verify_rejects_graph_replay() -> None:
+    from sglang_fl.dispatch.backends.vendor.ascend.patches import gdn_target_verify
+
+    with pytest.raises(RuntimeError, match="requires eager execution"):
+        gdn_target_verify._sequential_target_verify(
+            SimpleNamespace(graph_mode=True),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+
+
 def test_ascend_logsumexp_topk_uses_sglang_fallback(monkeypatch) -> None:
     import torch
 

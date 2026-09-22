@@ -89,6 +89,13 @@ def _sequential_target_verify(
 ) -> torch.Tensor:
     """Execute a fixed-width verify chain through the one-token decode ABI."""
 
+    if backend.graph_mode:
+        raise RuntimeError(
+            "Ascend sequential GDN target verify requires eager execution; "
+            "start SGLang with --disable-cuda-graph and "
+            "--disable-piecewise-cuda-graph."
+        )
+
     if not isinstance(mixed_qkv, torch.Tensor):
         raise TypeError("Ascend GDN target verify requires tensor mixed_qkv")
 
