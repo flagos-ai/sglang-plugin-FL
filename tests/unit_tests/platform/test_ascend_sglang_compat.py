@@ -407,6 +407,69 @@ def test_ascend_mamba_state_update_patch_is_optional(monkeypatch) -> None:
     assert mamba_state_update.patch_mamba_state_update_multibuffer() is False
 
 
+def test_ascend_logsumexp_topk_disables_multibuffer(monkeypatch) -> None:
+    from sglang_fl.dispatch.backends.vendor.ascend.patches import logsumexp
+
+    calls = []
+
+    class FakeKernel:
+        def __getitem__(self, grid):
+            return lambda *args, **kwargs: self.run(*args, grid=grid, **kwargs)
+
+        def run(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return "result"
+
+    kernel = FakeKernel()
+    module = SimpleNamespace(_row_logsumexp_topk_kernel=kernel)
+    monkeypatch.setattr(
+        logsumexp.importlib,
+        "import_module",
+        lambda name: (
+            module
+            if name == logsumexp._KERNEL_MODULE
+            else pytest.fail(f"unexpected import: {name}")
+        ),
+    )
+
+    assert logsumexp.patch_logsumexp_topk_multibuffer() is True
+    patched_run = kernel.run
+    assert logsumexp.patch_logsumexp_topk_multibuffer() is True
+    assert kernel.run is patched_run
+    assert (
+        kernel[(32,)](
+            "logits",
+            K=5,
+            K_PAD=8,
+            BLOCK_N=16384,
+            multibuffer=True,
+        )
+        == "result"
+    )
+    assert calls == [
+        (
+            ("logits",),
+            {
+                "grid": (32,),
+                "K": 5,
+                "K_PAD": 8,
+                "BLOCK_N": 16384,
+                "multibuffer": False,
+            },
+        )
+    ]
+
+
+def test_ascend_logsumexp_topk_patch_is_optional(monkeypatch) -> None:
+    from sglang_fl.dispatch.backends.vendor.ascend.patches import logsumexp
+
+    def missing(_name):
+        raise ImportError("SGLang logsumexp module is unavailable")
+
+    monkeypatch.setattr(logsumexp.importlib, "import_module", missing)
+    assert logsumexp.patch_logsumexp_topk_multibuffer() is False
+
+
 def test_ascend_single_node_entrypoints_default_gloo_to_loopback() -> None:
     root = Path(__file__).parents[3]
     examples = root / "examples"
