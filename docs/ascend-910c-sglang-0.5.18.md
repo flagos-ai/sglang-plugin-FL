@@ -6,10 +6,9 @@ SGLang v0.5.18 源码为基线，当前验收模型为 Qwen3.6-27B 和
 Qwen3.6-35B-A3B。本版本为基于官方 v0.5.18 和用户提供的 910C 环境说明
 完成的独立适配，不依赖其它实验实现。
 
-> **验收状态（2026-09-22）：真机验收进行中。** `910C_174` 已完成 4 卡
-> `torch.npu` tensor probe 和 SGLang v0.5.18 CLI 启动校验；examples、固定
-> 矩阵压测、双机和最终镜像仍以第 14 节的实际记录为准。本文不会沿用旧版本
-> 性能数字，也不会把尚未执行的项目标成通过。
+> **验收状态（2026-09-23）：代码、镜像与真机证据按第 14 节逐项记录，每项
+> 都绑定实际 `source_revision`。** 历史失败不会被后续重跑覆盖；尚未取得最终
+> `PASS` 的项目不会标成通过，也不会把某个旧 revision 的通过外推到其它源码。
 
 ## 1. 适用范围与版本矩阵
 
@@ -20,7 +19,7 @@ Qwen3.6-35B-A3B。本版本为基于官方 v0.5.18 和用户提供的 910C 环�
 | --- | --- |
 | 架构 | Linux aarch64 |
 | 已验证宿主 | openEuler 22.03 LTS-SP4，kernel 5.10，aarch64 |
-| NPU | Ascend 910C；单机 4 卡，双机共 8 卡 |
+| NPU | Ascend 910C；已验证单机 4 卡；目标双机 8 卡尚未验证 |
 | 驱动 | 25.5.0 |
 | CANN | 8.5.0 |
 | Python | 3.11.14（校验器要求 Python 3.11） |
@@ -64,6 +63,7 @@ CI 配置改成仓库返回的真实 digest；不得手写或猜测 digest。
 | 完整环境校验 | [`.github/scripts/ascend/verify_environment.py`](../.github/scripts/ascend/verify_environment.py) |
 | 算子策略 | [`sglang_fl/dispatch/config/ascend.yaml`](../sglang_fl/dispatch/config/ascend.yaml) |
 | 单机验收总入口 | [`scripts/ascend/run_single_node_acceptance.sh`](../scripts/ascend/run_single_node_acceptance.sh) |
+| 单机压测总入口 | [`scripts/ascend/run_single_node_benchmark.sh`](../scripts/ascend/run_single_node_benchmark.sh) |
 | 双机 examples 总入口 | [`scripts/ascend/run_multinode_examples.sh`](../scripts/ascend/run_multinode_examples.sh) |
 | 双机压测总入口 | [`scripts/ascend/run_multinode_benchmark.sh`](../scripts/ascend/run_multinode_benchmark.sh) |
 | 压测驱动 | [`benchmarks/benchmark_throughput_serve.py`](../benchmarks/benchmark_throughput_serve.py) |
@@ -87,13 +87,22 @@ CI 配置改成仓库返回的真实 digest；不得手写或猜测 digest。
 ```bash
 git clone https://github.com/flagos-ai/sglang-plugin-FL.git
 cd sglang-plugin-FL
-git checkout dev/0.5.18
+git fetch origin dev/0.5.18
+export RELEASE_COMMIT_SHA='<经评审批准的 dev/0.5.18 commit SHA>'
+git checkout --detach "${RELEASE_COMMIT_SHA}"
+
+test -z "$(git status --porcelain)" || {
+  echo 'refusing to build a release image from a dirty checkout' >&2
+  exit 1
+}
+export SGLANG_FL_REVISION="$(git rev-parse HEAD)"
 
 export ASCEND_CI_IMAGE='harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-ascend-sglang0.5.18-ci'
 
 DOCKER_BUILDKIT=1 docker build \
   --platform linux/arm64 \
   --target ci \
+  --build-arg SGLANG_FL_REVISION="${SGLANG_FL_REVISION}" \
   -f docker/ascend/empty-0.5.18.containerfile \
   -t "${ASCEND_CI_IMAGE}" \
   .
@@ -107,6 +116,7 @@ export GIT_PROXY='http://USER:PASSWORD@HOST:PORT'
 DOCKER_BUILDKIT=1 docker build \
   --platform linux/arm64 \
   --target ci \
+  --build-arg SGLANG_FL_REVISION="${SGLANG_FL_REVISION}" \
   --secret id=git_proxy,env=GIT_PROXY \
   -f docker/ascend/empty-0.5.18.containerfile \
   -t "${ASCEND_CI_IMAGE}" \
@@ -136,7 +146,37 @@ unset GIT_PROXY
 
 ### 3.3 推送并固定真实 digest
 
-只有真机环境校验通过后才推送：
+构建完成后，先把本地 tag 传到 910C 验收机。第一步是 **baked-image gate**：
+不挂载仓库、不设置仓库 workdir 或 `PYTHONPATH`，直接验证镜像内 site-packages
+安装和源码身份：
+
+```bash
+docker image inspect \
+  --format '{{index .Config.Labels "ai.flagos.sglang-plugin-fl.revision"}}' \
+  "${ASCEND_CI_IMAGE}"
+
+docker run --rm \
+  --runtime=ascend --ipc=host --shm-size=64g --user root \
+  -e ASCEND_VISIBLE_DEVICES=0,1,2,3 \
+  -e ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 \
+  -e EXPECTED_SGLANG_FL_REVISION="${SGLANG_FL_REVISION}" \
+  -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro \
+  -v /usr/local/Ascend/firmware:/usr/local/Ascend/firmware:ro \
+  -v /etc/ascend_install.info:/etc/ascend_install.info:ro \
+  -v /var/queue_schedule:/var/queue_schedule \
+  --entrypoint bash "${ASCEND_CI_IMAGE}" -lc '
+    test "$(cat /opt/sglang-plugin-fl/.flagos-source-commit)" = \
+      "${EXPECTED_SGLANG_FL_REVISION}"
+    python3 -c "import sglang_fl; print(sglang_fl.__file__)"
+    /usr/local/bin/verify-sglang-fl-ascend \
+      --require-ci --require-npu --min-npus 4
+  '
+```
+
+第二步才按第 4、5、8 节挂载**同一 SHA 的 clean checkout**，运行 examples；
+需要发布性能数据时再运行第 10 节。checkout gate 不能替代 baked-image gate。
+确认 OCI revision、镜像内 `.flagos-source-commit` 和 checkout SHA 完全一致，且
+两步真机验证均通过后再推送：
 
 ```bash
 docker push "${ASCEND_CI_IMAGE}"
@@ -151,6 +191,10 @@ docker inspect --format '{{index .RepoDigests 0}}' "${ASCEND_CI_IMAGE}"
 保持 `false`，避免 CI 拉取尚未发布的 tag。
 
 ## 4. 启动 910C 容器
+
+> 以下命令适用于目标镜像成功构建后；推送前可用本地 tag 验收，推送后的正式
+> 验收应改用 registry digest。截至 2026-09-23 尚无已发布 digest，当前开发
+> 容器证据不等价于目标镜像验收。
 
 下面命令适用于每台暴露 4 张 910C 的主机。按现场路径修改 `REPO_DIR` 和
 `MODEL_DIR`；双机必须使用相同代码、镜像和模型内容。
@@ -171,7 +215,7 @@ docker run --rm -it \
   --shm-size=512g \
   -e ASCEND_VISIBLE_DEVICES=0,1,2,3 \
   -e ASCEND_RT_VISIBLE_DEVICES=0,1,2,3 \
-  -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \
+  -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro \
   -v /usr/local/Ascend/firmware:/usr/local/Ascend/firmware:ro \
   -v /etc/ascend_install.info:/etc/ascend_install.info:ro \
   -v /var/queue_schedule:/var/queue_schedule \
@@ -182,6 +226,10 @@ docker run --rm -it \
   --entrypoint bash \
   "${ASCEND_CI_IMAGE}"
 ```
+
+该最小权限命令用于 Ascend OCI runtime 已完成设备注入修复的 runner；
+`910C_174` 当前专用隔离验收容器需经管理员授权额外使用 `--privileged`，共享
+CI 不得照搬该例外。
 
 `ASCEND_VISIBLE_DEVICES` 由华为 OCI runtime 消费并完成设备/cgroup 注入，
 `ASCEND_RT_VISIBLE_DEVICES` 由容器内 torch-npu/SGLang 消费；二者缺一不可。
@@ -196,8 +244,9 @@ docker run --rm -it \
 
 ## 5. 安装当前插件与环境校验
 
-镜像已经包含一份构建时插件。真机验收应将待测 checkout 挂载进容器，并
-以 editable 方式覆盖它；`--no-deps` 防止 pip 替换厂商 torch/CANN 依赖：
+发布后的目标 CI 镜像将包含一份构建时插件。当前人工验收使用缓存开发容器，
+并以挂载 checkout 的 editable 安装覆盖其中旧插件，因此该证据不能替代最终
+镜像验收。`--no-deps` 防止 pip 替换厂商 torch/CANN 依赖：
 
 ```bash
 cd /workspace/sglang-plugin-FL
@@ -266,6 +315,33 @@ recurrent update。GDN prefill 的内部 `gdn_triton.chunk_gated_delta_rule` 别
 保留 SGLang 的 NPU wheel 直连路径，因为它返回 final state 供主 cache 回写；
 这与公共 chunk API 的返回契约不同，不能用同一个 bridge 覆盖。
 
+### 6.1 MTP GDN target-verify 兼容层
+
+在当前 Qwen3.6-27B/topk=1 配置的源码审计与真机失败中，固定的 CANN 8.5
+kernel wheel 在 multi-token GDN target verify 中，不会在每个 draft token 后
+经过与普通单 token decode 相同的状态持久化边界；speculative
+temporal pool 又是物理 V×K、逻辑 K×V 的非连续 view。直接调用 multi-token
+kernel 会让后续 target logits 偏离逐 token decode。
+
+插件只对以下线性 EAGLE 验证形态启用顺序兼容层：
+
+- `forward_mode` 为 target verify；
+- `spec_info.topk == 1`，且 `ragged_verify_layout is None`；
+- token 布局严格为 dense `batch_size * draft_token_num`。
+
+兼容层先把卷积窗口和逻辑 K×V SSM state 物化为连续工作缓存，再逐个 draft
+token 调用普通单 token causal-conv 和 GDN decode；每步保存 conv/SSM snapshot，
+最后按 accepted step 与 track step 回写，`step == -1` 保持 no-op。这里的
+`topk=1` 指 speculative EAGLE tree width，不是上表中的 MoE `topk` 算子。
+
+tree、`topk>1`、ragged verify 和非 target-verify 路径仍使用上游原生实现。该
+兼容层的声明范围仅限 Qwen3.6-27B、TP=4、EAGLE、steps=3、topk=1、draft
+tokens=4，且关闭 CUDA graph、piecewise CUDA graph 与 overlap schedule；只有
+第 8.2 节完整门禁通过后才能记录为真机验收，结果不得外推到其它 speculative
+配置或 graph 模式。第 10 节 serving benchmark 不启用 MTP，也不构成该兼容层
+的性能证据。插件在该 target-verify 路径检测到 graph capture 时会直接报错并提示
+关闭 graph，避免绕过 example 的直接 server 启动静默写入错误状态。
+
 `fused_recurrent_gated_delta_rule` 不进入 Ascend FL dispatch。固定的 FlagGems
 v5.3.0 实现采用 vLLM 风格的 inplace K×V state，而 SGLang v0.5.18 公共函数
 采用 V×K/output-final-state 契约；仅替换关键字会造成错误。该函数因此保持
@@ -275,11 +351,12 @@ SGLang v0.5.18 在 NPU 上默认使用 `VisionAscendAttention`。本项目要求
 CANN 8.5 `npu_fused_infer_attention_score` 在 BF16/FP16 下接受的
 head size 为 64/128/192，而 Qwen3.6-27B 的视觉 head size 为 72。插件将
 Q/K/V 末维补零到 128，仍使用原始 `1/sqrt(72)` scale，融合计算后切回
-72；该变换在数学上与未填充 attention 等价，并保留了融合路径。其他
-CANN 8.5 未支持的 head size 才调用上游类已有的
-`VisionSdpaAttention` fallback。这是 CANN 8.5 的兼容层，不是对官方
-CANN 9.0 默认路径的修改。当前验收要求关闭
-`SGLANG_VIT_ENABLE_CUDA_GRAPH`。
+72；该变换在数学上与未填充 attention 等价，并保留了融合路径。D=72 且
+没有 attention mask 时使用该融合兼容层；D=72 有 mask，或其他 CANN 8.5
+不支持的 head size，则调用上游类已有的 `VisionSdpaAttention` fallback。
+这是 CANN 8.5 的兼容层，不是对官方 CANN 9.0 默认路径的修改。当前验收环境
+保持 `SGLANG_VIT_ENABLE_CUDA_GRAPH` 未设置（上游默认关闭）；调用方若曾开启，
+应在启动验收前清除。
 
 Qwen3.6-VL 的 deep-stack embedding 写回保持原生 torch-npu
 `masked_scatter_`。FlagGems v5.3.0 的 Ascend 实现会先用 Triton `sum`
@@ -293,44 +370,46 @@ FlagGems blacklist，不全局禁用 `sum`。
 export SGLANG_FL_PER_OP='silu_and_mul=flagos;mrotary_embedding=flagos;topk=vendor;gemma_rms_norm=vendor;fused_moe=vendor;chunk_gated_delta_rule=vendor'
 ```
 
-验收脚本会设置插件、FlagGems、FlagCX 和运行模式所需环境，并保留调用者
-已经显式设置的值。正式提交结果时，应在 `environment.txt` 中同时记录任何
-覆盖，避免不同策略的结果被混在一起。
+验收脚本会设置插件、FlagGems、FlagCX 和运行模式所需环境。调用方没有设置
+`HCCL_HOST_SOCKET_PORT_RANGE`、`HCCL_NPU_SOCKET_PORT_RANGE` 或
+`HCCL_IF_BASE_PORT` 中任何一项时，入口才会成对设置前两项为 `auto`；这与
+官方 SGLang v0.5.18 Ascend runner 一致。只要调用方显式设置了其中任意一项，
+脚本就原样保留三项，不会自动补齐、清除或校验；调用方必须自行保证 HOST/NPU
+成对配置，或只使用 legacy base。`environment.txt` 会同时记录三项，避免不同
+端口策略的结果被混在一起。
 
-所有 Ascend 入口默认设置 `HCCL_IF_BASE_PORT=52000`，即为 HCCL 分配
-`52000-52031`。共享宿主上若该范围已被其他任务占用，应在两端启动前显式选择
-另一段连续 32 个空闲端口；验收脚本会把最终值写进 `environment.txt`。
-脚本不会修改宿主机 sysctl。CI/生产节点管理员应按
+共享宿主不应在仓库或镜像中固定一个通用 HCCL base port。`auto` 避免仓库把
+所有容器强制到同一固定范围；实际端口分配与冲突处理仍由 HCCL 和作业调度
+保证。确需固定范围时，应由作业调度统一分配，并在同一拓扑的所有节点显式
+设置一致策略。脚本不会修改宿主机 sysctl；CI/生产节点
+管理员应按
 [CANN 8.5 HCCL 文档](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/850/commlib/hcclug/hcclug_000090.html)
-预留所选范围，避免被临时端口分配占用。
+配置和预留端口。
 
-CANN 8.5 的 `HCCL_HOST_SOCKET_PORT_RANGE` 优先级高于
-`HCCL_IF_BASE_PORT`。为保证验收端口策略可复现，本文提供的 Ascend examples
-和验收入口会明确清除继承的 `HCCL_HOST_SOCKET_PORT_RANGE`，并在
-`environment.txt` 中将其记录为 `<unset>`。不要依赖父进程中的该变量覆盖验收
-端口；需要调整时应在同一拓扑的所有节点显式设置 `HCCL_IF_BASE_PORT`。
-
-### 6.1 正确性模式
+### 6.2 正确性模式
 
 单机和双机 examples 使用正确性模式：
 
 ```text
 SGLANG_ENABLE_OVERLAP_PLAN_STREAM=0
 HCCL_BUFFSIZE=2400
-HCCL_IF_BASE_PORT=52000
+HCCL_HOST_SOCKET_PORT_RANGE=auto
+HCCL_NPU_SOCKET_PORT_RANGE=auto
 ```
 
 单机入口和 Ascend CI 容器还默认设置 `GLOO_SOCKET_IFNAME=lo`，将 Gloo
-数据面固定到回环接口；双机总入口会用 `--business-iface` 指定的业务网卡覆盖
-该值。PyTorch TCPStore 仍可能打印容器 hostname 反向解析告警；只要随后完成
-Gloo 连接且请求正常，该告警本身不代表验收失败。
+数据面固定到回环接口；双机总入口会用 `--interface` 指定的业务网卡覆盖
+该值。PyTorch TCPStore 仍可能打印容器 hostname 反向解析告警；只有同一次
+运行随后完成 Gloo 初始化、请求断言、正常退出并出现最终 `PASS` 时，才可将
+该告警判为非致命。`7b998c2` 的非连续芯片运行最终 watchdog 失败，因此仍按
+失败记录，不能因该告警通常可忽略而豁免。
 
 不要设置 `ASCEND_LAUNCH_BLOCKING=1`。同步 launch 会改变编译时机，并可能
 触发动态 kernel 编译失败。
 
-### 6.2 性能模式
+### 6.3 性能模式
 
-双机压测入口默认使用：
+单机和双机压测入口在调用方未显式覆盖相应变量时默认使用：
 
 ```text
 SGLANG_ENABLE_OVERLAP_PLAN_STREAM=1
@@ -338,7 +417,8 @@ SGLANG_NPU_USE_MULTI_STREAM=1
 STREAMS_PER_DEVICE=32
 HCCL_BUFFSIZE=1000
 HCCL_OP_EXPANSION_MODE=AIV
-HCCL_IF_BASE_PORT=52000
+HCCL_HOST_SOCKET_PORT_RANGE=auto
+HCCL_NPU_SOCKET_PORT_RANGE=auto
 ```
 
 这些设置只用于性能验收；不要用性能模式替代前面的正确性矩阵。
@@ -403,11 +483,37 @@ tmux has-session -t ascend-single 2>/dev/null && echo running || echo done
 | Qwen3.6-35B-A3B | concurrent `--mode all`：text + VL + mixed | TP=4 | 1 |
 | Qwen3.6-35B-A3B | concurrent `--mode text` canary | TP=2 | 3 次独立建引擎 |
 
-只跑一个模型时可加 `--model 27b` 或 `--model 35b`；完整验收不得使用该选项。
+分阶段执行时可加 `--model 27b` 或 `--model 35b`。单个模型的结果不能称为
+完整验收；最终必须在相同代码、镜像和环境下取得两个模型各自的完整 `PASS`，
+并合并归档两个结果目录。
 
-### 8.2 单独运行 example
+### 8.2 MTP 正确性门禁
 
-需要定位某一模型时，可直接运行仓库脚本：
+27B MTP example 固定使用 TP=4、EAGLE steps=3、topk=1、draft tokens=4，并
+附加 `--disable-cuda-graph --disable-piecewise-cuda-graph
+--disable-overlap-schedule`。为避免直接运行 example 时意外进入未经验证的 graph
+重放路径，该脚本在 Ascend 上即使未传这些参数，也会强制关闭 CUDA graph、
+piecewise CUDA graph 和 overlap schedule；其它平台仍保留原有命令行行为。它不是
+只检查“能生成文本”，而是同时要求：
+
+- 两个 prompt 的 speculative decode 与同一 MTP target engine 的
+  teacher-forced prefill 共完成 64 个 token 对照；
+- chosen-token logprob 最大差 `< 0.5`，decode top1 必须等于生成 token；
+- target prefill 明显偏好其它 token 时失败，近似并列数量不得超限；
+- MTP 与 non-MTP baseline 的 12 个输出分别通过事实、数学、代码执行、结构和
+  语言契约，并达到 12/12 semantic contract agreement；
+- `avg_spec_accept_length > 2.0`。
+
+baseline 只参加语义和吞吐对照，不运行同一套 logprob conformance；logprob
+oracle 比较的是 MTP speculative decode 与 target-model teacher-forced prefill。
+任何硬门禁失败都会返回非零。MTP 吞吐低于 baseline 当前只产生 warning，不能
+据此宣称有性能收益。
+
+### 8.3 单独运行 example
+
+定位某一模型时优先运行总入口的 `--model` 选项。下面的裸 example 命令只适合
+高级排障；执行前必须按第 5、6 节设置与总入口相同的插件、FlagGems、FlagCX、
+算子策略、HCCL 和 Gloo 环境，不能用裸命令结果替代总入口证据：
 
 ```bash
 MODEL_PATH=/models/Qwen3.6-27B TP_SIZE=4 \
@@ -415,6 +521,13 @@ python3 examples/qwen3_6_27b_offline_inference.py
 
 MODEL_PATH=/models/Qwen3.6-27B TP_SIZE=4 \
 python3 examples/qwen3_6_27b_concurrent.py --mode all
+
+# Ascend 会自动强制 eager + synchronous；显式参数便于日志自说明。
+MODEL_PATH=/models/Qwen3.6-27B TP_SIZE=4 \
+python3 examples/qwen3_6_27b_mtp_inference.py \
+  --disable-cuda-graph \
+  --disable-piecewise-cuda-graph \
+  --disable-overlap-schedule
 
 MODEL_PATH=/models/Qwen3.6-35B-A3B TP_SIZE=4 \
 python3 examples/qwen3_6_35b_a3b_offline_inference.py
@@ -426,7 +539,7 @@ python3 examples/qwen3_6_35b_a3b_concurrent.py --mode all
 单独命令适合排障，但不能代替总入口对模型、图片、NPU 数量、重复 canary
 和产物的强校验。
 
-### 8.3 TP=2 文本并发 canary
+### 8.4 TP=2 文本并发 canary
 
 Ascend 算子与 FlagGems Ascend 算子混用时，TP=2 文本并发曾出现非稳定问题。
 因此本版本把它保留为强制 canary，而不是标记为“预期失败”。总入口对两个
@@ -445,15 +558,21 @@ python3 examples/qwen3_6_35b_a3b_concurrent.py --mode text
 若失败，应保留对应 `*_tp2_canary_*.log`，不得只重跑到偶然成功后删除失败
 记录。
 
-### 8.4 单机通过判据
+### 8.5 单机通过判据
 
 - 所有脚本退出码为 0；
 - 没有用例因模型或图片缺失而跳过；
-- `single/environment.txt` 记录的是本次 checkout 和固定依赖；
+- `single/environment.txt` 记录环境变量、固定 distribution、`source_revision`、
+  `source_state`，以及 dirty checkout 的 `source_status`；源码归档必须带受控
+  `.source-commit`；正式发布证据要求 `source_state=clean` 或
+  `source_state=source-archive`，dirty 结果只用于排障；
 - 每个阶段日志存在且非空；
 - 末行出现 `PASS: single-node acceptance completed; no command was skipped`。
 
 ## 9. 双机 TP=4 + PP=2 examples 验收
+
+> **当前未执行：**第二台主机 SSH 登录被拒绝。以下内容是目标验收步骤，不是
+> 已验证结果。
 
 两台主机都要进入同版本容器，准备相同模型和图片，并保证业务网卡互通。
 以下示例假设 master 业务 IP 是 `172.16.10.108`，HCCL/Gloo 网卡名为
@@ -503,7 +622,12 @@ HTTP shutdown `rc=3`。worker wrapper 只在完整日志严格匹配该已知顺
 双机通过要求两端都出现各自的最终 `PASS`，并保存两端
 `environment.txt` 与 `*_master.log` / `*_worker.log`。仅 master 成功不算通过。
 
-## 10. 双机 serving 压测
+## 10. Serving 压测
+
+单机和双机入口共用相同的固定请求矩阵和严格通过标准。单机入口用于在一台
+910C 主机的 4 张可见 NPU 上执行 TP=4、PP=1、`nnodes=1` 实测；双机入口用于
+目标拓扑 TP=4、PP=2、`nnodes=2`。第 14 节只记录已经取得完整 JSONL、CSV 和
+最终 `PASS` 的实际结果，不用单机结果替代双机结论。
 
 ### 10.1 固定矩阵
 
@@ -520,7 +644,33 @@ HTTP shutdown `rc=3`。worker wrapper 只在完整日志严格匹配该已知顺
 `python -m sglang.benchmark.serving`，使用 `random-ids`、固定 seed、无限请求
 速率和精确长度输入。
 
-### 10.2 启动压测
+### 10.2 启动单机压测
+
+```bash
+cd /workspace/sglang-plugin-FL
+tmux new-session -d -s ascend-single-benchmark \
+  'bash scripts/ascend/run_single_node_benchmark.sh \
+    --model all \
+    --port 30000 \
+    --result-dir /results/ascend-0518/single-benchmark'
+```
+
+入口会依次启动 27B 和 35B-A3B 的 TP=4 服务，等待 `/health` 成功后运行完整
+3×4 矩阵；每个模型结束后会先 TERM 整个服务进程组，最多等待 30 秒，再在
+必要时 KILL，避免残留 scheduler 占用 NPU 或端口。完整成功时除驱动的 12 轮
+`PASS` 外，总入口末行还必须出现：
+
+```text
+PASS: single-node TP=4 benchmark matrix completed; no run was skipped
+```
+
+可用 `--model 27b` 或 `--model 35b` 分阶段保存证据和定位失败；正式完整验收
+仍需两个模型均通过。
+
+### 10.3 启动双机压测
+
+> **当前未执行：**双机 benchmark 需要第二台可登录且业务网互通的 910C
+> 主机。下列步骤定义目标拓扑，不代表已经取得双机性能结果。
 
 验收脚本会设置进程级性能变量，但不会擅自修改宿主机 sysctl。需要比较跨版本
 性能时，应由机器管理员在两台主机上统一 CPU/NUMA 策略，并先记录原值：
@@ -576,18 +726,20 @@ worker 只加入分布式服务。默认启动参数包括：
 - `--disable-radix-cache` 和 `--trust-remote-code`；
 - 性能模式中的 overlap、multi-stream 和 HCCL 设置。
 
-如已有服务，也可以只运行驱动：
+如有独立启动且保持运行的服务，也可以只运行驱动。使用单机总入口默认端口时，
+27B 为 30000、35B 为 30010；以下 35B 示例使用 30010，现场应以实际服务端口
+为准：
 
 ```bash
 python3 benchmarks/benchmark_throughput_serve.py \
   --model /models/Qwen3.6-35B-A3B \
   --model-name qwen3_6_35b_a3b \
   --host 127.0.0.1 \
-  --port 30000 \
+  --port 30010 \
   --output-dir /results/ascend-0518/manual-benchmark
 ```
 
-### 10.3 压测的严格通过条件
+### 10.4 压测的严格通过条件
 
 每一轮都必须同时满足：
 
@@ -606,9 +758,9 @@ python3 benchmarks/benchmark_throughput_serve.py \
 PASS: all 12 runs completed with exact request and token counts
 ```
 
-### 10.4 压测产物
+### 10.5 压测产物
 
-每个模型的时间戳目录包含：
+每个模型的 `<RESULT_DIR>/<model>_results/` 目录包含：
 
 ```text
 configuration.json
@@ -624,13 +776,15 @@ failures.txt                 # 仅失败时存在
 
 `raw_runs.csv` 应有 12 条数据行；`summary.csv` 应有 3 条数据行，且只平均
 第 2–4 轮。发布性能结论时必须同时归档 JSONL、客户端日志、server 日志、
-CSV、`configuration.json` 和两端 `environment.txt`，不能只抄一张汇总表。
+CSV 和 `configuration.json`；单机保存一份 `environment.txt`，双机保存两端
+各自的 `environment.txt`，不能只抄一张汇总表。
 
 ## 11. CI 配置
 
 Ascend 工作流和测试矩阵已经接线，但 `.github/configs/platforms.yml` 当前保持
-`enabled: false`。完成 ARM64 镜像构建、910C 验收与镜像推送并固定真实 digest
-后，再启用 Ascend；启用后 CI 会在 `dev/0.5.18` 的 push 和 pull request 上运行。
+`enabled: false`。完成 ARM64 镜像构建、910C 验收与镜像推送、固定真实 digest，
+并确认 `flagcicd-910c` runner 的 non-privileged 设备注入通过完整 verifier 后，
+再启用 Ascend；启用后 CI 会在 `dev/0.5.18` 的 push 和 pull request 上运行。
 Ascend 配置要求 runner 具有以下标签：
 
 ```text
@@ -645,21 +799,30 @@ Runner 宿主机必须注册华为 `ascend` Docker runtime，支持
 驱动/固件/queue scheduler 挂载，以及预先放置在
 `/mnt/airs-business/cicd/models` 的离线模型。CI 不下载模型。
 
-流水线顺序为：
+平台编排顺序为 unit → functional → E2E → benchmark；每个 NPU job 都在自己的
+容器内先执行 `check.sh` 和 `setup.sh`，输出设备诊断、要求至少 4 张工作 NPU，
+再以 `--no-deps` 安装当前 checkout 并校验导入路径。functional 执行组件测试，
+E2E 串行执行 27B/35B-A3B inference、serving、concurrent，benchmark 执行
+throughput、latency、serve smoke。
 
-1. `check.sh` 输出设备诊断，并用完整校验器要求至少 4 张工作 NPU；
-2. `setup.sh` 以 `--no-deps` 安装当前 checkout，再次校验导入路径；
-3. unit tests；
-4. functional tests；
-5. 27B/35B-A3B inference、serving、concurrent E2E，Ascend 固定串行执行；
-6. throughput、latency、serve benchmark smoke。
+functional 阶段的 `ascend_compat_probe.py` 真机检查 MTP state-copy tile 和
+split logsumexp/top-k fallback；unit 阶段覆盖 sequential GDN 的逻辑 K×V
+materialize、snapshot、commit 和 `step=-1`。CI 当前没有执行第 8.2 节完整的
+27B 严格 MTP example，因此 GDN 全模型防回归仍以单机验收产物为准，不能用
+compat probe 的通过替代。
 
-CI 的 benchmark job 是入口级 smoke test，不等于第 10 节的双机固定长度性能
+CI 的 benchmark job 是入口级 smoke test，不等于第 10 节的固定长度性能
 验收。发布 0.5.18 时两者都要通过。
 
 在镜像尚未推送或仍使用可变 tag 时，CI 仍是“待部署”状态。建议的启用顺序
 是：构建镜像 → 910C 环境校验 → 推送 → 固定真实 digest → 触发 CI → 保存
 CI 链接和 artifacts。
+
+镜像构建尝试的证据 revision 为 `7f7e558`；截至本记录，`910C_174` 的 Docker
+daemon proxy 无法拉取目标 base，且本机没有缓存该精确 base，
+因此最终镜像尚未构建或推送，也没有可固定的 digest；Ascend CI 保持
+`enabled: false`，尚无可引用的 CI run；该 runner 的 non-privileged 注入也尚未
+取得完整 verifier 通过证据。
 
 ## 12. 最终交付产物清单
 
@@ -669,11 +832,16 @@ CI 链接和 artifacts。
 - 镜像完整 `repository@sha256:...`；
 - 每台主机的 `npu-smi info`；
 - 环境校验器完整输出；
+- Ascend compat probe 日志；
 - 单机两模型 TP=4 offline/concurrent 日志；
 - 两模型各 3 次 TP=2 canary 日志；
+- 27B TP=4 严格 MTP 日志（含 64-token oracle、12/12 semantic contract、
+  accept length 与退出码）；
 - 双机 examples 的 master/worker 日志；
+- 单机 benchmark 的 server/driver 日志；
 - 双机 benchmark 的 master/worker server 日志；
-- 两模型全部 JSONL、raw CSV、summary CSV 和 configuration；
+- 单机与双机分别归档两模型全部 JSONL、raw CSV、summary CSV 和
+  configuration，不得用单机结果代替双机结果；
 - CI run 链接及 unit、functional、E2E、benchmark artifacts；
 - 异常场景的失败日志，不得删除后只保留重试成功结果。
 
@@ -691,8 +859,10 @@ PY
 python3 -m pip show sglang
 ```
 
-不要手工改 `PYTHONPATH` 掩盖问题。重新用 0.5.18 Dockerfile 构建镜像；该
-Dockerfile 会先卸载旧包，校验器也会阻止旧 checkout 抢占导入。
+只按第 5 节将当前插件 checkout 放在 `PYTHONPATH` 首位；不得把旧
+`/sgl-workspace/sglang` 加回 `PYTHONPATH` 来掩盖导入问题。重新用 0.5.18
+Dockerfile 构建镜像；该 Dockerfile 会先卸载旧包，校验器也会阻止旧 checkout
+抢占导入。
 
 ### 13.2 NPU 不可见或少于 4 张
 
@@ -716,7 +886,9 @@ stub 伪装缺失的 native module；镜像构建和真机导入检查都应失�
 
 ### 13.5 FlagCX 加载失败
 
-默认镜像路径是 `/opt/FlagCX`。确认：
+目标镜像默认路径是 `/opt/FlagCX`；开发容器或现场挂载可能不同，应以本次
+`environment.txt` 的 `FLAGCX_PATH` 为准（本次专用开发容器为
+`/sgl-workspace/FlagCX`）。确认：
 
 ```bash
 echo "${FLAGCX_PATH}"
@@ -729,16 +901,19 @@ test -f "${FLAGCX_PATH}/plugin/interservice/flagcx_wrapper.py"
 collective 端口没有被占用或防火墙阻断。
 
 如果出现 `Communication_Error_Bind_IP_Port (EJ0003)` 或
-`Failed to bind the IP port`，先检查当前 `HCCL_IF_BASE_PORT` 起始的连续 32
-个端口。共享宿主不要结束不属于本验收的进程；改用一段空闲范围，并在同一
-验收拓扑的所有节点设置相同值。例如：
+`Failed to bind the IP port`，先从 `environment.txt` 核对 HOST/NPU range 与
+legacy base 三项是否混用了不同策略。共享宿主不要结束不属于本验收的进程；
+优先清除作业外部遗留的固定 base，让入口成对使用 `auto`：
 
 ```bash
-export HCCL_IF_BASE_PORT=52100
+unset HCCL_IF_BASE_PORT
+export HCCL_HOST_SOCKET_PORT_RANGE=auto
+export HCCL_NPU_SOCKET_PORT_RANGE=auto
 ```
 
-随后由宿主管理员按 CANN 文档预留 `52100-52131`；验收脚本本身不执行
-`sysctl`。
+若现场调度系统必须分配固定 base，则先清除两个 range，再在同一拓扑所有节点
+设置同一个 `HCCL_IF_BASE_PORT`；具体范围和预留方式以 CANN 文档为准。验收
+脚本本身不执行 `sysctl`。
 
 ### 13.6 图片用例被跳过或直接失败
 
@@ -748,8 +923,8 @@ export HCCL_IF_BASE_PORT=52100
 如果日志在 `npu_fused_infer_attention_score` 报错 561002 且提示
 head size 不支持，先确认当前 checkout 已包含 Ascend vision 兼容层，并确认
 `SGLANG_VIT_ENABLE_CUDA_GRAPH` 未开启。不要把整个多模态后端全局强制为
-SDPA；插件会对 Qwen3.6 的 D=72 使用补零融合路径，只对其他未支持
-head size 回退，以保留其他模型的融合性能。
+SDPA；插件会对 Qwen3.6 的 D=72 且无 mask 请求使用补零融合路径，D=72 有
+mask 或其他未支持 head size 才回退，以保留可支持请求的融合性能。
 
 如果四个 rank 都在 `mm_utils._scatter` 中经 FlagGems
 `masked_scatter_ -> sum_kernel_1` 报 `coreDim=0`，检查 Ascend 策略是否已将
@@ -777,22 +952,76 @@ head size 回退，以保留其他模型的融合性能。
 从对应 `.log` 和 official JSONL 检查服务错误、请求错误和实际 token 长度。
 本驱动有意拒绝部分成功、少 token 和缺指标结果；不要编辑 CSV 伪造通过。
 
+### 13.10 引擎退出后的 `resource_tracker` traceback
+
+当前 Python multiprocessing 可能在 example 已打印 `All validations passed.`、
+引擎已 shutdown 后，继续输出 shared-memory `KeyError`。只有业务断言全部通过、
+进程退出码为 0 且总入口继续下一阶段时，才把它记录为退出清理噪声；若 traceback
+出现在成功标记前、伴随 worker/scheduler 异常或退出码非零，仍按失败处理。
+
 ## 14. 0.5.18 验收记录
 
-本文初始状态如下，完成真机运行后由验收人填写实际日期、commit、digest 和
-产物位置：
+截至 2026-09-23，真机运行使用源码归档 commit
+`d13fb9a690faa2346a58fdd07b8d759dd3722bfa`，归档
+`source.tar.gz` 的 SHA-256 为
+`d118dfae07856206a88db057e02121fcbe87580f1ea78e37b5ffd70e4126879b`，容器内
+`.source-commit` 与之完全一致。其后的 `7f7e558`、`b52a8b9`、`e94afc8`、
+`928d1fa` 和 `8d9ab2f` 分别补充镜像 revision、验收源码身份、吞吐 warning
+文案、Ascend MTP 自动强制 eager，以及未支持 graph target-verify 的 fail-fast；
+后两项与真机命令已显式使用的三个 disable 参数一致，不改变已验收 eager 路径，
+也没有把 graph 模式纳入通过范围。本地回归在 `8d9ab2f` 上执行，真机结果不能
+外推到未运行的 graph、tree、`topk>1` 或 ragged speculative 配置。
 
-| 项目 | 当前状态 | 通过证据 |
+| 项目 | 当前状态 | 证据或阻塞原因 |
 | --- | --- | --- |
-| aarch64 CI 镜像构建 | 待真机/构建机验收 | 镜像构建日志 + digest |
-| 4 卡环境校验 | 待真机验收 | verifier 完整日志 |
-| 27B 单机 TP=4 examples | 待真机验收 | offline/concurrent/MTP 日志 |
-| 35B-A3B 单机 TP=4 examples | 待真机验收 | offline/concurrent 日志 |
-| 两模型 TP=2 canary，各 3 次 | 待真机验收 | 6 份 canary 日志 |
-| 两模型双机 TP=4 + PP=2 examples | 待真机验收 | 两端日志与 PASS 标记 |
-| 27B 双机固定矩阵压测 | 待真机验收 | 12 JSONL + raw/summary CSV |
-| 35B-A3B 双机固定矩阵压测 | 待真机验收 | 12 JSONL + raw/summary CSV |
-| Ascend CI 全链路 | 待镜像发布后验收 | CI run 链接与 artifacts |
+| `dev/0.5.18` 上游基线 | 已核对 | `upstream/dev/0.5.18=244fda597bd7128482490c75895f7699330f39e6`；刷新远端后仍以该 commit 为 merge-base，目标分支没有待合入的新 commit |
+| 本地聚焦回归 | 已通过（`8d9ab2f`） | 9 个受影响测试文件合计 `69 passed, 3 skipped`；3 项仅因本地未安装 SGLang 跳过，真机 compat/examples 另行通过；变更文件 Ruff check/format 通过 |
+| 开发容器 4 卡环境校验 | 已通过（`93c8198`） | 真实 NPU verifier，包括视觉 D=72→128 数值校验；这是开发容器证据，不是 baked-image gate |
+| Ascend compat probe | 已通过（`d13fb9a`） | exit 0；MTP state-update tile 与 split row-logsumexp/top-k fallback 均通过 |
+| 27B，非连续物理芯片 `0,1,8,9` | 历史失败（`7b998c2`） | 首个请求进入分布式等待，scheduler watchdog 超时；未被后续结果删除 |
+| 单机完整 examples，连续物理芯片 `0,1,2,3` | 已通过（`d13fb9a`） | 总入口 exit 0 并输出最终 `PASS`；27B/35B-A3B TP4 offline、TP4 concurrent、各 3 次 TP2 canary 均通过，无跳过 |
+| 27B TP4 严格 MTP | 已通过（`d13fb9a`） | 64 token oracle `max_delta=0.095655`、`near_ties=0/1`、`large_gap_violations=0`；语义 12/12；`avg_spec_accept_length=2.94` |
+| 27B MTP 吞吐对照 | 仅正确性证据 | MTP 512 token 为 5.7 tok/s，baseline 为 5.9 tok/s；没有性能收益声明 |
+| 27B / 35B-A3B 单机固定矩阵压测 | 已通过（`d13fb9a`） | 总入口 exit 0 并输出最终 `PASS`；两模型各 12 轮均为 64/64 请求成功、精确 token 计数，无跳过、无 `failures.txt` |
+| 最终 aarch64 CI 镜像 | 阻塞 | `910C_174` Docker daemon 无法取得固定 base，重试后本机仍无该镜像；未构建、未推送、无 digest |
+| 两模型双机 TP=4 + PP=2 examples/benchmark | 阻塞 | 第二台主机 SSH 登录被拒绝，未执行；单机通过不能替代双机结论 |
+| Ascend CI 全链路 | 禁用/阻塞 | 最终镜像未发布，`ascend.enabled=false`，仍是可变 tag，且 runner non-privileged NPU probe 尚未取得通过证据，无 CI run |
 
-在上述项目全部有可追溯证据之前，本适配只能描述为“代码与验收入口已准备”，
-不能描述为“910C 0.5.18 已完成性能验收”。
+### 14.1 单机 benchmark 实测
+
+下表是 `910C_174`、连续物理芯片 `0,1,2,3`、TP=4、PP=1 的实测；每行都是
+第 2–4 轮平均值，第 1 轮仅预热。`Output tok/s` 只统计生成 token，`Total
+tok/s` 同时包含输入和输出 token；这些数字没有沿用参考文档或其它 revision 的
+历史结果。
+
+| 模型 | 输入→输出 token | Req/s | Output tok/s | Total tok/s | Mean TTFT (ms) | Mean TPOT (ms) | Mean E2E (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3.6-27B | 1,024→1,024 | 1.42 | 1,449.63 | 2,899.26 | 6,026.31 | 38.15 | 45,051.81 |
+| Qwen3.6-27B | 4,096→1,024 | 0.99 | 1,016.15 | 5,080.75 | 14,838.50 | 48.39 | 64,339.54 |
+| Qwen3.6-27B | 16,384→1,024 | 0.38 | 384.88 | 6,542.94 | 59,903.27 | 88.97 | 150,922.80 |
+| Qwen3.6-35B-A3B | 1,024→1,024 | 2.05 | 2,103.37 | 4,206.74 | 2,977.23 | 27.35 | 30,958.89 |
+| Qwen3.6-35B-A3B | 4,096→1,024 | 1.62 | 1,654.39 | 8,271.95 | 6,154.92 | 32.55 | 39,448.72 |
+| Qwen3.6-35B-A3B | 16,384→1,024 | 0.71 | 722.71 | 12,286.14 | 23,879.53 | 54.88 | 80,021.76 |
+
+两个模型各有 13 行 `raw_runs.csv`（表头 + 12 轮）、4 行 `summary.csv`
+（表头 + 3 个 shape）、12 个 official JSONL 和 12 个客户端日志。结果目录为：
+
+```text
+/data/codex/sglang-plugin-fl-0518-d13fb9a/artifacts/real-910c/benchmark/qwen3_6_27b_results/20260922_160622_317252
+/data/codex/sglang-plugin-fl-0518-d13fb9a/artifacts/real-910c/benchmark/qwen3_6_35b_a3b_results/20260922_163606_254451
+```
+
+单机 examples 与 benchmark 的宿主归档根目录均为
+`/data/codex/sglang-plugin-fl-0518-d13fb9a/artifacts/real-910c/`。关键校验和：
+
+| 产物 | SHA-256 |
+| --- | --- |
+| `single_node_acceptance.log` | `8d8f1c19da85328618fcc1c8eb1ccec38664c0923f290db07ca4053d1d159aa8` |
+| `single_node_benchmark.log` | `7403c4c04a53de14efc1fb46b42b1a2539fdca206953245c02994e3319057646` |
+| 27B `summary.csv` | `40e3e78d91c264e8242bcf35f6fb87a3bcb91160d6ae1e1bf52b09c4ee3b21d8` |
+| 35B-A3B `summary.csv` | `6beafb5ad31f5857fa8899a98b23ce76d969081ade221d8108c3117e24cf3f10` |
+
+这些结果可以声明当前适配在指定开发容器、固定依赖和单机 4×910C 上的
+examples 正确性矩阵与固定 serving benchmark 均通过；它们不是最终发布镜像或
+双机结果。在取得真实发布镜像 digest、baked-image gate、修复后的
+non-privileged runner、双机证据和 CI run 前，不能声明完整 release certification。

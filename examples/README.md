@@ -39,6 +39,8 @@ all concurrent modes at TP=4, then recreates a TP=2 engine for each of three
 text-concurrency canary rounds. It also compares Qwen3.6-27B MTP with the
 baseline at TP=4. Correctness mode disables the Ascend overlap plan stream;
 the MTP comparison also explicitly disables overlap scheduling.
+The 27B MTP example enforces this validated eager/synchronous mode whenever it
+detects Ascend, so a direct invocation cannot silently enter graph replay.
 
 Because this is a long-running GPU job, run it in `tmux`:
 
