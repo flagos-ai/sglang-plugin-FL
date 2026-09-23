@@ -38,7 +38,24 @@ def _router_kernel():
         allowed = mask
         if GROUPED:
             EPG: tl.constexpr = experts // GROUPS
-            group_score = tl.max(tl.reshape(score, (GROUPS, EPG)), axis=1)
+            group_values = tl.reshape(score, (GROUPS, EPG))
+            if HAS_CORRECTION:
+                corrected = score + tl.load(correction + col, mask=mask, other=0.0)
+                group_values = tl.reshape(corrected, (GROUPS, EPG))
+                first_index = tl.argmax(group_values, axis=1)
+                first = tl.max(group_values, axis=1)
+                positions = tl.arange(0, EPG)[None, :]
+                second = tl.max(
+                    tl.where(
+                        positions == first_index[:, None],
+                        -float("inf"),
+                        group_values,
+                    ),
+                    axis=1,
+                )
+                group_score = first + second
+            else:
+                group_score = tl.max(group_values, axis=1)
             selected_groups = tl.zeros((GROUPS,), dtype=tl.int1)
             selected_experts = tl.zeros((BLOCK,), dtype=tl.int1)
             for _ in tl.static_range(TOP_GROUPS):
@@ -61,9 +78,10 @@ def _router_kernel():
             total += value
             work = tl.where(col == index, -float("inf"), work)
         if RENORMALIZE:
+            denominator = total + 1.0e-20
             for i in tl.static_range(TOPK):
                 ptr = weights + row * TOPK + i
-                tl.store(ptr, tl.load(ptr) / total)
+                tl.store(ptr, tl.load(ptr) / denominator)
 
     return kernel
 
@@ -78,6 +96,16 @@ def _route_triton(logits: torch.Tensor, cfg):
     block = triton.next_power_of_2(experts)
     if block > 1024:
         return None
+    if cfg.use_grouped_topk:
+        groups = cfg.num_expert_group
+        if not groups or experts % groups or block != experts:
+            return None
+        experts_per_group = experts // groups
+        if cfg.correction_bias is not None and (
+            experts_per_group < 2
+            or experts_per_group & (experts_per_group - 1)
+        ):
+            return None
     topk = cfg.top_k
     correction = cfg.correction_bias
     weights = torch.empty((tokens, topk), device=logits.device, dtype=torch.float32)
@@ -146,23 +174,38 @@ def _route_torch(logits: torch.Tensor, cfg):
     if cfg.use_grouped_topk:
         groups = cfg.num_expert_group
         experts_per_group = score.shape[-1] // groups
-        group_score = score.view(score.shape[0], groups, experts_per_group).amax(-1)
+        choice = score
+        if cfg.correction_bias is not None:
+            choice = choice + cfg.correction_bias.float()
+            group_score = (
+                choice.view(score.shape[0], groups, experts_per_group)
+                .topk(2, dim=-1)
+                .values.sum(-1)
+            )
+        else:
+            group_score = choice.view(
+                score.shape[0], groups, experts_per_group
+            ).amax(-1)
         group_ids = group_score.topk(cfg.topk_group, dim=-1).indices
         allowed = torch.zeros_like(group_score, dtype=torch.bool)
         allowed.scatter_(1, group_ids, True)
-        score = score.masked_fill(
-            ~allowed.unsqueeze(-1)
+        allowed = (
+            allowed.unsqueeze(-1)
             .expand(-1, -1, experts_per_group)
-            .reshape_as(score),
+            .reshape_as(score)
+        )
+        ranked = choice.masked_fill(
+            ~allowed,
             float("-inf"),
         )
-    ranked = score
-    if cfg.correction_bias is not None:
+    else:
+        ranked = score
+    if cfg.correction_bias is not None and not cfg.use_grouped_topk:
         ranked = ranked + cfg.correction_bias.float()
     ids = ranked.topk(cfg.top_k, dim=-1).indices
     weights = score.gather(1, ids)
     if cfg.renormalize:
-        weights /= weights.sum(-1, keepdim=True)
+        weights /= weights.sum(-1, keepdim=True) + 1.0e-20
     return weights, ids.to(torch.int32)
 
 

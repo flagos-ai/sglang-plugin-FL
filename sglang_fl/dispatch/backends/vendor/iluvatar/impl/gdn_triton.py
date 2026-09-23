@@ -165,6 +165,7 @@ def _kernel():
         cu,
         out,
         checkpoints,
+        stride_state: tl.constexpr,
         H: tl.constexpr,
         HV: tl.constexpr,
         K: tl.constexpr,
@@ -185,9 +186,13 @@ def _kernel():
         kk = tl.arange(0, BK)
         mask_v = vv < V
         mask_k = kk < K
-        slot = tl.load(indices + seq)
+        slot = tl.load(indices + seq).to(tl.int64)
         active = slot >= 0
-        state_offset = ((slot * HV + hv) * V + vv[:, None]) * K + kk[None, :]
+        state_offset = (
+            slot * stride_state
+            + (hv * V + vv[:, None]) * K
+            + kk[None, :]
+        )
         current = tl.load(
             state + state_offset,
             mask=active & mask_v[:, None] & mask_k[None, :],
@@ -202,6 +207,15 @@ def _kernel():
             previous_end = tl.load(cu + previous + 1)
             chunk_base += (previous_end - previous_begin + 63) // 64
             previous += 1
+        if SAVE_CHECKPOINTS:
+            checkpoint_offset = (
+                (chunk_base * HV + hv) * V + vv[:, None]
+            ) * K + kk[None, :]
+            tl.store(
+                checkpoints + checkpoint_offset,
+                current,
+                mask=active & mask_v[:, None] & mask_k[None, :],
+            )
         ratio: tl.constexpr = HV // H
         q_head = hv // ratio
         token = begin
@@ -231,7 +245,7 @@ def _kernel():
             )
             if SAVE_CHECKPOINTS:
                 local_token = token - begin + 1
-                chunk = chunk_base + local_token // 64 - 1
+                chunk = chunk_base + local_token // 64
                 checkpoint_offset = (
                     (chunk * HV + hv) * V + vv[:, None]
                 ) * K + kk[None, :]
@@ -240,6 +254,7 @@ def _kernel():
                     current,
                     mask=active
                     & (local_token % 64 == 0)
+                    & (token + 1 < end)
                     & mask_v[:, None]
                     & mask_k[None, :],
                 )
@@ -302,6 +317,7 @@ def recurrent_gdn(
         cu_seqlens,
         out,
         checkpoints,
+        stride_state=initial_state.stride(0),
         H=heads,
         HV=value_heads,
         K=key_dim,

@@ -22,6 +22,7 @@ def _kernels():
         TOPK: tl.constexpr,
         H: tl.constexpr,
         I: tl.constexpr,
+        TRANSPOSED: tl.constexpr,
         BH: tl.constexpr,
         BI: tl.constexpr,
     ):
@@ -33,16 +34,15 @@ def _kernels():
         values = tl.load(
             x + (row // TOPK) * H + hh, mask=hh < H, other=0.0
         ).to(tl.float32)
-        gate_weight = tl.load(
-            w13 + (expert * 2 * I + ii[:, None]) * H + hh[None, :],
-            mask=mask_i[:, None] & (hh[None, :] < H),
-            other=0.0,
-        ).to(tl.float32)
-        up_weight = tl.load(
-            w13 + (expert * 2 * I + I + ii[:, None]) * H + hh[None, :],
-            mask=mask_i[:, None] & (hh[None, :] < H),
-            other=0.0,
-        ).to(tl.float32)
+        if TRANSPOSED:
+            gate_ptr = w13 + (expert * H + hh[None, :]) * (2 * I) + ii[:, None]
+            up_ptr = gate_ptr + I
+        else:
+            gate_ptr = w13 + (expert * 2 * I + ii[:, None]) * H + hh[None, :]
+            up_ptr = gate_ptr + I * H
+        weight_mask = mask_i[:, None] & (hh[None, :] < H)
+        gate_weight = tl.load(gate_ptr, mask=weight_mask, other=0.0).to(tl.float32)
+        up_weight = tl.load(up_ptr, mask=weight_mask, other=0.0).to(tl.float32)
         gate = tl.sum(gate_weight * values[None, :], axis=1)
         up = tl.sum(up_weight * values[None, :], axis=1)
         tl.store(mid + row * I + ii, gate * tl.sigmoid(gate) * up, mask=mask_i)
@@ -55,6 +55,7 @@ def _kernels():
         routed,
         I: tl.constexpr,
         H: tl.constexpr,
+        TRANSPOSED: tl.constexpr,
         BI: tl.constexpr,
         BH: tl.constexpr,
     ):
@@ -66,8 +67,12 @@ def _kernels():
         values = tl.load(mid + row * I + ii, mask=ii < I, other=0.0).to(
             tl.float32
         )
+        if TRANSPOSED:
+            weight_ptr = w2 + (expert * I + ii[None, :]) * H + hh[:, None]
+        else:
+            weight_ptr = w2 + (expert * H + hh[:, None]) * I + ii[None, :]
         weight = tl.load(
-            w2 + (expert * H + hh[:, None]) * I + ii[None, :],
+            weight_ptr,
             mask=mask_h[:, None] & (ii[None, :] < I),
             other=0.0,
         ).to(tl.float32)
@@ -109,7 +114,26 @@ def fused_experts(
 
     tokens, hidden_size = hidden.shape
     topk = topk_ids.shape[1]
-    intermediate = w2.shape[-1]
+    canonical = (
+        w13.ndim == 3
+        and w2.ndim == 3
+        and w13.shape[1] == 2 * w2.shape[2]
+        and w13.shape[2] == hidden_size
+        and w2.shape[1] == hidden_size
+    )
+    transposed = (
+        w13.ndim == 3
+        and w2.ndim == 3
+        and w13.shape[1] == hidden_size
+        and w13.shape[2] == 2 * w2.shape[1]
+        and w2.shape[2] == hidden_size
+    )
+    if not canonical and not transposed:
+        raise ValueError(
+            f"unsupported MoE weight layout: hidden={tuple(hidden.shape)}, "
+            f"w13={tuple(w13.shape)}, w2={tuple(w2.shape)}"
+        )
+    intermediate = w2.shape[1] if transposed else w2.shape[2]
     rows = tokens * topk
     ids = topk_ids.to(torch.int32).contiguous().view(-1)
     mid = hidden.new_empty((rows, intermediate))
@@ -124,6 +148,7 @@ def fused_experts(
         TOPK=topk,
         H=hidden_size,
         I=intermediate,
+        TRANSPOSED=transposed,
         BH=triton.next_power_of_2(hidden_size),
         BI=4,
         num_warps=8,
@@ -136,6 +161,7 @@ def fused_experts(
         routed,
         I=intermediate,
         H=hidden_size,
+        TRANSPOSED=transposed,
         BI=triton.next_power_of_2(intermediate),
         BH=16,
         num_warps=4,
