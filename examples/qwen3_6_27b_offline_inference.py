@@ -84,7 +84,7 @@ elif _is_corex:
         "trust_remote_code": True,
         "watchdog_timeout": 3600,
         "attention_backend": "triton",
-        "cuda_graph_max_bs": 16,
+        "cuda_graph_max_bs_decode": 16,
     }
 elif _is_hcu:
     _extra_engine_kwargs = {
