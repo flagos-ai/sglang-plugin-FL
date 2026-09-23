@@ -804,8 +804,8 @@ CSV 和 `configuration.json`；单机保存一份 `environment.txt`，双机保�
 ## 11. CI 配置
 
 Ascend 工作流和测试矩阵已经接线；镜像已上传、回拉并固定真实 registry digest，
-`.github/configs/platforms.yml` 当前为 `enabled: true`。首轮 Ascend CI 负责验证
-`flagcicd-910c` runner 的 non-privileged 设备注入和完整 verifier，并在
+`.github/configs/platforms.yml` 当前为 `enabled: true`。首轮 Ascend CI 已验证
+`flagcicd-910c` runner 的 non-privileged 设备注入和完整 verifier；该流水线继续在
 `dev/0.5.18` 的 push 和 pull request 上运行。
 Ascend 配置要求 runner 具有以下标签：
 
@@ -847,8 +847,17 @@ base；清理/扁平后的 image ID 为
 不挂载仓库的 4 卡 privileged baked-image gate 已完整通过，发布前敏感信息扫描
 为 0 命中。Harbor artifact 大小为 `5,427,763,383` 字节；按上述 digest 回拉后，
 image ID、ARM64 架构、revision 和 flattened 标签均一致，并再次通过完整 4 卡
-gate。CI 已固定该 digest 并启用；专用 runner 的 non-privileged 路径尚待首轮 CI
-验证，当前还没有可引用的通过 run。
+gate。CI 已固定该 digest 并启用；代码/CI 配置 revision
+`c9e14c420106aabd9f3c235a8e7fe8b18550a49d` 对应的
+[Actions run 35825348774](https://github.com/flagos-ai/sglang-plugin-FL/actions/runs/35825348774)
+attempt 2 已以 `completed / success` 收敛：27 个 job 成功、`test-thead` 按配置跳过、
+0 个失败。Ascend 专用 runner 的 non-privileged 环境校验、unit、functional、
+concurrent/inference/serving E2E、benchmark 和 notify 均通过。
+
+该 run 的 attempt 1 中，MUSA functional 在 checkout 前的 `Initialize containers`
+阶段达到 180 分钟超时；Ascend 和 CUDA 全链路当时已经通过。随后仅定向重跑该
+MUSA job 及其依赖，attempt 2 的 MUSA functional、E2E、benchmark 和 notify 全部
+通过。该基础设施重跑没有替换或外推 Ascend 证据。
 
 ## 12. 最终交付产物清单
 
@@ -1019,7 +1028,7 @@ benchmark。
 | 27B / 35B-A3B 单机固定矩阵压测 | 已通过（`d13fb9a`） | 总入口 exit 0 并输出最终 `PASS`；两模型各 12 轮均为 64/64 请求成功、精确 token 计数，无跳过、无 `failures.txt` |
 | 最终 aarch64 CI 镜像 | 已发布并按 digest 复验通过（`539b91f`） | 实际使用已缓存 fallback base；清理/扁平 image ID `sha256:fe38adaaaa39f4b3e1e9e7b5d407f82ff5cc050444b70f80f31a38b6c104c889`；敏感信息扫描 0 命中；发布引用为 `harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:8aee90099504bfdec9a1c0caf484ebff74273eeda4480ff07554138d727de62e`，回拉后 4 卡 privileged baked-image gate exit 0 |
 | 两模型双机 TP=4 + PP=2 examples/benchmark | 阻塞 | 第二台主机 SSH 登录被拒绝，未执行；单机通过不能替代双机结论 |
-| Ascend CI 全链路 | 已启用/运行待验收 | `ascend.enabled=true` 且固定真实 digest；runner non-privileged NPU probe 与完整流水线由本次首轮 CI 验证，尚不能提前声明通过 |
+| Ascend CI 全链路 | 已通过（`c9e14c4`） | `ascend.enabled=true` 且固定真实 digest；[Actions run 35825348774](https://github.com/flagos-ai/sglang-plugin-FL/actions/runs/35825348774) attempt 2 为 `completed / success`，专用 runner non-privileged NPU probe、unit、functional、concurrent/inference/serving E2E、benchmark 和 notify 全部通过 |
 
 ### 14.1 单机 benchmark 实测
 
@@ -1058,6 +1067,6 @@ tok/s` 同时包含输入和输出 token；这些数字没有沿用参考文档�
 这些 `d13fb9a` 结果可以声明当前适配在指定开发容器、固定依赖和单机 4×910C
 上的 examples 正确性矩阵与固定 serving benchmark 均通过；它们不是
 `539b91f` 发布镜像或双机结果。`539b91f` 发布镜像已经固定真实 registry digest，
-且回拉后的 privileged baked-image gate 已通过；但在取得专用 runner 的
-non-privileged CI 证据、双机证据和完整 CI run 前，不能声明完整 release
-certification。
+回拉后的 privileged baked-image gate 已通过，并且 `c9e14c4` 的专用 runner
+non-privileged CI 与完整 Actions run 已通过；双机证据仍因第二台主机 SSH 登录
+被拒绝而缺失，因此不能声明完整 release certification。
