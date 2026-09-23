@@ -24,8 +24,20 @@ from sglang_fl.dispatch.policy import reset_global_policy
 
 
 @pytest.fixture(autouse=True)
-def _reset_policy():
-    """Reset global policy before each test."""
+def _reset_policy(monkeypatch):
+    """Reset policy and isolate generic dispatch tests from host defaults."""
+    from sglang_fl.dispatch import config as dispatch_config
+
+    for name in (
+        "SGLANG_FL_CONFIG",
+        "SGLANG_FL_PREFER",
+        "SGLANG_FL_STRICT",
+        "SGLANG_FL_DENY_VENDORS",
+        "SGLANG_FL_ALLOW_VENDORS",
+        "SGLANG_FL_PER_OP",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(dispatch_config, "get_config_path", lambda platform=None: None)
     reset_global_policy()
     yield
     reset_global_policy()
