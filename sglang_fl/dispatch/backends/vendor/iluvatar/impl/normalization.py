@@ -1,5 +1,3 @@
-# Iluvatar normalization operator implementations using SGLang layer forward.
-
 from __future__ import annotations
 
 from typing import Optional, Union
@@ -12,15 +10,16 @@ def rms_norm_iluvatar(
     x: torch.Tensor,
     residual: Optional[torch.Tensor] = None,
 ) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
-    """
-    RMS normalization via SGLang RMSNorm.forward_cuda.
+    from .triton_ops import rms_norm
 
-    Args:
-        obj: The calling RMSNorm instance (provides obj.weight, obj.variance_epsilon)
-        x: Input tensor
-        residual: Optional residual tensor (post_residual_addition merged by bridge)
+    out = rms_norm(x, obj.weight, obj.variance_epsilon, residual)
+    if out is not None:
+        return out
 
-    Returns:
-        Normalized tensor, or tuple of (normalized, residual) if residual provided
-    """
-    return obj.forward_cuda(x, residual)
+    if residual is not None:
+        x = x + residual
+        residual = x
+    output = torch.nn.functional.rms_norm(
+        x.float(), (x.shape[-1],), obj.weight.float(), obj.variance_epsilon
+    ).to(x.dtype)
+    return (output, residual) if residual is not None else output

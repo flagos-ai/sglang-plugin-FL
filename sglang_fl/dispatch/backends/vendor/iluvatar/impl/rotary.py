@@ -1,5 +1,3 @@
-# Iluvatar rotary embedding operator implementations using SGLang apply_rotary_emb.
-
 from __future__ import annotations
 
 import torch
@@ -15,32 +13,37 @@ def rotary_embedding_iluvatar(
     rotary_interleaved: bool = False,
     inplace: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Apply rotary position embedding using SGLang apply_rotary_emb.
+    del obj
+    q_out = query if inplace else query.clone()
+    k_out = key if inplace else key.clone()
 
-    Args:
-        obj: The calling RotaryEmbedding instance (for interface consistency)
-        query: Query tensor [batch, num_heads, head_dim]
-        key: Key tensor
-        cos: Cosine cache [max_seq_len, rotary_dim // 2]
-        sin: Sine cache [max_seq_len, rotary_dim // 2]
-        position_ids: Position indices
-        rotary_interleaved: Whether to use interleaved rotary (GPT-J style)
-        inplace: Whether to modify tensors in-place
+    from .triton_ops import rotary_embedding
 
-    Returns:
-        Tuple of (embedded_query, embedded_key)
-    """
-    from sglang.srt.layers.rotary_embedding.utils import apply_rotary_emb
+    if rotary_embedding(
+        q_out, k_out, cos, sin, position_ids, rotary_interleaved
+    ):
+        return q_out, k_out
 
-    is_neox_style = not rotary_interleaved
     pos = position_ids.flatten()
-    cos_sel = cos.index_select(0, pos)
-    sin_sel = sin.index_select(0, pos)
+    cos = cos.index_select(0, pos).unsqueeze(1).to(query.dtype)
+    sin = sin.index_select(0, pos).unsqueeze(1).to(query.dtype)
 
-    q = query if inplace else query.clone()
-    k = key if inplace else key.clone()
+    def rotate(x: torch.Tensor) -> torch.Tensor:
+        if rotary_interleaved:
+            x1, x2 = x[..., ::2], x[..., 1::2]
+            rotated = torch.stack((-x2, x1), dim=-1).flatten(-2)
+            scale_cos = torch.stack((cos, cos), dim=-1).flatten(-2)
+            scale_sin = torch.stack((sin, sin), dim=-1).flatten(-2)
+        else:
+            x1, x2 = x.chunk(2, dim=-1)
+            rotated = torch.cat((-x2, x1), dim=-1)
+            scale_cos = torch.cat((cos, cos), dim=-1)
+            scale_sin = torch.cat((sin, sin), dim=-1)
+        return x * scale_cos + rotated * scale_sin
 
-    q_embed = apply_rotary_emb(q, cos_sel, sin_sel, is_neox_style)
-    k_embed = apply_rotary_emb(k, cos_sel, sin_sel, is_neox_style)
-    return q_embed, k_embed
+    q_out, k_out = rotate(query), rotate(key)
+    if inplace:
+        query.copy_(q_out)
+        key.copy_(k_out)
+        return query, key
+    return q_out, k_out
