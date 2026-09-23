@@ -1,6 +1,5 @@
 # CI workflow for the SGLang 0.5.18 development line.
-# NVIDIA and MUSA are enabled. Ascend wiring is staged behind the image-release
-# gate in platforms.yml; T-Head remains temporarily disabled.
+# NVIDIA, Ascend, and MUSA are enabled; T-Head remains temporarily disabled.
 name: CI
 
 on:

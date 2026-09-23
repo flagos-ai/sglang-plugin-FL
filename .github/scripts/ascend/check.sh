@@ -66,17 +66,21 @@ done
 echo "--- Locate npu-smi ---"
 NPU_SMI=""
 path_hit="$(command -v npu-smi 2>/dev/null || true)"
-if [ -n "$path_hit" ]; then
+if [ -n "$path_hit" ] && [ -x "$path_hit" ] && [ -s "$path_hit" ]; then
   NPU_SMI="$path_hit"
   echo "found on PATH: $NPU_SMI"
 else
+  if [ -n "$path_hit" ]; then
+    echo "ignoring unusable PATH entry: $path_hit (not executable or empty)"
+  fi
   echo "not on PATH; searching known driver locations..."
   for cand in \
     /usr/local/Ascend/driver/tools/npu-smi \
     /usr/local/Ascend/driver/usr/local/sbin/npu-smi \
+    /usr/local/bin/npu-smi \
     /usr/local/sbin/npu-smi \
     /usr/bin/npu-smi ; do
-    if [ -x "$cand" ]; then
+    if [ -x "$cand" ] && [ -s "$cand" ]; then
       NPU_SMI="$cand"
       echo "found at: $NPU_SMI  (off-PATH)"
       break

@@ -9,9 +9,9 @@ platforms:
   cuda:
     enabled: true
   ascend:
-    # Enable only after empty-0.5.18.containerfile has been built on ARM64,
-    # validated on 910C, pushed, and ascend.yml is pinned to its real digest.
-    enabled: false
+    # Published image is pinned to its Harbor digest and passed the four-card
+    # baked-image gate; CI now validates the dedicated runner's non-privileged path.
+    enabled: true
   musa:
     enabled: true
   thead:

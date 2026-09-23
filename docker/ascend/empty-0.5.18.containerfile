@@ -189,5 +189,5 @@ WORKDIR /workspace
 #     --build-arg SGLANG_FL_REVISION="$(git rev-parse HEAD)" \
 #     --secret id=git_proxy,env=GIT_PROXY \
 #     -f docker/ascend/empty-0.5.18.containerfile \
-#     -t harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-ascend-sglang0.5.18-ci .
+#     -t harbor.baai.ac.cn/plugin/sglang-plugin-fl:0.2.0-ascend-sglang0.5.18-ci .
 # Push that tag first, then replace the CI reference with its registry digest.

@@ -37,23 +37,35 @@ Qwen3.6-35B-A3B。本版本为基于官方 v0.5.18 和用户提供的 910C 环�
 | deep-ep | `1.0.0+e05fc90e.cann.8.5.0.b232` |
 | 插件代码 | `flagos-ai/sglang-plugin-FL` 的 `dev/0.5.18` 分支 |
 
-基础 empty 镜像为：
+Dockerfile 默认的目标 empty 基础镜像为：
 
 ```text
 harbor.baai.ac.cn/flagos-inner-models-release/flagrelease-qwen3.6-ascend-empty-tree_none-gems_5.3.0rc2-sgl_0.5.11-plugin_0.1.0-cx_0.13.0-python_3.11.14-torch_npu_2.8.0.post2-pcp_cann8.5.0-gpu_a3-arc_arm64-driver_25.5.0:202608291915
 ```
 
-0.5.18 CI 镜像的目标标签为：
+`910C_174` 当时无法解析外部下载地址，也无法取得上述精确 empty 镜像；本次
+已构建镜像因此从宿主已缓存、且经版本核对的以下 fallback base 离线收敛：
 
 ```text
-harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-ascend-sglang0.5.18-ci
+harbor.baai.ac.cn/flagos-inner-models-release/flagrelease-qwen3.6-ascend-gems_5.3.0rc2-sglang_0.5.11-sglang_plugin_0.1.0-cx_0.13.0-python_3.11.14-torch_npu_2.8.0.post2-pcp_cann8.5.0-a3-arc_arm64-driver_25.5.0:202607241548
+```
+
+0.5.18 CI 镜像的发布标签为：
+
+```text
+harbor.baai.ac.cn/plugin/sglang-plugin-fl:0.2.0-ascend-sglang0.5.18-ci
 ```
 
 标签中的 `0.2.0` 是仓库 CI 镜像系列名；镜像内当前插件 distribution 版本仍为
-`sglang-fl==0.1.0`，并通过 OCI label 明确记录。该标签是 CI 配置使用的发布
-目标，不代表本次本地开发已经完成构建或推送。
-首次启用 CI 前，镜像维护者必须实际构建、在 910C 上校验、推送，并将
-CI 配置改成仓库返回的真实 digest；不得手写或猜测 digest。
+`sglang-fl==0.1.0`，并通过 OCI label 明确记录。本次已生成清理/扁平后的本地
+镜像，image ID 为
+`sha256:fe38adaaaa39f4b3e1e9e7b5d407f82ff5cc050444b70f80f31a38b6c104c889`；
+该 image ID 不是 registry digest，不能直接写入 CI。Harbor 返回并经回拉验证的
+不可变引用为：
+
+```text
+harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:8aee90099504bfdec9a1c0caf484ebff74273eeda4480ff07554138d727de62e
+```
 
 ## 2. 本版本的仓库入口
 
@@ -97,7 +109,7 @@ test -z "$(git status --porcelain)" || {
 }
 export SGLANG_FL_REVISION="$(git rev-parse HEAD)"
 
-export ASCEND_CI_IMAGE='harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-ascend-sglang0.5.18-ci'
+export ASCEND_CI_IMAGE='harbor.baai.ac.cn/plugin/sglang-plugin-fl:0.2.0-ascend-sglang0.5.18-ci'
 
 DOCKER_BUILDKIT=1 docker build \
   --platform linux/arm64 \
@@ -178,29 +190,36 @@ docker run --rm \
 确认 OCI revision、镜像内 `.flagos-source-commit` 和 checkout SHA 完全一致，且
 两步真机验证均通过后再推送：
 
+以上是后续正式发布应遵循的标准流程。本次因精确 empty base 无法取得而采用了
+受控 fallback：完整 examples/benchmark 证据绑定 `d13fb9a`，最终扁平镜像及
+baked-image gate 绑定 `539b91f`，没有把两组证据表述成“同一 SHA 完整验收”。
+本次证据范围、差异和仍待 CI/双机验证的边界见第 14 节。
+
 ```bash
 docker push "${ASCEND_CI_IMAGE}"
 docker pull "${ASCEND_CI_IMAGE}"
 docker inspect --format '{{index .RepoDigests 0}}' "${ASCEND_CI_IMAGE}"
 ```
 
-将最后一条命令返回的完整 `repository@sha256:...` 写入
-`.github/configs/ascend.yml` 的 `ci_image`。如果镜像尚未存在，应保持 CI
-为待验收状态，不能以一个虚构 digest 代替。完成固定后，再把
-`.github/configs/platforms.yml` 中 `ascend.enabled` 改为 `true`；仓库初始交付
-保持 `false`，避免 CI 拉取尚未发布的 tag。
+将最后一条命令返回的完整 digest 写入 `.github/configs/ascend.yml`。本次发布
+已固定为
+`harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:8aee90099504bfdec9a1c0caf484ebff74273eeda4480ff07554138d727de62e`。
+如果镜像尚未上传完成，应保持 CI 为待验收状态，不能以本地 image ID 或虚构
+digest 代替。完成固定后，再把
+`.github/configs/platforms.yml` 中 `ascend.enabled` 改为 `true`；未完成上述步骤时
+必须保持 `false`，避免 CI 拉取尚未发布的 tag。
 
 ## 4. 启动 910C 容器
 
 > 以下命令适用于目标镜像成功构建后；推送前可用本地 tag 验收，推送后的正式
-> 验收应改用 registry digest。截至 2026-09-23 尚无已发布 digest，当前开发
-> 容器证据不等价于目标镜像验收。
+> 验收必须使用 registry 返回的真实 digest。截至 2026-09-23，镜像已发布、
+> 按 digest 回拉，并完成 privileged 4 卡 baked-image gate。
 
 下面命令适用于每台暴露 4 张 910C 的主机。按现场路径修改 `REPO_DIR` 和
 `MODEL_DIR`；双机必须使用相同代码、镜像和模型内容。
 
 ```bash
-export ASCEND_CI_IMAGE='harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-ascend-sglang0.5.18-ci'
+export ASCEND_CI_IMAGE='harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:8aee90099504bfdec9a1c0caf484ebff74273eeda4480ff07554138d727de62e'
 export REPO_DIR=/path/to/sglang-plugin-FL
 export MODEL_DIR=/path/to/models
 export RESULT_DIR=/path/to/ascend-0518-results
@@ -244,9 +263,12 @@ CI 不得照搬该例外。
 
 ## 5. 安装当前插件与环境校验
 
-发布后的目标 CI 镜像将包含一份构建时插件。当前人工验收使用缓存开发容器，
-并以挂载 checkout 的 editable 安装覆盖其中旧插件，因此该证据不能替代最终
-镜像验收。`--no-deps` 防止 pip 替换厂商 torch/CANN 依赖：
+清理/扁平后的目标 CI 镜像已包含 revision
+`539b91ffec1095af0c9e60d6d47183b2f06ea2e0` 的构建时插件，且不挂载仓库的
+4 卡 privileged baked-image gate 已通过。下面的 editable 安装仅用于挂载
+checkout 的开发/复验场景；第 14 节 `d13fb9a` 的完整 examples 与 benchmark
+证据来自较早的开发容器，不能替代 `539b91f` 镜像上的同项复验。
+`--no-deps` 防止 pip 替换厂商 torch/CANN 依赖：
 
 ```bash
 cd /workspace/sglang-plugin-FL
@@ -781,10 +803,10 @@ CSV 和 `configuration.json`；单机保存一份 `environment.txt`，双机保�
 
 ## 11. CI 配置
 
-Ascend 工作流和测试矩阵已经接线，但 `.github/configs/platforms.yml` 当前保持
-`enabled: false`。完成 ARM64 镜像构建、910C 验收与镜像推送、固定真实 digest，
-并确认 `flagcicd-910c` runner 的 non-privileged 设备注入通过完整 verifier 后，
-再启用 Ascend；启用后 CI 会在 `dev/0.5.18` 的 push 和 pull request 上运行。
+Ascend 工作流和测试矩阵已经接线；镜像已上传、回拉并固定真实 registry digest，
+`.github/configs/platforms.yml` 当前为 `enabled: true`。首轮 Ascend CI 负责验证
+`flagcicd-910c` runner 的 non-privileged 设备注入和完整 verifier，并在
+`dev/0.5.18` 的 push 和 pull request 上运行。
 Ascend 配置要求 runner 具有以下标签：
 
 ```text
@@ -818,18 +840,22 @@ CI 的 benchmark job 是入口级 smoke test，不等于第 10 节的固定长�
 是：构建镜像 → 910C 环境校验 → 推送 → 固定真实 digest → 触发 CI → 保存
 CI 链接和 artifacts。
 
-镜像构建尝试的证据 revision 为 `7f7e558`；截至本记录，`910C_174` 的 Docker
-daemon proxy 无法拉取目标 base，且本机没有缓存该精确 base，
-因此最终镜像尚未构建或推送，也没有可固定的 digest；Ascend CI 保持
-`enabled: false`，尚无可引用的 CI run；该 runner 的 non-privileged 注入也尚未
-取得完整 verifier 通过证据。
+本次 baked 镜像绑定 revision
+`539b91ffec1095af0c9e60d6d47183b2f06ea2e0`，实际使用第 1 节记录的 fallback
+base；清理/扁平后的 image ID 为
+`sha256:fe38adaaaa39f4b3e1e9e7b5d407f82ff5cc050444b70f80f31a38b6c104c889`。
+不挂载仓库的 4 卡 privileged baked-image gate 已完整通过，发布前敏感信息扫描
+为 0 命中。Harbor artifact 大小为 `5,427,763,383` 字节；按上述 digest 回拉后，
+image ID、ARM64 架构、revision 和 flattened 标签均一致，并再次通过完整 4 卡
+gate。CI 已固定该 digest 并启用；专用 runner 的 non-privileged 路径尚待首轮 CI
+验证，当前还没有可引用的通过 run。
 
 ## 12. 最终交付产物清单
 
 完成验收后应归档：
 
 - 插件 commit SHA 和 `git status --short`；
-- 镜像完整 `repository@sha256:...`；
+- 镜像完整 `harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:8aee90099504bfdec9a1c0caf484ebff74273eeda4480ff07554138d727de62e`；
 - 每台主机的 `npu-smi info`；
 - 环境校验器完整输出；
 - Ascend compat probe 日志；
@@ -961,8 +987,16 @@ mask 或其他未支持 head size 才回退，以保留可支持请求的融合�
 
 ## 14. 0.5.18 验收记录
 
-截至 2026-09-23，真机运行使用源码归档 commit
-`d13fb9a690faa2346a58fdd07b8d759dd3722bfa`，归档
+截至 2026-09-23，验收证据分成两个不能互相外推的 revision 集合。完整
+examples、严格 MTP 与固定矩阵 benchmark 使用源码归档 commit
+`d13fb9a690faa2346a58fdd07b8d759dd3722bfa`；清理/扁平镜像及其 4 卡
+privileged baked-image gate 绑定 commit
+`539b91ffec1095af0c9e60d6d47183b2f06ea2e0`。前者证明 `d13fb9a` 开发容器的
+模型功能与性能矩阵，后者证明 `539b91f` 镜像内安装、依赖、真实 NPU tensor、
+视觉数值路径和 FlagCX 加载，不代表已在该镜像上重跑前者的完整 examples 或
+benchmark。
+
+`d13fb9a` 的归档
 `source.tar.gz` 的 SHA-256 为
 `d118dfae07856206a88db057e02121fcbe87580f1ea78e37b5ffd70e4126879b`，容器内
 `.source-commit` 与之完全一致。其后的 `7f7e558`、`b52a8b9`、`e94afc8`、
@@ -983,9 +1017,9 @@ mask 或其他未支持 head size 才回退，以保留可支持请求的融合�
 | 27B TP4 严格 MTP | 已通过（`d13fb9a`） | 64 token oracle `max_delta=0.095655`、`near_ties=0/1`、`large_gap_violations=0`；语义 12/12；`avg_spec_accept_length=2.94` |
 | 27B MTP 吞吐对照 | 仅正确性证据 | MTP 512 token 为 5.7 tok/s，baseline 为 5.9 tok/s；没有性能收益声明 |
 | 27B / 35B-A3B 单机固定矩阵压测 | 已通过（`d13fb9a`） | 总入口 exit 0 并输出最终 `PASS`；两模型各 12 轮均为 64/64 请求成功、精确 token 计数，无跳过、无 `failures.txt` |
-| 最终 aarch64 CI 镜像 | 阻塞 | `910C_174` Docker daemon 无法取得固定 base，重试后本机仍无该镜像；未构建、未推送、无 digest |
+| 最终 aarch64 CI 镜像 | 已发布并按 digest 复验通过（`539b91f`） | 实际使用已缓存 fallback base；清理/扁平 image ID `sha256:fe38adaaaa39f4b3e1e9e7b5d407f82ff5cc050444b70f80f31a38b6c104c889`；敏感信息扫描 0 命中；发布引用为 `harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:8aee90099504bfdec9a1c0caf484ebff74273eeda4480ff07554138d727de62e`，回拉后 4 卡 privileged baked-image gate exit 0 |
 | 两模型双机 TP=4 + PP=2 examples/benchmark | 阻塞 | 第二台主机 SSH 登录被拒绝，未执行；单机通过不能替代双机结论 |
-| Ascend CI 全链路 | 禁用/阻塞 | 最终镜像未发布，`ascend.enabled=false`，仍是可变 tag，且 runner non-privileged NPU probe 尚未取得通过证据，无 CI run |
+| Ascend CI 全链路 | 已启用/运行待验收 | `ascend.enabled=true` 且固定真实 digest；runner non-privileged NPU probe 与完整流水线由本次首轮 CI 验证，尚不能提前声明通过 |
 
 ### 14.1 单机 benchmark 实测
 
@@ -1021,7 +1055,9 @@ tok/s` 同时包含输入和输出 token；这些数字没有沿用参考文档�
 | 27B `summary.csv` | `40e3e78d91c264e8242bcf35f6fb87a3bcb91160d6ae1e1bf52b09c4ee3b21d8` |
 | 35B-A3B `summary.csv` | `6beafb5ad31f5857fa8899a98b23ce76d969081ade221d8108c3117e24cf3f10` |
 
-这些结果可以声明当前适配在指定开发容器、固定依赖和单机 4×910C 上的
-examples 正确性矩阵与固定 serving benchmark 均通过；它们不是最终发布镜像或
-双机结果。在取得真实发布镜像 digest、baked-image gate、修复后的
-non-privileged runner、双机证据和 CI run 前，不能声明完整 release certification。
+这些 `d13fb9a` 结果可以声明当前适配在指定开发容器、固定依赖和单机 4×910C
+上的 examples 正确性矩阵与固定 serving benchmark 均通过；它们不是
+`539b91f` 发布镜像或双机结果。`539b91f` 发布镜像已经固定真实 registry digest，
+且回拉后的 privileged baked-image gate 已通过；但在取得专用 runner 的
+non-privileged CI 证据、双机证据和完整 CI run 前，不能声明完整 release
+certification。

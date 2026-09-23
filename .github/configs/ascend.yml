@@ -3,11 +3,10 @@
 
 platform: ascend
 
-# SGLang 0.5.18 empty CI image built from
-# docker/ascend/empty-0.5.18.containerfile. This is intentionally a versioned
-# tag, not a fabricated digest; after the image is pushed, pin its real
-# registry-reported sha256 digest here.
-ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-ascend-sglang0.5.18-ci
+# Published SGLang 0.5.18 ARM64 CI image. The immutable Harbor digest was
+# pulled back and passed the four-card 910C baked-image gate; build provenance
+# and the canonical rebuild recipe are documented in the 0.5.18 usage guide.
+ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:8aee90099504bfdec9a1c0caf484ebff74273eeda4480ff07554138d727de62e
 
 # Runner labels for this hardware
 runner_labels:

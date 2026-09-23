@@ -20,6 +20,7 @@ _ROOT = Path(__file__).parents[2]
 _DOCKERFILE = _ROOT / "docker" / "ascend" / "empty-0.5.18.containerfile"
 _DOCKERIGNORE = Path(f"{_DOCKERFILE}.dockerignore")
 _ASCEND_CONFIG = _ROOT / ".github" / "configs" / "ascend.yml"
+_ASCEND_CHECK = _ROOT / ".github" / "scripts" / "ascend" / "check.sh"
 _PLATFORM_REGISTRY = _ROOT / ".github" / "configs" / "platforms.yml"
 _FUNCTIONAL_WORKFLOW = _ROOT / ".github" / "workflows" / "_functional_test.yml"
 _COMPAT_PROBE_PATH = _ROOT / "examples" / "ascend_compat_probe.py"
@@ -153,6 +154,16 @@ def test_ci_mounts_host_models_and_driver_read_only() -> None:
     assert "/var/queue_schedule:/var/queue_schedule:ro" not in volumes
 
 
+def test_ascend_check_ignores_empty_npu_smi_stub() -> None:
+    script = _ASCEND_CHECK.read_text(encoding="utf-8")
+
+    assert '[ -x "$path_hit" ] && [ -s "$path_hit" ]' in script
+    assert 'if [ -x "$cand" ] && [ -s "$cand" ]; then' in script
+    assert script.index("    /usr/local/bin/npu-smi \\") < script.index(
+        "    /usr/local/sbin/npu-smi \\"
+    )
+
+
 def test_enabled_ascend_ci_requires_an_immutable_image_digest() -> None:
     registry = yaml.safe_load(_PLATFORM_REGISTRY.read_text(encoding="utf-8"))
     config = yaml.safe_load(_ASCEND_CONFIG.read_text(encoding="utf-8"))
@@ -164,6 +175,8 @@ def test_enabled_ascend_ci_requires_an_immutable_image_digest() -> None:
         "Ascend CI may be enabled only after ci_image is pinned to its "
         "registry-reported sha256 digest"
     )
+    if enabled:
+        assert image.startswith("harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:")
 
 
 def test_functional_matrix_runs_the_real_ascend_compatibility_probe() -> None:
