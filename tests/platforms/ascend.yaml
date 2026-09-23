@@ -102,8 +102,20 @@ env_defaults:
     unit:
       # Include patterns: "*" for all, or list specific paths.
       include: "*"
-      # Exclude patterns: empty list or list paths to exclude.
-      exclude: []
+      # MUSA tests import the MUSA auto-patch entry point during collection.
+      # Ignore them before import so vendor-specific monkeypatches never run in
+      # the Ascend pytest process; the MUSA CI lane retains their full coverage.
+      exclude:
+        - platform/test_musa_fp32_collective.py
+        - platform/test_musa_gated_layernorm.py
+        - platform/test_musa_gdn_precision.py
+        - platform/test_musa_lifecycle.py
+        - platform/test_musa_multimodal_mask.py
+        - platform/test_musa_pp_compat.py
+        - platform/test_musa_runtime_config.py
+        - platform/test_musa_sampling_mask.py
+        - platform/test_musa_sglang_compat.py
+        - platform/test_musa_triton_compat.py
 
     benchmark:
       enabled: true

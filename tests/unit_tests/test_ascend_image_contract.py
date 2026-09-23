@@ -22,6 +22,8 @@ _DOCKERIGNORE = Path(f"{_DOCKERFILE}.dockerignore")
 _ASCEND_CONFIG = _ROOT / ".github" / "configs" / "ascend.yml"
 _ASCEND_CHECK = _ROOT / ".github" / "scripts" / "ascend" / "check.sh"
 _PLATFORM_REGISTRY = _ROOT / ".github" / "configs" / "platforms.yml"
+_ASCEND_TEST_CONFIG = _ROOT / "tests" / "platforms" / "ascend.yaml"
+_PLATFORM_UNIT_TESTS = _ROOT / "tests" / "unit_tests" / "platform"
 _FUNCTIONAL_WORKFLOW = _ROOT / ".github" / "workflows" / "_functional_test.yml"
 _COMPAT_PROBE_PATH = _ROOT / "examples" / "ascend_compat_probe.py"
 _VERIFIER_PATH = _ROOT / ".github" / "scripts" / "ascend" / "verify_environment.py"
@@ -162,6 +164,18 @@ def test_ascend_check_ignores_empty_npu_smi_stub() -> None:
     assert script.index("    /usr/local/bin/npu-smi \\") < script.index(
         "    /usr/local/sbin/npu-smi \\"
     )
+
+
+def test_ascend_unit_scope_excludes_musa_autopatch_tests() -> None:
+    config = yaml.safe_load(_ASCEND_TEST_CONFIG.read_text(encoding="utf-8"))
+    excluded = set(config["910c"]["tests"]["unit"]["exclude"])
+    musa_tests = {
+        path.relative_to(_ROOT / "tests" / "unit_tests").as_posix()
+        for path in _PLATFORM_UNIT_TESTS.glob("test_musa_*.py")
+    }
+
+    assert musa_tests
+    assert musa_tests <= excluded
 
 
 def test_enabled_ascend_ci_requires_an_immutable_image_digest() -> None:
