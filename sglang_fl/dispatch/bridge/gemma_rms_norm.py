@@ -44,7 +44,7 @@ def gemma_rms_norm_bridge(
     # Handle post_residual_addition: merge into residual
     if post_residual_addition is not None and residual is not None:
         residual = residual + post_residual_addition
-    elif post_residual_addition is not None and residual is None:
-        residual = post_residual_addition
+    # SGLang 0.5.18 ignores post_residual_addition when there is no residual;
+    # it is not an alternate residual input.
 
     return call_op("gemma_rms_norm", self, x, residual)

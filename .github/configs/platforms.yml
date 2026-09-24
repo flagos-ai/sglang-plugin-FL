@@ -9,8 +9,9 @@ platforms:
   cuda:
     enabled: true
   ascend:
-    # Temporarily disabled until the dedicated SGLang 0.5.18 adaptation is merged.
-    enabled: false
+    # Published image is pinned to its Harbor digest and passed the four-card
+    # baked-image gate; CI now validates the dedicated runner's non-privileged path.
+    enabled: true
   musa:
     enabled: true
   thead:

@@ -1,14 +1,20 @@
 #!/bin/bash
 # Copyright (c) 2025 BAAI. All rights reserved.
-# Install sglang-plugin-FL and test dependencies on Huawei Ascend NPU.
-# CANN toolkit + torch_npu are preinstalled in the CI image (see
-# docker/ascend/containerfile); this script only installs the plugin itself.
+# Install only the checked-out plugin on Huawei Ascend NPU. The versioned CI
+# image owns SGLang, CANN, torch_npu, FlagGems, FlagCX, kernels, and test tools.
 set -euo pipefail
 git config --global --add safe.directory "$(pwd)"
 echo "=== Installing sglang-plugin-FL (Ascend) ==="
-pip install --upgrade pip "setuptools>=68,<82" wheel
-pip install -e ".[dev]" --no-build-isolation || pip install -e . --no-build-isolation
-pip install pytest pytest-timeout pyyaml
+python3 -m pip install --no-deps --no-build-isolation -e .
+# An older plugin is present in the empty base image. Keep this checkout first
+# for this step and all later Actions steps without re-resolving dependencies.
+export PYTHONPATH="$(pwd)${PYTHONPATH:+:${PYTHONPATH}}"
+if [ -n "${GITHUB_ENV:-}" ]; then
+  printf 'PYTHONPATH=%s\n' "$PYTHONPATH" >> "$GITHUB_ENV"
+fi
+python3 .github/scripts/ascend/verify_environment.py \
+  --require-ci \
+  --require-npu \
+  --min-npus 4 \
+  --plugin-root "$(pwd)"
 echo "=== Installation complete ==="
-python -c "import torch_npu; print(f'torch_npu {torch_npu.__version__} loaded')"
-python -c "import sglang_fl; print('sglang_fl plugin loaded')"

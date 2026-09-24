@@ -38,6 +38,22 @@ class FlagOSBackend(Backend):
                 FlagOSBackend._available = False
         return FlagOSBackend._available
 
+    def is_fused_recurrent_available(self) -> bool:
+        """Return whether FlagGems can honor SGLang's recurrent contract.
+
+        FlagGems v5.3.0 on Ascend provides the vLLM-style inplace KxV state
+        API, not SGLang v0.5.18's public VxK/output-final-state API.  The real
+        NPU GDN path is native in SGLang, so do not advertise this incompatible
+        generic implementation to direct dispatch callers.
+        """
+        if not self.is_available():
+            return False
+
+        from sglang_fl.utils import get_device_info
+
+        info = get_device_info()
+        return info is None or info.vendor_name != "ascend"
+
     def silu_and_mul(self, obj, x):
         from .impl.activation import silu_and_mul_flagos
 
@@ -98,7 +114,7 @@ class FlagOSBackend(Backend):
         beta,
         scale,
         initial_state=None,
-        output_final_state=True,
+        output_final_state=False,
         cu_seqlens=None,
         ssm_state_indices=None,
         num_accepted_tokens=None,

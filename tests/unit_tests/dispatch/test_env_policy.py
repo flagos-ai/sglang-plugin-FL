@@ -217,6 +217,30 @@ class TestEnvVarPerOp:
             policy = pm.get_policy()
             assert policy.per_op_order == ()
 
+    def test_empty_string_inherits_platform_default(self, monkeypatch, tmp_path):
+        from sglang_fl.dispatch import config as dispatch_config
+
+        config_file = tmp_path / "platform.yaml"
+        config_file.write_text(
+            "op_backends:\n  silu_and_mul: [flagos, vendor, reference]\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            dispatch_config,
+            "get_config_path",
+            lambda platform=None: config_file,
+        )
+
+        with patch.dict(os.environ, {"SGLANG_FL_PER_OP": ""}, clear=False):
+            pm = PolicyManager.get_instance()
+            pm.reset_global_policy()
+            policy = pm.get_policy()
+            assert policy.per_op_order_dict["silu_and_mul"] == [
+                "flagos",
+                "vendor",
+                "reference",
+            ]
+
     def test_trailing_semicolon(self):
         val = "silu_and_mul=vendor|flagos;"
         with patch.dict(os.environ, {"SGLANG_FL_PER_OP": val}, clear=False):

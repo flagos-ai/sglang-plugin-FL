@@ -12,9 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Ascend normalization operator implementations.
-# rms_norm      : torch_npu.npu_rms_norm / npu_add_rms_norm (fused add+norm)
-# gemma_rms_norm: torch_npu.npu_gemma_rms_norm / sgl_kernel_npu add_gemma_rms_norm
+"""SGLang 0.5.18 Ascend normalization adapters."""
 
 from __future__ import annotations
 
@@ -23,33 +21,24 @@ from typing import Optional, Union
 import torch
 
 
+def _forward_npu(obj, x: torch.Tensor, residual: Optional[torch.Tensor]):
+    forward_npu = getattr(obj, "forward_npu", None)
+    if forward_npu is None:
+        raise RuntimeError(
+            f"SGLang 0.5.18 {type(obj).__name__}.forward_npu is required by "
+            "the Ascend normalization adapter"
+        )
+    return forward_npu(x, residual)
+
+
 def rms_norm_ascend(
     obj,
     x: torch.Tensor,
     residual: Optional[torch.Tensor] = None,
 ) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
-    """
-    RMS normalization using Ascend NPU.
+    """Use SGLang's native NPU RMSNorm contract."""
 
-    Args:
-        obj: The calling obj (provides obj.weight, obj.variance_epsilon)
-        x: Input tensor
-        residual: Optional residual tensor
-
-    Returns:
-        Normalized tensor, or tuple of (normalized, residual) if residual provided
-    """
-    import torch_npu
-
-    weight = obj.weight
-    epsilon = obj.variance_epsilon
-
-    if residual is not None:
-        x, _, residual = torch_npu.npu_add_rms_norm(x, residual, weight, epsilon)
-        return x, residual
-
-    x, _ = torch_npu.npu_rms_norm(x, weight, epsilon)
-    return x
+    return _forward_npu(obj, x, residual)
 
 
 def gemma_rms_norm_ascend(
@@ -57,16 +46,6 @@ def gemma_rms_norm_ascend(
     x: torch.Tensor,
     residual: Optional[torch.Tensor] = None,
 ) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
-    
-    import torch_npu
-    from sgl_kernel_npu.norm.add_rmsnorm_bias import add_gemma_rms_norm
+    """Use SGLang's native NPU Gemma RMSNorm and its size/env fallbacks."""
 
-    weight = obj.weight
-    epsilon = obj.variance_epsilon
-
-    if residual is not None:
-        norm_out, residual = add_gemma_rms_norm(x, weight, residual, epsilon)
-        return norm_out, residual
-
-    x, _ = torch_npu.npu_gemma_rms_norm(x, weight, epsilon)
-    return x
+    return _forward_npu(obj, x, residual)

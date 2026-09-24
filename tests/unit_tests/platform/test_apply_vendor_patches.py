@@ -33,9 +33,17 @@ class TestApplyVendorPatches:
         assert "vendor patch loaded" in caplog.text
         assert "fakevendor.patch" in caplog.text
 
-    def test_mthreads_vendor_loads_patch(self, caplog, mock_device_detector):
-        """mthreads vendor has a real patch.py on disk - verify it loads directly."""
+    def test_mthreads_vendor_loads_patch(
+        self, caplog, mock_device_detector, inject_vendor_module
+    ):
+        """The mthreads detector must route to the mthreads patch module.
+
+        Inject the module so this generic loader test does not apply MUSA
+        runtime monkeypatches inside another platform's pytest process. The
+        real entry point is exercised by the MUSA CI lane.
+        """
         mock_device_detector("mthreads")
+        inject_vendor_module("mthreads", "patch")
         with caplog.at_level(logging.INFO, logger="sglang_fl"):
             _apply_vendor_patches()
         assert "vendor patch loaded" in caplog.text

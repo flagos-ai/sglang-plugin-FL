@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Compatibility checks for the staged SGLang 0.5.18 CUDA upgrade."""
+"""Cross-platform compatibility checks for the SGLang 0.5.18 upgrade."""
 
 import sys
 from types import ModuleType
@@ -61,8 +61,54 @@ def test_non_nvidia_piecewise_backend_remains_unsupported(
         platform.get_piecewise_backend_cls()
 
 
-def test_non_cuda_upgrade_targets_keep_legacy_oot_key() -> None:
-    assert _platform("ascend", "npu").get_dispatch_key_name() == "oot"
+def test_ascend_uses_npu_fused_op_fallback_key() -> None:
+    platform = _platform("ascend", "npu")
+
+    assert platform.is_npu() is True
+    assert platform.is_out_of_tree() is True
+    assert platform.get_dispatch_key_name() == "npu"
+
+
+def test_ascend_npugraph_uses_torchair_backend(monkeypatch) -> None:
+    torchair = ModuleType("torchair")
+    configs = ModuleType("torchair.configs")
+    compiler_config = ModuleType("torchair.configs.compiler_config")
+    ge = ModuleType("torchair.ge_concrete_graph")
+    converter = ModuleType("torchair.ge_concrete_graph.ge_converter")
+    experimental = ModuleType("torchair.ge_concrete_graph.ge_converter.experimental")
+    hcom_patch = ModuleType(
+        "torchair.ge_concrete_graph.ge_converter.experimental.patch_for_hcom_allreduce"
+    )
+
+    class CompilerConfig:
+        def __init__(self):
+            self.mode = None
+            self.debug = ModuleType("debug")
+            self.debug.run_eagerly = False
+
+    calls = []
+    compiler_config.CompilerConfig = CompilerConfig
+    torchair.get_npu_backend = lambda *, compiler_config: (
+        calls.append(compiler_config) or "npu-backend"
+    )
+
+    for module in (
+        torchair,
+        configs,
+        compiler_config,
+        ge,
+        converter,
+        experimental,
+        hcom_patch,
+    ):
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+
+    backend = _platform("ascend", "npu").get_compile_backend("npugraph_ex")
+
+    assert backend == "npu-backend"
+    assert len(calls) == 1
+    assert calls[0].mode == "reduce-overhead"
+    assert calls[0].debug.run_eagerly is True
 
 
 def test_mthreads_uses_musa_fused_op_fallback_key() -> None:

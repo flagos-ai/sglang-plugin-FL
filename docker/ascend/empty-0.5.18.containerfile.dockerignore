@@ -1,0 +1,15 @@
+# This build needs only the plugin package and the Ascend verifier. Exclude
+# repository history, local models, credentials, caches, and unrelated files.
+**
+!pyproject.toml
+!sglang_fl/
+!sglang_fl/**
+!.github/
+!.github/scripts/
+!.github/scripts/ascend/
+!.github/scripts/ascend/verify_environment.py
+!docker/
+!docker/ascend/
+!docker/ascend/empty-0.5.18.containerfile
+**/__pycache__/
+**/*.py[cod]

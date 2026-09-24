@@ -3,8 +3,10 @@
 
 platform: ascend
 
-# Docker image for this hardware
-ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-ascend-ci
+# Published SGLang 0.5.18 ARM64 CI image. The immutable Harbor digest was
+# pulled back and passed the four-card 910C baked-image gate; build provenance
+# and the canonical rebuild recipe are documented in the 0.5.18 usage guide.
+ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:8aee90099504bfdec9a1c0caf484ebff74273eeda4480ff07554138d727de62e
 
 # Runner labels for this hardware
 runner_labels:
@@ -13,11 +15,11 @@ runner_labels:
   - ARM64
   - flagcicd-910c
 
-# Container volumes. DooD mode (runner uses the node docker socket) does NOT
-# auto-mount anything - unlike the nvidia-container-toolkit hook CUDA relies on
-# (NVIDIA_VISIBLE_DEVICES), Ascend has no equivalent, so the driver userspace and
-# the model cache must be mounted explicitly from the node. Device nodes are
-# passed via --device in container_options below.
+# Container volumes. The vendor `ascend` OCI runtime injects the selected NPU
+# nodes, driver libraries, npu-smi, and queue scheduler from
+# ASCEND_VISIBLE_DEVICES. The explicit mounts below keep the validated runner
+# layout deterministic and provide the model cache; they do not replace the
+# runtime hook.
 # - /mnt/airs-business/cicd/models -> /data/models/Qwen: model cache. The
 #   flagcicd-910c runners have NO internet, so the e2e models are staged here
 #   out-of-band (SSH/rsync from an internal machine that already has them).
@@ -27,30 +29,36 @@ runner_labels:
 # - /usr/local/Ascend/driver: NPU driver userspace (libascend_hal.so, libruntime.so,
 #   tools/npu-smi). The CI image ships only the CANN toolkit; the driver lives on
 #   the node. check.sh auto-adds driver/tools to PATH so npu-smi runs without a
-#   rebuild. (slog mount omitted; re-add /usr/local/slog if the node has it.)
+#   rebuild.
+# - firmware/install metadata/queue scheduler: match the validated 910C empty
+#   runtime and keep host driver/firmware state outside the image.
 container_volumes:
-  - /mnt/airs-business/cicd/models:/data/models/Qwen
-  - /usr/local/Ascend/driver:/usr/local/Ascend/driver
+  - /mnt/airs-business/cicd/models:/data/models/Qwen:ro
+  - /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro
+  - /usr/local/Ascend/firmware:/usr/local/Ascend/firmware:ro
+  - /etc/ascend_install.info:/etc/ascend_install.info:ro
+  - /var/queue_schedule:/var/queue_schedule
 
-# Container options (--device for NPU access; --init reaps orphan zombies).
-# NPU devices are passed via --device (there is no --gpus equivalent for Ascend);
-# adjust the /dev/davinciN list to match the runner's actual NPU count.
+# Container options. The self-hosted runner must register the Huawei `ascend`
+# Docker runtime. ASCEND_VISIBLE_DEVICES is consumed by its OCI hook, while
+# ASCEND_RT_VISIBLE_DEVICES constrains torch_npu/SGLang inside the container.
+# Do not replace this with --privileged on a shared runner: the latter exposes
+# the host broadly and requires a separate security decision.
 # --user root is required: CI images install CANN/torch_npu libs under system paths,
 # and pip install needs write access to /usr/local. This matches org convention.
 # --init: tini as PID 1 reaps orphan zombies from sglang TP workers on shutdown
 # (PID 1 was tail -f /dev/null, never wait()s -> zombies pile up, kill_process_tree times out)
 container_options: >-
   --hostname sglang-plugin-fl
+  --runtime=ascend
   --ipc=host
   --shm-size=64g
   --ulimit memlock=-1
   --ulimit stack=67108864
   --user root
-  --device /dev/davinci0
-  --device /dev/davinci1
-  --device /dev/davinci2
-  --device /dev/davinci3
-  --device /dev/davinci_manager
-  --device /dev/devmm_svm
-  --device /dev/hisi_hdc
+  -e ASCEND_VISIBLE_DEVICES=0,1,2,3
+  -e ASCEND_RT_VISIBLE_DEVICES=0,1,2,3
+  -e GLOO_SOCKET_IFNAME=lo
+  -e HCCL_HOST_SOCKET_PORT_RANGE=auto
+  -e HCCL_NPU_SOCKET_PORT_RANGE=auto
   --init

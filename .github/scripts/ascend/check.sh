@@ -3,21 +3,19 @@
 # Check Huawei Ascend NPU availability.
 #
 # npu-smi is a host-side *driver* tool (/usr/local/Ascend/driver/tools/npu-smi),
-# NOT part of the CANN toolkit. The CI image bundles only the CANN toolkit
-# (/usr/local/Ascend/ascend-toolkit); the driver userspace is bind-mounted from
-# the host by ascend.yml (container_volumes: /usr/local/Ascend/driver) and the
-# containerfile prepends /usr/local/Ascend/driver/tools to PATH, so npu-smi is
+# NOT part of the CANN toolkit. The CI image bundles the CANN toolkit; driver
+# userspace is bind-mounted from the host by ascend.yml, and the image prepends
+# /usr/local/Ascend/driver/tools to PATH, so npu-smi is
 # normally on PATH. This script still handles the off-PATH/missing case (driver
-# mount regressed, or an older image without the PATH entry) and falls back to a
-# torch_npu probe as the real availability signal.
+# mount regressed, or an older image without the PATH entry); the pinned
+# torch_npu verifier below remains the authoritative availability signal.
 #
 # But a missing npu-smi CLI does NOT mean the NPU is unusable: torch_npu reaches
 # the device via /dev/davinci* nodes + driver libs, independent of the CLI. So
 # this script:
 #   1. Diagnoses the environment (paths, device nodes, npu-smi location).
 #   2. Recovers by extending PATH if npu-smi exists off-PATH.
-#   3. Falls back to a torch_npu probe as the real availability signal.
-# It only fails when there is NO evidence the NPU is usable.
+#   3. Runs the pinned environment verifier and requires four working NPUs.
 #
 # NOTE: `set -e` is intentionally omitted so all diagnostics run before we decide.
 set -uo pipefail
@@ -49,10 +47,12 @@ for d in \
 done
 
 # ---------------------------------------------------------------------------
-# 2. Device nodes (passed via --device in ascend.yml)
+# 2. Device nodes (injected by the Ascend OCI runtime configured in ascend.yml)
 # ---------------------------------------------------------------------------
 echo "--- Device nodes ---"
-for dev in /dev/davinci0 /dev/davinci1 /dev/davinci_manager /dev/devmm_svm /dev/hisi_hdc; do
+for dev in \
+  /dev/davinci0 /dev/davinci1 /dev/davinci2 /dev/davinci3 \
+  /dev/davinci_manager /dev/devmm_svm /dev/hisi_hdc; do
   if [ -e "$dev" ]; then
     echo "[exists] $dev"
   else
@@ -66,17 +66,21 @@ done
 echo "--- Locate npu-smi ---"
 NPU_SMI=""
 path_hit="$(command -v npu-smi 2>/dev/null || true)"
-if [ -n "$path_hit" ]; then
+if [ -n "$path_hit" ] && [ -x "$path_hit" ] && [ -s "$path_hit" ]; then
   NPU_SMI="$path_hit"
   echo "found on PATH: $NPU_SMI"
 else
+  if [ -n "$path_hit" ]; then
+    echo "ignoring unusable PATH entry: $path_hit (not executable or empty)"
+  fi
   echo "not on PATH; searching known driver locations..."
   for cand in \
     /usr/local/Ascend/driver/tools/npu-smi \
     /usr/local/Ascend/driver/usr/local/sbin/npu-smi \
+    /usr/local/bin/npu-smi \
     /usr/local/sbin/npu-smi \
     /usr/bin/npu-smi ; do
-    if [ -x "$cand" ]; then
+    if [ -x "$cand" ] && [ -s "$cand" ]; then
       NPU_SMI="$cand"
       echo "found at: $NPU_SMI  (off-PATH)"
       break
@@ -109,50 +113,18 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Fallback: probe the NPU through torch_npu (real availability signal).
-#    Matches the project idiom in sglang_fl/dispatch/backends/vendor/ascend/.
+# 5. Verify the complete pinned runtime and require the TP=4 device allocation.
 # ---------------------------------------------------------------------------
-echo "--- torch_npu probe ---"
-torch_probe_ok=0
-if command -v python3 >/dev/null 2>&1 && python3 - <<'PY' 2>&1; then
-import sys
-try:
-    import torch
-    import torch_npu  # noqa: F401  (registers torch.npu)
-    avail = torch.npu.is_available()
-    count = torch.npu.device_count()
-    print(f"torch_npu: is_available={avail} device_count={count}")
-    if avail and count > 0:
-        try:
-            print(f"device0: {torch.npu.get_device_name(0)}")
-        except Exception as e:
-            print(f"(get_device_name failed: {type(e).__name__}: {e})")
-        sys.exit(0)
-    sys.exit(1)
-except Exception as e:
-    print(f"torch_npu probe failed: {type(e).__name__}: {e}")
-    sys.exit(1)
-PY
-  torch_probe_ok=1
-else
-  echo "WARN: torch_npu probe did not succeed (python3 missing or probe failed)."
+echo "--- Pinned runtime and torch_npu probe ---"
+verify_rc=0
+python3 .github/scripts/ascend/verify_environment.py \
+  --require-ci \
+  --require-npu \
+  --min-npus 4 || verify_rc=$?
+
+if [ "$verify_rc" -ne 0 ]; then
+  echo "FAIL: pinned Ascend environment verification failed (rc=$verify_rc)."
+  exit "$verify_rc"
 fi
 
-# ---------------------------------------------------------------------------
-# 6. Verdict
-# ---------------------------------------------------------------------------
-echo "--- Verdict ---"
-if [ "$npu_smi_ok" = "1" ] || [ "$torch_probe_ok" = "1" ]; then
-  echo "PASS: NPU available (npu-smi=$npu_smi_ok torch_npu=$torch_probe_ok)"
-  exit 0
-fi
-
-echo "FAIL: NPU not available - npu-smi missing AND torch_npu probe failed."
-echo "      Likely causes (in order of probability):"
-echo "        1. Host Ascend driver not mounted into the container."
-echo "           Fix: add '/usr/local/Ascend/driver:/usr/local/Ascend/driver'"
-echo "                to container_volumes in .github/configs/ascend.yml."
-echo "        2. /dev/davinci* device nodes not passed (check --device in ascend.yml)."
-echo "        3. Runner host has no Ascend hardware or driver not loaded."
-echo "        4. Driver/toolkit version mismatch (image is CANN 8.5.1)."
-exit 1
+echo "PASS: pinned Ascend runtime and four NPUs are available (npu-smi=$npu_smi_ok)"

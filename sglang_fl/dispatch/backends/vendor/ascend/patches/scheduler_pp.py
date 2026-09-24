@@ -1,111 +1,121 @@
-"""Ascend/NPU patches for SGLang pipeline-parallel scheduler mixin.
+"""Ascend pipeline-parallel compatibility for SGLang 0.5.18.
 
-Ports two source edits from
-``sglang/srt/managers/scheduler_pp_mixin.py`` into the plugin patch layer:
-
-  1. ``_pp_send_recv_and_preprocess_output_tensors``: HCCL isend is
-     effectively blocking (unlike CUDA), so if every PP rank sends first the
-     ring deadlocks. Order send/recv by ``pp_rank`` parity (even: send->recv,
-     odd: recv->send) and synchronize the device before the exchange.
-  2. ``_pp_launch_batch``: synchronize ``forward_stream`` before returning so
-     the forward computation is complete before the PP send/recv runs.
+HCCL point-to-point sends can wait until the peer posts a receive. SGLang
+0.5.18 already contains a parity-ordered exchange for XPU, so this patch keeps
+the upstream implementation intact and enables that same branch for Ascend.
+It also synchronizes NPU work at the two boundaries required before the
+pipeline exchange. This deliberately avoids copying the scheduler body: new
+0.5.18 behavior such as skip-output communication remains owned by SGLang.
 """
 
 from __future__ import annotations
 
+import inspect
 import logging
 from functools import wraps
 
 logger = logging.getLogger(__name__)
 
+_SEND_RECV_PARAMETERS = (
+    "self",
+    "next_first_rank_mb_id",
+    "next_mb_id",
+    "mbs",
+    "mb_metadata",
+    "last_rank_comm_queue",
+    "pp_outputs",
+)
+_LAUNCH_PARAMETERS = (
+    "self",
+    "mb_id",
+    "cur_batch",
+    "pp_proxy_tensors",
+    "mb_metadata",
+    "last_rank_comm_queue",
+)
+
+
+def _require_signature(function, expected: tuple[str, ...], label: str) -> None:
+    actual = tuple(inspect.signature(function).parameters)
+    if actual != expected:
+        raise RuntimeError(
+            "Unsupported SGLang scheduler interface for the Ascend 0.5.18 "
+            f"patch: {label}{actual}, expected {expected}."
+        )
+
 
 def patch_pp_send_recv_order() -> None:
+    """Enable upstream's parity ordering for HCCL and sync before exchange."""
+
     try:
-        from sglang.srt.managers.scheduler_pp_mixin import SchedulerPPMixin
-        from sglang.srt.model_executor.forward_batch_info import PPProxyTensors
-    except Exception as e:
-        logger.warning("Ascend PP send/recv order patch skipped: %s", e)
+        from sglang.srt.managers import scheduler_pp_mixin as pp_module
+    except ImportError as exc:
+        raise RuntimeError(
+            "SGLang 0.5.18 scheduler_pp_mixin is required by the Ascend backend"
+        ) from exc
+
+    mixin = pp_module.SchedulerPPMixin
+    original = mixin._pp_send_recv_and_preprocess_output_tensors
+    if getattr(original, "_sglang_fl_ascend_ordered", False):
         return
 
-    import torch
-
-    def _pp_send_recv_and_preprocess_output_tensors(
-        self,
-        next_first_rank_mb_id,
-        next_mb_id,
-        mbs,
-        mb_metadata,
-        last_rank_comm_queue,
-        pp_outputs,
-    ):
-        next_pp_outputs = None
-        d2h_event = None
-        batch_result = None
-        send_output_work = []
-
-        # On CUDA, isend is async: it enqueues to the stream and returns,
-        # so every rank can send first safely. On HCCL isend is effectively
-        # blocking and does not return until the peer posts a matching recv;
-        # if every PP rank sends first, all ranks block waiting for a receiver
-        # and the ring deadlocks. Order send/recv by pp_rank parity (even:
-        # send->recv, odd: recv->send) so each adjacent pair has one sender and
-        # one receiver posted at the same time.
-        send_first = (self.pp_rank % 2) == 0
-        if self.device == "npu":
-            self.device_module.synchronize()
-
-        def _do_send():
-            return self._pp_send_output_to_next_stage(
-                next_first_rank_mb_id,
-                mbs,
-                last_rank_comm_queue,
-                pp_outputs,
-            )
-
-        def _do_recv():
-            nonlocal next_pp_outputs, batch_result, d2h_event
-            if mbs[next_mb_id] is None or mbs[next_mb_id].forward_mode.is_prebuilt():
-                return
-            with torch.profiler.record_function("recv_res_dict_from_prev_stage"):
-                next_pp_outputs = PPProxyTensors(self._pp_recv_dict_from_prev_stage())
-            with self.copy_stream_ctx:
-                self.copy_stream.wait_stream(self.schedule_stream)
-                batch_result = self._pp_prep_batch_result(
-                    mbs[next_mb_id], mb_metadata[next_mb_id], next_pp_outputs
-                )
-                d2h_event = self.device_module.Event()
-                d2h_event.record(self.device_module.current_stream())
-
-        if send_first:
-            send_output_work = _do_send()
-            _do_recv()
-        else:
-            _do_recv()
-            send_output_work = _do_send()
-
-        return next_pp_outputs, batch_result, d2h_event, send_output_work
-
-    SchedulerPPMixin._pp_send_recv_and_preprocess_output_tensors = (
-        _pp_send_recv_and_preprocess_output_tensors
+    _require_signature(
+        original,
+        _SEND_RECV_PARAMETERS,
+        "_pp_send_recv_and_preprocess_output_tensors",
     )
-    logger.info("Ascend PP send/recv ordering patch applied")
+    if not hasattr(pp_module, "is_xpu"):
+        raise RuntimeError(
+            "SGLang 0.5.18 scheduler no longer exposes the parity-order hook "
+            "expected by the Ascend backend"
+        )
+
+    # The upstream function consults this module global at exactly one point:
+    # `send_first = (not is_xpu()) or pp_rank % 2 == 0`. An Ascend worker owns
+    # its process, so selecting the ordered branch here cannot affect another
+    # device backend and retains the rest of the upstream function verbatim.
+    if not hasattr(pp_module, "_sglang_fl_native_is_xpu"):
+        pp_module._sglang_fl_native_is_xpu = pp_module.is_xpu
+
+    def _requires_ordered_pp_transport() -> bool:
+        return True
+
+    pp_module.is_xpu = _requires_ordered_pp_transport
+
+    @wraps(original)
+    def _send_recv_with_npu_sync(self, *args, **kwargs):
+        self.device_module.synchronize()
+        return original(self, *args, **kwargs)
+
+    _send_recv_with_npu_sync._sglang_fl_ascend_ordered = True
+    _send_recv_with_npu_sync._sglang_fl_original = original
+    mixin._pp_send_recv_and_preprocess_output_tensors = _send_recv_with_npu_sync
+    logger.info("Ascend PP parity ordering and pre-exchange sync applied")
 
 
 def patch_pp_launch_batch_sync() -> None:
+    """Wait for the forward stream before a microbatch enters PP exchange."""
+
     try:
         from sglang.srt.managers.scheduler_pp_mixin import SchedulerPPMixin
-    except Exception as e:
-        logger.warning("Ascend PP launch sync patch skipped: %s", e)
+    except ImportError as exc:
+        raise RuntimeError(
+            "SGLang 0.5.18 scheduler_pp_mixin is required by the Ascend backend"
+        ) from exc
+
+    original = SchedulerPPMixin._pp_launch_batch
+    if getattr(original, "_sglang_fl_ascend_synced", False):
         return
 
-    orig_fn = SchedulerPPMixin._pp_launch_batch
+    _require_signature(original, _LAUNCH_PARAMETERS, "_pp_launch_batch")
 
-    @wraps(orig_fn)
-    def _pp_launch_batch_with_forward_stream_sync(self, *args, **kwargs):
-        result, event = orig_fn(self, *args, **kwargs)
-        # NPU fix: ensure forward computation completes before PP send/recv
+    @wraps(original)
+    def _launch_with_forward_stream_sync(self, *args, **kwargs):
+        result = original(self, *args, **kwargs)
         self.forward_stream.synchronize()
-        return result, event
+        return result
 
-    SchedulerPPMixin._pp_launch_batch = _pp_launch_batch_with_forward_stream_sync
-    logger.info("Ascend PP launch forward_stream sync patch applied")
+    _launch_with_forward_stream_sync._sglang_fl_ascend_synced = True
+    _launch_with_forward_stream_sync._sglang_fl_original = original
+    SchedulerPPMixin._pp_launch_batch = _launch_with_forward_stream_sync
+    logger.info("Ascend PP forward-stream sync applied")

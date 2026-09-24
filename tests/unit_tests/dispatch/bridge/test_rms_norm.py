@@ -51,7 +51,9 @@ def test_rms_norm_bridge_merges_post_residual_addition(monkeypatch) -> None:
     torch.testing.assert_close(op_residual, residual + post)
 
 
-def test_rms_norm_bridge_uses_post_residual_when_residual_is_none(monkeypatch) -> None:
+def test_rms_norm_bridge_ignores_post_residual_when_residual_is_none(
+    monkeypatch,
+) -> None:
     obj = SimpleNamespace()
     x = torch.randn(2, 4)
     post = torch.randn(2, 4)
@@ -65,8 +67,8 @@ def test_rms_norm_bridge_uses_post_residual_when_residual_is_none(monkeypatch) -
 
     result = bridge.rms_norm_bridge(obj, x, post_residual_addition=post)
 
-    assert result is post
-    assert calls == [(("rms_norm", obj, x, post), {})]
+    assert result is None
+    assert calls == [(("rms_norm", obj, x, None), {})]
 
 
 def test_rms_norm_bridge_accepts_quant_linear_hint(monkeypatch) -> None:

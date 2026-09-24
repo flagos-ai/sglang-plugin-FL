@@ -1,64 +1,197 @@
-# Examples
+# Qwen3.6 examples and Ascend acceptance
 
-Offline inference examples for smoke-testing sglang-plugin-FL with various models.
+These examples exercise `sglang-plugin-FL` with Qwen3.6-27B and
+Qwen3.6-35B-A3B. They are executable correctness checks: a missing model,
+missing/empty test image, invalid response, or child-process failure returns a
+non-zero exit code.
 
-Each script is self-contained: it loads the model, runs inference, validates output,
-and exits with code 0 on success or non-zero on failure. This makes them directly
-usable in CI pipelines.
+The Ascend commands below target SGLang 0.5.18. They describe the acceptance
+matrix and artifact format; they do not claim measured performance results.
 
-## Available Examples
+## Examples
 
-| Script | Model | Architecture | TP |
-|--------|-------|-------------|-----|
-| `qwen3_6_35b_a3b_offline_inference.py` | Qwen3.6-35B-A3B | MoE (256 experts) | 1 |
-| `qwen3_6_27b_offline_inference.py` | Qwen3.6-27B | Dense (hybrid attention) | 1 |
+| Script | Coverage | Ascend default |
+| --- | --- | --- |
+| `qwen3_6_27b_offline_inference.py` | Sequential text and vision correctness | TP=4 |
+| `qwen3_6_35b_a3b_offline_inference.py` | Sequential text and vision correctness | TP=4 |
+| `qwen3_6_27b_concurrent.py` | Concurrent text, vision, and mixed requests | TP=4 |
+| `qwen3_6_35b_a3b_concurrent.py` | Concurrent text, vision, and mixed requests | TP=4 |
+| `qwen3_6_27b_mtp_inference.py` | MTP generation and optional baseline comparison | TP=4 |
+| `qwen3_6_27b_multinode.py` | Two-node server plus text/vision validation | CLI-controlled |
+| `qwen3_6_35b_a3b_multinode.py` | Two-node server plus text/vision validation | CLI-controlled |
 
-## Usage
+Ascend is detected through `torch.npu`. The examples select `device=npu`,
+`attention_backend=ascend`, and BF16 without assuming CUDA. MTP cache cleanup
+also uses the active accelerator rather than calling CUDA unconditionally.
+
+All vision-capable examples require these non-empty files under
+`IMAGE_DIR` (default `examples/test_images`):
+
+- `red_square.jpg`
+- `cat.jpg`
+- `stop_sign.png`
+- `digit_seven.png`
+
+## Full single-node acceptance
+
+The entrypoint below verifies both models. For each model it runs offline and
+all concurrent modes at TP=4, then recreates a TP=2 engine for each of three
+text-concurrency canary rounds. It also compares Qwen3.6-27B MTP with the
+baseline at TP=4. Correctness mode disables the Ascend overlap plan stream;
+the MTP comparison also explicitly disables overlap scheduling.
+The 27B MTP example enforces this validated eager/synchronous mode whenever it
+detects Ascend, so a direct invocation cannot silently enter graph replay.
+
+Because this is a long-running GPU job, run it in `tmux`:
 
 ```bash
-# Run with plugin loaded (default — SGLANG_PLUGINS auto-discovers sglang_fl)
-python examples/qwen3_6_35b_a3b_offline_inference.py
-
-# Run with only ATen replacement (no fused op dispatch)
-SGLANG_FL_OOT_ENABLED=0 python examples/qwen3_6_35b_a3b_offline_inference.py
-
-# Run baseline (no plugin at all)
-SGLANG_PLUGINS=__none__ python examples/qwen3_6_35b_a3b_offline_inference.py
-
-# Custom model path / TP
-MODEL_PATH=/data/models/Qwen3.6-27B TP_SIZE=2 python examples/qwen3_6_27b_offline_inference.py
+cd /workspace/sglang-plugin-FL
+tmux new-session -d -s ascend-single \
+  'bash scripts/ascend/run_single_node_acceptance.sh \
+   --result-dir /tmp/sglang-fl-acceptance/single'
+tmux capture-pane -t ascend-single -p
 ```
 
-## CI Integration
+Default model paths can be overridden without editing the scripts:
 
-These scripts are designed for CI use:
-
-- **Exit code**: 0 = pass, non-zero = fail
-- **Model path**: Configurable via `MODEL_PATH` env var
-- **Skip if model missing**: Prints message and exits with code 1
-- **No interactive input**: Fully automated
-- **Deterministic**: temperature=0, greedy decoding
-
-A CI workflow can run them as:
-
-```yaml
-- name: Run inference examples
-  run: |
-    for f in examples/*_offline_inference.py; do
-      echo "========== Running $f =========="
-      python "$f" || exit 1
-    done
+```bash
+MODEL_27B_PATH=/models/Qwen3.6-27B \
+MODEL_35B_PATH=/models/Qwen3.6-35B-A3B \
+bash scripts/ascend/run_single_node_acceptance.sh
 ```
 
-## Test Modes
+`--model 27b` or `--model 35b` selects a partial run. Omitting `--model` is the
+full acceptance run.
 
-Control the plugin behavior via environment variables:
+## Two-node TP=4, PP=2 examples
 
-| Mode | Env Vars | What's tested |
-|------|----------|---------------|
-| Baseline | `SGLANG_PLUGINS=__none__` | Native SGLang, no plugin |
-| ATen only | `SGLANG_FL_OOT_ENABLED=0` | Layer 1: FlagGems ATen replacement |
-| Full | (default) | Layer 1 + Layer 2: ATen + fused op dispatch |
-| Vendor | `USE_FLAGGEMS=0 SGLANG_FL_PREFER=vendor` | Layer 2 only: vendor fused ops |
+Both hosts need the same checkout, model paths, images, and four visible NPUs.
+Replace the address and interface below with the routable HCCL network values.
+Start both sessions close together; the master is rank 0 and the worker is rank
+1. The default `--model all` runs 27B and then 35B-A3B with distinct ports.
 
-For precision comparison across modes, use `tests/test_precision_align.py` or `tests/validate.sh`.
+Master node:
+
+```bash
+cd /workspace/sglang-plugin-FL
+tmux new-session -d -s ascend-multinode-examples \
+  'bash scripts/ascend/run_multinode_examples.sh \
+   --role master --master-addr 192.168.1.10 --interface eth0 \
+   --result-dir /tmp/sglang-fl-acceptance/examples-master'
+```
+
+Worker node:
+
+```bash
+cd /workspace/sglang-plugin-FL
+tmux new-session -d -s ascend-multinode-examples \
+  'bash scripts/ascend/run_multinode_examples.sh \
+   --role worker --master-addr 192.168.1.10 --interface eth0 \
+   --result-dir /tmp/sglang-fl-acceptance/examples-worker'
+```
+
+Inspect either session with:
+
+```bash
+tmux capture-pane -t ascend-multinode-examples -p
+```
+
+The wrapper fixes the topology at `tp_size=4`, `pp_size=2`, `nnodes=2` and
+fails on an unsupported exit. The worker only normalizes the narrowly
+identified SGLang 0.5.18 clean-shutdown path; arbitrary exit code 3 or an
+incomplete scheduler shutdown still fails.
+
+## Two-node serving benchmark
+
+Run the benchmark wrapper in separate `tmux` sessions on the same two hosts.
+It starts an SGLang 0.5.18 server with TP=4 and PP=2, then the master executes
+the fixed matrix for both 27B and 35B-A3B:
+
+| Input tokens | Output tokens | Requests | Max concurrency | Runs used |
+| ---: | ---: | ---: | ---: | --- |
+| 1,024 | 1,024 | 64 | 64 | 2-4 of 4 |
+| 4,096 | 1,024 | 64 | 64 | 2-4 of 4 |
+| 16,384 | 1,024 | 64 | 64 | 2-4 of 4 |
+
+Master node:
+
+```bash
+cd /workspace/sglang-plugin-FL
+tmux new-session -d -s ascend-benchmark \
+  'bash scripts/ascend/run_multinode_benchmark.sh \
+   --role master --master-addr 192.168.1.10 --interface eth0 \
+   --result-dir /tmp/sglang-fl-acceptance/benchmark-master'
+```
+
+Worker node:
+
+```bash
+cd /workspace/sglang-plugin-FL
+tmux new-session -d -s ascend-benchmark \
+  'bash scripts/ascend/run_multinode_benchmark.sh \
+   --role worker --master-addr 192.168.1.10 --interface eth0 \
+   --result-dir /tmp/sglang-fl-acceptance/benchmark-worker'
+```
+
+The driver uses the official 0.5.18 entrypoint
+`python -m sglang.benchmark.serving` and one unique `--output-file` per run.
+`random-ids`, `--random-range-ratio 1.0`, and `--tokenize-prompt` make the
+requested lengths exact. Every JSONL record must report all 64 requests, exact
+input/output totals, 64 exact per-request lengths, no request errors, and all
+required finite latency/throughput metrics. A CSV row is never presented as a
+passing result unless those checks succeed.
+
+Artifacts for each model contain:
+
+- `configuration.json`, including the exact client arguments;
+- twelve official JSONL records and twelve captured client logs;
+- `raw_runs.csv`, retaining all four runs per shape;
+- `summary.csv`, averaging only runs 2-4;
+- `failures.txt` when any shape fails.
+
+You can point the driver at an already-running server directly:
+
+```bash
+python3 benchmarks/benchmark_throughput_serve.py \
+  --model /models/Qwen3.6-35B-A3B \
+  --model-name qwen3_6_35b_a3b \
+  --host 127.0.0.1 --port 30000 \
+  --output-dir /tmp/sglang-fl-acceptance/manual-benchmark
+```
+
+## Runtime settings
+
+The wrappers preserve explicit caller overrides and otherwise set the plugin,
+FlagCX, per-op dispatch, HCCL buffer, and visible-device defaults used for the
+Ascend acceptance environment. Useful overrides are:
+
+| Variable | Default |
+| --- | --- |
+| `MODEL_27B_PATH` | `/models/Qwen3.6-27B` |
+| `MODEL_35B_PATH` | `/models/Qwen3.6-35B-A3B` |
+| `IMAGE_DIR` | `examples/test_images` |
+| `ASCEND_RT_VISIBLE_DEVICES` | `0,1,2,3` |
+| `SGLANG_FL_DIST_BACKEND` | `flagcx` |
+| `FLAGCX_PATH` | `/opt/FlagCX` |
+| `PYTHON_BIN` | `python3` |
+
+Each wrapper writes its command lines, output logs, and environment/package
+manifest to its result directory. A final `PASS` line means every requested
+stage returned zero; absence of that line is not a pass.
+
+## Manual example use
+
+Individual examples remain usable outside the full matrix:
+
+```bash
+MODEL_PATH=/models/Qwen3.6-27B TP_SIZE=4 \
+python3 examples/qwen3_6_27b_concurrent.py --mode all
+
+MODEL_PATH=/models/Qwen3.6-27B TP_SIZE=4 \
+python3 examples/qwen3_6_27b_mtp_inference.py \
+  --disable-cuda-graph --disable-piecewise-cuda-graph \
+  --disable-overlap-schedule
+```
+
+For precision comparison across plugin modes, use
+`tests/test_precision_align.py` or `tests/validate.sh`.

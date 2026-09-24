@@ -84,7 +84,10 @@ def register_builtins(registry) -> None:
             op_name="fused_recurrent_gated_delta_rule",
             impl_id="default.flagos",
             kind=BackendImplKind.DEFAULT,
-            fn=_bind_is_available(backend.fused_recurrent_gated_delta_rule, is_avail),
+            fn=_bind_is_available(
+                backend.fused_recurrent_gated_delta_rule,
+                backend.is_fused_recurrent_available,
+            ),
             vendor=None,
             priority=BackendPriority.DEFAULT,
         ),

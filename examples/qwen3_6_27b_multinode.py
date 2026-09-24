@@ -116,12 +116,11 @@ if _is_txda:
     os.environ.setdefault("SGLANG_REQ_RUNNING_TIMEOUT", "-1")
 if _is_npu:
     os.environ.setdefault("SGLANG_ENABLE_OVERLAP_PLAN_STREAM", "0")
-    os.environ.setdefault("SGLANG_ENABLE_SPEC_V2", "1")
     os.environ.setdefault("HCCL_BUFFSIZE", "2400")
     os.environ.setdefault("SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK", "128")
 elif _is_musa:
     os.environ.setdefault("MCCL_IB_DISABLE", "1")
-    
+
 # Extra launch_server flags per platform.
 # - MUSA: page_size=1 works around a sglang platform bug.
 # - Ascend NPU: requires ascend attention backend, bfloat16, radix cache off.
@@ -131,22 +130,29 @@ if _is_musa:
     _PLATFORM_SERVER_ARGS: list = ["--page-size", "1"]
 elif _is_npu:
     _PLATFORM_SERVER_ARGS = [
-        "--attention-backend", "ascend",
-        "--device", "npu",
-        "--dtype", "bfloat16",
+        "--attention-backend",
+        "ascend",
+        "--device",
+        "npu",
+        "--dtype",
+        "bfloat16",
         "--disable-radix-cache",
     ]
 elif _is_corex:
     _PLATFORM_SERVER_ARGS = [
-        "--attention-backend", "triton",
-        "--watchdog-timeout", "3600",
-        "--cuda-graph-max-bs", "16",
+        "--attention-backend",
+        "triton",
+        "--watchdog-timeout",
+        "3600",
+        "--cuda-graph-max-bs",
+        "16",
         "--sleep-on-idle",
     ]
 elif _is_hcu:
     _PLATFORM_SERVER_ARGS = [
         "--disable-radix-cache",
-        "--page-size", "64",
+        "--page-size",
+        "64",
     ]
 elif _is_nvidia:
     _PLATFORM_SERVER_ARGS = ["--disable-overlap-schedule"]
@@ -160,6 +166,25 @@ ATTENTION_BACKEND = os.environ.get("ATTENTION_BACKEND", "").strip()
 
 _HERE = Path(__file__).resolve().parent
 IMG_DIR = Path(os.environ.get("IMAGE_DIR", _HERE / "test_images"))
+REQUIRED_IMAGE_NAMES = (
+    "red_square.jpg",
+    "cat.jpg",
+    "stop_sign.png",
+    "digit_seven.png",
+)
+
+
+def _check_images():
+    missing = [
+        str(IMG_DIR / name)
+        for name in REQUIRED_IMAGE_NAMES
+        if not (IMG_DIR / name).is_file() or (IMG_DIR / name).stat().st_size == 0
+    ]
+    if missing:
+        print("ERROR: Missing or empty test images:")
+        for path in missing:
+            print(f"  - {path}")
+        sys.exit(1)
 
 
 # ─── Argument parsing ────────────────────────────────────────────────────────
@@ -355,21 +380,31 @@ def run_tests(
     print(f"  Q: How many states?  A: {r}")
     t.check("US states = 50", "50", r)
 
-    r = chat_request(port, "What is the capital of France? Answer with one word.", 10, timeout=request_timeout)
+    r = chat_request(
+        port,
+        "What is the capital of France? Answer with one word.",
+        10,
+        timeout=request_timeout,
+    )
     print(f"  Q: Capital of France?  A: {r}")
     t.check("Capital of France = Paris", "Paris", r)
 
-    r = chat_request(port, "What is 2+3? Answer with just the number.", 10, timeout=request_timeout)
+    r = chat_request(
+        port, "What is 2+3? Answer with just the number.", 10, timeout=request_timeout
+    )
     print(f"  Q: 2+3?  A: {r}")
     t.check("2+3 = 5", "5", r)
 
     # Test 2: Longer Generation
     print("\n=== Test 2: Longer Generation ===")
-    r = chat_request(port, "List the first 5 prime numbers, separated by commas.", 64, timeout=request_timeout)
-    print(f"  Q: First 5 primes  A: {r}")
-    expected_pattern = (
-        r"(?<!\d)2\s*,\s*3\s*,\s*5\s*,\s*7\s*,\s*11(?!\d)"
+    r = chat_request(
+        port,
+        "List the first 5 prime numbers, separated by commas.",
+        64,
+        timeout=request_timeout,
     )
+    print(f"  Q: First 5 primes  A: {r}")
+    expected_pattern = r"(?<!\d)2\s*,\s*3\s*,\s*5\s*,\s*7\s*,\s*11(?!\d)"
 
     t.total += 1
     if re.search(expected_pattern, r):
@@ -387,7 +422,11 @@ def run_tests(
         futures = {}
         for i in range(1, 5):
             f = executor.submit(
-                chat_request, port, f"What is {i}+{i}? Answer with just the number.", 10, request_timeout
+                chat_request,
+                port,
+                f"What is {i}+{i}? Answer with just the number.",
+                10,
+                request_timeout,
             )
             futures[i] = f
 
@@ -419,7 +458,11 @@ def run_tests(
         for i in range(text_concurrency):
             a, b = i + 1, i + 2
             f = executor.submit(
-                chat_request, port, f"What is {a}+{b}? Answer with just the number.", 10, request_timeout
+                chat_request,
+                port,
+                f"What is {a}+{b}? Answer with just the number.",
+                10,
+                request_timeout,
             )
             futures[i] = (a, b, f)
 
@@ -478,7 +521,7 @@ def run_tests(
         print(f"  Q: Digit in image?  A: {r}")
         t.check("VL: digit = 7", "7", r)
     else:
-        print(f"  SKIP: test_images directory not found at {IMG_DIR}")
+        raise RuntimeError(f"Required test_images directory disappeared: {IMG_DIR}")
 
     # Test 6: High-Concurrency VL
     if IMG_DIR.is_dir() and vl_concurrency > 1:
@@ -566,6 +609,8 @@ def run_master(args):
         "sglang.launch_server",
         "--model-path",
         MODEL_PATH,
+        "--served-model-name",
+        "default",
         "--tp",
         str(args.tp),
         "--pp-size",
@@ -593,16 +638,24 @@ def run_master(args):
     if _is_txda:
         insert_pos = cmd.index("--mem-fraction-static")
         cmd[insert_pos + 1] = "0.6"
-        for flag in reversed([
-            "--device", "txda",
-            "--dtype", "bfloat16",
-            "--disable-radix-cache",
-            "--watchdog-timeout", "3600",
-            "--mm-attention-backend", "triton_attn",
-            "--disable-fast-image-processor",
-            "--context-length", "8192",
-            "--chunked-prefill-size", "256",
-        ]):
+        for flag in reversed(
+            [
+                "--device",
+                "txda",
+                "--dtype",
+                "bfloat16",
+                "--disable-radix-cache",
+                "--watchdog-timeout",
+                "3600",
+                "--mm-attention-backend",
+                "triton_attn",
+                "--disable-fast-image-processor",
+                "--context-length",
+                "8192",
+                "--chunked-prefill-size",
+                "256",
+            ]
+        ):
             cmd.insert(insert_pos, flag)
 
     print("Launching server...")
@@ -677,6 +730,8 @@ def run_worker(args):
         "sglang.launch_server",
         "--model-path",
         MODEL_PATH,
+        "--served-model-name",
+        "default",
         "--tp",
         str(args.tp),
         "--pp-size",
@@ -702,16 +757,24 @@ def run_worker(args):
     if _is_txda:
         insert_pos = cmd.index("--mem-fraction-static")
         cmd[insert_pos + 1] = "0.6"
-        for flag in reversed([
-            "--device", "txda",
-            "--dtype", "bfloat16",
-            "--disable-radix-cache",
-            "--watchdog-timeout", "3600",
-            "--mm-attention-backend", "triton_attn",
-            "--disable-fast-image-processor",
-            "--context-length", "8192",
-            "--chunked-prefill-size", "256",
-        ]):
+        for flag in reversed(
+            [
+                "--device",
+                "txda",
+                "--dtype",
+                "bfloat16",
+                "--disable-radix-cache",
+                "--watchdog-timeout",
+                "3600",
+                "--mm-attention-backend",
+                "triton_attn",
+                "--disable-fast-image-processor",
+                "--context-length",
+                "8192",
+                "--chunked-prefill-size",
+                "256",
+            ]
+        ):
             cmd.insert(insert_pos, flag)
 
     print("Starting worker node... (will block until master shuts down)\n")
@@ -738,9 +801,21 @@ if __name__ == "__main__":
         print("Set MODEL_PATH environment variable to the correct path.")
         sys.exit(1)
 
+    _check_images()
+
     # Ensure network interfaces are set
     os.environ.setdefault("GLOO_SOCKET_IFNAME", "eth0")
     os.environ.setdefault("NCCL_SOCKET_IFNAME", "eth0")
+    if not any(
+        name in os.environ
+        for name in (
+            "HCCL_HOST_SOCKET_PORT_RANGE",
+            "HCCL_NPU_SOCKET_PORT_RANGE",
+            "HCCL_IF_BASE_PORT",
+        )
+    ):
+        os.environ["HCCL_HOST_SOCKET_PORT_RANGE"] = "auto"
+        os.environ["HCCL_NPU_SOCKET_PORT_RANGE"] = "auto"
 
     if args.role == "master":
         run_master(args)

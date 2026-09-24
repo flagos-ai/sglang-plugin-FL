@@ -65,6 +65,10 @@ jobs:
       - name: Install project
         run: bash .github/scripts/${{ inputs.platform }}/setup.sh
 
+      - name: Run Ascend compatibility probe
+        if: inputs.platform == 'ascend'
+        run: python3 examples/ascend_compat_probe.py
+
       - name: Run functional tests
         run: |
           python tests/run.py \

@@ -130,6 +130,10 @@ class PlatformFL(SRTPlatform):
     def is_cuda(self) -> bool:
         return self._device_type == "cuda"
 
+    def is_npu(self) -> bool:
+        """Report the concrete device even though this is an OOT platform."""
+        return self._device_type == "npu"
+
     def is_cuda_alike(self) -> bool:
         """True for devices that expose CUDA-compatible APIs."""
         # Iluvatar uses CUDA API but is not NVIDIA
@@ -140,12 +144,31 @@ class PlatformFL(SRTPlatform):
     def is_out_of_tree(self) -> bool:
         return True
 
-    def get_compile_backend(self, mode: str | None = None) -> str:
+    def get_compile_backend(self, mode: str | None = None):
         """Return the compilation backend for this platform.
 
-        On txda and other non-CUDA platforms, triton's inductor backend
-        has no active driver, so we return "eager" to disable torch.compile.
+        SGLang's NPU graph runner asks for ``npugraph_ex``. Because this
+        platform remains ``PlatformEnum.OOT``, SGLang delegates compiler
+        selection here instead of entering its built-in torchair branch.
         """
+        if self._device_type == "npu":
+            try:
+                import torchair
+                import torchair.ge_concrete_graph.ge_converter.experimental.patch_for_hcom_allreduce  # noqa: F401,E501
+                from torchair.configs.compiler_config import CompilerConfig
+            except ImportError as exc:
+                raise ImportError(
+                    "Ascend graph execution requires torchair for the SGLang "
+                    "0.5.18 npugraph_ex compiler backend."
+                ) from exc
+
+            compiler_config = CompilerConfig()
+            compiler_config.mode = "max-autotune"
+            if mode == "npugraph_ex":
+                compiler_config.mode = "reduce-overhead"
+                compiler_config.debug.run_eagerly = True
+            return torchair.get_npu_backend(compiler_config=compiler_config)
+
         if self._device_type == "txda":
             return "eager"
         return "inductor"
@@ -258,8 +281,7 @@ class PlatformFL(SRTPlatform):
 
             return DecodeCudaGraphRunner
         except ImportError:
-            # SGLang <= 0.5.13 compatibility (MUSA/Ascend remain pinned there
-            # while the CUDA environment is upgraded first).
+            # Compatibility for older SGLang versions that predate the split.
             from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
 
             return CudaGraphRunner
@@ -309,11 +331,11 @@ class PlatformFL(SRTPlatform):
 
     def get_paged_allocator_cls(self) -> type:
         if self._device_type == "npu":
-            from sglang.srt.hardware_backend.npu.allocator_npu import (
-                NPUPagedTokenToKVPoolAllocator,
+            from sglang_fl.dispatch.backends.vendor.ascend.allocator import (
+                AscendPagedTokenToKVPoolAllocator,
             )
 
-            return NPUPagedTokenToKVPoolAllocator
+            return AscendPagedTokenToKVPoolAllocator
 
         from sglang.srt.mem_cache.allocator import PagedTokenToKVPoolAllocator
 
@@ -387,10 +409,12 @@ class PlatformFL(SRTPlatform):
         overridden by sglang-plugin-FL retain their native CUDA implementation;
         registered FL bridges still take precedence in the OOT registry.
 
-        MUSA likewise retains its native vendor path for operators outside
-        the FL bridge set. Other vendors keep the legacy ``oot`` key.
+        Ascend and MUSA likewise retain their native vendor paths for operators
+        outside the FL bridge set. Other vendors keep the legacy ``oot`` key.
         """
-        return {"nvidia": "cuda", "mthreads": "musa"}.get(self._vendor_name, "oot")
+        return {"nvidia": "cuda", "ascend": "npu", "mthreads": "musa"}.get(
+            self._vendor_name, "oot"
+        )
 
     # ------------------------------------------------------------------
     # Configuration lifecycle
