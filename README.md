@@ -51,9 +51,7 @@ Chip vendors only need to implement a backend class + `register_ops.py`. The dis
 This table is the current **NVIDIA CUDA** target. MUSA CI uses SGLang v0.5.18
 with vendor Torch 2.9.0; see the [MUSA empty container recipe](docker/mthreads/empty-0.5.18.containerfile).
 The Ascend target has also been upgraded to SGLang v0.5.18 on the CANN 8.5 /
-torch_npu 2.8 empty runtime. See the
-[Ascend 910C v0.5.18 usage and acceptance guide](docs/ascend-910c-sglang-0.5.18.md);
-its final hardware validation status is recorded in that guide.
+torch_npu 2.8 empty runtime.
 
 The validated H100 environment removes the Triton package installed with
 PyTorch and uses FlagTree 0.6.2a1 as its Triton 3.6-compatible compiler. The
