@@ -14,6 +14,9 @@
 
 # Integration tests for sglang_fl.load_plugin: step order and idempotency.
 
+import sys
+import types
+
 import pytest
 
 
@@ -101,3 +104,45 @@ class TestLoadPluginIdempotency:
         sglang_fl.load_plugin()
 
         assert call_count == {"flaggems": 1, "vendor_patches": 1}
+
+
+@pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on"])
+def test_communicator_hook_can_be_disabled(monkeypatch, value):
+    import sglang_fl
+
+    monkeypatch.setenv("SGLANG_FL_DISABLE_COMM_HOOK", value)
+    # No SGLang hook module is installed in this test. Returning without an
+    # import therefore also proves that the disable check runs first.
+    monkeypatch.delitem(
+        sys.modules, "sglang.srt.plugins.hook_registry", raising=False
+    )
+
+    sglang_fl._setup_communicator_hooks()
+
+
+def test_communicator_hook_remains_enabled_by_default(monkeypatch):
+    import sglang_fl
+
+    monkeypatch.delenv("SGLANG_FL_DISABLE_COMM_HOOK", raising=False)
+    registrations = []
+    fake_module = types.ModuleType("sglang.srt.plugins.hook_registry")
+
+    class FakeHookRegistry:
+        @staticmethod
+        def register(target, function, hook_type):
+            registrations.append((target, function, hook_type))
+
+    class FakeHookType:
+        AROUND = "around"
+
+    fake_module.HookRegistry = FakeHookRegistry
+    fake_module.HookType = FakeHookType
+    monkeypatch.setitem(
+        sys.modules, "sglang.srt.plugins.hook_registry", fake_module
+    )
+
+    sglang_fl._setup_communicator_hooks()
+
+    assert len(registrations) == 12
+    assert all(item[2] == FakeHookType.AROUND for item in registrations)
+    assert registrations[0][0].endswith("GroupCoordinator.__init__")

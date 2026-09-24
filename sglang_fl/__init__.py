@@ -477,6 +477,11 @@ def _setup_communicator_hooks():
       - broadcast_tensor_dict, send_tensor_dict, recv_tensor_dict:
         full method intercept for FlagCX coverage on composite operations
     """
+    if os.getenv("SGLANG_FL_DISABLE_COMM_HOOK", "0").lower() in (
+        "1", "true", "yes", "on"
+    ):
+        logger.info("CommunicatorFL hooks disabled by SGLANG_FL_DISABLE_COMM_HOOK")
+        return
     from sglang.srt.plugins.hook_registry import HookRegistry, HookType
 
     _GC_TARGET = "sglang.srt.distributed.parallel_state.GroupCoordinator"
