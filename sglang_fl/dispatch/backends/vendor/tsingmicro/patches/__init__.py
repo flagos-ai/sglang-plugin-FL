@@ -44,13 +44,14 @@ def apply_all_txda_patches() -> None:
     for per-patch submodules; per_rank_log and device_support are applied
     unconditionally.
     """
-    from sglang_fl.dispatch.backends.vendor.tsingmicro.patches import per_rank_log, device_support, platform_stubs, model_runner, qwen3_asr_config
+    from sglang_fl.dispatch.backends.vendor.tsingmicro.patches import per_rank_log, device_support, platform_stubs, model_runner, qwen3_asr_config, kv_leak_fix
 
     per_rank_log.patch()
     qwen3_asr_config.patch()  # tolerate transformers 5.15+ built-in qwen3_asr (must run before device_support)
     device_support.patch()   # universal + txda-gated internally
     platform_stubs.patch()   # dummy-module injection for non-CUDA platforms
     model_runner.patch()     # gated by SGLANG_FL_TIMER_ENABLE internally
+    kv_leak_fix.patch()     # hardened release; enable with SGLANG_KVLEAK_FIX=1
 
     if not is_txda_available():
         _log.skipped("txda not available — txda-specific patches skipped")
