@@ -110,17 +110,23 @@ def _paged_attention_decode_torch(
     k_h = k.transpose(1, 2).float()  # [B, Hq, max_seq, Dk]
     v_h = v.transpose(1, 2).float()
 
-    pos = torch.arange(max_seq, device=query.device, dtype=context_lens.dtype)
-    key_mask = pos.unsqueeze(0) < context_lens.unsqueeze(1)  # [B, max_seq]
+    # Graph-safe pad mask without boolean `<` / `masked_fill`.
+    # Kunlunxin flag_gems `lt` Triton fails on large int compares during
+    # CUDA Graph capture; use float arange + clamp only (no host sync).
+    # invalid==1 iff pos >= context_len  (same as ~(pos < context_lens)).
+    pos = torch.arange(max_seq, device=query.device, dtype=torch.float32)
+    cl = context_lens.to(dtype=torch.float32).unsqueeze(1)  # [B, 1]
+    invalid = (pos.unsqueeze(0) - cl + 1.0).clamp(min=0.0, max=1.0)  # [B, max_seq]
+    key_mask_f = 1.0 - invalid
 
     scores = torch.matmul(q_h, k_h.transpose(-1, -2)) * scale  # [B, Hq, 1, S]
-    scores = scores.masked_fill(~key_mask[:, None, None, :], -1.0e9)
+    scores = scores + (-1.0e9) * invalid[:, None, None, :]
 
     if sinks is not None:
         sink = sinks.float().view(1, Hq, 1, 1)
         row_max = torch.maximum(scores.amax(dim=-1, keepdim=True), sink)
         exp_scores = torch.exp(scores - row_max)
-        exp_scores = exp_scores * key_mask[:, None, None, :].to(exp_scores.dtype)
+        exp_scores = exp_scores * key_mask_f[:, None, None, :].to(exp_scores.dtype)
         denom = exp_scores.sum(dim=-1, keepdim=True) + torch.exp(sink - row_max)
         attn = exp_scores / denom
     else:

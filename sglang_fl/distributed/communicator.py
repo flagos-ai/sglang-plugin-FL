@@ -37,6 +37,28 @@ from torch.distributed import ProcessGroup
 TensorMetadata = namedtuple("TensorMetadata", ["device", "dtype", "size"])
 
 logger = logging.getLogger(__name__)
+_p2p_device_sync_logged = False
+
+
+def _sync_device_p2p(tensor: torch.Tensor) -> None:
+    """Join XCCL's private comm stream before the buffer is reused or read.
+
+    Unbatched ``dist.send`` / ``irecv().wait()`` on Kunlun XCCL return before
+    the device copy is visible. ``current_stream().synchronize()`` only waits
+    for the compute stream, so the receiver's ``torch.empty`` buffer is still
+    uninitialized (garbage hidden states, NaN logits, token ids outside vocab).
+    A device-wide sync waits for the comm stream as well.
+    """
+    if tensor.device.type != "cuda":
+        return
+    global _p2p_device_sync_logged
+    if not _p2p_device_sync_logged:
+        logger.info(
+            "PP P2P: device-wide synchronize after XCCL send/recv "
+            "(compute-stream sync does not cover the XCCL comm stream)"
+        )
+        _p2p_device_sync_logged = True
+    torch.cuda.synchronize(tensor.device)
 
 
 class CommunicatorFL:
@@ -398,7 +420,10 @@ class CommunicatorFL:
                 ):
                     t = tensor.reshape(all_gather_size, -1)[all_gather_rank]
                 if not t.is_cpu:
-                    self._flagcx_comm.send(t, dst)
+                    # Own the bytes until the comm stream has finished reading.
+                    staged = t.detach().contiguous().clone()
+                    self._flagcx_comm.send(staged, dst)
+                    _sync_device_p2p(staged)
                 else:
                     dist.send(t, self.ranks[dst], self.cpu_group)
         else:
@@ -414,7 +439,9 @@ class CommunicatorFL:
                 if t.is_cpu:
                     dist.send(t, self.ranks[dst], self.cpu_group)
                 else:
-                    dist.send(t, self.ranks[dst], self.device_group)
+                    staged = t.detach().contiguous().clone()
+                    dist.send(staged, self.ranks[dst], self.device_group)
+                    _sync_device_p2p(staged)
 
         # Return metadata p2p_works so PP mixin can manage their lifecycle.
         # Do NOT wait here — the peer may not have posted recv yet (PP sends
@@ -469,6 +496,7 @@ class CommunicatorFL:
             for key, tensor, is_gpu, use_all_gather, orig_shape in recv_ops:
                 if is_gpu:
                     self._flagcx_comm.recv(tensor, src)
+                    _sync_device_p2p(tensor)
                 else:
                     dist.recv(tensor, self.ranks[src], self.cpu_group)
         else:
@@ -476,6 +504,9 @@ class CommunicatorFL:
                 if is_gpu:
                     work = dist.irecv(tensor, self.ranks[src], self.device_group)
                     work.wait()
+                    # irecv().wait() does not join the XCCL comm stream.
+                    # Without this, callers sample from an uninitialized buffer.
+                    _sync_device_p2p(tensor)
                 else:
                     work = dist.irecv(tensor, self.ranks[src], self.cpu_group)
                     work.wait()
