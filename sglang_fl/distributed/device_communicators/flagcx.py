@@ -23,7 +23,9 @@ Adapted from vllm-plugin-FL's PyFlagcxCommunicator pattern:
 Requirements:
   - FLAGCX_PATH env var pointing to FlagCX installation
   - libflagcx.so built at $FLAGCX_PATH/build/lib/
-  - FlagCX Python wrapper at $FLAGCX_PATH/plugin/interservice/flagcx_wrapper.py
+  - FlagCX Python wrapper in either of these layouts:
+    - $FLAGCX_PATH/src/flagcx/api.py (FlagCX >= 0.14.0-rc2)
+    - $FLAGCX_PATH/plugin/interservice/flagcx_wrapper.py (legacy)
 
 Usage:
   SGLANG_FL_DIST_BACKEND=flagcx FLAGCX_PATH=/path/to/FlagCX \
@@ -32,9 +34,11 @@ Usage:
 
 import contextlib
 import ctypes
+import importlib
 import logging
 import os
 import sys
+from types import ModuleType
 
 import torch
 import torch.distributed as dist
@@ -42,8 +46,8 @@ import torch.distributed as dist
 logger = logging.getLogger(__name__)
 
 
-def _import_flagcx_wrapper():
-    """Import FlagCX wrapper, adding FLAGCX_PATH to sys.path if needed."""
+def _import_flagcx_wrapper() -> ModuleType:
+    """Import the FlagCX Python API from its current or legacy layout."""
     flagcx_path = os.getenv("FLAGCX_PATH")
     if not flagcx_path:
         raise RuntimeError(
@@ -53,26 +57,27 @@ def _import_flagcx_wrapper():
     if not os.path.isdir(flagcx_path):
         raise RuntimeError(f"FLAGCX_PATH={flagcx_path} is not a valid directory.")
 
-    if flagcx_path not in sys.path:
-        sys.path.append(flagcx_path)
+    # FlagCX >= 0.14.0-rc2 uses a src layout. Keep the repository root on
+    # sys.path as well so pre-rc2 checkouts remain importable. Because
+    # FLAGCX_PATH is explicit user configuration, prefer these paths over an
+    # unrelated FlagCX installation already present later on sys.path.
+    for path in (flagcx_path, os.path.join(flagcx_path, "src")):
+        if not os.path.isdir(path):
+            continue
+        if path in sys.path:
+            sys.path.remove(path)
+        sys.path.insert(0, path)
 
-    from plugin.interservice.flagcx_wrapper import (
-        FLAGCXLibrary,
-        buffer_type,
-        flagcxComm_t,
-        flagcxDataTypeEnum,
-        flagcxRedOpTypeEnum,
-        flagcxUniqueId,
-    )
+    try:
+        return importlib.import_module("flagcx.api")
+    except ModuleNotFoundError as exc:
+        # Fall back only when the new API module itself is unavailable. An
+        # import failure inside flagcx.api is actionable and must not be hidden
+        # by silently selecting a legacy wrapper from another installation.
+        if exc.name not in {"flagcx", "flagcx.api"}:
+            raise
 
-    return (
-        FLAGCXLibrary,
-        buffer_type,
-        flagcxComm_t,
-        flagcxDataTypeEnum,
-        flagcxRedOpTypeEnum,
-        flagcxUniqueId,
-    )
+    return importlib.import_module("plugin.interservice.flagcx_wrapper")
 
 
 class FlagCXCommunicator:
@@ -96,14 +101,13 @@ class FlagCXCommunicator:
 
         # Import FlagCX wrapper
         try:
-            (
-                FLAGCXLibrary,
-                self._buffer_type,
-                _,
-                self._dtype_enum,
-                self._redop_enum,
-                flagcxUniqueId,
-            ) = _import_flagcx_wrapper()
+            api = _import_flagcx_wrapper()
+            FLAGCXLibrary = api.FLAGCXLibrary
+            self._buffer_type = api.buffer_type
+            self._stream_type = api.flagcxStream_t
+            self._dtype_enum = api.flagcxDataTypeEnum
+            self._redop_enum = api.flagcxRedOpTypeEnum
+            flagcxUniqueId = api.flagcxUniqueId
         except Exception as e:
             logger.warning(
                 f"FlagCX wrapper import failed: {e}. Falling back to torch.distributed."
@@ -206,8 +210,7 @@ class FlagCXCommunicator:
         cached = self._stream_cache.get(handle)
         if cached is not None:
             return cached
-        from plugin.interservice.flagcx_wrapper import flagcxStream_t
-        new_stream = flagcxStream_t()
+        new_stream = self._stream_type()
         self.flagcx.FLAGCX_CHECK(
             self.flagcx.devHandle.contents.streamCopy(
                 ctypes.byref(new_stream),

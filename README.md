@@ -87,6 +87,13 @@ cd FlagCX && make USE_NVIDIA=1
 export FLAGCX_PATH="$PWD"
 ```
 
+FlagCX `0.14.0-rc2` and newer expose their Python API as `flagcx.api` using a
+`src` layout. The plugin supports both that layout and the legacy
+`plugin/interservice/flagcx_wrapper.py` layout. Installing the FlagCX Python
+package is recommended for new versions; a source checkout referenced by
+`FLAGCX_PATH` is also supported. Keep `FLAGCX_PATH` set so the matching
+`libflagcx.so` can be resolved from the selected build tree.
+
 ### Option B: Empty Install (Multi-Chip / Non-CUDA)
 
 For running on non-NVIDIA hardware (Ascend, MUSA, etc.), use SGLang's **empty install** mode. This installs SGLang's pure Python code without pulling in CUDA-specific dependencies (torch, torchao, flashinfer, etc.), avoiding conflicts with vendor-specific PyTorch builds.

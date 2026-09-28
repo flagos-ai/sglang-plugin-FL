@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+import ctypes
 from pathlib import Path
-from unittest.mock import Mock
+from types import SimpleNamespace
+from unittest.mock import Mock, call
 
 import pytest
 import torch
@@ -21,14 +23,15 @@ class _FakeFlagCXId:
         self.internal = [0] * 128
 
 
-def _fake_wrapper_tuple():
-    return (
-        _FakeFlagCXLibrary,
-        lambda ptr=None: ptr,
-        object,
-        object,
-        object,
-        _FakeFlagCXId,
+def _fake_wrapper_module():
+    return SimpleNamespace(
+        FLAGCXLibrary=_FakeFlagCXLibrary,
+        buffer_type=lambda ptr=None: ptr,
+        flagcxComm_t=object,
+        flagcxStream_t=object,
+        flagcxDataTypeEnum=object,
+        flagcxRedOpTypeEnum=object,
+        flagcxUniqueId=_FakeFlagCXId,
     )
 
 
@@ -60,11 +63,64 @@ def test_import_flagcx_wrapper_rejects_invalid_path(monkeypatch) -> None:
         _import_flagcx_wrapper()
 
 
+def test_import_flagcx_wrapper_prefers_new_layout(monkeypatch, tmp_path: Path) -> None:
+    from sglang_fl.distributed.device_communicators import flagcx as flagcx_mod
+
+    src_path = tmp_path / "src"
+    src_path.mkdir()
+    monkeypatch.setenv("FLAGCX_PATH", str(tmp_path))
+    monkeypatch.setattr(flagcx_mod.sys, "path", flagcx_mod.sys.path.copy())
+    new_api = _fake_wrapper_module()
+    import_module = Mock(return_value=new_api)
+    monkeypatch.setattr(flagcx_mod.importlib, "import_module", import_module)
+
+    assert flagcx_mod._import_flagcx_wrapper() is new_api
+    import_module.assert_called_once_with("flagcx.api")
+    assert flagcx_mod.sys.path[:2] == [str(src_path), str(tmp_path)]
+
+
+def test_import_flagcx_wrapper_falls_back_to_legacy_layout(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from sglang_fl.distributed.device_communicators import flagcx as flagcx_mod
+
+    monkeypatch.setenv("FLAGCX_PATH", str(tmp_path))
+    monkeypatch.setattr(flagcx_mod.sys, "path", flagcx_mod.sys.path.copy())
+    new_layout_missing = ModuleNotFoundError("No module named 'flagcx.api'")
+    new_layout_missing.name = "flagcx.api"
+    legacy_api = _fake_wrapper_module()
+    import_module = Mock(side_effect=[new_layout_missing, legacy_api])
+    monkeypatch.setattr(flagcx_mod.importlib, "import_module", import_module)
+
+    assert flagcx_mod._import_flagcx_wrapper() is legacy_api
+    assert import_module.call_args_list == [
+        call("flagcx.api"),
+        call("plugin.interservice.flagcx_wrapper"),
+    ]
+
+
+def test_import_flagcx_wrapper_does_not_hide_dependency_error(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from sglang_fl.distributed.device_communicators import flagcx as flagcx_mod
+
+    monkeypatch.setenv("FLAGCX_PATH", str(tmp_path))
+    dependency_missing = ModuleNotFoundError("No module named 'torch_npu'")
+    dependency_missing.name = "torch_npu"
+    import_module = Mock(side_effect=dependency_missing)
+    monkeypatch.setattr(flagcx_mod.importlib, "import_module", import_module)
+
+    with pytest.raises(ModuleNotFoundError, match="torch_npu"):
+        flagcx_mod._import_flagcx_wrapper()
+
+    import_module.assert_called_once_with("flagcx.api")
+
+
 def test_world_size_one_disables_communicator(monkeypatch, tmp_path: Path) -> None:
     from sglang_fl.distributed.device_communicators import flagcx as flagcx_mod
 
     monkeypatch.setenv("FLAGCX_PATH", str(tmp_path))
-    monkeypatch.setattr(flagcx_mod, "_import_flagcx_wrapper", lambda: _fake_wrapper_tuple())
+    monkeypatch.setattr(flagcx_mod, "_import_flagcx_wrapper", _fake_wrapper_module)
     monkeypatch.setattr(flagcx_mod.dist, "get_rank", Mock(return_value=0))
     monkeypatch.setattr(flagcx_mod.dist, "get_world_size", Mock(return_value=1))
 
@@ -73,6 +129,24 @@ def test_world_size_one_disables_communicator(monkeypatch, tmp_path: Path) -> No
     assert comm.disabled is True
     assert comm.available is False
     assert comm.group == "group"
+
+
+def test_get_stream_uses_imported_stream_type() -> None:
+    from sglang_fl.distributed.device_communicators.flagcx import FlagCXCommunicator
+
+    stream_type = Mock(return_value=ctypes.c_void_p())
+    comm = FlagCXCommunicator.__new__(FlagCXCommunicator)
+    comm._stream_cache = {}
+    comm._stream_type = stream_type
+    comm.flagcx = Mock()
+    comm.flagcx.devHandle.contents.streamCopy.return_value = 0
+    comm._get_raw_stream_handle = Mock(return_value=123)
+
+    stream = comm._get_stream()
+
+    assert stream is comm._stream_cache[123]
+    stream_type.assert_called_once_with()
+    comm.flagcx.devHandle.contents.streamCopy.assert_called_once()
 
 
 def test_del_destroys_communicator() -> None:
