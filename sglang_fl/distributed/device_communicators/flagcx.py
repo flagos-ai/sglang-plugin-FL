@@ -22,7 +22,7 @@ Adapted from vllm-plugin-FL's PyFlagcxCommunicator pattern:
 
 Requirements:
   - FLAGCX_PATH env var pointing to FlagCX installation
-  - libflagcx.so built at $FLAGCX_PATH/build/lib/
+  - libflagcx.so available from the FlagCX installation or Python package
   - FlagCX Python wrapper in either of these layouts:
     - $FLAGCX_PATH/src/flagcx/api.py (FlagCX >= 0.14.0-rc2)
     - $FLAGCX_PATH/plugin/interservice/flagcx_wrapper.py (legacy)
@@ -138,6 +138,23 @@ def _import_flagcx_wrapper() -> ModuleType:
         ) from exc
 
 
+def _create_flagcx_library(api: ModuleType):
+    """Load libflagcx while preserving legacy source-tree compatibility."""
+    root = Path(os.environ["FLAGCX_PATH"])
+    candidates = (
+        root / "lib" / "libflagcx.so",
+        root / "build" / "lib" / "libflagcx.so",
+        root / "lib" / "libflagcx.so.0",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return api.FLAGCXLibrary(str(candidate))
+
+    # The current API can also resolve a wheel-bundled or system library. Do
+    # not pass a non-existent source-tree path and prevent that fallback.
+    return api.FLAGCXLibrary()
+
+
 class FlagCXCommunicator:
     """OOT communicator using FlagCX as the communication backend.
 
@@ -160,7 +177,6 @@ class FlagCXCommunicator:
         # Import FlagCX wrapper
         try:
             api = _import_flagcx_wrapper()
-            FLAGCXLibrary = api.FLAGCXLibrary
             self._buffer_type = api.buffer_type
             self._stream_type = api.flagcxStream_t
             self._dtype_enum = api.flagcxDataTypeEnum
@@ -174,12 +190,10 @@ class FlagCXCommunicator:
             return
 
         # Load libflagcx.so
-        flagcx_path = os.getenv("FLAGCX_PATH")
-        library_path = os.path.join(flagcx_path, "build", "lib", "libflagcx.so")
         try:
-            self.flagcx = FLAGCXLibrary(library_path)
+            self.flagcx = _create_flagcx_library(api)
         except Exception as e:
-            logger.warning(f"Failed to load libflagcx.so from {library_path}: {e}")
+            logger.warning(f"Failed to load libflagcx.so: {e}")
             self.disabled = True
             return
 

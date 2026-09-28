@@ -14,7 +14,7 @@ import torch
 
 
 class _FakeFlagCXLibrary:
-    def __init__(self, library_path: str) -> None:
+    def __init__(self, library_path: str | None = None) -> None:
         self.library_path = library_path
 
 
@@ -246,9 +246,32 @@ def test_import_flagcx_wrapper_reuses_source_module(
     assert second is first
 
 
-def test_world_size_one_disables_communicator(monkeypatch, tmp_path: Path) -> None:
+def test_installed_package_uses_default_library_resolution(
+    monkeypatch, tmp_path: Path
+) -> None:
     from sglang_fl.distributed.device_communicators import flagcx as flagcx_mod
 
+    monkeypatch.setenv("FLAGCX_PATH", str(tmp_path))
+    import_module = Mock(return_value=_fake_wrapper_module())
+    monkeypatch.setattr(flagcx_mod.importlib, "import_module", import_module)
+    monkeypatch.setattr(flagcx_mod.dist, "get_rank", Mock(return_value=0))
+    monkeypatch.setattr(flagcx_mod.dist, "get_world_size", Mock(return_value=1))
+
+    comm = flagcx_mod.FlagCXCommunicator(group="group", device=torch.device("cpu"))
+
+    import_module.assert_called_once_with("flagcx.api")
+    assert comm.flagcx.library_path is None
+    assert comm.disabled is True
+    assert comm.available is False
+    assert comm.group == "group"
+
+
+def test_source_tree_uses_explicit_build_library(monkeypatch, tmp_path: Path) -> None:
+    from sglang_fl.distributed.device_communicators import flagcx as flagcx_mod
+
+    library_path = tmp_path / "build" / "lib" / "libflagcx.so"
+    library_path.parent.mkdir(parents=True)
+    library_path.touch()
     monkeypatch.setenv("FLAGCX_PATH", str(tmp_path))
     monkeypatch.setattr(flagcx_mod, "_import_flagcx_wrapper", _fake_wrapper_module)
     monkeypatch.setattr(flagcx_mod.dist, "get_rank", Mock(return_value=0))
@@ -256,9 +279,8 @@ def test_world_size_one_disables_communicator(monkeypatch, tmp_path: Path) -> No
 
     comm = flagcx_mod.FlagCXCommunicator(group="group", device=torch.device("cpu"))
 
+    assert comm.flagcx.library_path == str(library_path)
     assert comm.disabled is True
-    assert comm.available is False
-    assert comm.group == "group"
 
 
 def test_get_stream_uses_imported_stream_type() -> None:
