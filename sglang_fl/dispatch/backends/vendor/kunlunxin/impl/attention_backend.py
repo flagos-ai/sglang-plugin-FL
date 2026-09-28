@@ -102,8 +102,24 @@ def _paged_attention_decode_torch(
                 f"GQA requires Hq % Hkv == 0 (got Hq={Hq}, Hkv={num_kv_heads})."
             )
         rep = Hq // num_kv_heads
-        k = k.repeat_interleave(rep, dim=2)
-        v = v.repeat_interleave(rep, dim=2)
+        # k = k.repeat_interleave(rep, dim=2)
+        # v = v.repeat_interleave(rep, dim=2)
+        
+        # Avoid aten.repeat_interleave (FlagGems klx path → decode "!!!!!").
+        # GQA expand: [B, S, Hkv, D] -> [B, S, Hq, D] via expand+reshape.
+        k = (
+            k.unsqueeze(3)
+            .expand(B, max_seq, num_kv_heads, rep, Dk)
+            .reshape(B, max_seq, Hq, Dk)
+            .contiguous()
+        )
+        v = (
+            v.unsqueeze(3)
+            .expand(B, max_seq, num_kv_heads, rep, Dv)
+            .reshape(B, max_seq, Hq, Dv)
+            .contiguous()
+        )
+
 
     # [B, H, S, D]
     q_h = query.unsqueeze(2).float()  # [B, Hq, 1, Dk]

@@ -28,10 +28,6 @@ prefer: flagos
 #   stack                -> Triton VGather on uint8 image data in VL preprocessing
 #                           ("Only support I16/FP16/BF16/I32/FP32 in VGather" abort)
 #   round, copy_         -> qwen3_6_35b_a3b_multinode
-#   repeat_interleave_self_int -> decode "!!!!!" on Qwen3.6-27B (bisect).
-#                           Pass-1/2 (sum/mean/softmax/...) and the temporary
-#                           HALF_A/HALF_B0 lists were dropped and retested:
-#                           Qwen3.6-27B tp1 single-node 10/10 still passes.
 #   ge, gt, softmax        -> non-greedy sampling (temperature>0) chat crash
 #                           on Qwen3.6-27B. Leave-one-out bisect on GPU2:
 #                           base FAIL(ge); all-cand PASS; NEEDED={ge,gt,
@@ -65,11 +61,6 @@ flagos_blacklist:
   - to_copy
   - nonzero
   - argmax
-  # BISSECT: FlagGems repeat_interleave_self_int corrupts Qwen3.6-27B
-  # decode (Graph-on "!!!!!" / wrong math). self_tensor and repeat are OK.
-  # Round10 PASS with only self_int blacklisted; Round11 FAIL with only
-  # self_tensor blacklisted (self_int re-enabled).
-  - repeat_interleave_self_int
   # BISSECT (2026-09-22): temp>0 chat on Qwen3.6-27B. Minimal set from
   # leave-one-out over sampling-path candidates; VERIFY_needed PASS.
   - ge
