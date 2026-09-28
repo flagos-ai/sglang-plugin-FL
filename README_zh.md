@@ -106,6 +106,12 @@ cd FlagCX && make USE_NVIDIA=1
 export FLAGCX_PATH="$PWD"
 ```
 
+FlagCX `0.14.0-rc2` 及之后版本通过 `src` 布局提供 `flagcx.api`。本插件同时
+支持该布局和旧版的 `plugin/interservice/flagcx_wrapper.py` 布局。使用上述
+`make` 流程构建并通过 `FLAGCX_PATH` 指向源码目录即可，也支持已安装的 FlagCX
+Python 包。请保留 `FLAGCX_PATH`，以便从选定的构建目录加载对应的 wrapper 和
+`libflagcx.so`。
+
 ### 方式 B：Empty 安装（多芯 / 非 CUDA 平台）
 
 在非 NVIDIA 硬件（华为 Ascend、摩尔线程 MUSA 等）上运行时，使用 SGLang 的 **empty 安装**模式。该模式只安装 SGLang 的纯 Python 代码，不拉入 CUDA 专属依赖（torch、torchao、flashinfer 等），避免与厂商自有 PyTorch 版本冲突。

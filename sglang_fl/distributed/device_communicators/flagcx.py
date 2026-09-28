@@ -34,16 +34,69 @@ Usage:
 
 import contextlib
 import ctypes
+import hashlib
 import importlib
+import importlib.util
 import logging
 import os
 import sys
+from pathlib import Path
 from types import ModuleType
 
 import torch
 import torch.distributed as dist
 
 logger = logging.getLogger(__name__)
+
+_FLAGCX_API_SYMBOLS = (
+    "FLAGCXLibrary",
+    "buffer_type",
+    "flagcxStream_t",
+    "flagcxDataTypeEnum",
+    "flagcxRedOpTypeEnum",
+    "flagcxUniqueId",
+)
+_SOURCE_MODULE_PREFIX = "_sglang_fl_flagcx_api_"
+
+
+def _load_module_from_file(path: Path) -> ModuleType:
+    """Load a FlagCX ctypes wrapper without executing its package initializer."""
+    resolved_path = path.resolve()
+    digest = hashlib.sha256(str(resolved_path).encode()).hexdigest()[:12]
+    module_name = f"{_SOURCE_MODULE_PREFIX}{digest}"
+
+    cached = sys.modules.get(module_name)
+    if cached is not None:
+        return cached
+
+    spec = importlib.util.spec_from_file_location(module_name, resolved_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot create an import spec for {resolved_path}.")
+
+    module = importlib.util.module_from_spec(spec)
+    # Register before execution because decorators such as @dataclass resolve
+    # their defining module through sys.modules while the file is loading.
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
+
+
+def _validate_flagcx_api(module: ModuleType) -> ModuleType:
+    """Ensure both supported wrappers provide the API used by this plugin."""
+    missing = [name for name in _FLAGCX_API_SYMBOLS if not hasattr(module, name)]
+    if missing:
+        if module.__name__.startswith(_SOURCE_MODULE_PREFIX):
+            sys.modules.pop(module.__name__, None)
+        module_path = getattr(module, "__file__", module.__name__)
+        raise ImportError(
+            f"FlagCX API at {module_path} is missing required symbols: "
+            f"{', '.join(missing)}"
+        )
+    return module
 
 
 def _import_flagcx_wrapper() -> ModuleType:
@@ -54,30 +107,35 @@ def _import_flagcx_wrapper() -> ModuleType:
             "FLAGCX_PATH environment variable is not set. "
             "Set it to the FlagCX installation directory."
         )
-    if not os.path.isdir(flagcx_path):
+    root = Path(flagcx_path)
+    if not root.is_dir():
         raise RuntimeError(f"FLAGCX_PATH={flagcx_path} is not a valid directory.")
 
-    # FlagCX >= 0.14.0-rc2 uses a src layout. Keep the repository root on
-    # sys.path as well so pre-rc2 checkouts remain importable. Because
-    # FLAGCX_PATH is explicit user configuration, prefer these paths over an
-    # unrelated FlagCX installation already present later on sys.path.
-    for path in (flagcx_path, os.path.join(flagcx_path, "src")):
-        if not os.path.isdir(path):
-            continue
-        if path in sys.path:
-            sys.path.remove(path)
-        sys.path.insert(0, path)
+    # Load source-tree wrappers by file path so a cached package named
+    # ``flagcx`` cannot redirect the import. This also avoids executing the new
+    # layout's flagcx/__init__.py, which requires the optional flagcx._C
+    # extension that a plain ``make`` build does not produce.
+    candidates = (
+        root / "src" / "flagcx" / "api.py",
+        root / "plugin" / "interservice" / "flagcx_wrapper.py",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return _validate_flagcx_api(_load_module_from_file(candidate))
 
+    # A wheel/runtime installation may keep libflagcx.so under FLAGCX_PATH but
+    # expose its Python API only through site-packages.
     try:
-        return importlib.import_module("flagcx.api")
+        return _validate_flagcx_api(importlib.import_module("flagcx.api"))
     except ModuleNotFoundError as exc:
-        # Fall back only when the new API module itself is unavailable. An
-        # import failure inside flagcx.api is actionable and must not be hidden
-        # by silently selecting a legacy wrapper from another installation.
         if exc.name not in {"flagcx", "flagcx.api"}:
             raise
-
-    return importlib.import_module("plugin.interservice.flagcx_wrapper")
+        searched = "\n".join(f"  - {path}" for path in candidates)
+        raise RuntimeError(
+            "Unable to locate the FlagCX Python API. Searched:\n"
+            f"{searched}\n"
+            "The installed package 'flagcx.api' is also unavailable."
+        ) from exc
 
 
 class FlagCXCommunicator:

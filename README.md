@@ -89,10 +89,10 @@ export FLAGCX_PATH="$PWD"
 
 FlagCX `0.14.0-rc2` and newer expose their Python API as `flagcx.api` using a
 `src` layout. The plugin supports both that layout and the legacy
-`plugin/interservice/flagcx_wrapper.py` layout. Installing the FlagCX Python
-package is recommended for new versions; a source checkout referenced by
-`FLAGCX_PATH` is also supported. Keep `FLAGCX_PATH` set so the matching
-`libflagcx.so` can be resolved from the selected build tree.
+`plugin/interservice/flagcx_wrapper.py` layout. A source checkout referenced by
+`FLAGCX_PATH` works with the `make` flow above; installing the FlagCX Python
+package is also supported. Keep `FLAGCX_PATH` set so the wrapper and matching
+`libflagcx.so` are resolved from the selected build tree.
 
 ### Option B: Empty Install (Multi-Chip / Non-CUDA)
 
