@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Kunlunxin: route GDN causal_conv1d (prefill + decode) to the klx sgl_kernel.
+"""Kunlunxin: route GDN causal_conv1d (prefill + decode) to pure PyTorch.
 
 Qwen3.5/3.6 is a hybrid model: its linear-attention (GDN) layers run a short
 causal depthwise conv via ``causal_conv1d_fn`` (prefill) / ``causal_conv1d_update``
@@ -27,32 +27,21 @@ must run BEFORE they import (plugin-activation time, which it does) — then:
   * ``gdn_backend`` (which on ``is_cuda()`` keeps ``causal_conv1d_update`` bound
     to the pure-triton import) picks up our update fn directly.
 For already-imported consumers we also rebind their local names as a
-belt-and-suspenders step (see ``patch_causal_conv1d_native``).
+belt-and-suspenders step.
 
-Two independent problems make the stock path unusable on Kunlun, and both the
-prefill dispatcher-fallback and the decode triton binding hit them:
+Why not stock Triton / sgl_kernel / fla_xpu_ops:
 
 1. Kunlun's Triton XPU backend cannot compile ``_causal_conv1d_fwd_kernel`` /
-   ``_causal_conv1d_update_kernel``:
-       fp16: AssertionError('mismatched type for col0 ... bf16 vs fp16')
-       bf16: 'arith.muli' op requires the same type ...
-             -> OutOfResources: uni_sram PassManager::run failed
-2. The stock cuda ``sgl_kernel.causal_conv1d_*`` binding needs extra trailing
-   args vs sglang 0.5.12's call convention:
-       TypeError: causal_conv1d_fwd() missing 2 required positional arguments ...
+   ``_causal_conv1d_update_kernel`` (dtype / SRAM failures).
+2. Stock cuda ``sgl_kernel.causal_conv1d_*`` call convention mismatches sglang
+   0.5.12; klx fwd is fp32-only.
+3. ``fla_xpu_ops`` is an optional vendor wheel; empty stacks may not ship it.
 
-So we replace both functions with kunlunxin-native wrappers:
-
-  * PREFILL -> ``fla_xpu_ops.causal_conv1d_fwd`` (the xfla xpu op). Runs NATIVELY
-    in the model dtype (bf16/fp16), NWC layout, ``is_ncw=False``. sglang passes
-    ``x`` as ``(dim, tokens)`` NCW packed and ``conv_states`` as
-    ``(num_cache_lines, dim, state_len)`` NCW; we transpose both to NWC and back.
-    (No fp32 shadow — the xfla kernel handles bf16/fp16 directly, unlike the
-    klx ``sgl_kernel.causal_conv1d_fwd`` which is fp32-only.)
-  * DECODE -> ``sgl_kernel.causal_conv1d_update`` (klx), fp32 shadow + NWC
-    (``is_ncw=False``); see ``_kunlun_causal_conv1d_update``. (The xfla package's
-    ``causal_conv1d_update`` is a pure-python ref that drops conv_state_indices,
-    so decode stays on the klx kernel.)
+Both prefill and decode therefore use the same NCW windowed depthwise formula
+(``unfold`` + elementwise ``mul`` + ``sum``, matching decode's seqlen=1 path).
+We deliberately avoid ``F.conv1d``: on Kunlun with FlagGems enabled it is
+rewritten through a broken Triton/conv path (logs show
+``conv2d_forward_kernel`` / ``Removed N operations``) and corrupts GDN prefill.
 """
 
 import itertools
@@ -63,6 +52,34 @@ import torch
 
 logger = logging.getLogger(__name__)
 _applied = False
+
+
+def _depthwise_causal_windows_ncw(
+    x_ncw: torch.Tensor,
+    weight: torch.Tensor,
+    bias: Optional[torch.Tensor],
+) -> torch.Tensor:
+    """Depthwise causal conv on NCW ``(..., dim, length)`` without ``F.conv1d``.
+
+    ``weight`` is ``(dim, width)``. Output length is ``length - width + 1``.
+    Same math as decode's ``(window * w).sum(-1)`` for each time step.
+    """
+    width = weight.shape[1]
+    # (..., dim, n_out, width)
+    windows = x_ncw.unfold(dimension=-1, size=width, step=1)
+    w = weight.to(dtype=x_ncw.dtype).view(
+        *([1] * (windows.dim() - 3)), weight.shape[0], 1, width
+    )
+    y = (windows * w).sum(dim=-1)
+    if bias is not None:
+        b = bias.to(dtype=y.dtype)
+        y = y + b.view(*([1] * (y.dim() - 2)), -1, 1)
+    return y
+
+
+def _silu(x: torch.Tensor) -> torch.Tensor:
+    """SiLU without relying on FlagGems ``silu`` / ``sigmoid`` kernels."""
+    return x * torch.sigmoid(x)
 
 
 def _kunlun_causal_conv1d_fn(
@@ -77,99 +94,107 @@ def _kunlun_causal_conv1d_fn(
     pad_slot_id: Optional[int] = None,
     seq_lens_cpu: Optional[List[int]] = None,
 ):
-    """GDN prefill causal_conv1d_fn -> xfla ``fla_xpu_ops.causal_conv1d_fwd``.
+    """GDN prefill causal_conv1d_fn — pure PyTorch (no fla_xpu_ops / sgl_kernel).
 
-    Unlike the klx ``sgl_kernel.causal_conv1d_fwd`` (fp32-only, is_ncw=True), the
-    xfla op runs NATIVELY in the model dtype (bf16/fp16) — no fp32 shadow — and
-    expects the NWC layout. sglang's ``gdn_backend`` passes ``x`` as
-    ``(dim, total_tokens)`` NCW packed (``mixed_qkv.transpose(0, 1)``) and
-    ``conv_states`` as ``(num_cache_lines, dim, state_len)`` NCW; we transpose
-    both into NWC for the kernel, then transpose the output / updated state back.
+    ``x`` is ``(dim, total_tokens)`` NCW packed (gdn_backend does
+    ``mixed_qkv.transpose(0, 1)``). Sequences are sliced by ``query_start_loc``
+    / ``seq_lens_cpu``. Each sequence optionally seeds from
+    ``conv_states[cache_indices[i]]`` when ``has_initial_state[i]`` is true,
+    then depthwise-convolves with ``weight`` of shape ``(dim, width)`` and
+    writes back the trailing ``width-1`` tokens into ``conv_states``.
     """
     from sglang.srt.layers.attention.mamba.causal_conv1d_triton import PAD_SLOT_ID
-
-    # Deferred, kunlunxin-local side-effect import (registers the xfla xpu ops).
-    import fla_xpu_ops
 
     if pad_slot_id is None:
         pad_slot_id = PAD_SLOT_ID
     if activation not in [None, "silu", "swish"]:
         raise NotImplementedError("activation must be None, silu, or swish")
 
-    silu_activation = activation in ["silu", "swish"]
+    # x: (dim, total_tokens) NCW
+    if x.dim() != 2:
+        raise ValueError(
+            f"expected packed x of shape (dim, tokens), got {tuple(x.shape)}"
+        )
+    dim, total_tokens = x.shape
+    width = weight.shape[1]
+    state_len = width - 1
+    assert weight.shape == (dim, width)
 
-    # x: (dim, total_tokens) NCW  ->  x_flat: (total_tokens, dim) NWC
-    x_flat = x.transpose(0, 1).contiguous()
-    run_dtype = x_flat.dtype
+    dtype_in = x.dtype
+    w = weight.to(dtype=dtype_in)
+    b = bias.to(dtype=dtype_in) if bias is not None else None
 
-    # The kernel casts weight to x.dtype internally; do it up front so bias/weight
-    # match. No fp32 shadow — bf16/fp16 run natively on the xfla path.
-    if weight.dtype != run_dtype:
-        weight = weight.to(run_dtype)
-    bias = bias.contiguous() if bias is not None else None
-
-    # cu_seqlens: device + cpu int32 (the kernel slices each request out of the
-    # packed batch using both).
     if query_start_loc is not None:
-        qsl = query_start_loc.to(torch.int32)
-        qsl_cpu = query_start_loc.detach().to(dtype=torch.int32, device="cpu")
+        qsl_cpu = query_start_loc.detach().to(dtype=torch.int64, device="cpu").tolist()
     else:
         if seq_lens_cpu is None:
-            seq_lens_cpu = [x_flat.shape[0]]
+            seq_lens_list = [total_tokens]
         elif not isinstance(seq_lens_cpu, list):
-            seq_lens_cpu = seq_lens_cpu.tolist()
-        prefix = [0] + list(itertools.accumulate(seq_lens_cpu))
-        qsl_cpu = torch.tensor(prefix, dtype=torch.int32)
-        qsl = qsl_cpu.to(x.device)
+            seq_lens_list = list(seq_lens_cpu)
+        else:
+            seq_lens_list = seq_lens_cpu
+        qsl_cpu = [0] + list(itertools.accumulate(seq_lens_list))
 
-    num_seqs = qsl.numel() - 1
+    num_seqs = len(qsl_cpu) - 1
+    if qsl_cpu[-1] != total_tokens:
+        raise ValueError(
+            f"query_start_loc ends at {qsl_cpu[-1]} but x has {total_tokens} tokens"
+        )
 
     if cache_indices is not None:
-        cache_indices = cache_indices.to(torch.int32)
+        cache_idx_list = (
+            cache_indices.detach().to(dtype=torch.int64, device="cpu").tolist()
+        )
     else:
-        cache_indices = torch.arange(num_seqs, device=x.device, dtype=torch.int32)
+        cache_idx_list = list(range(num_seqs))
 
-    # gdn_backend passes has_initial_state as a bool tensor (extend_prefix_lens>0);
-    # the kernel wants an int32 per-seq flag.
     if has_initial_state is not None:
-        has_initial_state = has_initial_state.to(torch.int32)
+        has_init_list = (
+            has_initial_state.detach().to(dtype=torch.bool, device="cpu").tolist()
+        )
     else:
-        has_initial_state = torch.zeros(num_seqs, device=x.device, dtype=torch.int32)
+        has_init_list = [False] * num_seqs
 
-    # conv_states: (num_cache_lines, dim, state_len) NCW -> NWC (…, state_len, dim)
-    cs_nwc = (
-        conv_states.transpose(1, 2).contiguous() if conv_states is not None else None
-    )
+    out = torch.empty_like(x)
 
-    out_flat = torch.empty_like(x_flat)
+    for i in range(num_seqs):
+        start, end = int(qsl_cpu[i]), int(qsl_cpu[i + 1])
+        seqlen = end - start
+        if seqlen <= 0:
+            continue
 
-    fla_xpu_ops.causal_conv1d_fwd(
-        x_flat,
-        weight,
-        qsl,
-        qsl_cpu,
-        cache_indices,
-        has_initial_state,
-        silu_activation,
-        False,  # is_ncw = False (NWC layout)
-        pad_slot_id,
-        bias,
-        cs_nwc,
-        1,  # dilation
-        out_flat,
-    )
+        cache_i = int(cache_idx_list[i]) if i < len(cache_idx_list) else i
+        if cache_i == pad_slot_id:
+            out[:, start:end].zero_()
+            continue
 
-    # Write the updated NWC conv state back into the stock NCW cache in place.
-    if conv_states is not None:
-        conv_states.copy_(cs_nwc.transpose(1, 2))
+        x_seq = x[:, start:end]  # (dim, seqlen)
 
-    # out_flat: (total_tokens, dim) NWC -> (dim, total_tokens) NCW for the caller
-    # (gdn_backend does .transpose(0, 1)[:seq_len] on the return value).
-    return out_flat.transpose(0, 1)
+        if conv_states is not None and has_init_list[i]:
+            prefix = conv_states[cache_i].to(dtype=dtype_in)  # (dim, state_len)
+        else:
+            prefix = torch.zeros((dim, state_len), dtype=dtype_in, device=x.device)
 
-import torch
-import torch.nn.functional as F
-from typing import Optional
+        # (dim, state_len + seqlen); n_out = seqlen when state_len == width - 1
+        x_cat = torch.cat([prefix, x_seq], dim=-1)
+        y = _depthwise_causal_windows_ncw(x_cat, w, b)
+        if y.shape[-1] != seqlen:
+            y = y[..., -seqlen:]
+
+        if activation in ("silu", "swish"):
+            y = _silu(y)
+
+        out[:, start:end] = y.to(dtype=dtype_in)
+
+        if conv_states is not None:
+            # Trailing width-1 tokens of the effective input stream.
+            new_state = (
+                x_cat[:, -state_len:] if state_len > 0 else conv_states[cache_i]
+            )
+            conv_states[cache_i].copy_(new_state.to(dtype=conv_states.dtype))
+
+    return out
+
 
 def _kunlun_causal_conv1d_update(
     x: torch.Tensor,
@@ -226,22 +251,18 @@ def _kunlun_causal_conv1d_update(
     cs_updated = x_new[:, :, -state_len:]
     w = weight.to(dtype=x_new.dtype)
 
-    if seqlen > 1:
-        out = F.conv1d(
-            x_new.to(w.dtype),
-            w.unsqueeze(1),
-            bias.to(w.dtype) if bias is not None else None,
-            padding=0,
-            groups=dim,
-        )[:, :, -seqlen:]
-    else:
-        window = x_new[:, :, -width:]  # (B, D, width)
-        out = (window * w.unsqueeze(0)).sum(dim=-1, keepdim=True)  # (B, D, 1)
-        if bias is not None:
-            out = out + bias.to(out.dtype).view(1, -1, 1)
+    # Same windowed formula as prefill / seqlen=1 decode — avoid F.conv1d
+    # (FlagGems conv path is incorrect on Kunlun).
+    out = _depthwise_causal_windows_ncw(
+        x_new.to(w.dtype),
+        w,
+        bias.to(w.dtype) if bias is not None else None,
+    )
+    if out.shape[-1] != seqlen:
+        out = out[..., -seqlen:]
 
     if activation in ("silu", "swish"):
-        out = F.silu(out)
+        out = _silu(out)
     out = out.to(dtype=dtype_in)
 
     if conv_state_indices is not None:
@@ -265,7 +286,7 @@ def patch_causal_conv1d():
     """Patch causal_conv1d_triton.{causal_conv1d_fn,causal_conv1d_update}.
 
     Patching at the triton module seam (rather than gdn_backend directly) makes
-    both consumers pick up our klx-signature wrappers:
+    both consumers pick up our PyTorch wrappers:
       * the cuda-compat dispatcher's ``_causal_conv1d_fn_triton`` /
         ``_causal_conv1d_update_triton`` fallbacks (prefill non-contig path), and
       * ``gdn_backend.causal_conv1d_update`` (decode; kept bound to the pure
