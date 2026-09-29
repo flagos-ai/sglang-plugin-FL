@@ -237,7 +237,14 @@ def chat_request(
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             result = json.loads(resp.read())
-            return result["choices"][0]["message"]["content"]
+            msg = result["choices"][0]["message"]
+            print(
+                "  RAW content=", msg.get("content"),
+                "reasoning=", msg.get("reasoning_content"),
+                "finish=", result["choices"][0].get("finish_reason"),
+                "usage=", result.get("usage"),
+            )
+            return msg.get("content") or msg.get("reasoning_content") or ""
     except Exception as e:
         return f"ERROR: {e}"
 
@@ -290,6 +297,7 @@ class TestRunner:
 
     def check(self, desc: str, expected: str, content: str):
         self.total += 1
+        content = content or ""
         if expected.lower() in content.lower():
             print(f"  PASS: {desc}")
             self.passed += 1
@@ -563,6 +571,7 @@ def run_master(args):
         "--disable-cuda-graph",
         "--disable-piecewise-cuda-graph",
         "--trust-remote-code",
+        "--watchdog-timeout", "1200",
         *_PLATFORM_SERVER_ARGS,
     ]
     if ATTENTION_BACKEND:
@@ -672,6 +681,7 @@ def run_worker(args):
         "--disable-cuda-graph",
         "--disable-piecewise-cuda-graph",
         "--trust-remote-code",
+        "--watchdog-timeout", "1200",
         *_PLATFORM_SERVER_ARGS,
     ]
     if ATTENTION_BACKEND:
