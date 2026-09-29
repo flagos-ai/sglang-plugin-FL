@@ -40,8 +40,6 @@ prefer: flagos
 # Everything else uses FlagGems unless listed below.
 # Override per-run with env SGLANG_FL_FLAGOS_BLACKLIST if needed.
 flagos_blacklist:
-  - index_select
-  - index
   - cat
   - floor_divide
   - sub
