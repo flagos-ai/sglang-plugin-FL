@@ -11,6 +11,8 @@ from .patches.sampler import patch_sampler
 from .patches.flashinfer_backend import patch_flashinfer_backend_classes
 from .patches.fused_moe import patch_fused_moe_functions
 from .patches.pynccl_wrapper import patch_pynccl_wrapper
+from .patches.prefill_attention import patch_prefill_attention
+from .patches.fp32_tp_allreduce import patch_fp32_tp_allreduce
 logger = logging.getLogger(__name__)
 _patches_applied = False
 
@@ -51,6 +53,14 @@ def _required_patches() -> tuple[tuple[str, Callable[[], None]], ...]:
         (
             "fused_moe",
             patch_fused_moe_functions,
+        ),
+        (
+            "prefill_attention",
+            patch_prefill_attention,
+        ),
+        (
+            "fp32_tp_allreduce",
+            patch_fp32_tp_allreduce,
         ),
     )
 
