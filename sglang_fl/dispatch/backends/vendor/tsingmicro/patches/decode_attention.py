@@ -27,6 +27,9 @@ import os
 
 import torch
 
+from sglang_fl.dispatch.backends.vendor.tsingmicro.flaggems_compat import (
+    load_txda_op,
+)
 from sglang_fl.dispatch.backends.vendor.tsingmicro.patches._logger import patch_logger
 
 _log = patch_logger("decode_attention")
@@ -46,7 +49,7 @@ _TXDA_TILES = 16
 
 
 def _enabled() -> bool:
-    return os.getenv(_ENABLED_KEY, "0").lower() in ("1", "true", "yes", "on")
+    return os.getenv(_ENABLED_KEY, "1").lower() in ("1", "true", "yes", "on")
 
 
 def _choose_num_kv_splits(batch, head_num, kv_heads, max_kv_splits):
@@ -125,7 +128,7 @@ def _fl_decode_attention_fwd(
             xai_temperature_len=xai_temperature_len,
         )
 
-    import flag_gems
+    txda_decode_attention_fwd_sglang = load_txda_op("decode_attention_fwd_sglang")
 
     batch = q.shape[0]
     device = q.device
@@ -153,7 +156,7 @@ def _fl_decode_attention_fwd(
     fl_lse = torch.empty(batch, head_num, dtype=torch.float32, device=device)
 
     # k_scale is folded into the softmax scale (SGLang does the same).
-    flag_gems.decode_attention_fwd_sglang(
+    txda_decode_attention_fwd_sglang(
         q,
         k_buffer,
         v_buffer,
@@ -183,14 +186,10 @@ def patch() -> None:
         _log.skipped("disabled (set %s=1 to enable)", _ENABLED_KEY)
         return
 
-    try:
-        import flag_gems
-
-        if not hasattr(flag_gems, "decode_attention_fwd_sglang"):
-            _log.skipped("flag_gems has no decode_attention_fwd_sglang")
-            return
-    except Exception as exc:  # noqa: BLE001
-        _log.skipped("flag_gems unavailable: %s", exc)
+    # Older flag_gems releases ship the _tsingmicro backend without this op; keep
+    # SGLang's own decode_attention_fwd in that case.
+    if load_txda_op("decode_attention_fwd_sglang") is None:
+        _log.skipped("flag_gems has no decode_attention_fwd_sglang")
         return
 
     try:
