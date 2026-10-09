@@ -111,9 +111,7 @@ elif _is_npu:
     ]
 elif _is_maca:
     _PLATFORM_SERVER_ARGS = [
-        "--attention-backend", "flashinfer",
-        "--chunked-prefill-size", "4096",
-        "--disable-radix-cache",
+        "--attention-backend", "triton",
     ]
 else:
     _PLATFORM_SERVER_ARGS = []
