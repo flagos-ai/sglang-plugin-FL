@@ -28,7 +28,7 @@ _COMMON_MODULE = "sglang.srt.mem_cache.common"
 
 
 def _enabled() -> bool:
-    v = os.getenv(_ENABLED_KEY, "")
+    v = os.getenv(_ENABLED_KEY, "1")
     return v.lower() in ("1", "true", "yes", "on")
 
 
