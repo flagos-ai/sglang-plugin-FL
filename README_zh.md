@@ -723,6 +723,8 @@ Bridge 层将框架特有参数与标准化算子签名解耦。厂商后端只�
 
 ## 已知问题
 
+- Ascend 910C 上新增的 Qwen3.6-27B TP2 prefill 调优默认关闭。启用条件、三个环境变量、版本约束及 BF16 数值边界见 [Ascend prefill 调优说明](ASCEND_PREFILL_TUNING.md)。这些选项不启用 MTP 或 prefix cache；其他模型/形状需单独验证，不能仅依据单算子加速推断整模型收益。
+
 - **不支持 Piecewise CUDA Graph**：FlagGems Triton kernels 包含 `logging.Logger` 调用，与 `torch.compile`（SGLang piecewise CUDA graph 使用）不兼容。启动服务时使用 `--disable-piecewise-cuda-graph`。常规 CUDA graph capture 正常工作。
 
 ## 许可证
