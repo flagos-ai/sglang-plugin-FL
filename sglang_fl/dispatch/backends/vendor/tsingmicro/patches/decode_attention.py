@@ -133,25 +133,12 @@ def _fl_decode_attention_fwd(
     batch = q.shape[0]
     device = q.device
 
-    seq_lens = (kv_indptr[1 : batch + 1] - kv_indptr[: batch]).to(torch.int64)
-    max_len = int(seq_lens.max().cpu().item())
-
-    # CSR → dense physical token slots [batch, max_len].
-    pos = torch.arange(max_len, dtype=torch.int64, device=device).unsqueeze(0)
-    offsets = kv_indptr[:batch].to(torch.int64).unsqueeze(1)
-    flat_idx = offsets + pos
-    mask = pos < seq_lens.unsqueeze(1)
-    safe_idx = flat_idx.clamp(max=kv_indices.numel() - 1)
-    dense = kv_indices[safe_idx].to(torch.int32)
-    dense = torch.where(mask, dense, torch.zeros_like(dense))
-
-    # Leading contiguous run per request (the prompt).  The generated tokens are
-    # scattered (interleaved across the batch), so they break the contiguity here;
-    # the two-segment kernel handles the split natively.
-    expected = dense[:, :1] + torch.arange(max_len, dtype=torch.int32, device=device)
-    contig = (dense == expected) | (~mask)
-    prefix_lens = contig.int().cumprod(dim=1).sum(dim=1).to(torch.int32)
-
+    # prefix_lens (leading contiguous run per request = the prompt) is computed
+    # inside the FlagGems op via _compute_prefix_lens/_prefix_len_kernel (a
+    # native TXDA scan, no host sync).  Computing it here in Python with
+    # torch.cumprod used to hit FlagGems' *generic* cumprod (no _tsingmicro
+    # specialization), which lowers to tts.get_structured_state and faults the
+    # device (HPGR device error 0x600000F).  Pass None to use the in-kernel scan.
     head_num = q.shape[1]
     fl_lse = torch.empty(batch, head_num, dtype=torch.float32, device=device)
 
@@ -164,7 +151,7 @@ def _fl_decode_attention_fwd(
         fl_lse,
         kv_indptr,
         kv_indices,
-        prefix_lens,
+        None,
         sm_scale * k_scale,
         logit_cap,
     )
@@ -172,8 +159,8 @@ def _fl_decode_attention_fwd(
     if not _logged["routed"]:
         _logged["routed"] = True
         _log.info(
-            "decode_attention -> flag_gems two-segment (batch=%d, prefix_lens=%s)",
-            batch, prefix_lens.cpu().tolist()[:8],
+            "decode_attention -> flag_gems two-segment (batch=%d, prefix_lens in-kernel)",
+            batch,
         )
 
 
