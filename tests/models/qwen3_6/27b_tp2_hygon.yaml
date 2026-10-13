@@ -1,0 +1,68 @@
+# Hygon BW1000 TP2 development acceptance, using the documented BF16 route.
+# This is an eager baseline. tests/platforms/hygon.yaml adds an opt-in
+# bw1000_graph device profile for standard decode graph acceptance.
+llm:
+  model: "/models/Qwen3.6-27B"
+  tp_size: 2
+  pp_size: 1
+  context_length: 4096
+  mem_fraction_static: 0.70
+  dtype: bfloat16
+  kv_cache_dtype: bfloat16
+  attention_backend: hcu
+  page_size: 64
+  disable_radix_cache: true
+  disable_cuda_graph: true
+  cuda_graph_backend_prefill: disabled
+  trust_remote_code: true
+  disable_custom_all_reduce: true
+
+generate:
+  prompts:
+    - text: "How many states are there in the United States?"
+      expected: "50"
+    - text: "The capital of France is"
+      expected: "Paris"
+  sampling:
+    max_new_tokens: 10
+    temperature: 0.0
+  vl:
+    sampling:
+      max_new_tokens: 64
+      temperature: 0.0
+    cases:
+      - image: "examples/test_images/red_square.jpg"
+        question: "What color is shown in this image? Answer with one word."
+        expected: ["red"]
+      - image: "examples/test_images/cat.jpg"
+        question: "What animal is in this image? Answer with one word."
+        expected: ["cat"]
+      - image: "examples/test_images/stop_sign.png"
+        question: "What is the color of this sign? Answer with one word."
+        expected: ["red"]
+      - image: "examples/test_images/digit_seven.png"
+        question: "What digit is shown in this image? Answer with one digit."
+        expected: ["7"]
+
+serve:
+  served_model_name: qwen
+  startup_retries: 120
+  endpoints: ["chat"]
+  stream: false
+  max_tokens: 256
+  chat_messages:
+    - role: user
+      content: "Introduce yourself, please"
+  sampling:
+    temperature: 0.0
+
+concurrent:
+  modes: ["text", "vl", "mixed"]
+  concurrent_n: 16
+  sampling:
+    text:
+      max_new_tokens: 256
+      temperature: 0.0
+    vl:
+      max_new_tokens: 64
+      temperature: 0.0

@@ -52,6 +52,12 @@ This table is the current **NVIDIA CUDA** target. MUSA CI uses SGLang v0.5.18
 with vendor Torch 2.9.0; see the [MUSA empty container recipe](docker/mthreads/empty-0.5.18.containerfile).
 The Ascend image remains pinned to v0.5.11.
 
+The Hygon BW1000 upgrade keeps the documented DTK device stack and adds a
+[SGLang 0.5.18 empty container recipe](docker/hygon/empty-0.5.18.containerfile).
+Run `.github/scripts/hygon/verify_environment.py --require-gpu` and the
+`hygon` / `bw1000` or `bw1000_graph` test profiles before deployment;
+hardware and two-node acceptance are pending.
+
 The validated H100 environment removes the Triton package installed with
 PyTorch and uses FlagTree 0.6.2a1 as its Triton 3.6-compatible compiler. The
 verified FlagGems master snapshot handles `to_copy` on H100.
