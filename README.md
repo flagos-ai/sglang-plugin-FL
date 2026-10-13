@@ -53,6 +53,12 @@ with vendor Torch 2.9.0; see the [MUSA empty container recipe](docker/mthreads/e
 The Ascend target has also been upgraded to SGLang v0.5.18 on the CANN 8.5 /
 torch_npu 2.8 empty runtime.
 
+The Hygon BW1000 upgrade keeps the documented DTK device stack and adds a
+[SGLang 0.5.18 empty container recipe](docker/hygon/empty-0.5.18.containerfile).
+Run `.github/scripts/hygon/verify_environment.py --require-gpu` and the
+`hygon` / `bw1000` or `bw1000_graph` test profiles before deployment;
+hardware and two-node acceptance are pending.
+
 The validated H100 environment removes the Triton package installed with
 PyTorch and uses FlagTree 0.6.2a1 as its Triton 3.6-compatible compiler. The
 verified FlagGems master snapshot handles `to_copy` on H100.

@@ -109,7 +109,7 @@ elif _is_hcu:
         "kv_cache_dtype": "bfloat16",
         "page_size": 64,
         "disable_radix_cache": True,
-        "enable_breakable_cuda_graph": False,
+        "cuda_graph_backend_prefill": "disabled",
         "trust_remote_code": True,
     }
 else:

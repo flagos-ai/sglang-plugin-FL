@@ -409,9 +409,12 @@ class PlatformFL(SRTPlatform):
         overridden by sglang-plugin-FL retain their native CUDA implementation;
         registered FL bridges still take precedence in the OOT registry.
 
-        Ascend and MUSA likewise retain their native vendor paths for operators
-        outside the FL bridge set. Other vendors keep the legacy ``oot`` key.
+        Ascend, MUSA and Hygon retain their native vendor paths for operators
+        outside the FL bridge set. Hygon DTK exposes the CUDA API, but HIP
+        builds must prefer forward_hip before forward_cuda.
         """
+        if self._vendor_name == "hygon":
+            return "hip" if getattr(torch.version, "hip", None) is not None else "cuda"
         return {"nvidia": "cuda", "ascend": "npu", "mthreads": "musa"}.get(
             self._vendor_name, "oot"
         )

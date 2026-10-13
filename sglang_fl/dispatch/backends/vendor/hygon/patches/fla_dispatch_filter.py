@@ -13,15 +13,15 @@ logger = logging.getLogger(__name__)
 
 _FLA_TARGETS = {
     "chunk_gated_delta_rule": (
-        "sglang.srt.layers.attention.fla.chunk",
+        "chunk",
         "chunk_gated_delta_rule",
     ),
     "fused_recurrent_gated_delta_rule": (
-        "sglang.srt.layers.attention.fla.fused_recurrent",
+        "fused_recurrent",
         "fused_recurrent_gated_delta_rule",
     ),
     "fused_recurrent_gated_delta_rule_packed_decode": (
-        "sglang.srt.layers.attention.fla.fused_recurrent",
+        "fused_recurrent",
         "fused_recurrent_gated_delta_rule_packed_decode",
     ),
 }
@@ -50,8 +50,7 @@ def _get_oot_filters() -> tuple[set[str], set[str]]:
 
     if whitelist and blacklist:
         raise ValueError(
-            "Cannot set both SGLANG_FL_OOT_WHITELIST and "
-            "SGLANG_FL_OOT_BLACKLIST."
+            "Cannot set both SGLANG_FL_OOT_WHITELIST and SGLANG_FL_OOT_BLACKLIST."
         )
     return whitelist, blacklist
 
@@ -66,13 +65,24 @@ def _is_filtered(
     return name in blacklist
 
 
+def _import_fla_module(name: str):
+    """Follow the common FLA patch's new namespace, retaining older SGLang."""
+    module_name = f"sglang.kernels.ops.attention.fla.{name}"
+    try:
+        return importlib.import_module(module_name)
+    except ModuleNotFoundError as exc:
+        # Missing dependencies inside an installed kernel are real failures;
+        # only a missing namespace warrants trying the pre-0.5.16 path.
+        if exc.name != module_name and not module_name.startswith(f"{exc.name}."):
+            raise
+        return importlib.import_module(f"sglang.srt.layers.attention.fla.{name}")
+
+
 def patch_fla_dispatch_filter() -> tuple[str, ...]:
     """Restore original FLA bindings excluded from HCU OOT dispatch."""
     whitelist, blacklist = _get_oot_filters()
     filtered = {
-        name
-        for name in _FLA_TARGETS
-        if _is_filtered(name, whitelist, blacklist)
+        name for name in _FLA_TARGETS if _is_filtered(name, whitelist, blacklist)
     }
     if not filtered:
         return ()
@@ -88,7 +98,7 @@ def patch_fla_dispatch_filter() -> tuple[str, ...]:
     restored = []
     for name, original in available.items():
         module_name, attribute = _FLA_TARGETS[name]
-        module = importlib.import_module(module_name)
+        module = _import_fla_module(module_name)
         setattr(module, attribute, original)
         restored.append(name)
 

@@ -1,0 +1,66 @@
+# Hygon BW1000 development acceptance for the documented empty image.
+# This selects local tests, without enabling a GitHub runner or claiming that
+# the SGLang 0.5.18 runtime has passed on hardware.
+# Eager: python tests/run.py --platform hygon --device bw1000 --scope e2e
+# Graph: python tests/run.py --platform hygon --device bw1000_graph --scope e2e
+platform: hygon
+vendor: hygon
+
+device_types:
+  bw1000:
+    tags: [hygon, hcu, dcu, bf16]
+  bw1000_graph:
+    tags: [hygon, hcu, dcu, bf16, decode_graph]
+
+tolerance:
+  inference:
+    default: {rtol: 1e-5, atol: 1e-8}
+    bfloat16: {rtol: 1e-3, atol: 1e-3}
+
+# Keep graph acceptance explicit and use the SGLang 0.5.18 per-phase API.
+# The vendor backend supports standard decode graphs, with prefill eager.
+device_overrides:
+  bw1000_graph:
+    engine_overrides:
+      qwen3_6:
+        27b_tp2_hygon: &graph_engine
+          disable_cuda_graph: false
+          cuda_graph_backend_decode: full
+          cuda_graph_backend_prefill: disabled
+          cuda_graph_max_bs_decode: 16
+        35b_a3b_tp2_hygon: *graph_engine
+unsupported_features: []
+
+# Existing shell values take precedence. Dispatch policy comes from the
+# packaged Hygon runtime defaults instead of a second copy of the whitelist.
+env_defaults:
+  USE_FLAGGEMS: "1"
+  USE_FLAGTUNE: "0"
+  SGLANG_PLUGINS: sglang_fl
+  FLAGCX_PATH: /sgl-workspace/FlagCX
+  SGLANG_FL_DIST_BACKEND: flagcx
+
+bw1000: &bw1000_profile
+  name: bw1000
+  tests:
+    unit:
+      include: "*"
+      exclude: []
+    functional:
+      include: "*"
+      exclude: []
+    e2e:
+      inference:
+        qwen3_6: [27b_tp2_hygon, 35b_a3b_tp2_hygon]
+      serving:
+        qwen3_6: [27b_tp2_hygon, 35b_a3b_tp2_hygon]
+      concurrent:
+        qwen3_6: [27b_tp2_hygon, 35b_a3b_tp2_hygon]
+    # Benchmark and two-node TP2/PP2 acceptance are separate opt-in runs.
+    benchmark:
+      enabled: false
+      smoke: []
+
+bw1000_graph:
+  <<: *bw1000_profile
+  name: bw1000_graph

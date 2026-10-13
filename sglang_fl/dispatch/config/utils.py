@@ -64,6 +64,8 @@ def get_platform_name() -> str:
             return "gcu"
         if hasattr(torch, "corex") and torch.cuda.is_available():
             return "iluvatar"
+        if hasattr(torch, "__hcu_version__") and torch.cuda.is_available():
+            return "hygon"
         if torch.cuda.is_available():
             return "nvidia"
     except ImportError:

@@ -69,6 +69,11 @@ Torch 2.9.0，构建方式见 [MUSA empty 容器配置](docker/mthreads/empty-0.
 Ascend 目标也已升级到 CANN 8.5 / torch_npu 2.8 empty runtime 上的 SGLang
 v0.5.18。
 
+海光 BW1000 升级保留使用文档中的 DTK 设备依赖，提供
+[SGLang 0.5.18 empty 容器配方](docker/hygon/empty-0.5.18.containerfile)。
+部署前运行 `.github/scripts/hygon/verify_environment.py --require-gpu`，以及
+`hygon` 平台的 `bw1000` 或 `bw1000_graph` 测试配置；实机和双节点验收尚待完成。
+
 已验证的 H100 环境会卸载随 PyTorch 安装的 Triton 包，改用 FlagTree 0.6.2a1
 提供 Triton 3.6 兼容编译器；已验证的 FlagGems master 快照可以在 H100 上接管
 `to_copy`。
