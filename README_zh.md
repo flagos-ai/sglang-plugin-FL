@@ -72,7 +72,12 @@ v0.5.18。
 海光 BW1000 升级保留使用文档中的 DTK 设备依赖，提供
 [SGLang 0.5.18 empty 容器配方](docker/hygon/empty-0.5.18.containerfile)。
 部署前运行 `.github/scripts/hygon/verify_environment.py --require-gpu`，以及
-`hygon` 平台的 `bw1000` 或 `bw1000_graph` 测试配置；实机和双节点验收尚待完成。
+`hygon` 平台的 `bw1000` 或 `bw1000_graph` 测试配置。
+Qwen3.6-27B 与 Qwen3.6-35B-A3B 已在 BW1000 上通过 TP2 的 eager/graph
+推理、服务和并发完整矩阵（12/12 轮）。两模型的物理双机 TP2/PP2 eager
+文本、图片、并发和 scheduler 自然退出也已通过，跨机通信使用 FlagCX Socket。
+源码与镜像身份、流水线退出验证及范围
+见[海光部署和验收说明](docker/hygon/README.md)。
 
 已验证的 H100 环境会卸载随 PyTorch 安装的 Triton 包，改用 FlagTree 0.6.2a1
 提供 Triton 3.6 兼容编译器；已验证的 FlagGems master 快照可以在 H100 上接管
