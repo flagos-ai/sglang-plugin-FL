@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 class _PipelineShutdown(BaseException):
-    """Unwind only a regular PP loop after its explicit stop request."""
+    """Unwind a regular PP loop only after every rank drained its work."""
 
 
 def patch_pipeline_shutdown() -> None:
@@ -20,33 +20,68 @@ def patch_pipeline_shutdown() -> None:
         return
     original_loop = SchedulerPPMixin.event_loop_pp
     original_shutdown = Scheduler.handle_shutdown
+    original_idle = Scheduler.on_idle
 
     @wraps(original_loop)
     def event_loop_pp(self, *args, **kwargs):
         self._hcu_regular_pp_loop = True
+        self._hcu_pending_pp_shutdown = None
         try:
             return original_loop(self, *args, **kwargs)
         except _PipelineShutdown:
             return None
         finally:
             self._hcu_regular_pp_loop = False
+            self._hcu_pending_pp_shutdown = None
 
     @wraps(original_shutdown)
     def handle_shutdown(self, request):
         if not getattr(self, "_hcu_regular_pp_loop", False):
             return original_shutdown(self, request)
-        # The upstream PP loop has no gracefully_exit check. Forward the stop
-        # request before unwinding, so later stages can also exit in userspace.
-        # Transport failures still propagate through the normal error path.
-        if not self.pp_group.is_last_rank:
-            self._pp_commit_comm_work(self.send_req_work)
-            work = self._pp_send_pyobj_to_next_stage([request], async_send=True)
+        # The normal PP loop forwards this request to the next stage. Keep
+        # running that loop: an earlier stage still owes its peers the output
+        # of the previous microbatch even after the client received its answer.
+        # Do not set gracefully_exit yet; the shared get_next_batch hook would
+        # otherwise exit before that output send/recv can finish.
+        self._hcu_pending_pp_shutdown = request
+        return None
+
+    @wraps(original_idle)
+    def on_idle(self, *args, **kwargs):
+        request = getattr(self, "_hcu_pending_pp_shutdown", None)
+        if not getattr(self, "_hcu_regular_pp_loop", False) or request is None:
+            return original_idle(self, *args, **kwargs)
+        # Upstream calls on_idle only after a whole PP round has no runnable
+        # batch. Its idle predicate additionally checks every microbatch slot.
+        # Wait for buffered output metadata too; sleeping here could prevent
+        # the next round from forwarding the remaining output to a peer.
+        if (
+            not self.is_fully_idle()
+            or self.pp_outputs is not None
+            or self.last_rank_comm_queue
+            or any(self._pp_tensor_dict_inbox.values())
+        ):
+            return None
+        for work in (
+            self.send_req_work,
+            self.send_proxy_work,
+            self.send_output_work,
+        ):
             self._pp_commit_comm_work(work)
+        # CPU metadata completion does not wait for FlagCX GPU P2P streams.
+        self.device_module.synchronize()
+        # A fast TP rank must retain its groups while slower PP/TP peers finish
+        # their last receives. Every scheduler participates in this CPU group.
+        from torch.distributed import barrier
+
+        barrier(group=self.world_group.cpu_group)
         original_shutdown(self, request)
+        logger.info("HCU PP shutdown drained and synchronized across all ranks")
         raise _PipelineShutdown()
 
     SchedulerPPMixin.event_loop_pp = event_loop_pp
     Scheduler.handle_shutdown = handle_shutdown
+    Scheduler.on_idle = on_idle
 
 
 def patch_worker_http_shutdown() -> None:
