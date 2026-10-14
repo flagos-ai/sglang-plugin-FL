@@ -3,7 +3,8 @@
 """Exercise HCU gates in real patched SGLang source without GPU dependencies.
 
 Set SGLANG_HCU_UPSTREAM_SOURCE to the patched v0.5.18 source checkout. Without
-that override, an installed SGLang package is used when present. These tests
+that override, installed SGLang is inspected only on HCU. Other platforms skip
+these HCU-specific patch checks. These tests
 execute only import gates and constructor bodies from the actual source AST;
 they neither inject AITER modules nor claim GPU kernel or full-import coverage.
 """
@@ -47,6 +48,14 @@ def upstream_module(request):
         root = Path(override)
         candidates = (root / "python/sglang", root / "sglang", root)
     else:
+        torch = pytest.importorskip(
+            "torch", reason="automatic HCU source checks require HCU PyTorch"
+        )
+        if not hasattr(torch, "__hcu_version__"):
+            pytest.skip(
+                "HCU source checks auto-detect installed SGLang only on HCU; "
+                "set SGLANG_HCU_UPSTREAM_SOURCE for an explicit source check"
+            )
         spec = importlib.util.find_spec("sglang")
         if spec is None or spec.origin is None:
             pytest.skip("set SGLANG_HCU_UPSTREAM_SOURCE to patched v0.5.18 source")
