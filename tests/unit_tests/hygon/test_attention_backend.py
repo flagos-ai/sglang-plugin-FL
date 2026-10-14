@@ -6,9 +6,11 @@ The stubs implement the upstream graph API and page-block launch contract;
 real tensor metadata and vendor call layouts are checked without GPU packages.
 """
 
+import ast
 import importlib.util
 import sys
 from enum import Enum
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -23,6 +25,23 @@ class Mode(Enum):
 
     def is_decode_or_idle(self):
         return self in (Mode.DECODE, Mode.IDLE)
+
+
+@dataclass(slots=True)
+class BatchView:
+    """Only v0.5.18 ForwardBatch fields; pool ownership belongs to the backend."""
+
+    batch_size: int
+    forward_mode: Mode
+    spec_info: object
+    seq_lens: torch.Tensor
+    seq_lens_cpu: torch.Tensor
+    req_pool_indices: torch.Tensor
+    extend_prefix_lens_cpu: list | None = None
+    extend_seq_lens_cpu: list | None = None
+    extend_seq_lens: torch.Tensor | None = None
+    out_cache_loc: torch.Tensor | None = None
+    encoder_lens: torch.Tensor | None = None
 
 
 class PageTableKernel:
@@ -56,13 +75,18 @@ def backend_module(monkeypatch):
         stub.__dict__.update(attributes)
         monkeypatch.setitem(sys.modules, name, stub)
 
+    parallel = SimpleNamespace(attn_dcp_size=1)
+
     class TritonBackend:
         needs_cpu_seq_lens = False
 
         def __init__(self, runner, skip_prefill=False, kv_indptr_buf=None):
             self.use_mla = False
-            self.dcp_size = getattr(runner, "dcp_size", 1)
-            self._translate_kv_loc = getattr(runner, "translate_kv_loc", None)
+            self.dcp_size = parallel.attn_dcp_size
+            self.token_to_kv_pool = runner.token_to_kv_pool
+            self._translate_kv_loc = getattr(
+                runner.token_to_kv_pool_allocator, "translate_kv_loc_dense", None
+            ) or getattr(runner.token_to_kv_pool_allocator, "translate_kv_loc", None)
             self.sliding_window_size = None
             self.req_to_token = runner.req_to_token_pool.req_to_token
             self.max_context_len = runner.model_config.context_len
@@ -130,6 +154,7 @@ def backend_module(monkeypatch):
     spec.loader.exec_module(loaded)
     loaded.test_page_kernel = kernel
     loaded.test_triton_backend = TritonBackend
+    loaded.test_parallel_context = parallel
     return loaded
 
 
@@ -143,6 +168,8 @@ def make_runner(page_size=64, context_len=8192, decode="full", prefill="disabled
     )
     return SimpleNamespace(
         req_to_token_pool=SimpleNamespace(req_to_token=token_map),
+        token_to_kv_pool=KVPool(capacity=2 * context_len + page_size),
+        token_to_kv_pool_allocator=SimpleNamespace(),
         device="cpu",
         kv_cache_dtype=torch.bfloat16,
         model_config=SimpleNamespace(
@@ -161,7 +188,7 @@ def make_runner(page_size=64, context_len=8192, decode="full", prefill="disabled
 
 
 def make_batch(lengths, requests=None, dtype=torch.int64):
-    return SimpleNamespace(
+    return BatchView(
         batch_size=len(lengths),
         forward_mode=Mode.DECODE,
         spec_info=None,
@@ -203,11 +230,18 @@ def test_long_eager_sequences_fill_every_page_and_clear_stale_entries(
 def test_graph_capture_and_replay_refresh_stable_page_table(backend_module):
     backend = backend_module.HCUAttnBackend(make_runner())
     backend.init_cuda_graph_state(2, 2)
-    batch = make_batch([4097, 129], requests=[1, 0], dtype=torch.int32)
+    # Match real 0.5.18 DecodeInputBuffers, not the vendor ABI dtype.
+    batch = make_batch([4097, 129], requests=[1, 0], dtype=torch.int64)
     backend.init_forward_metadata_out_graph(batch, in_capture=True)
     table = backend._flash_attn_forward_page_table
     address = table.data_ptr()
-    sequence_address = backend._flash_attn_forward_seq_lens.data_ptr()
+    graph_seq_lens = backend._flash_attn_forward_seq_lens
+    sequence_address = graph_seq_lens.data_ptr()
+    assert batch.seq_lens.dtype == torch.int64
+    assert graph_seq_lens.dtype == torch.int32
+    assert sequence_address == backend._flash_attn_cuda_graph_seq_lens.data_ptr()
+    assert sequence_address != batch.seq_lens.data_ptr()
+    assert graph_seq_lens.tolist() == [4097, 129]
     assert table[0, 64] == (8192 + 64) // 64 + 64
 
     batch.req_pool_indices.copy_(torch.tensor([0, 1]))
@@ -215,6 +249,10 @@ def test_graph_capture_and_replay_refresh_stable_page_table(backend_module):
     backend.init_forward_metadata_out_graph(batch)
     assert backend._flash_attn_forward_page_table.data_ptr() == address
     assert backend._flash_attn_forward_seq_lens.data_ptr() == sequence_address
+    assert backend._flash_attn_forward_seq_lens.dtype == torch.int32
+    # The tensor captured by the vendor kernel observes new lengths in place.
+    assert graph_seq_lens.tolist() == [65, 1]
+    assert batch.seq_lens.dtype == torch.int64
     assert table[0, :2].tolist() == [1, 2]
     assert table[1, 0] == (8192 + 64) // 64
     assert torch.all(table[0, 2:] == -1)
@@ -225,6 +263,31 @@ def test_graph_capture_and_replay_refresh_stable_page_table(backend_module):
     # Legacy hooks were removed upstream and must not be the integration point.
     assert "init_forward_metadata_capture_cuda_graph" not in type(backend).__dict__
     assert "init_forward_metadata_replay_cuda_graph" not in type(backend).__dict__
+
+
+def test_graph_lengths_keep_captured_address_when_replay_input_changes(backend_module):
+    backend = backend_module.HCUAttnBackend(make_runner())
+    backend.init_cuda_graph_state(2, 2)
+    capture = make_batch([1, 1], dtype=torch.int64)
+    backend.init_forward_metadata_out_graph(capture, in_capture=True)
+    captured_lengths = backend._flash_attn_forward_seq_lens
+    address = captured_lengths.data_ptr()
+
+    # Replay views can wrap distinct runner tensors, so aliasing the input or
+    # converting with .to(int32) on every invocation would leave capture stale.
+    replay = make_batch([4097, 65], requests=[1, 0], dtype=torch.int64)
+    backend.init_forward_metadata_out_graph(replay)
+    assert backend._flash_attn_forward_seq_lens.data_ptr() == address
+    assert captured_lengths.dtype == torch.int32
+    assert captured_lengths.tolist() == [4097, 65]
+    assert replay.seq_lens.dtype == torch.int64
+    assert replay.seq_lens.tolist() == [4097, 65]
+
+    smaller = make_batch([129], dtype=torch.int64)
+    backend.init_forward_metadata_out_graph(smaller)
+    assert backend._flash_attn_forward_seq_lens.data_ptr() == address
+    assert backend._flash_attn_forward_seq_lens.shape == (1,)
+    assert captured_lengths[0].item() == 129
 
 
 @pytest.mark.parametrize("decode", ["full", "disabled"])
@@ -254,10 +317,10 @@ def test_rejects_unsupported_graph_modes(backend_module, decode, prefill, messag
 def test_rejects_cache_features_not_supported_by_vendor_kernel(backend_module, feature):
     runner = make_runner()
     if feature == "dcp":
-        runner.dcp_size = 2
+        backend_module.test_parallel_context.attn_dcp_size = 2
         message = "decode context parallelism"
     else:
-        runner.translate_kv_loc = lambda indices: indices
+        runner.token_to_kv_pool_allocator.translate_kv_loc = lambda indices: indices
         message = "virtual cache locations"
     with pytest.raises(RuntimeError, match=message):
         backend_module.HCUAttnBackend(runner)
@@ -300,8 +363,8 @@ def test_graph_rejects_extend_and_speculative_modes(backend_module):
 
 
 class KVPool:
-    def __init__(self):
-        self.k = torch.zeros((16448, 1, 64), dtype=torch.bfloat16)
+    def __init__(self, capacity=16448):
+        self.k = torch.zeros((capacity, 1, 64), dtype=torch.bfloat16)
         self.v = torch.zeros_like(self.k)
         self.writes = 0
 
@@ -341,7 +404,7 @@ def test_prefill_keeps_vendor_varlen_and_paged_cache_layout(backend_module, has_
     batch.extend_prefix_lens_cpu = prefix
     batch.extend_seq_lens_cpu = extend
     batch.extend_seq_lens = torch.tensor(extend)
-    batch.token_to_kv_pool = KVPool()
+    assert not hasattr(batch, "token_to_kv_pool")
     batch.out_cache_loc = torch.cat(
         [
             backend.req_to_token[i, p : p + e]
@@ -376,20 +439,26 @@ def test_prefill_keeps_vendor_varlen_and_paged_cache_layout(backend_module, has_
     backend._flash_attn_varlen_func = vendor_varlen
     output = backend.forward_extend(q, k, v, make_layer(), batch, score_mod=None)
     assert len(calls) == 1
-    assert batch.token_to_kv_pool.writes == 1
+    assert backend.token_to_kv_pool.writes == 1
     assert output.shape == (num_tokens, 128)
     assert output.dtype == torch.bfloat16
     assert torch.all(output == 7)
 
 
-def test_decode_keeps_vendor_paged_cache_layout(backend_module):
+@pytest.mark.parametrize("graph_metadata", [False, True])
+def test_decode_keeps_vendor_paged_cache_layout(backend_module, graph_metadata):
     backend = backend_module.HCUAttnBackend(make_runner())
     batch = make_batch([4097, 65])
-    batch.token_to_kv_pool = KVPool()
+    assert not hasattr(batch, "token_to_kv_pool")
     batch.out_cache_loc = torch.stack(
         [backend.req_to_token[i, length - 1] for i, length in enumerate([4097, 65])]
     )
-    backend.init_forward_metadata(batch)
+    if graph_metadata:
+        batch.seq_lens = batch.seq_lens.to(torch.int32)
+        backend.init_cuda_graph_state(2, 2)
+        backend.init_forward_metadata_out_graph(batch, in_capture=True)
+    else:
+        backend.init_forward_metadata(batch)
     q = torch.ones((2, 128), dtype=torch.bfloat16)
     k = torch.ones((2, 1, 64), dtype=torch.bfloat16)
     v = k * 2
@@ -411,7 +480,80 @@ def test_decode_keeps_vendor_paged_cache_layout(backend_module):
     backend._flash_attn_with_kvcache = vendor_decode
     output = backend.forward_decode(q, k, v, make_layer(), batch, aux_tensors=None)
     assert len(calls) == 1
-    assert batch.token_to_kv_pool.writes == 1
+    assert backend.token_to_kv_pool.writes == 1
     assert output.shape == (2, 128)
     assert output.dtype == torch.bfloat16
     assert torch.all(output == 9)
+
+
+def test_backend_never_reads_removed_forward_batch_pool_fields(backend_module):
+    tree = ast.parse(Path(backend_module.__file__).read_text(encoding="utf-8"))
+    removed = {"token_to_kv_pool", "req_to_token_pool", "attn_backend"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            if node.value.id == "forward_batch":
+                assert node.attr not in removed
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id == "forward_batch"
+            and isinstance(node.args[1], ast.Constant)
+        ):
+            assert node.args[1].value not in removed
+    # A future test cannot accidentally recreate the removed API on this view.
+    with pytest.raises(AttributeError):
+        make_batch([1]).token_to_kv_pool = KVPool()
+
+
+def test_graph_decode_refresh_uses_backend_pool_with_batch_only_locations(
+    backend_module,
+):
+    runner = make_runner()
+    pool = runner.token_to_kv_pool
+    backend = backend_module.HCUAttnBackend(runner)
+    assert backend.token_to_kv_pool is pool
+    batch = make_batch([65, 129], dtype=torch.int32)
+    assert not hasattr(batch, "token_to_kv_pool")
+    batch.out_cache_loc = torch.tensor([128, 8384])
+    backend.init_cuda_graph_state(2, 2)
+    backend.init_forward_metadata_out_graph(batch, in_capture=True)
+    table_address = backend._flash_attn_forward_page_table.data_ptr()
+    pool_address = pool.k.data_ptr()
+    q = torch.ones((2, 128), dtype=torch.bfloat16)
+    k = torch.ones((2, 1, 64), dtype=torch.bfloat16)
+    observed = []
+
+    def vendor_decode(**kwargs):
+        observed.append(kwargs["block_table"].clone())
+        assert kwargs["k_cache"].data_ptr() == pool_address
+        torch.testing.assert_close(pool.k[batch.out_cache_loc], k)
+        return torch.ones_like(kwargs["q"])
+
+    backend._flash_attn_with_kvcache = vendor_decode
+    backend.forward_decode(q, k, k, make_layer(), batch)
+    # Replay metadata changes locations and lengths, not ownership of the pool.
+    batch.seq_lens.copy_(torch.tensor([2, 3], dtype=torch.int32))
+    batch.out_cache_loc.copy_(torch.tensor([65, 8258]))
+    backend.init_forward_metadata_out_graph(batch)
+    assert backend._flash_attn_forward_page_table.data_ptr() == table_address
+    backend.forward_decode(q, k, k, make_layer(), batch)
+    assert pool.writes == 2
+    assert len(observed) == 2
+    assert observed[0][0, 1] != -1
+    assert observed[1][0, 1] == -1
+
+
+def test_decode_can_read_backend_cache_without_writing_kv(backend_module):
+    backend = backend_module.HCUAttnBackend(make_runner())
+    batch = make_batch([1, 1])
+    assert not hasattr(batch, "token_to_kv_pool")
+    backend.init_forward_metadata(batch)
+    q = torch.ones((2, 128), dtype=torch.bfloat16)
+    output = backend.forward_decode(
+        q, None, None, make_layer(), batch, save_kv_cache=False
+    )
+    assert output.shape == (2, 128)
+    assert backend.token_to_kv_pool.writes == 0

@@ -10,6 +10,9 @@ llm:
   dtype: bfloat16
   kv_cache_dtype: bfloat16
   attention_backend: hcu
+  moe_runner_backend: triton
+  max_running_requests: 16
+  chunked_prefill_size: 4096
   page_size: 64
   disable_radix_cache: true
   disable_cuda_graph: true

@@ -2,20 +2,24 @@
 """Verify the documented Hygon empty runtime after the SGLang 0.5.18 upgrade.
 
 Metadata-only checks work during an ordinary Docker build. Full checks load the
-vendor runtime and FlagCX library; --require-gpu additionally executes vendor
-RMSNorm to expose torch/sgl-kernel ABI and kernel failures before model loading.
+vendor runtime and FlagCX library; --require-gpu additionally compares the
+selected HCU BF16 torch, FlagOS SiLU-and-multiply, and reference GemmaRMSNorm
+paths against CPU results. The empty image does not require native RMSNorm.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 import importlib.util
+import inspect
 import json
 import os
 import sys
 from importlib import metadata
 from pathlib import Path
+from types import SimpleNamespace
 
 
 def _default_plugin_root(script_path: Path) -> Path:
@@ -55,6 +59,90 @@ def _distribution_version(name: str) -> str:
         raise RuntimeError(f"required distribution is missing: {name}") from exc
 
 
+_TRITON_REQUIRED_FILES = ("__init__.py", "compiler/compiler.py")
+_TRITON_OPTIONAL_FILES = ("_C/libtriton.so",)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _triton_module_snapshot() -> dict:
+    # Only look up the top-level package. Looking up triton.compiler.compiler
+    # would import the parent package and could load Torch or GPU libraries.
+    spec = importlib.util.find_spec("triton")
+    if spec is None or spec.origin is None:
+        raise RuntimeError("FlagTree-provided triton package could not be located")
+    root = Path(spec.origin).resolve().parent
+    files = {}
+    for relative in _TRITON_REQUIRED_FILES + _TRITON_OPTIONAL_FILES:
+        path = root / relative
+        if not path.is_file():
+            if relative in _TRITON_REQUIRED_FILES:
+                raise RuntimeError(
+                    f"required FlagTree-provided triton file is missing: {path}"
+                )
+            continue
+        try:
+            files[relative] = _file_sha256(path)
+        except OSError as exc:
+            raise RuntimeError(
+                f"could not hash FlagTree-provided triton file {path}: {exc}"
+            ) from exc
+    return {"schema_version": 1, "triton": {"package_root": str(root), "files": files}}
+
+
+def _verify_vendor_modules(baseline: Path) -> None:
+    modules_path = baseline.with_suffix(".modules.json")
+    try:
+        captured = json.loads(modules_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"vendor module baseline is missing: {modules_path}; module hashes "
+            "were not checked. Re-run --capture-vendor-stack in the original "
+            "unmodified base image, not in the upgraded environment."
+        ) from exc
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            f"could not read vendor module baseline {modules_path}: {exc}"
+        ) from exc
+    if not isinstance(captured, dict) or captured.get("schema_version") != 1:
+        raise RuntimeError(f"invalid vendor module baseline schema: {modules_path}")
+    triton = captured.get("triton")
+    files = triton.get("files") if isinstance(triton, dict) else None
+    if not isinstance(files, dict) or not set(_TRITON_REQUIRED_FILES) <= set(files):
+        raise RuntimeError(
+            f"vendor module baseline is missing required triton file hashes: {modules_path}"
+        )
+    if any(
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+        for digest in files.values()
+    ):
+        raise RuntimeError(f"invalid SHA256 in vendor module baseline: {modules_path}")
+    current = _triton_module_snapshot()["triton"]["files"]
+    if set(files) != set(current):
+        raise RuntimeError(
+            "FlagTree triton module file set changed after the upgrade: "
+            f"captured={sorted(files)}, current={sorted(current)}"
+        )
+    for relative, expected in files.items():
+        if current[relative] != expected:
+            raise RuntimeError(
+                f"FlagTree triton module hash changed after the upgrade: {relative}; "
+                "distribution versions can stay unchanged when pip overwrites "
+                "shared module files. Restore the preserved FlagTree package."
+            )
+    print(
+        f"[hygon-env] FlagTree triton module SHA256 checks passed ({len(files)} files)"
+    )
+
+
 def capture_vendor_stack(path: Path) -> None:
     """Record the actual vendor metadata, including its DTK local versions."""
     versions = {
@@ -65,14 +153,18 @@ def capture_vendor_stack(path: Path) -> None:
             versions[name] = metadata.version(name)
         except metadata.PackageNotFoundError:
             continue
+    modules = _triton_module_snapshot()
     path.write_text(json.dumps(versions, indent=2) + "\n", encoding="utf-8")
     constraints_path = path.with_suffix(".constraints.txt")
     constraints_path.write_text(
         "".join(f"{name}=={version}\n" for name, version in versions.items()),
         encoding="utf-8",
     )
+    modules_path = path.with_suffix(".modules.json")
+    modules_path.write_text(json.dumps(modules, indent=2) + "\n", encoding="utf-8")
     print(f"[hygon-env] vendor baseline: {path}")
     print(f"[hygon-env] vendor constraints: {constraints_path}")
+    print(f"[hygon-env] vendor module SHA256 baseline: {modules_path}")
 
 
 def _verify_versions(baseline: Path | None) -> None:
@@ -110,7 +202,20 @@ def _verify_versions(baseline: Path | None) -> None:
                     f"vendor stack changed after the upgrade: {name} was "
                     f"{expected}, now {actual}; restore the base image vendor wheel"
                 )
+        for name in OPTIONAL_VENDOR_DISTRIBUTIONS:
+            if name in versions:
+                continue
+            try:
+                added_version = metadata.version(name)
+            except metadata.PackageNotFoundError:
+                continue
+            raise RuntimeError(
+                f"vendor stack gained distribution absent from the base image: "
+                f"{name}=={added_version}; it can overwrite shared vendor modules. "
+                "Remove the added distribution and restore the preserved vendor package."
+            )
         print("[hygon-env] vendor wheel versions match the captured base image")
+        _verify_vendor_modules(baseline)
 
 
 def _verify_plugin_path(plugin_root: Path) -> None:
@@ -191,6 +296,124 @@ def _verify_flagcx() -> None:
     )
 
 
+def _report_sgl_kernel(torch, kernel) -> None:
+    """Inspect the empty wheel without requiring an unselected native kernel."""
+    native_rmsnorm = getattr(torch.ops.sgl_kernel, "rmsnorm", None)
+    wrapper = getattr(kernel, "rmsnorm", None)
+    try:
+        wrapper_signature = (
+            str(inspect.signature(wrapper)) if callable(wrapper) else None
+        )
+    except (TypeError, ValueError):
+        wrapper_signature = "unavailable"
+    print(
+        f"[hygon-env] sgl_kernel={getattr(kernel, '__file__', None)}, "
+        f"rmsnorm-wrapper-signature={wrapper_signature}, "
+        f"native-rmsnorm-registered={native_rmsnorm is not None} (informational)"
+    )
+    print(
+        "[hygon-env] native RMSNorm ABI/execution was not validated; "
+        "rms_norm is not selected in the documented empty-image policy"
+    )
+
+
+def _compare_bf16(torch, actual, expected, *, name: str, device: str) -> None:
+    if not isinstance(actual, torch.Tensor):
+        raise RuntimeError(f"{name} did not return a tensor")
+    if actual.dtype != torch.bfloat16 or actual.device.type != device:
+        raise RuntimeError(
+            f"{name} returned dtype/device {actual.dtype}/{actual.device}; "
+            f"expected bfloat16/{device}"
+        )
+    try:
+        torch.testing.assert_close(
+            actual.detach().float().cpu(),
+            expected.detach().float().cpu(),
+            rtol=2e-2,
+            atol=2e-2,
+        )
+    except AssertionError as exc:
+        raise RuntimeError(f"{name} disagrees with its CPU reference: {exc}") from exc
+
+
+def _verify_selected_tensor_paths(
+    torch, *, device: str, silu_and_mul, gemma_rms_norm
+) -> None:
+    """Numerically check selected paths on the requested actual tensor device.
+
+    CPU regression tests call this with CPU implementations and real CPU tensors.
+    Only _verify_gpu may label a successful CUDA-device invocation as GPU-tested.
+    """
+    x_cpu = (torch.arange(128, dtype=torch.float32).reshape(2, 64) / 64 - 1).to(
+        torch.bfloat16
+    )
+    matrix_cpu = (
+        (torch.arange(512, dtype=torch.float32).reshape(64, 8) % 13 - 6) / 16
+    ).to(torch.bfloat16)
+    x = x_cpu.to(device=device)
+    matrix = matrix_cpu.to(device=device)
+    _compare_bf16(
+        torch,
+        torch.mm(x, matrix),
+        torch.mm(x_cpu.float(), matrix_cpu.float()),
+        name="native torch BF16 matmul",
+        device=device,
+    )
+
+    activation_cpu = (
+        torch.arange(256, dtype=torch.float32).reshape(2, 128) / 64 - 2
+    ).to(torch.bfloat16)
+    left, right = activation_cpu.float().chunk(2, dim=-1)
+    activation_expected = torch.nn.functional.silu(left) * right
+    activation_actual = silu_and_mul(None, activation_cpu.to(device=device))
+    _compare_bf16(
+        torch,
+        activation_actual,
+        activation_expected,
+        name="selected silu_and_mul",
+        device=device,
+    )
+
+    weight_cpu = torch.linspace(-0.5, 0.5, 64).to(torch.bfloat16)
+    obj = SimpleNamespace(weight=weight_cpu.to(device=device), variance_epsilon=1e-6)
+    expected = x_cpu.float() / torch.sqrt(
+        x_cpu.float().square().mean(-1, keepdim=True) + obj.variance_epsilon
+    )
+    expected = expected * (1 + weight_cpu.float())
+    _compare_bf16(
+        torch,
+        gemma_rms_norm(obj, x),
+        expected,
+        name="selected GemmaRMSNorm reference",
+        device=device,
+    )
+
+    residual_cpu = (x_cpu.flip(-1).float() / 8).to(torch.bfloat16)
+    combined_cpu = x_cpu + residual_cpu
+    expected = combined_cpu.float() / torch.sqrt(
+        combined_cpu.float().square().mean(-1, keepdim=True) + obj.variance_epsilon
+    )
+    expected = expected * (1 + weight_cpu.float())
+    normalized, residual = gemma_rms_norm(obj, x, residual_cpu.to(device=device))
+    _compare_bf16(
+        torch,
+        normalized,
+        expected,
+        name="selected GemmaRMSNorm reference with residual",
+        device=device,
+    )
+    _compare_bf16(
+        torch,
+        residual,
+        combined_cpu,
+        name="selected GemmaRMSNorm residual sum",
+        device=device,
+    )
+    print(
+        f"[hygon-env] selected tensor-path numerical checks passed on device={device}"
+    )
+
+
 def _verify_gpu(torch, min_gpus: int) -> None:
     if not torch.cuda.is_available():
         raise RuntimeError("torch.cuda.is_available() is false on the Hygon runtime")
@@ -203,28 +426,26 @@ def _verify_gpu(torch, min_gpus: int) -> None:
         f"{index}:{torch.cuda.get_device_name(index)}" for index in range(count)
     )
     print(f"[hygon-env] visible-gpus={count} ({devices})")
-
-    kernel = _require_import("sgl_kernel")
+    activation = _require_import("sglang_fl.dispatch.backends.flagos.impl.activation")
+    normalization = _require_import(
+        "sglang_fl.dispatch.backends.reference.impl.gemma_rms_norm"
+    )
     try:
-        x = (torch.arange(128, device="cuda", dtype=torch.float32) / 64).reshape(2, 64)
-        x = x.to(torch.bfloat16)
-        weight = torch.ones(64, device="cuda", dtype=torch.bfloat16)
-        out = torch.empty_like(x)
-        # Match the documented vendor wheel's out-parameter ABI.
-        kernel.rmsnorm(out, x, weight, 1e-6)
-        torch.cuda.synchronize()
-        expected = x.float() * torch.rsqrt(
-            x.float().pow(2).mean(-1, keepdim=True) + 1e-6
+        _verify_selected_tensor_paths(
+            torch,
+            device="cuda",
+            silu_and_mul=activation.silu_and_mul_flagos,
+            gemma_rms_norm=normalization.gemma_rms_norm_torch,
         )
-        if not torch.allclose(out.float(), expected, rtol=2e-2, atol=2e-2):
-            raise RuntimeError(
-                "vendor RMSNorm output does not match the torch reference"
-            )
+        torch.cuda.synchronize()
     except Exception as exc:
         raise RuntimeError(
-            f"Hygon torch/sgl-kernel RMSNorm check failed: {type(exc).__name__}: {exc}"
+            f"selected Hygon GPU path check failed: {type(exc).__name__}: {exc}"
         ) from exc
-    print("[hygon-env] Hygon torch/sgl-kernel BF16 RMSNorm execution passed")
+    print(
+        "[hygon-env] HCU BF16 torch, FlagOS silu_and_mul, and reference "
+        "GemmaRMSNorm execution passed; native RMSNorm was not executed"
+    )
 
 
 def verify(
@@ -258,9 +479,9 @@ def verify(
         raise RuntimeError(
             f"FlagTree must provide Triton 3.6, found {getattr(triton, '__version__', None)}"
         )
-    # Import SGLang first to preserve its real plugin-discovery lifecycle.
+    _report_sgl_kernel(torch, _require_import("sgl_kernel"))
+    # Import SGLang before the plugin to preserve its discovery lifecycle.
     for name in (
-        "sgl_kernel",
         "sglang",
         "sglang_fl",
         "sglang.srt.server_args",
@@ -275,6 +496,8 @@ def verify(
     _verify_flagcx()
     if require_gpu:
         _verify_gpu(torch, min_gpus)
+    else:
+        print("[hygon-env] GPU selected-op execution was not run")
     print("[hygon-env] runtime imports passed")
 
 
