@@ -34,6 +34,9 @@ unsupported_features: []
 # Existing shell values take precedence. Dispatch policy comes from the
 # packaged Hygon runtime defaults instead of a second copy of the whitelist.
 env_defaults:
+  # The base image's pip flagcx Torch extension is CUDA-only. The plugin uses
+  # its native FlagCX wrapper; do not autoload that optional device extension.
+  TORCH_DEVICE_BACKEND_AUTOLOAD: "0"
   USE_FLAGGEMS: "1"
   USE_FLAGTUNE: "0"
   SGLANG_PLUGINS: sglang_fl

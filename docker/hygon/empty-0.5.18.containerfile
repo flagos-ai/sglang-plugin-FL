@@ -12,22 +12,37 @@ COPY .github/scripts/hygon/verify_environment.py /opt/hygon-verify-environment.p
 RUN python /opt/hygon-verify-environment.py \
         --capture-vendor-stack /opt/hygon-vendor-baseline.json
 
+# Optional trusted mirror/cache for sites with slow access to GitHub.
 ARG SGLANG_VERSION=0.5.18
+ARG SGLANG_SOURCE_URL
+ARG SGLANG_SOURCE_SHA256
+ARG PIP_INDEX_URL=https://pypi.org/simple
+COPY docker/hygon/sglang-v0.5.18-hcu.patch /opt/sglang-v0.5.18-hcu.patch
 RUN mkdir -p /opt/sglang-0.5.18 && \
-    curl -fL --retry 3 "https://codeload.github.com/sgl-project/sglang/tar.gz/refs/tags/v${SGLANG_VERSION}" \
+    curl -fL --retry 3 "${SGLANG_SOURCE_URL:-https://codeload.github.com/sgl-project/sglang/tar.gz/refs/tags/v${SGLANG_VERSION}}" \
         -o /tmp/sglang.tar.gz && \
+    if [ -n "$SGLANG_SOURCE_SHA256" ]; then \
+        printf '%s  /tmp/sglang.tar.gz\n' "$SGLANG_SOURCE_SHA256" | sha256sum -c -; \
+    fi && \
     tar -xzf /tmp/sglang.tar.gz --strip-components=1 -C /opt/sglang-0.5.18 && \
-    cd /opt/sglang-0.5.18/python && \
+    cd /opt/sglang-0.5.18 && \
+    git apply --check /opt/sglang-v0.5.18-hcu.patch && \
+    git apply /opt/sglang-v0.5.18-hcu.patch && \
+    cd python && \
     cp pyproject_other.toml pyproject.toml && \
     SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SGLANG=${SGLANG_VERSION} \
-        python -m pip install --no-build-isolation \
-        -c /opt/hygon-vendor-baseline.constraints.txt '.[srt_empty]' \
-        xgrammar==0.2.1 compressed-tensors==0.15.0 sqlalchemy==2.0.48
+        python -m pip install --no-build-isolation --index-url "$PIP_INDEX_URL" \
+        -c /opt/hygon-vendor-baseline.constraints.txt '.[srt_empty]' sqlalchemy==2.0.48 && \
+    python -m pip install --no-deps --no-build-isolation --index-url "$PIP_INDEX_URL" \
+        -c /opt/hygon-vendor-baseline.constraints.txt \
+        xgrammar==0.2.1 compressed-tensors==0.15.0
 
 # srt_empty uses the hardware-independent runtime_base dependency subset.
 # The captured constraints preserve DTK torch and the vendor kernel stack;
 # dependency conflicts fail instead of replacing those builds.
-# xgrammar/compressed-tensors/SQLAlchemy are also imported during startup.
+# xgrammar/compressed-tensors are imported during startup, but their metadata
+# requests a standalone Triton distribution. FlagTree already supplies that
+# module; --no-deps prevents overwriting its HCU compiler. SQLAlchemy is pure Python.
 # Install only the checked-out plugin after resolving Python dependencies.
 COPY . /opt/sglang-plugin-fl
 RUN python -m pip install --no-deps --no-build-isolation -e /opt/sglang-plugin-fl && \
@@ -35,7 +50,10 @@ RUN python -m pip install --no-deps --no-build-isolation -e /opt/sglang-plugin-f
         --plugin-root /opt/sglang-plugin-fl \
         --baseline /opt/hygon-vendor-baseline.json --metadata-only
 
-ENV USE_FLAGGEMS=1 \
+# The base also bundles a CUDA-only optional torch device extension named
+# flagcx. The HCU plugin loads its own native FlagCX wrapper explicitly.
+ENV TORCH_DEVICE_BACKEND_AUTOLOAD=0 \
+    USE_FLAGGEMS=1 \
     USE_FLAGTUNE=0 \
     SGLANG_PLUGINS=sglang_fl \
     SGLANG_FL_DIST_BACKEND=flagcx

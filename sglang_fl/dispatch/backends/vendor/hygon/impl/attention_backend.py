@@ -284,6 +284,8 @@ class HCUAttnBackend(TritonAttnBackend):
             kv_indptr_buf=kv_indptr_buf,
         )
 
+        # TritonAttnBackend owns the runner's KV pool in SGLang 0.5.18.
+        # ForwardBatch carries write locations and per-forward metadata only.
         self._flash_attn_input_dtype = model_runner.model_config.dtype
         self._flash_attn_kv_cache_dtype = model_runner.kv_cache_dtype
         self._flash_attn_page_size = model_runner.server_args.page_size
@@ -292,6 +294,7 @@ class HCUAttnBackend(TritonAttnBackend):
 
         self._flash_attn_eager_page_table = None
         self._flash_attn_cuda_graph_page_table = None
+        self._flash_attn_cuda_graph_seq_lens = None
         self._flash_attn_forward_page_table = None
         self._flash_attn_forward_seq_lens = None
         self._flash_attn_prefill_cu_seqlens_q = None
@@ -594,9 +597,9 @@ class HCUAttnBackend(TritonAttnBackend):
                 page_table,
             )
             self._flash_attn_forward_page_table = page_table
-            # Eager ScheduleBatch sequence lengths are int64, while the Hygon
-            # FlashAttention ABI requires int32. CUDA Graph buffers are already
-            # int32 and are handled separately without changing their address.
+            # ScheduleBatch and SGLang 0.5.18 CUDA Graph sequence lengths
+            # are int64, while the Hygon FlashAttention ABI requires int32.
+            # Graph execution uses a persistent int32 buffer below.
             self._flash_attn_forward_seq_lens = forward_batch.seq_lens[:batch_size].to(
                 dtype=torch.int32
             )
@@ -661,6 +664,12 @@ class HCUAttnBackend(TritonAttnBackend):
             dtype=torch.int32,
             device=self.device,
         )
+        # SGLang 0.5.18 DecodeInputBuffers owns int64 seq_lens. FlashAttention
+        # requires int32 and records this pointer during capture; allocate the
+        # conversion destination once rather than replacing it on replay.
+        self._flash_attn_cuda_graph_seq_lens = torch.zeros(
+            (max_bs,), dtype=torch.int32, device=self.device
+        )
 
     def _prepare_flash_attn_cuda_graph_metadata(
         self,
@@ -668,9 +677,12 @@ class HCUAttnBackend(TritonAttnBackend):
         req_pool_indices: torch.Tensor,
         seq_lens: torch.Tensor,
     ) -> None:
-        if self._flash_attn_cuda_graph_page_table is None:
+        if (
+            self._flash_attn_cuda_graph_page_table is None
+            or self._flash_attn_cuda_graph_seq_lens is None
+        ):
             raise RuntimeError(
-                "HCU FlashAttention CUDA Graph page-table buffer was not initialized."
+                "HCU FlashAttention CUDA Graph metadata buffers were not initialized."
             )
         if bs > self._flash_attn_cuda_graph_page_table.shape[0]:
             raise RuntimeError(
@@ -684,7 +696,9 @@ class HCUAttnBackend(TritonAttnBackend):
             req_pool_indices[:bs], seq_lens[:bs], page_table
         )
         self._flash_attn_forward_page_table = page_table
-        self._flash_attn_forward_seq_lens = seq_lens[:bs]
+        graph_seq_lens = self._flash_attn_cuda_graph_seq_lens[:bs]
+        graph_seq_lens.copy_(seq_lens[:bs])
+        self._flash_attn_forward_seq_lens = graph_seq_lens
 
     def init_forward_metadata_out_graph(
         self,
@@ -879,7 +893,6 @@ class HCUAttnBackend(TritonAttnBackend):
                 return page_table_reason
             cache_layout_reason = self._get_paged_prefill_cache_layout_reason(
                 layer,
-                forward_batch,
                 q,
             )
             if cache_layout_reason is not None:
@@ -915,10 +928,9 @@ class HCUAttnBackend(TritonAttnBackend):
     def _get_paged_prefill_cache_layout_reason(
         self,
         layer,
-        forward_batch,
         q: torch.Tensor,
     ) -> Optional[str]:
-        token_to_kv_pool = getattr(forward_batch, "token_to_kv_pool", None)
+        token_to_kv_pool = self.token_to_kv_pool
         if token_to_kv_pool is None:
             return "the token-to-KV pool is unavailable"
         try:
@@ -1022,9 +1034,7 @@ class HCUAttnBackend(TritonAttnBackend):
         k_view = None
         v_view = None
         if uses_paged_kv:
-            k_cache, v_cache = forward_batch.token_to_kv_pool.get_kv_buffer(
-                layer.layer_id
-            )
+            k_cache, v_cache = self.token_to_kv_pool.get_kv_buffer(layer.layer_id)
             k_view = k_cache.view(
                 -1,
                 self._flash_attn_page_size,
@@ -1039,7 +1049,7 @@ class HCUAttnBackend(TritonAttnBackend):
             )
 
         if save_kv_cache:
-            forward_batch.token_to_kv_pool.set_kv_buffer(
+            self.token_to_kv_pool.set_kv_buffer(
                 layer,
                 forward_batch.out_cache_loc,
                 k,
@@ -1206,14 +1216,14 @@ class HCUAttnBackend(TritonAttnBackend):
             )
 
         if save_kv_cache:
-            forward_batch.token_to_kv_pool.set_kv_buffer(
+            self.token_to_kv_pool.set_kv_buffer(
                 layer,
                 forward_batch.out_cache_loc,
                 k,
                 v,
             )
 
-        k_cache, v_cache = forward_batch.token_to_kv_pool.get_kv_buffer(layer.layer_id)
+        k_cache, v_cache = self.token_to_kv_pool.get_kv_buffer(layer.layer_id)
         if (
             k_cache.shape[0] % self._flash_attn_page_size != 0
             or v_cache.shape[0] % self._flash_attn_page_size != 0

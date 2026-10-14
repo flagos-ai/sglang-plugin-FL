@@ -1,0 +1,97 @@
+diff --git a/python/sglang/srt/layers/quantization/quark/schemes/quark_w4a4_mxfp4.py b/python/sglang/srt/layers/quantization/quark/schemes/quark_w4a4_mxfp4.py
+--- a/python/sglang/srt/layers/quantization/quark/schemes/quark_w4a4_mxfp4.py
++++ b/python/sglang/srt/layers/quantization/quark/schemes/quark_w4a4_mxfp4.py
+@@ -28,7 +28,9 @@
+ NVFP4_BLOCK_SIZE = 16
+ 
+ _is_hip = is_hip()
+-if _is_hip:
++# HCU uses the HIP runtime but does not provide AMD AITER quantization kernels.
++_is_hcu = hasattr(torch, "__hcu_version__")
++if _is_hip and not _is_hcu:
+     from aiter.ops.triton.gemm.fused.fused_gemm_afp4wfp4_split_cat import (
+         fused_gemm_afp4wfp4_split_cat as _fused_gemm_afp4wfp4_split_cat_orig,
+     )
+@@ -185,6 +187,11 @@
+         is_checkpoint_mxfp4_serialized: bool = True,
+         dequantization_config: QuantizationConfig | None = None,
+     ):
++        if _is_hcu:
++            raise NotImplementedError(
++                "Quark W4A4 MXFP4 requires AMD AITER kernels and is not supported on HCU."
++            )
++
+         self.out_dtype = torch.get_default_dtype()
+         self.qscheme = "per_group"
+         self.weight_quant_spec = weight_quant_spec
+diff --git a/python/sglang/srt/layers/quantization/quark/schemes/quark_w4a4_mxfp4_moe.py b/python/sglang/srt/layers/quantization/quark/schemes/quark_w4a4_mxfp4_moe.py
+--- a/python/sglang/srt/layers/quantization/quark/schemes/quark_w4a4_mxfp4_moe.py
++++ b/python/sglang/srt/layers/quantization/quark/schemes/quark_w4a4_mxfp4_moe.py
+@@ -43,12 +43,14 @@
+ __all__ = ["QuarkW4A4MXFp4MoE"]
+ 
+ _is_hip = is_hip()
+-_use_aiter = get_bool_env_var("SGLANG_USE_AITER") and _is_hip
++# HCU uses the HIP runtime but does not provide AMD AITER quantization kernels.
++_is_hcu = hasattr(torch, "__hcu_version__")
++_use_aiter = get_bool_env_var("SGLANG_USE_AITER") and _is_hip and not _is_hcu
+ if _use_aiter:
+     from aiter.ops.shuffle import shuffle_weight
+     from aiter.utility.fp4_utils import e8m0_shuffle
+ 
+-if _is_hip:
++if _is_hip and not _is_hcu:
+     from aiter.ops.triton.quant import dynamic_mxfp4_quant
+ else:
+     dynamic_mxfp4_quant = None
+@@ -65,6 +67,11 @@
+         is_checkpoint_mxfp4_serialized: bool = True,
+         dequantization_config: QuantizationConfig | None = None,
+     ):
++        if _is_hcu:
++            raise NotImplementedError(
++                "Quark W4A4 MXFP4 MoE requires AMD AITER kernels and is not supported on HCU."
++            )
++
+         self.weight_quant = weight_config
+         self.input_quant = input_config
+         self.is_checkpoint_mxfp4_serialized = is_checkpoint_mxfp4_serialized
+diff --git a/python/sglang/srt/layers/quantization/quark_int4fp8_moe.py b/python/sglang/srt/layers/quantization/quark_int4fp8_moe.py
+--- a/python/sglang/srt/layers/quantization/quark_int4fp8_moe.py
++++ b/python/sglang/srt/layers/quantization/quark_int4fp8_moe.py
+@@ -24,9 +24,11 @@
+     from sglang.srt.layers.moe.token_dispatcher import DispatchOutput
+ 
+ _is_hip = is_hip()
+-
+-
+-if _is_hip:
++# HCU uses the HIP runtime but does not provide AMD AITER quantization kernels.
++_is_hcu = hasattr(torch, "__hcu_version__")
++
++
++if _is_hip and not _is_hcu:
+     from aiter.ops.shuffle import shuffle_weight
+ 
+     ON_GFX950 = "gfx950" in torch.cuda.get_device_properties("cuda").gcnArchName
+@@ -59,6 +61,11 @@
+         is_checkpoint_fp8_serialized: bool = False,
+         activation_scheme: str = "dynamic",
+     ):
++        if _is_hcu:
++            raise NotImplementedError(
++                "Quark Int4FP8 MoE requires AMD AITER kernels and is not supported on HCU."
++            )
++
+         self.is_checkpoint_fp8_serialized = is_checkpoint_fp8_serialized
+         self.activation_scheme = activation_scheme
+ 
+@@ -306,7 +313,7 @@
+         layer.register_parameter("w13_fp8_scale", w13_fp8_scale)
+         layer.register_parameter("w2_fp8_scale", w2_fp8_scale)
+ 
+-        if _is_hip:
++        if _is_hip and not _is_hcu:
+             w13_int4_scale = torch.nn.Parameter(
+                 torch.ones(
+                     num_experts,
