@@ -184,8 +184,16 @@ packed decode 缓存更新与 CUDA Graph 重放，以及 MoE bias、路由权重
 无 GPU 的包版本检查通过。本地镜像为
 `codex-sglang-iluvatar:0.5.18-test-20261015`，ID
 `sha256:8bba1f405aaa707ce3ce58cd77ad1b0c019553f79ff1c797ba552ce219d14639`。
-这验证了配方在该缓存基底上的构建，尚未发布镜像，也没有新的镜像内模型
-验收结论；配方默认的远端 `BASE_IMAGE` 未在此次构建中使用。
+这验证了配方在该缓存基底上的构建；配方默认的远端 `BASE_IMAGE` 未在此次
+构建中使用。镜像现已发布为
+`harbor.baai.ac.cn/plugin/sglang-plugin-fl:0.5.18-iluvatar-ci`，CI 固定使用
+以下实际发布的 manifest digest：
+
+```text
+harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:8cc9b2ecd0b99f200eadde5bc13e556953a4a0001156864d2ae106fc3911741a
+```
+
+发布与版本检查不代表新的镜像内模型验收已经通过。
 
 ## CI 接入与范围
 
