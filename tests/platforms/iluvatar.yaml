@@ -14,12 +14,14 @@ engine_overrides:
       attention_backend: triton
       sampling_backend: pytorch
       mm_attention_backend: triton_attn
+      disable_fast_image_processor: true
     35b_a3b_tp4_nograph:
       model_path: /models/Qwen3.6-35B-A3B
       dtype: float16
       attention_backend: triton
       sampling_backend: pytorch
       mm_attention_backend: triton_attn
+      disable_fast_image_processor: true
 
 tolerance:
   inference:
@@ -54,7 +56,12 @@ bi_v150:
       serving:
         qwen3_6: [27b_tp4_nograph, 35b_a3b_tp4_nograph]
     benchmark:
-      # The shared smoke matrix needs Qwen3-0.6B, absent from the documented
-      # model set. Use the fixed-load benchmark driver for the Qwen3.6 models.
-      enabled: false
-      smoke: []
+      # Reuse all three shared smoke workloads and their original assertions.
+      # Bind their model fixture to the existing mounted 27B model, including
+      # TP4 for the serving template which otherwise hard-codes TP1.
+      enabled: true
+      smoke: [throughput, latency, serve]
+      model: qwen3_6
+      case: 27b_tp4_nograph
+      tp_size: 4
+      require_cases: true

@@ -1,0 +1,30 @@
+# Iluvatar BI-V150 / CoreX resources for SGLang 0.5.18 CI.
+# Runner, driver mounts and model source follow the existing hardware config:
+# https://github.com/flagos-ai/vllm-plugin-FL/blob/main/.github/configs/iluvatar.yml
+platform: iluvatar
+
+# CI image for this adaptation; replace the tag with its digest after publication.
+ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl:0.5.18-iluvatar-ci
+
+runner_labels:
+  - self-hosted
+  - iluvatar-cicd-vllm-plugin
+
+# Use the first four GPUs from the existing runner's 0..7 configuration for TP4.
+# Devices must be reserved by the runner; busy memory fails instead of changing GPUs.
+cuda_visible_devices: '0,1,2,3'
+models_path: /mnt/share/user_homes/models
+container_volumes:
+  - /dev:/dev
+  - /lib/modules:/lib/modules
+  - /usr/local/corex-4.5.0/lib64/libcuda.so.1:/usr/local/corex/lib64/libcuda.so.1
+  - /usr/local/corex-4.5.0/lib64/libixml.so:/usr/local/corex/lib64/libixml.so
+
+container_options: >-
+  --hostname sglang-plugin-fl
+  --privileged
+  --ipc=host
+  --shm-size=64g
+  --user root
+  --init
+  --env GEMS_VENDOR=iluvatar

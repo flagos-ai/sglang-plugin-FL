@@ -117,3 +117,10 @@ jobs:
     with:
       platform: hygon
     secrets: inherit
+
+  test-iluvatar:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'iluvatar')
+    uses: ./.github/workflows/iluvatar-gpu.yml
+    with:
+      scope: full
