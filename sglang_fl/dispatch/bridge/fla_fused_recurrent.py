@@ -15,7 +15,7 @@ def fused_recurrent_gated_delta_rule_bridge(
     beta: Optional[torch.Tensor] = None,
     scale: Optional[float] = None,
     initial_state: Optional[torch.Tensor] = None,
-    output_final_state: bool = True,
+    output_final_state: bool = False,
     cu_seqlens: Optional[torch.LongTensor] = None,
     ssm_state_indices: Optional[torch.Tensor] = None,
     num_accepted_tokens: Optional[torch.Tensor] = None,
@@ -33,7 +33,7 @@ def fused_recurrent_gated_delta_rule_bridge(
         g: gating (decays) of shape [B, T, HV]
         beta: betas of shape [B, T, HV]
         scale: scale factor (default: 1/sqrt(K))
-        initial_state: initial state of shape [N, HV, K, V]
+        initial_state: initial state of shape [N, HV, V, K]
         output_final_state: whether to output final state
         cu_seqlens: cumulative sequence lengths
         ssm_state_indices: indices to map sequences to states
@@ -41,7 +41,7 @@ def fused_recurrent_gated_delta_rule_bridge(
 
     Returns:
         o: output of shape [B, T, HV, V]
-        final_state: final state of shape [N, HV, K, V]
+        final_state: final state of shape [N, HV, V, K]
     """
     if scale is None:
         scale = k.shape[-1] ** -0.5

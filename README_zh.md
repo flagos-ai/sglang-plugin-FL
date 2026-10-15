@@ -89,6 +89,14 @@ Qwen3.6-35B-A3B 已通过普通对话、强制 128-token decode 和四并发请�
 两次 TP=2 测试均启用了 decode CUDA Graph。Qwen2.5 权重未存放在共享模型目录，
 因此仍等待复测。
 
+天数 CoreX 0.5.18 empty 适配基于 `9dc518f478`，已包含
+[PR #132](https://github.com/flagos-ai/sglang-plugin-FL/pull/132)。原生 GDN/MoE
+保持默认，`FUSED_PROFILE=flagos` 可切换到独立的 FlagGems 融合算子验收路径；
+镜像与配置见[天数指南](docker/iluvatar/README.md)。211 隔离环境中，原生和
+FlagGems 路径合计 30 项 GPU 算子测试通过，包含 packed decode graph 重放；
+另有 12 项运行时测试通过。双模型 TP4、多卡通信、两机 PP 和吞吐仍需空闲
+设备继续验收；新容器配方尚未实际构建。
+
 ## 快速开始
 
 ### 方式 A：标准安装（NVIDIA CUDA）
@@ -165,7 +173,7 @@ python -m sglang.launch_server \
 > - `ascend` — 华为 Ascend 专属优化 attention（在 NPU 上使用）
 > - 如果不设置，CUDA 类设备默认选 `flashinfer` — 在 empty 环境下**没有 flashinfer 会报错**
 
-`SGLANG_FL_DENY_VENDORS` 是自研覆盖审计开关，不是 Empty 模式的默认配置。例如设置 `SGLANG_FL_DENY_VENDORS=cuda` 会主动移除 `vendor.cuda`；尚未由 FlagOS 或真正的 torch reference 覆盖的算子，此时应明确报告 `No available implementation`。当前 FLA 和 Fused MoE 在 FlagOS 实现完成并通过验收之前，继续使用相应的平台 vendor backend。
+`SGLANG_FL_DENY_VENDORS` 是自研覆盖审计开关，不是 Empty 模式的默认配置。例如设置 `SGLANG_FL_DENY_VENDORS=cuda` 会主动移除 `vendor.cuda`；尚未由 FlagOS 或真正的 torch reference 覆盖的算子，此时应明确报告 `No available implementation`。FLA 和 Fused MoE 应使用在目标平台完成验收的实现。天数默认保留原生 vendor backend，并提供独立的 FlagGems profile；两条路径分别记录验收结果。
 
 ### 下载模型
 

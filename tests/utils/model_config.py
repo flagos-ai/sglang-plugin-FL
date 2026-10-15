@@ -158,9 +158,12 @@ class ModelConfig:
         self,
         overrides: dict[str, Any] | None,
     ) -> None:
-        """Apply shallow overrides to engine parameters."""
+        """Apply engine overrides, keeping the tokenizer's model path in sync."""
         if overrides:
-            self.engine.update(overrides)
+            engine_overrides = dict(overrides)
+            if "model_path" in engine_overrides:
+                self.model = str(engine_overrides.pop("model_path"))
+            self.engine.update(engine_overrides)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "ModelConfig":

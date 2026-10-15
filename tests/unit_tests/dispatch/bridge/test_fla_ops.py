@@ -61,7 +61,7 @@ def test_fused_recurrent_bridge_fills_beta_and_contiguous_inputs(monkeypatch) ->
     assert kwargs["beta"].is_contiguous()
     torch.testing.assert_close(kwargs["beta"], torch.ones_like(q[..., 0]))
     assert math.isclose(kwargs["scale"], k.shape[-1] ** -0.5)
-    assert kwargs["output_final_state"] is True
+    assert kwargs["output_final_state"] is False
 
 
 def test_fused_recurrent_bridge_keeps_explicit_beta_scale(monkeypatch) -> None:

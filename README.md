@@ -52,6 +52,16 @@ This table is the current **NVIDIA CUDA** target. MUSA CI uses SGLang v0.5.18
 with vendor Torch 2.9.0; see the [MUSA empty container recipe](docker/mthreads/empty-0.5.18.containerfile).
 The Ascend image remains pinned to v0.5.11.
 
+The Iluvatar CoreX 0.5.18 empty adaptation builds on `9dc518f478`, including
+[PR #132](https://github.com/flagos-ai/sglang-plugin-FL/pull/132). Its native
+GDN/MoE implementations remain the default; `FUSED_PROFILE=flagos` selects the
+separate FlagGems fused-op acceptance path. See the
+[Iluvatar guide](docker/iluvatar/README.md) for the container and configuration.
+An isolated CoreX environment on host 211 passed 30 GPU operator tests across
+the native and FlagGems paths, including packed decode graph replay, plus 12
+runtime tests. TP4 model, multi-GPU communication, pipeline and throughput
+acceptance still need available devices; the new container recipe is unbuilt.
+
 The validated H100 environment removes the Triton package installed with
 PyTorch and uses FlagTree 0.6.2a1 as its Triton 3.6-compatible compiler. The
 verified FlagGems master snapshot handles `to_copy` on H100.
@@ -148,7 +158,7 @@ python -m sglang.launch_server \
 > - `ascend` — Huawei Ascend optimized attention (use on NPU hardware)
 > - If not set, defaults to `flashinfer` on CUDA-like devices — **will fail** in empty environments without flashinfer installed
 
-`SGLANG_FL_DENY_VENDORS` is a coverage-audit switch, not a default Empty-mode setting. For example, `SGLANG_FL_DENY_VENDORS=cuda` intentionally removes `vendor.cuda`. Operators that are not yet implemented by FlagOS or a genuine torch reference are then expected to report `No available implementation`. FLA and Fused MoE currently use the platform vendor backend until their FlagOS implementations are available and validated.
+`SGLANG_FL_DENY_VENDORS` is a coverage-audit switch, not a default Empty-mode setting. For example, `SGLANG_FL_DENY_VENDORS=cuda` intentionally removes `vendor.cuda`. Operators that are not yet implemented by FlagOS or a genuine torch reference are then expected to report `No available implementation`. FLA and Fused MoE require an implementation validated for the selected platform. Iluvatar keeps its native backend by default and offers a separate FlagGems profile; both paths require their own acceptance results.
 
 **Why empty install?** In short, SGLang's default `pyproject.toml` hard-pins `torch==2.11.0`, `torchao`, `flashinfer`, etc., which conflicts with vendor-specific PyTorch. Empty install strips these out, letting each vendor bring their own torch.
 

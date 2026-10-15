@@ -1,5 +1,15 @@
 # SGLang-FL Dispatch Configuration for Iluvatar platform
 prefer: flagos
+deny_vendors: [cuda]
 
 flagos_blacklist:
+  - max
   - masked_scatter_
+
+# Preserve the native paths introduced by PR #132; FlagGems remains selectable.
+op_backends:
+  gemma_rms_norm: [reference]
+  fused_moe: [vendor:iluvatar, flagos]
+  chunk_gated_delta_rule: [vendor:iluvatar, flagos]
+  fused_recurrent_gated_delta_rule: [vendor:iluvatar, flagos]
+  fused_recurrent_gated_delta_rule_packed_decode: [vendor:iluvatar, flagos]

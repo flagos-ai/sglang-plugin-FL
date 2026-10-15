@@ -222,7 +222,7 @@ def _make_engine():
         model_path=MODEL_PATH,
         tp_size=TP_SIZE,
         mem_fraction_static=0.6 if _is_txda else 0.85,
-        disable_cuda_graph=True,
+        disable_cuda_graph=os.environ.get("DISABLE_CUDA_GRAPH", "1") != "0",
         **_extra_engine_kwargs,
     )
 
@@ -453,7 +453,7 @@ if __name__ == "__main__":
 
     print(
         f"Model: {MODEL_PATH} | TP: {TP_SIZE} | CONCURRENT_N: {CONCURRENT_N}\n"
-        f"cuda_graph disabled — throughput numbers reflect that.\n"
+        f"cuda_graph disabled: {os.environ.get('DISABLE_CUDA_GRAPH', '1') != '0'}\n"
     )
 
     engine = _make_engine()
