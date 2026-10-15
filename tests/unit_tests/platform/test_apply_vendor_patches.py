@@ -16,6 +16,7 @@
 
 import importlib
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -42,6 +43,11 @@ class TestApplyVendorPatches:
         runtime monkeypatches inside another platform's pytest process. The
         real entry point is exercised by the MUSA CI lane.
         """
+        patch_path = (
+            Path(__file__).resolve().parents[3]
+            / "sglang_fl/dispatch/backends/vendor/mthreads/patch.py"
+        )
+        assert patch_path.is_file()
         mock_device_detector("mthreads")
         inject_vendor_module("mthreads", "patch")
         with caplog.at_level(logging.INFO, logger="sglang_fl"):
