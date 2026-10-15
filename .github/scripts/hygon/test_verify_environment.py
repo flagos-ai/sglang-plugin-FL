@@ -498,13 +498,7 @@ class HygonAcceptanceSelectionTests(unittest.TestCase):
                         self.assertEqual(kwargs["cuda_graph_backend_decode"], "full")
                         self.assertEqual(kwargs["cuda_graph_max_bs_decode"], 16)
 
-    def test_hardware_acceptance_does_not_enable_unpublished_ci_platform(self):
-        import yaml
-
-        registry = yaml.safe_load(
-            (REPO_ROOT / ".github/configs/platforms.yml").read_text(encoding="utf-8")
-        )
-        self.assertFalse(registry["platforms"].get("hygon", {}).get("enabled", False))
+    def test_benchmark_acceptance_remains_opt_in(self):
         self.assertEqual(
             TestRunner("hygon", "bw1000", "benchmark").discover_tests(), []
         )

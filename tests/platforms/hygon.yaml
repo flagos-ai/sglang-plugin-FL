@@ -1,6 +1,6 @@
 # Hygon BW1000 development acceptance for the documented empty image.
-# This selects local tests, without enabling a GitHub runner or claiming that
-# the SGLang 0.5.18 runtime has passed on hardware.
+# The same eager/graph profiles are consumed by local acceptance and CI.
+# CI runner/image enablement is managed in .github/configs/platforms.yml.
 # Eager: python tests/run.py --platform hygon --device bw1000 --scope e2e
 # Graph: python tests/run.py --platform hygon --device bw1000_graph --scope e2e
 platform: hygon

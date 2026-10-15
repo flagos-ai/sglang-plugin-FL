@@ -1,5 +1,5 @@
 # CI workflow for the SGLang 0.5.18 development line.
-# NVIDIA, Ascend, and MUSA are enabled; T-Head remains temporarily disabled.
+# NVIDIA, Ascend, MUSA and Hygon are enabled; T-Head remains temporarily disabled.
 name: CI
 
 on:
@@ -104,4 +104,13 @@ jobs:
     uses: ./.github/workflows/_platform_test.yml
     with:
       platform: thead
+    secrets: inherit
+
+  # Uses the established HCU runner pool, gated until the 0.5.18 image is ready.
+  test-hygon:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'hygon')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: hygon
     secrets: inherit

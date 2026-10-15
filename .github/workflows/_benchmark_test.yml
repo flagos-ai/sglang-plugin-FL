@@ -68,6 +68,9 @@ jobs:
 
       - name: Run benchmark smoke tests
         run: |
+          if [ "${{ inputs.platform }}" = "hygon" ]; then
+            unset CUDA_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES
+          fi
           python tests/run.py \
             --platform ${{ inputs.platform }} \
             --scope benchmark
