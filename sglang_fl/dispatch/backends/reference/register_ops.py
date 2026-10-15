@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import functools
 
-from sglang_fl.dispatch.types import OpImpl, BackendImplKind, BackendPriority
+from sglang_fl.dispatch.types import BackendImplKind, BackendPriority, OpImpl
 
 
 def _bind_is_available(fn, is_available_fn):
@@ -89,5 +89,18 @@ def register_builtins(registry) -> None:
             priority=BackendPriority.REFERENCE,
         ),
     ]
+
+    from .impl import fusions
+
+    for name in ("shared_expert_gate_tail", "moe_sum_reduce", "allreduce_rms_norm"):
+        impls.append(
+            OpImpl(
+                op_name=name,
+                impl_id="reference.torch",
+                kind=BackendImplKind.REFERENCE,
+                fn=getattr(fusions, name),
+                priority=BackendPriority.REFERENCE,
+            )
+        )
 
     registry.register_many(impls)
