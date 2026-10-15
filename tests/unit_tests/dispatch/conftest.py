@@ -14,18 +14,19 @@
 
 # Shared fixtures for dispatch unit tests.
 
-import logging
-
 import pytest
 
+from sglang_fl.dispatch.config import utils as config_utils
 from sglang_fl.dispatch.types import BackendImplKind, BackendPriority, OpImpl
 from sglang_fl.dispatch.registry import OpRegistry
 from sglang_fl.dispatch.policy import reset_global_policy
 
 
 @pytest.fixture(autouse=True)
-def _reset_policy():
-    """Reset global policy before each test."""
+def _reset_policy(monkeypatch):
+    """Exercise generic policies independently of host hardware defaults."""
+    # Explicit SGLANG_FL_CONFIG overrides still use the real config loader.
+    monkeypatch.setattr(config_utils, "get_platform_name", lambda: "unknown")
     reset_global_policy()
     yield
     reset_global_policy()
