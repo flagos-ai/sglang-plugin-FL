@@ -105,7 +105,7 @@ class TestConfiguredResources(unittest.TestCase):
         resolved = resources.resolve_resources(self.config)
         self.assertEqual(
             json.loads(resolved["runner_labels"]),
-            ["iluvatar-cicd-vllm-plugin", "self-hosted"],
+            ["iluvatar-cicd-vllm-plugin"],
         )
         self.assertEqual(resolved["cuda_visible_devices"], "0,1,2,3")
         self.assertTrue(
@@ -124,16 +124,41 @@ class TestConfiguredResources(unittest.TestCase):
             self.config,
             scope="operators",
             overrides={
-                "runner_labels": '["self-hosted", "special", "special"]',
+                "runner_labels": '["special-z", "special-a", "special-z"]',
                 "cuda_visible_devices": "7",
                 "ci_image": "registry.example/corex:test",
             },
         )
         self.assertEqual(
-            json.loads(resolved["runner_labels"]), ["self-hosted", "special"]
+            json.loads(resolved["runner_labels"]), ["special-a", "special-z"]
         )
         self.assertEqual(resolved["cuda_visible_devices"], "7")
         self.assertNotIn(":/models:ro", resolved["container_options"])
+
+    def test_conventional_self_hosted_labels_remain_valid_when_explicit(self):
+        resolved = resources.resolve_resources(
+            self.config,
+            overrides={"runner_labels": '["self-hosted", "custom-hardware"]'},
+        )
+        self.assertEqual(
+            json.loads(resolved["runner_labels"]), ["custom-hardware", "self-hosted"]
+        )
+
+    def test_invalid_explicit_label_specs_are_rejected(self):
+        for labels in (
+            "[]",
+            "{}",
+            '"pool"',
+            "[null]",
+            '[""]',
+            '[" "]',
+            json.dumps(["pool\nother"]),
+            json.dumps(["pool\rother"]),
+        ):
+            with self.subTest(labels=labels), self.assertRaises(ValueError):
+                resources.resolve_resources(
+                    self.config, overrides={"runner_labels": labels}
+                )
 
     def test_invalid_full_allocations_and_model_paths_fail_closed(self):
         for overrides in (
@@ -141,7 +166,6 @@ class TestConfiguredResources(unittest.TestCase):
             {"cuda_visible_devices": "0,0,1,2"},
             {"models_path": "/model path"},
             {"models_path": "relative/models"},
-            {"runner_labels": '["unknown-without-self-hosted"]'},
         ):
             with self.subTest(overrides=overrides), self.assertRaises(ValueError):
                 resources.resolve_resources(self.config, overrides=overrides)

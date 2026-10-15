@@ -204,7 +204,9 @@ runner 上构建导入兼容包并执行 CPU 合约和 CI 守卫测试。该作�
 `.github/configs/platforms.yml` 启用天数，`test-iluvatar` 自动调用可复用的
 `Iluvatar GPU acceptance` workflow，硬件资源集中定义于
 `.github/configs/iluvatar.yml`。runner 标签、0–3 四卡、CoreX 挂载和模型源
-参考现有 vLLM main 天数 CI 配置。默认 `scope=full`，依次执行两种后端的
+参考现有 vLLM main 天数 CI 配置。默认 runner 标签只使用已配置的
+`iluvatar-cicd-vllm-plugin`，不额外要求 ARC 不支持的 `self-hosted`。
+默认 `scope=full`，依次执行两种后端的
 30 项算子测试、1 项真实 PDL 编译探针、TP4 双模型 offline/并发的两种 graph
 模式；自动验收使用原并发例子的 16 请求及 256-token 生成上限。再执行
 默认原生后端的两项原 HTTP serving 用例和三项原 benchmark
