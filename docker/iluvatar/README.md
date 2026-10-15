@@ -157,10 +157,12 @@ tmux new-session -d -s iluvatar-e2e \
 分别传 `--role master/worker --master-addr <主节点IP> --tp 4 --pp 2`；两机例子、服务与压测也通过 tmux 执行。
 固定负载性能对比沿用旧文档的 64 请求、并发 64、输入 1K/4K/16K、输出
 1K；服务启动后运行 `benchmarks/benchmark_throughput_serve.py --model <模型路径>`，
-保留每次原始结果。共享 benchmark smoke 依赖额外的 Qwen3-0.6B 模型，因此
-天数平台配置暂不启用该 smoke。
+保留每次原始结果。天数平台另将原 throughput、latency、serve 三项共享
+benchmark smoke 显式绑定到已有的 27B/TP4 配置，保留原始 dummy 加载方式、
+请求负载和断言；这些 smoke 验证入口能运行，不代表真实权重的性能验收。
+天数 benchmark 收集为零时会失败，不以空选择计为通过。
 
-## 当前实机状态（2026-10-14）
+## 当前实机状态（2026-10-15）
 
 已通过 JumpServer 的 `lxwang → u211 → new-root` 交互选择连接到 211。
 该机 16 张 BI-V150 均运行已有 vLLM 任务，每卡约占用 24 GiB / 32 GiB。
@@ -190,15 +192,23 @@ packed decode 缓存更新与 CUDA Graph 重放，以及 MoE bias、路由权重
 主 `CI` workflow 自动调用 `Iluvatar compatibility (CPU)`，在 GitHub 托管
 runner 上构建导入兼容包并执行 CPU 合约和 CI 守卫测试。该作业不代表硬件验收。
 
-独立的 `Iluvatar GPU acceptance` workflow 要求显式提供真实 runner 标签、
-可访问的已构建 test 镜像、分配的物理 GPU 索引及模型目录。默认 `scope=full`，
-依次执行两种后端的 30 项算子测试、1 项真实 PDL 编译探针，以及 TP4 双模型
-offline/并发、graph 关闭/开启的完整单机验收。`scope=operators` 只验算子，
-不执行模型测试。JUnit 门禁拒绝空结果、跳过和失败。
+主 CI 沿用 main 的平台注册与配置加载机制：
+`.github/configs/platforms.yml` 启用天数，`test-iluvatar` 自动调用可复用的
+`Iluvatar GPU acceptance` workflow，硬件资源集中定义于
+`.github/configs/iluvatar.yml`。runner 标签、0–3 四卡、CoreX 挂载和模型源
+参考现有 vLLM main 天数 CI 配置。默认 `scope=full`，依次执行两种后端的
+30 项算子测试、1 项真实 PDL 编译探针、TP4 双模型 offline/并发的两种 graph
+模式；自动验收使用原并发例子的 16 请求及 256-token 生成上限。再执行
+默认原生后端的两项原 HTTP serving 用例和三项原 benchmark
+smoke。JUnit 门禁要求各阶段实际执行、零跳过、零失败。
+
+手动入口允许覆盖预留的 runner、已发布镜像、物理 GPU 索引及模型目录；
+`scope=operators` 只验算子，不执行模型。PR 上的自动调用使用
+`workflow_call`，不依赖新手动入口先进入默认分支。
 
 GPU 工作流启动前通过 `ixsmi` 检查每张显式选卡，已用显存超过 512 MiB 则
 失败；不自动改选其它设备或停止现有进程。该检查只是单次闲置显存检查，
 持续独占仍须由 runner 的设备分配保证。不同 runner 标签池若共用同一主机，
-须由基础设施统一协调。当前尚未确认本仓可用的天数 runner 和已发布镜像，
-GPU CI 没有本次运行通过的结论；新手动 workflow 还需满足 GitHub 默认分支
-中的 `workflow_dispatch` 入口要求后才能调度。
+须由基础设施统一协调。平台资源配置已提供，runner 的实际调度和完整 GPU
+CI 结果仍需核对真实作业；配置存在、排队或 CPU 作业通过均不代表 GPU
+作业已经通过。

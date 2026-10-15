@@ -1,21 +1,28 @@
-# Dispatch only with an existing CoreX runner and a built test image.
-# No runner labels or unpublished image names are guessed by this workflow.
+# Shared GPU acceptance: automatic full CI plus optional manual resource overrides.
+# Hardware resources are loaded through the same config loader as other platforms.
 name: Iluvatar GPU acceptance
 
 on:
+  workflow_call:
+    inputs:
+      scope:
+        description: 'full runs both models; operators runs only numerical and graph contracts'
+        required: false
+        type: string
+        default: full
   workflow_dispatch:
     inputs:
       runner_labels:
-        description: 'Existing runner labels as JSON, including self-hosted'
-        required: true
+        description: 'Optional JSON override of configured runner labels, including self-hosted'
+        required: false
         type: string
       ci_image:
-        description: 'Accessible prebuilt test image from docker/iluvatar/empty-0.5.18.containerfile'
-        required: true
+        description: 'Optional override of the configured published CoreX test image'
+        required: false
         type: string
       cuda_visible_devices:
-        description: 'GPU indices explicitly allocated on the runner, for example 3'
-        required: true
+        description: 'Optional explicit override of configured GPU indices'
+        required: false
         type: string
       scope:
         description: 'Full models plus operators, or operators only (no model acceptance)'
@@ -24,7 +31,7 @@ on:
         options: [full, operators]
         default: full
       models_path:
-        description: 'Absolute model directory on the runner, required for full; mounted read-only at /models'
+        description: 'Optional override of the configured absolute host model directory'
         required: false
         type: string
 
@@ -33,57 +40,31 @@ permissions:
 
 jobs:
   validate:
-    name: Validate explicit CoreX resources
+    name: Load and validate configured CoreX resources
     runs-on: ubuntu-latest
     outputs:
       runner_labels: ${{ steps.resources.outputs.runner_labels }}
       ci_image: ${{ steps.resources.outputs.ci_image }}
       cuda_visible_devices: ${{ steps.resources.outputs.cuda_visible_devices }}
-      model_mount_options: ${{ steps.resources.outputs.model_mount_options }}
+      container_options: ${{ steps.resources.outputs.container_options }}
     steps:
-      - name: Validate resource selectors before scheduling
+      - name: Checkout platform configuration
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install config loader dependency
+        run: python3 -m pip install pyyaml
+      - name: Load platform CI configuration
+        id: config
+        run: python3 .github/scripts/load_config.py --platform iluvatar
+      - name: Validate resources before scheduling
         id: resources
         env:
+          PLATFORM_CONFIG: ${{ steps.config.outputs.config }}
           RUNNER_LABELS: ${{ inputs.runner_labels }}
           CI_IMAGE: ${{ inputs.ci_image }}
           CUDA_VISIBLE_DEVICES: ${{ inputs.cuda_visible_devices }}
           ACCEPTANCE_SCOPE: ${{ inputs.scope }}
           MODELS_PATH: ${{ inputs.models_path }}
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import re
-          from pathlib import PurePosixPath
-          labels = json.loads(os.environ['RUNNER_LABELS'])
-          if not isinstance(labels, list) or not labels or not all(
-              isinstance(label, str) and label.strip() and '\n' not in label
-              for label in labels
-          ) or 'self-hosted' not in labels:
-              raise SystemExit('runner_labels must list existing labels including self-hosted')
-          image = os.environ['CI_IMAGE'].strip()
-          if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/@+-]+', image):
-              raise SystemExit('ci_image must be an accessible prebuilt container reference')
-          devices = os.environ['CUDA_VISIBLE_DEVICES'].strip()
-          if not re.fullmatch(r'\d+(,\d+)*', devices):
-              raise SystemExit('Explicitly allocate one or more numeric CoreX GPU indices')
-          ids = devices.split(',')
-          if len(set(ids)) != len(ids):
-              raise SystemExit('GPU indices must be unique')
-          mount_options = ''
-          if os.environ['ACCEPTANCE_SCOPE'] == 'full':
-              if len(ids) < 4:
-                  raise SystemExit('Full TP4 model acceptance requires at least four allocated GPUs')
-              models = os.environ['MODELS_PATH'].strip()
-              if not PurePosixPath(models).is_absolute() or not re.fullmatch(r'/[A-Za-z0-9_./-]+', models):
-                  raise SystemExit('Full acceptance requires an absolute runner models_path without spaces or shell characters')
-              mount_options = f'--volume={models}:/models:ro'
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write(f'runner_labels={json.dumps(sorted(set(labels)))}\n')
-              output.write(f'ci_image={image}\n')
-              output.write(f'cuda_visible_devices={devices}\n')
-              output.write(f'model_mount_options={mount_options}\n')
-          PY
+        run: python3 scripts/iluvatar/resolve_ci_resources.py
 
   gpu-contracts:
     name: Iluvatar ${{ inputs.scope }} acceptance (GPU)
@@ -96,7 +77,7 @@ jobs:
       cancel-in-progress: false
     container:
       image: ${{ needs.validate.outputs.ci_image }}
-      options: --privileged --ipc=host --shm-size=32g ${{ needs.validate.outputs.model_mount_options }}
+      options: ${{ needs.validate.outputs.container_options }}
     defaults:
       run:
         shell: bash
@@ -111,13 +92,15 @@ jobs:
       USE_FLAGGEMS: '1'
       TORCH_COMPILE_DISABLE: '1'
       PYTHONDONTWRITEBYTECODE: '1'
-      CONCURRENT_N: '8'
-      MAX_TOKENS: '64'
+      CONCURRENT_N: '16'
+      MAX_TOKENS: '256'
     steps:
-      - name: Checkout dispatched revision
+      - name: Checkout tested revision
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Require idle memory on every explicitly allocated GPU
-        run: python scripts/iluvatar/require_idle_gpus.py
+        run: |
+          mkdir -p artifacts
+          python scripts/iluvatar/require_idle_gpus.py | tee artifacts/idle-memory.log
       - name: Require both mounted model configurations for full acceptance
         if: inputs.scope == 'full'
         run: |
@@ -175,6 +158,39 @@ jobs:
           TP_SIZE: '4'
           OUTPUT_DIR: artifacts/models-flagos
         run: bash scripts/iluvatar/run_single_node_acceptance.sh
+      - name: HTTP serving for Qwen3.6-27B (configured vendor profile)
+        if: inputs.scope == 'full'
+        run: |
+          python tests/run.py --platform iluvatar --device bi_v150 --scope e2e \
+            --task serving --model qwen3_6 --case 27b_tp4_nograph -- \
+            --junitxml=artifacts/serving-27b.xml
+      - name: Require all five 27B HTTP assertions without skips
+        if: always() && inputs.scope == 'full'
+        run: python scripts/iluvatar/check_ci_results.py artifacts/serving-27b.xml --min-tests 5
+      - name: HTTP serving for Qwen3.6-35B-A3B (configured vendor profile)
+        if: inputs.scope == 'full'
+        run: |
+          python tests/run.py --platform iluvatar --device bi_v150 --scope e2e \
+            --task serving --model qwen3_6 --case 35b_a3b_tp4_nograph -- \
+            --junitxml=artifacts/serving-35b.xml
+      - name: Require all five 35B HTTP assertions without skips
+        if: always() && inputs.scope == 'full'
+        run: python scripts/iluvatar/check_ci_results.py artifacts/serving-35b.xml --min-tests 5
+      - name: Run the original throughput, latency and serving benchmark smoke cases
+        if: inputs.scope == 'full'
+        run: |
+          for benchmark in throughput latency serve; do
+            python tests/run.py --platform iluvatar --device bi_v150 \
+              --scope benchmark --benchmark "$benchmark" -- \
+              --junitxml="artifacts/benchmark-${benchmark}.xml"
+          done
+      - name: Require all three benchmark reports without skips
+        if: always() && inputs.scope == 'full'
+        run: |
+          for benchmark in throughput latency serve; do
+            python scripts/iluvatar/check_ci_results.py \
+              "artifacts/benchmark-${benchmark}.xml" --min-tests 1
+          done
       - name: Require every requested model and graph log
         if: inputs.scope == 'full'
         run: |

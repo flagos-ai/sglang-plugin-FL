@@ -1,6 +1,6 @@
 # CI workflow for the SGLang 0.5.18 development line.
-# NVIDIA and MUSA use GPU runners; Iluvatar also has a hosted CPU contract gate.
-# Its explicit GPU workflow requires an existing CoreX runner and built image.
+# NVIDIA, MUSA and Iluvatar use platform GPU runners.
+# Iluvatar additionally runs Python compatibility contracts on a hosted CPU runner.
 name: CI
 
 on:
@@ -13,7 +13,6 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
-      - "examples/**"
       - "LICENSE"
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/PULL_REQUEST_TEMPLATE.md"
@@ -109,3 +108,10 @@ jobs:
     with:
       platform: thead
     secrets: inherit
+
+  test-iluvatar:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'iluvatar')
+    uses: ./.github/workflows/iluvatar-gpu.yml
+    with:
+      scope: full

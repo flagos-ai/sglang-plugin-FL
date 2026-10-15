@@ -53,7 +53,8 @@ jobs:
             tests/unit_tests/dispatch/backends/test_flagos_empty_ops.py \
             tests/unit_tests/dispatch/bridge/test_fla_ops.py \
             tests/unit_tests/test_iluvatar_example_graphs.py \
-            tests/unit_tests/test_iluvatar_test_config.py
+            tests/unit_tests/test_iluvatar_test_config.py \
+            tests/unit_tests/test_iluvatar_benchmark_config.py
       - name: Require executed CPU tests without skips
         if: always()
         run: python scripts/iluvatar/check_ci_results.py artifacts/iluvatar-cpu.xml
