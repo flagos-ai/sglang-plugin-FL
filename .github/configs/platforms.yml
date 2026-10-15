@@ -18,3 +18,7 @@ platforms:
     # CI image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-thead-ci.
     # Temporarily disabled until the dedicated SGLang 0.5.18 adaptation is merged.
     enabled: false
+
+  hygon:
+    # Validated SGLang 0.5.18 image is pinned in hygon.yml.
+    enabled: true

@@ -193,3 +193,33 @@ scheduler 自然退出、本地进程退出码均为 0、从节点原始 CLI 退
 
 本次双节点 TP2/PP2 使用 eager 模式；没有验证该拓扑的 graph 或 RDMA。
 未执行文档中 1K/4K/16K 输入、1K 输出、64 请求的 empty/non-empty 性能对照。
+
+## GitHub CI
+
+海光复用 main 分支的 `ci-sglang-plugin-fl-hygon` runner、驱动挂载和共享
+unit/functional/E2E 流程。CI 配置见 [hygon.yml](../../.github/configs/hygon.yml)；
+模型目录从宿主机 `/data/models/Qwen` 只读映射到 `/models`。
+
+已发布的 CI tag 为
+`harbor.baai.ac.cn/plugin/sglang-plugin-fl:0.5.18-hygon-ci-20261015`，工作流固定为：
+
+```text
+harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:d21327c133c4abd40297cf717278bd9190397916a544dc84cbfe9068f09b6c96
+```
+
+该镜像从已验证运行时派生，只增加 `pytest-timeout==2.4.0`，构建后重新核对
+厂商包版本与编译器文件哈希；发布时已核对匿名 registry manifest 与实际镜像 ID。
+复现构建先按上文生成 `sglang-fl:hygon-0.5.18`，再执行：
+
+```bash
+docker build -f docker/hygon/ci-0.5.18.containerfile -t sglang-fl:hygon-0.5.18-ci .
+```
+
+CI 在安装插件前拒绝旧的 SGLang 0.5.11 镜像。安装只使用
+`--no-deps --no-build-isolation`，并核对基底版本、编译器哈希和真实 GPU 数值路径。
+设备分配以 `HIP_VISIBLE_DEVICES` 为准；仅有 ROCR/CUDA 分配时保留其顺序转为
+HIP，存在不一致的双重映射时明确失败。CI 不自动挑选或抢占其它 GPU。
+
+E2E 包含 eager/graph 与 inference/serving/concurrent 六组，每组运行两模型，
+同平台组串行执行。benchmark 保持显式启用。工作流配置完成和镜像发布不代表
+GitHub 硬件验收已通过，应以对应 PR 最新提交的实际 job 结果为准。
