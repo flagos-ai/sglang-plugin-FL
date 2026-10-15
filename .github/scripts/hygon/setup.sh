@@ -3,6 +3,9 @@
 # The versioned CI image provides patched SGLang and the captured vendor stack.
 set -euo pipefail
 PLUGIN_ROOT="$(pwd)"
+# checkout's safe.directory uses a temporary HOME that build subprocesses do
+# not inherit. Trust only this checkout for editable metadata's Git inspection.
+git config --global --add safe.directory "$PLUGIN_ROOT"
 BASELINE="${HYGON_VENDOR_BASELINE:-/opt/hygon-vendor-baseline.json}"
 if [ ! -f "$BASELINE" ]; then
   echo "::error::Hygon CI image lacks its captured vendor baseline: $BASELINE" >&2

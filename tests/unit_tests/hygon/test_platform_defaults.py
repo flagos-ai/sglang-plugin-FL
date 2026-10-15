@@ -5,7 +5,7 @@
 import importlib.util
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
@@ -47,15 +47,22 @@ def test_hcu_retains_native_fused_op_fallback(monkeypatch, platform_cls, hip, ex
     assert platform.get_torch_distributed_backend_str() == "nccl"
 
 
-def test_hcu_config_detected_before_cuda(monkeypatch):
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch, "__hcu_version__", "3.6", raising=False)
+@pytest.fixture
+def cuda_torch(monkeypatch):
+    # Platform detection must not inherit an available MUSA/NPU backend from
+    # the hardware on which these CPU regressions happen to run.
+    module = ModuleType("torch")
+    module.cuda = SimpleNamespace(is_available=lambda: True)
+    monkeypatch.setitem(sys.modules, "torch", module)
+    return module
+
+
+def test_hcu_config_detected_before_cuda(cuda_torch):
+    cuda_torch.__hcu_version__ = "3.6"
     assert utils.get_platform_name() == "hygon"
 
 
-def test_ordinary_cuda_keeps_existing_config(monkeypatch):
-    monkeypatch.delattr(torch, "__hcu_version__", raising=False)
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+def test_ordinary_cuda_keeps_existing_config(cuda_torch):
     assert utils.get_platform_name() == "nvidia"
 
 
