@@ -9,7 +9,9 @@ import pytest
 import torch
 import yaml
 
-from sglang_fl.dispatch.backends.vendor.mthreads.patch import _patch_multimodal_mask
+from tests.utils.musa_patch import load_musa_patch
+
+_patch_multimodal_mask = load_musa_patch()._patch_multimodal_mask
 
 
 @pytest.mark.parametrize("owner", ["mm_utils", "mm_schedule"])
