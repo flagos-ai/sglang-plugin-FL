@@ -14,10 +14,9 @@
 
 # Shared fixtures for dispatch unit tests.
 
-import logging
-
 import pytest
 
+from sglang_fl.dispatch.config import utils as config_utils
 from sglang_fl.dispatch.types import BackendImplKind, BackendPriority, OpImpl
 from sglang_fl.dispatch.registry import OpRegistry
 from sglang_fl.dispatch.policy import reset_global_policy
@@ -38,6 +37,9 @@ def _reset_policy(monkeypatch):
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(dispatch_config, "get_config_path", lambda platform=None: None)
+    # Config utility callers also stay independent of the detected hardware.
+    # Explicit SGLANG_FL_CONFIG files continue through the real loader.
+    monkeypatch.setattr(config_utils, "get_platform_name", lambda: "unknown")
     reset_global_policy()
     yield
     reset_global_policy()
