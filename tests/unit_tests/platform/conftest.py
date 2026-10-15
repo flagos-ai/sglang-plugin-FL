@@ -32,9 +32,9 @@ def mock_device_detector(monkeypatch):
     flag_gems.runtime.backend.device import DeviceDetector`` hits it without
     needing flag_gems installed.
 
-    Also clears the process-wide ``get_device_info`` lru_cache so each test's
-    mock takes effect (otherwise a previous test's cached DeviceInfo would
-    win).
+    Clears the process-wide ``get_device_info`` lru_cache before each mock
+    and during teardown, so fake DeviceInfo objects cannot outlive the
+    monkeypatches that supplied their detector.
     """
 
     def _make(vendor_name=None, raise_exc=None):
@@ -63,7 +63,12 @@ def mock_device_detector(monkeypatch):
             sys.modules, "flag_gems.runtime.backend.device", fake_mod
         )
 
-    return _make
+    try:
+        yield _make
+    finally:
+        from sglang_fl.utils import get_device_info
+
+        get_device_info.cache_clear()
 
 
 @pytest.fixture
