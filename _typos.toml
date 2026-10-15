@@ -28,3 +28,7 @@ unparseable = "unparseable"
 thw = "thw"
 # MUSA / flashinfer C++ header file extension (.muh), e.g. flashinfer/sampling.muh
 muh = "muh"
+
+[default.extend-identifiers]
+# Recorded Hygon runtime commit; preserve the exact SHA in validation evidence.
+"8029ba2" = "8029ba2"
