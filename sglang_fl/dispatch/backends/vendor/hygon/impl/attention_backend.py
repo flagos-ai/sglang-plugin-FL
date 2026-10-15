@@ -2,16 +2,16 @@
 
 This standalone version exposes one FlashAttention implementation for both
 eager execution and standard decode CUDA Graph. SGLang selects the execution
-mode through ``disable_cuda_graph``; this backend has no eager/Graph backend
-selector. It keeps ``TritonAttnBackend`` only for SGLang metadata and Graph
-lifecycle compatibility. Attention prefill and decode never fall back to
-Triton: unsupported configurations and request modes fail fast.
+mode through ``cuda_graph_config`` (eager prefill, full or disabled decode).
+It keeps ``TritonAttnBackend`` only for SGLang metadata and Graph lifecycle
+compatibility. Attention prefill and decode never fall back to Triton:
+unsupported configurations and request modes fail fast.
 
 Lifecycle:
   - __init__ once per worker after model and memory-pool initialization
   - init_forward_metadata once per eager forward
   - init_cuda_graph_state once before standard graph capture
-  - init_forward_metadata_*_cuda_graph during capture and replay
+  - init_forward_metadata_out_graph before capture and replay
   - forward_extend / forward_decode per attention layer
 """
 
@@ -24,37 +24,40 @@ from typing import TYPE_CHECKING, Optional
 
 import torch
 
-from sglang.srt.compilation.piecewise_context_manager import (
-    is_in_piecewise_cuda_graph,
+from sglang.kernels.ops.kvcache.kv_indices import (
+    create_flashmla_kv_indices_triton,
+    get_num_kv_index_blocks_flashmla,
 )
 from sglang.srt.layers.attention.triton_backend import TritonAttnBackend
-from sglang.srt.layers.attention.utils import create_flashmla_kv_indices_triton
 from sglang.srt.layers.radix_attention import AttentionType
-from sglang.srt.model_executor.breakable_cuda_graph.context import (
+from sglang.srt.model_executor.cuda_graph_config import Backend, Phase
+from sglang.srt.model_executor.forward_batch_info import ForwardMode
+from sglang.srt.model_executor.runner_backend_utils.breakable_cuda_graph.context import (
     is_in_breakable_cuda_graph,
 )
-from sglang.srt.model_executor.forward_batch_info import ForwardMode
+from sglang.srt.model_executor.runner_backend_utils.tc_piecewise_cuda_graph.context_manager import (
+    is_in_tc_piecewise_cuda_graph,
+)
 
 if TYPE_CHECKING:
     from sglang.srt.layers.radix_attention import RadixAttention
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
     from sglang.srt.model_executor.model_runner import ModelRunner
-    from sglang.srt.speculative.spec_info import SpecInput
 
 logger = logging.getLogger(__name__)
 
 _PAGE_TABLE_DEBUG_ENV = "SGLANG_HCU_DEBUG_PAGE_TABLE"
 _FLASH_ATTN_SUPPORTED_PAGE_SIZES = frozenset((64, 128, 256))
 _FLASH_ATTN_PAGE_SIZE_DESCRIPTION = "64, 128, or 256"
-_FLASH_ATTN_HEAD_DIM_DESCRIPTION = (
-    "a multiple of 8 from 32 through 224, or exactly 256"
-)
+_FLASH_ATTN_HEAD_DIM_DESCRIPTION = "a multiple of 8 from 32 through 224, or exactly 256"
 
 
 def _is_supported_flash_attn_head_dim(head_dim: int) -> bool:
     """Return whether the validated Hygon FlashAttention kernels support it."""
-    return isinstance(head_dim, int) and head_dim % 8 == 0 and (
-        32 <= head_dim <= 224 or head_dim == 256
+    return (
+        isinstance(head_dim, int)
+        and head_dim % 8 == 0
+        and (32 <= head_dim <= 224 or head_dim == 256)
     )
 
 
@@ -107,14 +110,12 @@ def _validate_flash_attn_page_table(
             f"out_cache_loc={tuple(out_cache_loc.shape)}, batch_size={batch_size}."
         )
 
-    req_indices_cpu = req_pool_indices[:batch_size].detach().to(
-        device="cpu", dtype=torch.int64
+    req_indices_cpu = (
+        req_pool_indices[:batch_size].detach().to(device="cpu", dtype=torch.int64)
     )
-    seq_lens_cpu = seq_lens[:batch_size].detach().to(
-        device="cpu", dtype=torch.int64
-    )
-    page_table_cpu = page_table[:batch_size].detach().to(
-        device="cpu", dtype=torch.int64
+    seq_lens_cpu = seq_lens[:batch_size].detach().to(device="cpu", dtype=torch.int64)
+    page_table_cpu = (
+        page_table[:batch_size].detach().to(device="cpu", dtype=torch.int64)
     )
     out_cache_loc_cpu = (
         out_cache_loc[:batch_size].detach().to(device="cpu", dtype=torch.int64)
@@ -146,8 +147,8 @@ def _validate_flash_attn_page_table(
                 f"{page_table_cpu.shape[1]} columns."
             )
 
-        token_locs = req_to_token[req_idx, :seq_len].detach().to(
-            device="cpu", dtype=torch.int64
+        token_locs = (
+            req_to_token[req_idx, :seq_len].detach().to(device="cpu", dtype=torch.int64)
         )
         expected_page_ids = []
         for logical_page in range(num_pages):
@@ -262,6 +263,10 @@ def _load_flash_attn_varlen_func():
 class HCUAttnBackend(TritonAttnBackend):
     """FlashAttention-only Hygon backend for the controlled Qwen route."""
 
+    # Triton does not need the host mirror, but HCU prefill validates full and
+    # extend lengths on the CPU. Preserve the scheduler-provided mirror.
+    needs_cpu_seq_lens: bool = True
+
     def __init__(
         self,
         model_runner: ModelRunner,
@@ -279,6 +284,8 @@ class HCUAttnBackend(TritonAttnBackend):
             kv_indptr_buf=kv_indptr_buf,
         )
 
+        # TritonAttnBackend owns the runner's KV pool in SGLang 0.5.18.
+        # ForwardBatch carries write locations and per-forward metadata only.
         self._flash_attn_input_dtype = model_runner.model_config.dtype
         self._flash_attn_kv_cache_dtype = model_runner.kv_cache_dtype
         self._flash_attn_page_size = model_runner.server_args.page_size
@@ -287,6 +294,7 @@ class HCUAttnBackend(TritonAttnBackend):
 
         self._flash_attn_eager_page_table = None
         self._flash_attn_cuda_graph_page_table = None
+        self._flash_attn_cuda_graph_seq_lens = None
         self._flash_attn_forward_page_table = None
         self._flash_attn_forward_seq_lens = None
         self._flash_attn_prefill_cu_seqlens_q = None
@@ -309,13 +317,14 @@ class HCUAttnBackend(TritonAttnBackend):
         controlled_config_errors = []
         if not getattr(server_args, "disable_radix_cache", False):
             controlled_config_errors.append("disable_radix_cache must be True")
-        if not getattr(server_args, "disable_piecewise_cuda_graph", False):
+        graph_config = server_args.cuda_graph_config
+        if graph_config[Phase.PREFILL].backend != Backend.DISABLED:
             controlled_config_errors.append(
-                "disable_piecewise_cuda_graph must be True"
+                "cuda_graph_config.prefill.backend must be disabled"
             )
-        if getattr(server_args, "enable_breakable_cuda_graph", False):
+        if graph_config[Phase.DECODE].backend not in (Backend.FULL, Backend.DISABLED):
             controlled_config_errors.append(
-                "enable_breakable_cuda_graph must be False"
+                "cuda_graph_config.decode.backend must be full or disabled"
             )
         if getattr(server_args, "enable_deterministic_inference", False):
             controlled_config_errors.append(
@@ -350,6 +359,10 @@ class HCUAttnBackend(TritonAttnBackend):
         # The strict backend rejects every unsupported model-wide condition.
         if self.use_mla:
             return "MLA is not supported"
+        if self.dcp_size != 1:
+            return "decode context parallelism is not supported"
+        if self._translate_kv_loc is not None:
+            return "unified KV pools with virtual cache locations are not supported"
         if self._flash_attn_page_size not in _FLASH_ATTN_SUPPORTED_PAGE_SIZES:
             return (
                 f"page_size={self._flash_attn_page_size} is not supported; "
@@ -411,7 +424,7 @@ class HCUAttnBackend(TritonAttnBackend):
             and getattr(forward_batch, "global_forward_mode", None)
             in (None, ForwardMode.EXTEND)
             and forward_batch.spec_info is None
-            and not is_in_piecewise_cuda_graph()
+            and not is_in_tc_piecewise_cuda_graph()
             and not is_in_breakable_cuda_graph()
             and all(int(prefix_len) >= 0 for prefix_len in prefix_lens)
             and all(int(extend_len) > 0 for extend_len in extend_lens_cpu)
@@ -421,10 +434,7 @@ class HCUAttnBackend(TritonAttnBackend):
             and seq_lens.numel() >= batch_size
             and seq_lens_cpu is not None
             and seq_lens_cpu.numel() >= batch_size
-            and [
-                int(length)
-                for length in seq_lens_cpu[:batch_size].tolist()
-            ]
+            and [int(length) for length in seq_lens_cpu[:batch_size].tolist()]
             == expected_full_lens
             and (
                 not uses_paged_kv
@@ -443,9 +453,7 @@ class HCUAttnBackend(TritonAttnBackend):
         prefix_lens_cpu = [
             int(length) for length in forward_batch.extend_prefix_lens_cpu
         ]
-        extend_lens_cpu = [
-            int(length) for length in forward_batch.extend_seq_lens_cpu
-        ]
+        extend_lens_cpu = [int(length) for length in forward_batch.extend_seq_lens_cpu]
         full_lens_cpu = [
             prefix_len + extend_len
             for prefix_len, extend_len in zip(prefix_lens_cpu, extend_lens_cpu)
@@ -525,15 +533,23 @@ class HCUAttnBackend(TritonAttnBackend):
     ) -> torch.Tensor:
         if target.dtype != torch.int32 or target.ndim != 2:
             raise RuntimeError(
-                "HCU FlashAttention page table must be a two-dimensional int32 "
-                "tensor."
+                "HCU FlashAttention page table must be a two-dimensional int32 tensor."
             )
         batch_size = target.shape[0]
         if batch_size == 0:
             return target
 
         target.fill_(-1)
-        create_flashmla_kv_indices_triton[(batch_size,)](
+        # v0.5.18 assigns each page-block to grid axis 1. A one-dimensional
+        # launch silently leaves sequences beyond the first 4096 tokens stale.
+        create_flashmla_kv_indices_triton[
+            (
+                batch_size,
+                get_num_kv_index_blocks_flashmla(
+                    target.shape[1], self._flash_attn_page_size
+                ),
+            )
+        ](
             self.req_to_token,
             req_pool_indices[:batch_size],
             seq_lens[:batch_size],
@@ -556,7 +572,7 @@ class HCUAttnBackend(TritonAttnBackend):
 
     def init_forward_metadata(self, forward_batch: ForwardBatch) -> None:
         """Prepare SGLang base metadata and Hygon FlashAttention metadata."""
-        # Triton metadata remains available for unsupported layers and modes.
+        # Reuse upstream metadata lifecycle; forward kernels remain HCU-only.
         super().init_forward_metadata(forward_batch)
         self._flash_attn_forward_page_table = None
         self._flash_attn_forward_seq_lens = None
@@ -581,12 +597,12 @@ class HCUAttnBackend(TritonAttnBackend):
                 page_table,
             )
             self._flash_attn_forward_page_table = page_table
-            # Eager ScheduleBatch sequence lengths are int64, while the Hygon
-            # FlashAttention ABI requires int32. CUDA Graph buffers are already
-            # int32 and are handled separately without changing their address.
-            self._flash_attn_forward_seq_lens = forward_batch.seq_lens[
-                :batch_size
-            ].to(dtype=torch.int32)
+            # ScheduleBatch and SGLang 0.5.18 CUDA Graph sequence lengths
+            # are int64, while the Hygon FlashAttention ABI requires int32.
+            # Graph execution uses a persistent int32 buffer below.
+            self._flash_attn_forward_seq_lens = forward_batch.seq_lens[:batch_size].to(
+                dtype=torch.int32
+            )
             if getattr(self, "_flash_attn_debug_page_table", False):
                 self._debug_validate_flash_attn_metadata(forward_batch, page_table)
 
@@ -648,6 +664,12 @@ class HCUAttnBackend(TritonAttnBackend):
             dtype=torch.int32,
             device=self.device,
         )
+        # SGLang 0.5.18 DecodeInputBuffers owns int64 seq_lens. FlashAttention
+        # requires int32 and records this pointer during capture; allocate the
+        # conversion destination once rather than replacing it on replay.
+        self._flash_attn_cuda_graph_seq_lens = torch.zeros(
+            (max_bs,), dtype=torch.int32, device=self.device
+        )
 
     def _prepare_flash_attn_cuda_graph_metadata(
         self,
@@ -655,9 +677,12 @@ class HCUAttnBackend(TritonAttnBackend):
         req_pool_indices: torch.Tensor,
         seq_lens: torch.Tensor,
     ) -> None:
-        if self._flash_attn_cuda_graph_page_table is None:
+        if (
+            self._flash_attn_cuda_graph_page_table is None
+            or self._flash_attn_cuda_graph_seq_lens is None
+        ):
             raise RuntimeError(
-                "HCU FlashAttention CUDA Graph page-table buffer was not initialized."
+                "HCU FlashAttention CUDA Graph metadata buffers were not initialized."
             )
         if bs > self._flash_attn_cuda_graph_page_table.shape[0]:
             raise RuntimeError(
@@ -671,66 +696,31 @@ class HCUAttnBackend(TritonAttnBackend):
             req_pool_indices[:bs], seq_lens[:bs], page_table
         )
         self._flash_attn_forward_page_table = page_table
-        self._flash_attn_forward_seq_lens = seq_lens[:bs]
+        graph_seq_lens = self._flash_attn_cuda_graph_seq_lens[:bs]
+        graph_seq_lens.copy_(seq_lens[:bs])
+        self._flash_attn_forward_seq_lens = graph_seq_lens
 
-    def init_forward_metadata_capture_cuda_graph(
+    def init_forward_metadata_out_graph(
         self,
-        bs: int,
-        num_tokens: int,
-        req_pool_indices: torch.Tensor,
-        seq_lens: torch.Tensor,
-        encoder_lens: Optional[torch.Tensor],
-        forward_mode: ForwardMode,
-        spec_info: Optional[SpecInput],
+        forward_batch: ForwardBatch,
+        in_capture: bool = False,
     ) -> None:
-        super().init_forward_metadata_capture_cuda_graph(
-            bs,
-            num_tokens,
-            req_pool_indices,
-            seq_lens,
-            encoder_lens,
-            forward_mode,
-            spec_info,
-        )
-        self._flash_attn_forward_page_table = None
-        self._flash_attn_forward_seq_lens = None
-        if self._should_prepare_flash_attn_metadata(forward_mode, spec_info):
-            self._prepare_flash_attn_cuda_graph_metadata(
-                bs, req_pool_indices, seq_lens
+        """Refresh address-stable HCU metadata before graph capture or replay."""
+        if not self._should_prepare_flash_attn_metadata(
+            forward_batch.forward_mode, forward_batch.spec_info
+        ):
+            raise RuntimeError(
+                "Strict HCU FlashAttention CUDA Graph supports only normal decode."
             )
-
-    def init_forward_metadata_replay_cuda_graph(
-        self,
-        bs: int,
-        req_pool_indices: torch.Tensor,
-        seq_lens: torch.Tensor,
-        seq_lens_sum: int,
-        encoder_lens: Optional[torch.Tensor],
-        forward_mode: ForwardMode,
-        spec_info: Optional[SpecInput],
-        seq_lens_cpu: Optional[torch.Tensor],
-    ) -> None:
-        super().init_forward_metadata_replay_cuda_graph(
-            bs,
-            req_pool_indices,
-            seq_lens,
-            seq_lens_sum,
-            encoder_lens,
-            forward_mode,
-            spec_info,
-            seq_lens_cpu,
+        super().init_forward_metadata_out_graph(forward_batch, in_capture=in_capture)
+        self._prepare_flash_attn_cuda_graph_metadata(
+            forward_batch.batch_size,
+            forward_batch.req_pool_indices,
+            forward_batch.seq_lens,
         )
-        self._flash_attn_forward_page_table = None
-        self._flash_attn_forward_seq_lens = None
-        if self._should_prepare_flash_attn_metadata(forward_mode, spec_info):
-            self._prepare_flash_attn_cuda_graph_metadata(
-                bs, req_pool_indices, seq_lens
-            )
-            if not getattr(self, "_flash_attn_cuda_graph_replay_logged", False):
-                logger.info(
-                    "HCU FlashAttention CUDA Graph replay metadata path is active"
-                )
-                self._flash_attn_cuda_graph_replay_logged = True
+        if not in_capture and not self._flash_attn_cuda_graph_replay_logged:
+            logger.info("HCU FlashAttention CUDA Graph replay metadata path is active")
+            self._flash_attn_cuda_graph_replay_logged = True
 
     def get_cuda_graph_seq_len_fill_value(self) -> int:
         """Return the Triton-compatible padding value for graph sequence lengths."""
@@ -751,7 +741,7 @@ class HCUAttnBackend(TritonAttnBackend):
         global_forward_mode = getattr(forward_batch, "global_forward_mode", None)
         if global_forward_mode not in (None, ForwardMode.EXTEND):
             return "the global forward mode is not ordinary EXTEND"
-        if is_in_piecewise_cuda_graph():
+        if is_in_tc_piecewise_cuda_graph():
             return "piecewise CUDA Graph prefill has not been validated"
         if is_in_breakable_cuda_graph():
             return "breakable CUDA Graph prefill has not been validated"
@@ -794,8 +784,7 @@ class HCUAttnBackend(TritonAttnBackend):
             for prefix_len, extend_len in zip(prefix_lens, extend_lens)
         ]
         actual_full_lens = [
-            int(length)
-            for length in seq_lens_cpu[: forward_batch.batch_size].tolist()
+            int(length) for length in seq_lens_cpu[: forward_batch.batch_size].tolist()
         ]
         if actual_full_lens != expected_full_lens:
             return "full sequence lengths do not match prefix plus extend lengths"
@@ -904,7 +893,6 @@ class HCUAttnBackend(TritonAttnBackend):
                 return page_table_reason
             cache_layout_reason = self._get_paged_prefill_cache_layout_reason(
                 layer,
-                forward_batch,
                 q,
             )
             if cache_layout_reason is not None:
@@ -923,9 +911,7 @@ class HCUAttnBackend(TritonAttnBackend):
             return "cached-prefix prefill requires a two-dimensional int32 page table"
         if page_table.shape[0] != forward_batch.batch_size:
             return "cached-prefix prefill page-table rows do not match the batch"
-        max_seq_len_k = getattr(
-            self, "_flash_attn_prefill_max_k_seq_len", None
-        )
+        max_seq_len_k = getattr(self, "_flash_attn_prefill_max_k_seq_len", None)
         if max_seq_len_k is None or int(max_seq_len_k) <= 0:
             return "cached-prefix prefill maximum K sequence length is unavailable"
         required_columns = (
@@ -942,10 +928,9 @@ class HCUAttnBackend(TritonAttnBackend):
     def _get_paged_prefill_cache_layout_reason(
         self,
         layer,
-        forward_batch,
         q: torch.Tensor,
     ) -> Optional[str]:
-        token_to_kv_pool = getattr(forward_batch, "token_to_kv_pool", None)
+        token_to_kv_pool = self.token_to_kv_pool
         if token_to_kv_pool is None:
             return "the token-to-KV pool is unavailable"
         try:
@@ -996,8 +981,14 @@ class HCUAttnBackend(TritonAttnBackend):
         forward_batch: ForwardBatch,
         save_kv_cache: bool = True,
         sinks: Optional[torch.Tensor] = None,
+        score_mod=None,
+        aux_tensors=None,
     ) -> torch.Tensor:
         """Run ordinary prefill/extend with strict Hygon FlashAttention."""
+        if score_mod is not None or aux_tensors is not None:
+            raise RuntimeError(
+                "Strict HCU FlashAttention does not support score_mod or aux_tensors."
+            )
         error_reason = self._get_prefill_error_reason(
             q,
             k,
@@ -1043,9 +1034,7 @@ class HCUAttnBackend(TritonAttnBackend):
         k_view = None
         v_view = None
         if uses_paged_kv:
-            k_cache, v_cache = forward_batch.token_to_kv_pool.get_kv_buffer(
-                layer.layer_id
-            )
+            k_cache, v_cache = self.token_to_kv_pool.get_kv_buffer(layer.layer_id)
             k_view = k_cache.view(
                 -1,
                 self._flash_attn_page_size,
@@ -1060,7 +1049,7 @@ class HCUAttnBackend(TritonAttnBackend):
             )
 
         if save_kv_cache:
-            forward_batch.token_to_kv_pool.set_kv_buffer(
+            self.token_to_kv_pool.set_kv_buffer(
                 layer,
                 forward_batch.out_cache_loc,
                 k,
@@ -1068,9 +1057,7 @@ class HCUAttnBackend(TritonAttnBackend):
             )
 
         num_tokens = q.shape[0]
-        q_view = q.contiguous().view(
-            num_tokens, layer.tp_q_head_num, layer.qk_head_dim
-        )
+        q_view = q.contiguous().view(num_tokens, layer.tp_q_head_num, layer.qk_head_dim)
         if uses_paged_kv:
             assert k_view is not None and v_view is not None
             if not getattr(self, "_flash_attn_prefill_paged_logged", False):
@@ -1198,8 +1185,14 @@ class HCUAttnBackend(TritonAttnBackend):
         forward_batch: ForwardBatch,
         save_kv_cache: bool = True,
         sinks: Optional[torch.Tensor] = None,
+        score_mod=None,
+        aux_tensors=None,
     ) -> torch.Tensor:
         """Run single-token decode with strict paged Hygon FlashAttention."""
+        if score_mod is not None or aux_tensors is not None:
+            raise RuntimeError(
+                "Strict HCU FlashAttention does not support score_mod or aux_tensors."
+            )
         error_reason = self._get_runtime_error_reason(
             q, k, v, layer, forward_batch, save_kv_cache, sinks
         )
@@ -1223,16 +1216,14 @@ class HCUAttnBackend(TritonAttnBackend):
             )
 
         if save_kv_cache:
-            forward_batch.token_to_kv_pool.set_kv_buffer(
+            self.token_to_kv_pool.set_kv_buffer(
                 layer,
                 forward_batch.out_cache_loc,
                 k,
                 v,
             )
 
-        k_cache, v_cache = forward_batch.token_to_kv_pool.get_kv_buffer(
-            layer.layer_id
-        )
+        k_cache, v_cache = self.token_to_kv_pool.get_kv_buffer(layer.layer_id)
         if (
             k_cache.shape[0] % self._flash_attn_page_size != 0
             or v_cache.shape[0] % self._flash_attn_page_size != 0

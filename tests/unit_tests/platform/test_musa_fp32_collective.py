@@ -7,10 +7,10 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sglang_fl.dispatch.backends.vendor.mthreads.patch import (
-    _patch_flagcx_fp32_all_reduce,
-)
 from sglang_fl.distributed.communicator import CommunicatorFL
+from tests.utils.musa_patch import load_musa_patch
+
+_patch_flagcx_fp32_all_reduce = load_musa_patch()._patch_flagcx_fp32_all_reduce
 
 
 @pytest.mark.parametrize(

@@ -16,6 +16,7 @@
 
 import importlib
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -33,9 +34,17 @@ class TestApplyVendorPatches:
         assert "vendor patch loaded" in caplog.text
         assert "fakevendor.patch" in caplog.text
 
-    def test_mthreads_vendor_loads_patch(self, caplog, mock_device_detector):
-        """mthreads vendor has a real patch.py on disk - verify it loads directly."""
+    def test_mthreads_vendor_loads_patch(
+        self, caplog, mock_device_detector, inject_vendor_module
+    ):
+        """Verify the real vendor route without activating foreign hardware."""
+        patch_path = (
+            Path(__file__).resolve().parents[3]
+            / "sglang_fl/dispatch/backends/vendor/mthreads/patch.py"
+        )
+        assert patch_path.is_file()
         mock_device_detector("mthreads")
+        inject_vendor_module("mthreads", "patch")
         with caplog.at_level(logging.INFO, logger="sglang_fl"):
             _apply_vendor_patches()
         assert "vendor patch loaded" in caplog.text

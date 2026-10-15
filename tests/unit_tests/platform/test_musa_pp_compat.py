@@ -7,7 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from sglang_fl.dispatch.backends.vendor.mthreads.patch import _patch_pp_send_recv_order
+from tests.utils.musa_patch import load_musa_patch
+
+_patch_pp_send_recv_order = load_musa_patch()._patch_pp_send_recv_order
 
 
 @pytest.mark.parametrize("new_api", [False, True])

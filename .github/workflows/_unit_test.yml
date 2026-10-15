@@ -68,9 +68,16 @@ jobs:
 
       - name: Run unit tests
         run: |
+          if [ "${{ inputs.platform }}" = "hygon" ]; then
+            unset CUDA_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES
+          fi
           python tests/run.py \
             --platform ${{ inputs.platform }} \
             --scope unit
+
+      - name: Run Hygon vendor-stack verifier regressions
+        if: inputs.platform == 'hygon'
+        run: python .github/scripts/hygon/ci_environment.py -- python -m pytest .github/scripts/hygon/test_verify_environment.py -q --junitxml=test-results-hygon-environment.xml
 
       - name: Upload test results
         if: always()
@@ -80,3 +87,4 @@ jobs:
           path: |
             test-results-${{ inputs.platform }}.xml
             test-results-${{ inputs.platform }}.json
+            test-results-hygon-environment.xml

@@ -28,12 +28,19 @@ def fused_moe_hcu(
     Returns:
         CombineInput (StandardCombineInput)
     """
-    from sglang.srt.layers.moe.moe_runner.triton import TritonMoeQuantInfo
+    get_quant_info = getattr(obj, "get_triton_quant_info", None)
+    if callable(get_quant_info):
+        # SGLang owns the weight layout and its corresponding runner flags
+        # (e.g. fuse_swiglu_interleaved in 0.5.18). Preserve the complete info.
+        quant_info = get_quant_info(layer)
+    else:
+        # Older SGLang releases do not expose the quant-info factory.
+        from sglang.srt.layers.moe.moe_runner.triton import TritonMoeQuantInfo
 
-    quant_info = TritonMoeQuantInfo(
-        w13_weight=layer.w13_weight,
-        w2_weight=layer.w2_weight,
-        b13=getattr(layer, "w13_weight_bias", None),
-        b2=getattr(layer, "w2_weight_bias", None),
-    )
+        quant_info = TritonMoeQuantInfo(
+            w13_weight=layer.w13_weight,
+            w2_weight=layer.w2_weight,
+            b13=getattr(layer, "w13_weight_bias", None),
+            b2=getattr(layer, "w2_weight_bias", None),
+        )
     return obj.runner.run(dispatch_output, quant_info)
