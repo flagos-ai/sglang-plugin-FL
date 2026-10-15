@@ -34,5 +34,7 @@ def silu_and_mul_cuda(obj, x: torch.Tensor) -> torch.Tensor:
 
     d = x.shape[-1] // 2
     out = torch.empty(*x.shape[:-1], d, dtype=x.dtype, device=x.device)
-    sgl_silu_and_mul(out, x)
+    # sgl_kernel's public wrapper is silu_and_mul(input, out=None), which is the
+    # reverse of the underlying ATen op: sgl_kernel::silu_and_mul(out, input).
+    sgl_silu_and_mul(x, out)
     return out
