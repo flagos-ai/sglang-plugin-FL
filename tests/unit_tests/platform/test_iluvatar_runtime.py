@@ -89,8 +89,23 @@ def test_older_vendor_bf16_query_without_keyword(monkeypatch):
     assert config.dtype == torch.bfloat16
 
 
-def test_missing_bf16_query_requires_explicit_dtype(monkeypatch):
-    monkeypatch.delattr(torch.cuda, "is_bf16_supported")
+@pytest.mark.parametrize("dynamic_cuda", [False, True], ids=["native-module", "vendor-proxy"])
+def test_missing_bf16_query_requires_explicit_dtype(monkeypatch, dynamic_cuda):
+    if dynamic_cuda:
+        cuda = ModuleType("_vendor_cuda_proxy")
+
+        def forwarded_attribute(name):
+            if name == "is_bf16_supported":
+                return lambda **kwargs: True
+            raise AttributeError(name)
+
+        cuda.__getattr__ = forwarded_attribute
+        assert cuda.is_bf16_supported()
+        assert "is_bf16_supported" not in vars(cuda)
+        monkeypatch.setattr(torch, "cuda", cuda)
+    # Deleting a concrete name can expose a vendor proxy's dynamic fallback.
+    # An explicit None models a genuinely unavailable query on both runtimes.
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", None)
     with pytest.raises(RuntimeError, match="select --dtype float16"):
         legacy_gpu_gate._downgrade_for_iluvatar(
             model_config=SimpleNamespace(dtype=torch.bfloat16)

@@ -1,0 +1,196 @@
+# Dispatch only with an existing CoreX runner and a built test image.
+# No runner labels or unpublished image names are guessed by this workflow.
+name: Iluvatar GPU acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_labels:
+        description: 'Existing runner labels as JSON, including self-hosted'
+        required: true
+        type: string
+      ci_image:
+        description: 'Accessible prebuilt test image from docker/iluvatar/empty-0.5.18.containerfile'
+        required: true
+        type: string
+      cuda_visible_devices:
+        description: 'GPU indices explicitly allocated on the runner, for example 3'
+        required: true
+        type: string
+      scope:
+        description: 'Full models plus operators, or operators only (no model acceptance)'
+        required: true
+        type: choice
+        options: [full, operators]
+        default: full
+      models_path:
+        description: 'Absolute model directory on the runner, required for full; mounted read-only at /models'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate explicit CoreX resources
+    runs-on: ubuntu-latest
+    outputs:
+      runner_labels: ${{ steps.resources.outputs.runner_labels }}
+      ci_image: ${{ steps.resources.outputs.ci_image }}
+      cuda_visible_devices: ${{ steps.resources.outputs.cuda_visible_devices }}
+      model_mount_options: ${{ steps.resources.outputs.model_mount_options }}
+    steps:
+      - name: Validate resource selectors before scheduling
+        id: resources
+        env:
+          RUNNER_LABELS: ${{ inputs.runner_labels }}
+          CI_IMAGE: ${{ inputs.ci_image }}
+          CUDA_VISIBLE_DEVICES: ${{ inputs.cuda_visible_devices }}
+          ACCEPTANCE_SCOPE: ${{ inputs.scope }}
+          MODELS_PATH: ${{ inputs.models_path }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import PurePosixPath
+          labels = json.loads(os.environ['RUNNER_LABELS'])
+          if not isinstance(labels, list) or not labels or not all(
+              isinstance(label, str) and label.strip() and '\n' not in label
+              for label in labels
+          ) or 'self-hosted' not in labels:
+              raise SystemExit('runner_labels must list existing labels including self-hosted')
+          image = os.environ['CI_IMAGE'].strip()
+          if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/@+-]+', image):
+              raise SystemExit('ci_image must be an accessible prebuilt container reference')
+          devices = os.environ['CUDA_VISIBLE_DEVICES'].strip()
+          if not re.fullmatch(r'\d+(,\d+)*', devices):
+              raise SystemExit('Explicitly allocate one or more numeric CoreX GPU indices')
+          ids = devices.split(',')
+          if len(set(ids)) != len(ids):
+              raise SystemExit('GPU indices must be unique')
+          mount_options = ''
+          if os.environ['ACCEPTANCE_SCOPE'] == 'full':
+              if len(ids) < 4:
+                  raise SystemExit('Full TP4 model acceptance requires at least four allocated GPUs')
+              models = os.environ['MODELS_PATH'].strip()
+              if not PurePosixPath(models).is_absolute() or not re.fullmatch(r'/[A-Za-z0-9_./-]+', models):
+                  raise SystemExit('Full acceptance requires an absolute runner models_path without spaces or shell characters')
+              mount_options = f'--volume={models}:/models:ro'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'runner_labels={json.dumps(sorted(set(labels)))}\n')
+              output.write(f'ci_image={image}\n')
+              output.write(f'cuda_visible_devices={devices}\n')
+              output.write(f'model_mount_options={mount_options}\n')
+          PY
+
+  gpu-contracts:
+    name: Iluvatar ${{ inputs.scope }} acceptance (GPU)
+    needs: validate
+    runs-on: ${{ fromJson(needs.validate.outputs.runner_labels) }}
+    timeout-minutes: 180
+    concurrency:
+      # Serialize the same runner-label pool; GPU allocation must still be reserved.
+      group: iluvatar-gpu-${{ needs.validate.outputs.runner_labels }}
+      cancel-in-progress: false
+    container:
+      image: ${{ needs.validate.outputs.ci_image }}
+      options: --privileged --ipc=host --shm-size=32g ${{ needs.validate.outputs.model_mount_options }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      CUDA_VISIBLE_DEVICES: ${{ needs.validate.outputs.cuda_visible_devices }}
+      SGLANG_PLATFORM: sglang_fl
+      SGLANG_PLUGINS: sglang_fl
+      SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK: '1'
+      SGLANG_IS_FLASHINFER_AVAILABLE: '0'
+      SGLANG_FL_DIST_BACKEND: flagcx
+      FLAGCX_PATH: /sgl-workspace/FlagCX
+      USE_FLAGGEMS: '1'
+      TORCH_COMPILE_DISABLE: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+      CONCURRENT_N: '8'
+      MAX_TOKENS: '64'
+    steps:
+      - name: Checkout dispatched revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Require idle memory on every explicitly allocated GPU
+        run: python scripts/iluvatar/require_idle_gpus.py
+      - name: Require both mounted model configurations for full acceptance
+        if: inputs.scope == 'full'
+        run: |
+          test -f /models/Qwen3.6-27B/config.json
+          test -f /models/Qwen3.6-35B-A3B/config.json
+      - name: Require real CoreX hardware before installing the addon
+        run: |
+          python - <<'PY'
+          import torch
+          assert hasattr(torch, 'corex'), 'A CoreX vendor Torch image is required'
+          assert torch.cuda.is_available(), 'Allocated CoreX GPUs must be visible'
+          print(torch.__version__, torch.cuda.device_count(), torch.cuda.get_device_name(0))
+          PY
+      - name: Install this revision without resolving vendor dependencies
+        run: |
+          python -m pip install --no-deps --no-build-isolation --force-reinstall \
+            -e . ./addon/iluvatar-compat
+      - name: Verify vendor profile and CUDA-alias runtime imports
+        run: |
+          mkdir -p artifacts
+          python scripts/iluvatar/verify_environment.py --min-devices 1 --fused-profile vendor \
+            | tee artifacts/iluvatar-vendor-environment.log
+      - name: Verify FlagOS profile
+        env:
+          SGLANG_FL_PER_OP: 'gemma_rms_norm=reference;fused_moe=flagos;chunk_gated_delta_rule=flagos;fused_recurrent_gated_delta_rule=flagos;fused_recurrent_gated_delta_rule_packed_decode=flagos'
+        run: |
+          python scripts/iluvatar/verify_environment.py --min-devices 1 --fused-profile flagos \
+            | tee artifacts/iluvatar-flagos-environment.log
+      - name: Run both numerical and graph backends plus the CoreX PDL probe
+        run: |
+          python - <<'PY'
+          import sglang
+          import pytest
+          raise SystemExit(pytest.main([
+              '-q', '-p', 'no:cacheprovider', '-m', 'gpu',
+              '--junitxml=artifacts/iluvatar-gpu.xml',
+              'tests/functional_tests/ops/test_iluvatar_empty_ops.py',
+              'tests/unit_tests/platform/test_iluvatar_runtime.py',
+          ]))
+          PY
+      - name: Require all 30 operator contracts and the PDL probe without skips
+        if: always()
+        run: python scripts/iluvatar/check_ci_results.py artifacts/iluvatar-gpu.xml --min-tests 31
+      - name: Full vendor model acceptance (offline and concurrent, both graph modes)
+        if: inputs.scope == 'full'
+        env:
+          FUSED_PROFILE: vendor
+          TP_SIZE: '4'
+          OUTPUT_DIR: artifacts/models-vendor
+        run: bash scripts/iluvatar/run_single_node_acceptance.sh
+      - name: Full FlagOS model acceptance (offline and concurrent, both graph modes)
+        if: inputs.scope == 'full'
+        env:
+          FUSED_PROFILE: flagos
+          TP_SIZE: '4'
+          OUTPUT_DIR: artifacts/models-flagos
+        run: bash scripts/iluvatar/run_single_node_acceptance.sh
+      - name: Require every requested model and graph log
+        if: inputs.scope == 'full'
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          for profile in ('vendor', 'flagos'):
+              for model in ('27b', '35b_a3b'):
+                  for disabled in (1, 0):
+                      for mode in ('offline', 'concurrent'):
+                          log = Path('artifacts') / f'models-{profile}' / f'{model}_{mode}_graph_disabled_{disabled}.log'
+                          assert log.is_file() and log.stat().st_size, f'Missing model evidence: {log}'
+          PY
+      - name: Upload real CoreX test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: iluvatar-gpu-contracts
+          path: artifacts/
+          if-no-files-found: error

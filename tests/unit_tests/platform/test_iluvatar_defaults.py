@@ -37,6 +37,7 @@ def test_explicit_backends_are_preserved():
 
 def test_empty_policy_resolves_without_vendor_kernels(monkeypatch):
     import sglang_fl
+    from sglang_fl.dispatch.config import utils as config_utils
     from sglang_fl.dispatch.registry import OpRegistry
     from sglang_fl.dispatch.manager import OpManager
     from sglang_fl.dispatch.policy import SelectionPolicy, policy_context
@@ -53,7 +54,9 @@ def test_empty_policy_resolves_without_vendor_kernels(monkeypatch):
     for key in list(os.environ):
         if key.startswith("SGLANG_FL_"):
             monkeypatch.delenv(key)
-    monkeypatch.setenv("SGLANG_FL_PLATFORM", "iluvatar")
+    # Hardware detection precedes SGLANG_FL_PLATFORM on real CUDA/MUSA hosts.
+    # Isolate only that detection while exercising the real Iluvatar YAML.
+    monkeypatch.setattr(config_utils, "get_platform_name", lambda: "iluvatar")
     config = sglang_fl._build_config()
     assert config["deny_vendors"] == {"cuda"}
     assert config["flagos_blacklist"] == ["max", "masked_scatter_"]
