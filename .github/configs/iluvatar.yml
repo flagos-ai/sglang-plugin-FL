@@ -6,8 +6,9 @@ platform: iluvatar
 # Published tag: 0.5.18-iluvatar-ci. Pin the manifest returned by docker push.
 ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:8cc9b2ecd0b99f200eadde5bc13e556953a4a0001156864d2ae106fc3911741a
 
+# Match the pool label used by successful vLLM jobs. Do not add the
+# conventional self-hosted default label to the configured runner scale set.
 runner_labels:
-  - self-hosted
   - iluvatar-cicd-vllm-plugin
 
 # Use the first four GPUs from the existing runner's 0..7 configuration for TP4.

@@ -19,13 +19,15 @@ def resolve_resources(config, *, scope="full", overrides=None):
         not isinstance(labels, list)
         or not labels
         or not all(
-            isinstance(label, str) and label.strip() and "\n" not in label
+            isinstance(label, str)
+            and label.strip()
+            and "\n" not in label
+            and "\r" not in label
             for label in labels
         )
-        or "self-hosted" not in labels
     ):
         raise ValueError(
-            "runner_labels must name existing labels including self-hosted"
+            "runner_labels must be a non-empty list of explicit label names"
         )
     image = str(overrides.get("ci_image") or config.get("ci_image", "")).strip()
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]+", image):
