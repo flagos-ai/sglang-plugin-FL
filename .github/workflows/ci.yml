@@ -1,5 +1,6 @@
 # CI workflow for the SGLang 0.5.18 development line.
-# NVIDIA and MUSA are enabled; the other backends remain temporarily disabled.
+# NVIDIA and MUSA use GPU runners; Iluvatar also has a hosted CPU contract gate.
+# Its explicit GPU workflow requires an existing CoreX runner and built image.
 name: CI
 
 on:
@@ -29,6 +30,9 @@ permissions:
 jobs:
   lint:
     uses: ./.github/workflows/_lint.yml
+
+  iluvatar-cpu-contracts:
+    uses: ./.github/workflows/_iluvatar_compat_test.yml
 
   build:
     needs: lint

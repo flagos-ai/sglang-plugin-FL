@@ -158,6 +158,14 @@ _HERE = Path(__file__).resolve().parent
 IMG_DIR = Path(os.environ.get("IMAGE_DIR", _HERE / "test_images"))
 
 
+def _check_images():
+    required = ("red_square.jpg", "cat.jpg", "digit_seven.png", "stop_sign.png")
+    missing = [str(IMG_DIR / name) for name in required if not (IMG_DIR / name).is_file()]
+    if missing:
+        raise FileNotFoundError("Required test images are missing: " + ", ".join(missing))
+
+
+
 # ─── Argument parsing ────────────────────────────────────────────────────────
 
 
@@ -340,6 +348,7 @@ def run_tests(
     request_timeout: int = 300,
 ) -> bool:
     """Run all verification tests. Returns True if all passed."""
+    _check_images()
     t = TestRunner()
 
     # Test 1: Text Inference (Sequential)
@@ -445,41 +454,38 @@ def run_tests(
 
     # Test 5: Multimodal (VL) Sequential
     print("\n=== Test 5: Multimodal (VL) Sequential ===")
-    if IMG_DIR.is_dir():
-        r = vl_request(
-            port,
-            IMG_DIR / "red_square.jpg",
-            "What color is shown in this image? Answer with one word.",
-            10,
-            timeout=request_timeout,
-        )
-        print(f"  Q: Color of square?  A: {r}")
-        t.check("VL: red square = red", "red", r)
+    r = vl_request(
+        port,
+        IMG_DIR / "red_square.jpg",
+        "What color is shown in this image? Answer with one word.",
+        10,
+        timeout=request_timeout,
+    )
+    print(f"  Q: Color of square?  A: {r}")
+    t.check("VL: red square = red", "red", r)
 
-        r = vl_request(
-            port,
-            IMG_DIR / "cat.jpg",
-            "What animal is in this image? Answer with one word.",
-            10,
-            timeout=request_timeout,
-        )
-        print(f"  Q: Animal in image?  A: {r}")
-        t.check("VL: cat image = cat", "cat", r)
+    r = vl_request(
+        port,
+        IMG_DIR / "cat.jpg",
+        "What animal is in this image? Answer with one word.",
+        10,
+        timeout=request_timeout,
+    )
+    print(f"  Q: Animal in image?  A: {r}")
+    t.check("VL: cat image = cat", "cat", r)
 
-        r = vl_request(
-            port,
-            IMG_DIR / "digit_seven.png",
-            "What digit is shown in this image? Answer with one digit.",
-            10,
-            timeout=request_timeout,
-        )
-        print(f"  Q: Digit in image?  A: {r}")
-        t.check("VL: digit = 7", "7", r)
-    else:
-        print(f"  SKIP: test_images directory not found at {IMG_DIR}")
+    r = vl_request(
+        port,
+        IMG_DIR / "digit_seven.png",
+        "What digit is shown in this image? Answer with one digit.",
+        10,
+        timeout=request_timeout,
+    )
+    print(f"  Q: Digit in image?  A: {r}")
+    t.check("VL: digit = 7", "7", r)
 
     # Test 6: High-Concurrency VL
-    if IMG_DIR.is_dir() and vl_concurrency > 1:
+    if vl_concurrency > 1:
         print(f"\n=== Test 6: High-Concurrency VL x{vl_concurrency} ===")
         vl_cases = [
             (IMG_DIR / "red_square.jpg", "What color is this? One word.", "red"),
@@ -533,6 +539,7 @@ def run_tests(
 
 def run_master(args):
     """Launch server, wait for ready, run tests, shutdown."""
+    _check_images()
     node_rank = args.node_rank if args.node_rank is not None else 0
 
     print("=" * 56)

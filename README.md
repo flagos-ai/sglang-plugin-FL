@@ -60,7 +60,8 @@ separate FlagGems fused-op acceptance path. See the
 An isolated CoreX environment on host 211 passed 30 GPU operator tests across
 the native and FlagGems paths, including packed decode graph replay, plus 12
 runtime tests. TP4 model, multi-GPU communication, pipeline and throughput
-acceptance still need available devices; the new container recipe is unbuilt.
+acceptance still need available devices. The test image builds with a cached
+vendor base override; publication and GPU CI scheduling remain pending.
 
 The validated H100 environment removes the Triton package installed with
 PyTorch and uses FlagTree 0.6.2a1 as its Triton 3.6-compatible compiler. The

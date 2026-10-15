@@ -18,6 +18,16 @@ export TP_SIZE="${TP_SIZE:-4}"
 export CONCURRENT_N="${CONCURRENT_N:-8}"
 export MAX_TOKENS="${MAX_TOKENS:-64}"
 export PYTHONUNBUFFERED=1
+for name in TP_SIZE MAX_TOKENS; do
+    if ! [[ "${!name}" =~ ^[1-9][0-9]*$ ]]; then
+        printf '%s must be a positive integer\n' "$name" >&2
+        exit 2
+    fi
+done
+if ! [[ "$CONCURRENT_N" =~ ^[1-9][0-9]*$ ]] || (( CONCURRENT_N < 2 )); then
+    printf 'CONCURRENT_N must be an integer >= 2 for concurrent acceptance\n' >&2
+    exit 2
+fi
 fused_profile="${FUSED_PROFILE:-vendor}"
 if [[ "$fused_profile" == flagos ]]; then
     export SGLANG_FL_PER_OP='gemma_rms_norm=reference;fused_moe=flagos;chunk_gated_delta_rule=flagos;fused_recurrent_gated_delta_rule=flagos;fused_recurrent_gated_delta_rule_packed_decode=flagos'
@@ -45,8 +55,8 @@ for model in 27b 35b_a3b; do
         export DISABLE_CUDA_GRAPH="$disabled"
         python "examples/qwen3_6_${model}_offline_inference.py" \
             2>&1 | tee "$output_dir/${model}_offline_graph_disabled_${disabled}.log"
+        python "examples/qwen3_6_${model}_concurrent.py" --mode all \
+            2>&1 | tee "$output_dir/${model}_concurrent_graph_disabled_${disabled}.log"
     done
-    python "examples/qwen3_6_${model}_concurrent.py" --mode all \
-        2>&1 | tee "$output_dir/${model}_concurrent.log"
 done
 printf 'Acceptance completed: %s\n' "$output_dir"

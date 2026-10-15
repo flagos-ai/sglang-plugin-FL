@@ -95,7 +95,8 @@ Qwen3.6-35B-A3B 已通过普通对话、强制 128-token decode 和四并发请�
 镜像与配置见[天数指南](docker/iluvatar/README.md)。211 隔离环境中，原生和
 FlagGems 路径合计 30 项 GPU 算子测试通过，包含 packed decode graph 重放；
 另有 12 项运行时测试通过。双模型 TP4、多卡通信、两机 PP 和吞吐仍需空闲
-设备继续验收；新容器配方尚未实际构建。
+设备继续验收；test 镜像已使用缓存厂商基底覆盖构建通过，发布和 GPU CI
+调度仍待完成。
 
 ## 快速开始
 

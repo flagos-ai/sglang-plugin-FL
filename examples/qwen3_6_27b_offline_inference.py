@@ -10,7 +10,7 @@ Usage:
 
 Environment variables:
   MODEL_PATH    Model path (default: /models/Qwen3.6-27B)
-  TP_SIZE       Tensor parallelism (default: 1)
+  TP_SIZE       Tensor parallelism (CoreX/NPU/txda default: 4; otherwise: 1)
   MAX_TOKENS    Max generation tokens (default: 10)
   IMAGE_DIR     Test image directory (default: examples/test_images/ next to this file)
 """
@@ -43,7 +43,7 @@ if _is_txda:
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-27B")
-TP_SIZE = int(os.environ.get("TP_SIZE", "4" if _is_npu or _is_txda else "1"))
+TP_SIZE = int(os.environ.get("TP_SIZE", "4" if _is_npu or _is_txda or _is_corex else "1"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "10"))
 
 _HERE = Path(__file__).resolve().parent
@@ -137,6 +137,16 @@ VL_CASES = [
 ]
 
 
+def _check_images():
+    missing = [
+        str(IMAGE_DIR / case["image"])
+        for case in VL_CASES
+        if not (IMAGE_DIR / case["image"]).is_file()
+    ]
+    if missing:
+        raise FileNotFoundError("Required test images are missing: " + ", ".join(missing))
+
+
 # ─── Prompt formatting ───────────────────────────────────────────────────────
 
 _tokenizer = None
@@ -191,6 +201,7 @@ def _image_uri(name: str) -> str:
 
 
 def run_engine():
+    _check_images()
     from sglang.srt.entrypoints.engine import Engine
 
     engine = Engine(
@@ -219,11 +230,6 @@ def run_engine():
     print("\n=== Multimodal Inference ===")
     vl_outputs = []
     for case in VL_CASES:
-        img_path = IMAGE_DIR / case["image"]
-        if not img_path.is_file():
-            print(f"  SKIP (missing image): {img_path}")
-            vl_outputs.append(None)
-            continue
         uri = _image_uri(case["image"])
         result = engine.generate(
             prompt=_vl_prompt(case["question"], uri),
@@ -254,9 +260,9 @@ def validate(text_outputs, vl_outputs):
             )
 
     # VL validation
+    assert len(vl_outputs) == len(VL_CASES), "Missing required VL outputs"
     for case, text in zip(VL_CASES, vl_outputs):
-        if text is None:
-            continue
+        assert text is not None, f"Missing output for required image: {case['image']}"
         assert len(text) > 0, f"Empty output for VL case: {case['image']}"
         lower = text.lower()
         matched = any(pat.lower() in lower for pat in case["expected"])

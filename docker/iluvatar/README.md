@@ -128,7 +128,7 @@ tail -n 60 /tmp/iluvatar-ops.log
 
 以下完整验收需四张显存充足的 GPU。脚本先以原生 FlagCX 执行多卡
 all-reduce/all-gather，拒绝回退，再分别运行 Dense/MoE 的 graph 开关两种
-offline 配置，以及 text、image、mixed 并发测试。可通过
+offline 配置和两种 graph 模式的 text、image、mixed 并发测试。可通过
 `DENSE_MODEL_PATH`、`MOE_MODEL_PATH`、`TP_SIZE`、`CONCURRENT_N`、
 `OUTPUT_DIR` 指定模型和日志目录。`CUDA_VISIBLE_DEVICES` 按实际分配的设备设置。
 
@@ -178,5 +178,27 @@ packed decode 缓存更新与 CUDA Graph 重放，以及 MoE bias、路由权重
 
 双模型 TP4、FlagCX 多卡、两机 PP 和吞吐尚未验收。当前各卡已有 vLLM
 作业，需分配空闲设备后继续；单卡小算子通过不能替代模型和性能验收。
-容器配方已提供，本次测试使用缓存厂商镜像派生的隔离环境手动安装同版本
-软件栈，尚未实际构建、发布或启用新的天数 CI 镜像。
+2026-10-15 已用缓存厂商镜像作为 `BASE_IMAGE` 构建 `test` target，构建与
+无 GPU 的包版本检查通过。本地镜像为
+`codex-sglang-iluvatar:0.5.18-test-20261015`，ID
+`sha256:8bba1f405aaa707ce3ce58cd77ad1b0c019553f79ff1c797ba552ce219d14639`。
+这验证了配方在该缓存基底上的构建，尚未发布镜像，也没有新的镜像内模型
+验收结论；配方默认的远端 `BASE_IMAGE` 未在此次构建中使用。
+
+## CI 接入与范围
+
+主 `CI` workflow 自动调用 `Iluvatar compatibility (CPU)`，在 GitHub 托管
+runner 上构建导入兼容包并执行 CPU 合约和 CI 守卫测试。该作业不代表硬件验收。
+
+独立的 `Iluvatar GPU acceptance` workflow 要求显式提供真实 runner 标签、
+可访问的已构建 test 镜像、分配的物理 GPU 索引及模型目录。默认 `scope=full`，
+依次执行两种后端的 30 项算子测试、1 项真实 PDL 编译探针，以及 TP4 双模型
+offline/并发、graph 关闭/开启的完整单机验收。`scope=operators` 只验算子，
+不执行模型测试。JUnit 门禁拒绝空结果、跳过和失败。
+
+GPU 工作流启动前通过 `ixsmi` 检查每张显式选卡，已用显存超过 512 MiB 则
+失败；不自动改选其它设备或停止现有进程。该检查只是单次闲置显存检查，
+持续独占仍须由 runner 的设备分配保证。不同 runner 标签池若共用同一主机，
+须由基础设施统一协调。当前尚未确认本仓可用的天数 runner 和已发布镜像，
+GPU CI 没有本次运行通过的结论；新手动 workflow 还需满足 GitHub 默认分支
+中的 `workflow_dispatch` 入口要求后才能调度。
