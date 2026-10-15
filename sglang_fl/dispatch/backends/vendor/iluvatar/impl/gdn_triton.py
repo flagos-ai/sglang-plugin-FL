@@ -63,9 +63,9 @@ def _packed_decode_kernel():
         current = tl.load(state_ptr, mask=mask_state, other=0.0).to(tl.float32)
 
         packed = mixed_qkv + batch * stride_qkv
-        q = tl.load(
-            packed + query_head * K + offsets_k, mask=mask_k, other=0.0
-        ).to(tl.float32)
+        q = tl.load(packed + query_head * K + offsets_k, mask=mask_k, other=0.0).to(
+            tl.float32
+        )
         k = tl.load(
             packed + H * K + query_head * K + offsets_k,
             mask=mask_k,
@@ -85,9 +85,11 @@ def _packed_decode_kernel():
         gate += tl.load(dt_bias + value_head).to(tl.float32)
         gate = tl.where(gate <= 20.0, tl.log(1.0 + tl.exp(gate)), gate)
         gate *= -tl.exp(tl.load(A_log + value_head).to(tl.float32))
-        update = tl.sigmoid(
-            tl.load(b + batch * stride_b + value_head).to(tl.float32)
-        ).to(b.dtype.element_ty).to(tl.float32)
+        update = (
+            tl.sigmoid(tl.load(b + batch * stride_b + value_head).to(tl.float32))
+            .to(b.dtype.element_ty)
+            .to(tl.float32)
+        )
 
         current *= tl.exp(gate)
         value = (value - tl.sum(current * k[None, :], axis=1)) * update
@@ -188,11 +190,7 @@ def _kernel():
         mask_k = kk < K
         slot = tl.load(indices + seq).to(tl.int64)
         active = slot >= 0
-        state_offset = (
-            slot * stride_state
-            + (hv * V + vv[:, None]) * K
-            + kk[None, :]
-        )
+        state_offset = slot * stride_state + (hv * V + vv[:, None]) * K + kk[None, :]
         current = tl.load(
             state + state_offset,
             mask=active & mask_v[:, None] & mask_k[None, :],
@@ -208,13 +206,15 @@ def _kernel():
             chunk_base += (previous_end - previous_begin + 63) // 64
             previous += 1
         if SAVE_CHECKPOINTS:
-            checkpoint_offset = (
-                (chunk_base * HV + hv) * V + vv[:, None]
-            ) * K + kk[None, :]
+            checkpoint_offset = ((chunk_base * HV + hv) * V + vv[:, None]) * K + kk[
+                None, :
+            ]
             tl.store(
                 checkpoints + checkpoint_offset,
                 current,
-                mask=active & mask_v[:, None] & mask_k[None, :],
+                # Padding has a zero initial state but still owns output
+                # and chunk checkpoints. Only cache reads/writes are masked.
+                mask=mask_v[:, None] & mask_k[None, :],
             )
         ratio: tl.constexpr = HV // H
         q_head = hv // ratio
@@ -231,9 +231,9 @@ def _kernel():
                 k_value *= tl.rsqrt(tl.sum(k_value * k_value, axis=0) + 1e-6)
             decay = tl.load(g + token * HV + hv).to(tl.float32)
             update = tl.load(beta + token * HV + hv).to(tl.float32)
-            value = tl.load(
-                v + (token * HV + hv) * V + vv, mask=mask_v, other=0.0
-            ).to(tl.float32)
+            value = tl.load(v + (token * HV + hv) * V + vv, mask=mask_v, other=0.0).to(
+                tl.float32
+            )
             current *= tl.exp(decay)
             prediction = tl.sum(current * k_value[None, :], axis=1)
             current += ((value - prediction) * update)[:, None] * k_value[None, :]
@@ -241,19 +241,18 @@ def _kernel():
             tl.store(
                 out + (token * HV + hv) * V + vv,
                 result,
-                mask=active & mask_v,
+                mask=mask_v,
             )
             if SAVE_CHECKPOINTS:
                 local_token = token - begin + 1
                 chunk = chunk_base + local_token // 64
-                checkpoint_offset = (
-                    (chunk * HV + hv) * V + vv[:, None]
-                ) * K + kk[None, :]
+                checkpoint_offset = ((chunk * HV + hv) * V + vv[:, None]) * K + kk[
+                    None, :
+                ]
                 tl.store(
                     checkpoints + checkpoint_offset,
                     current,
-                    mask=active
-                    & (local_token % 64 == 0)
+                    mask=(local_token % 64 == 0)
                     & (token + 1 < end)
                     & mask_v[:, None]
                     & mask_k[None, :],

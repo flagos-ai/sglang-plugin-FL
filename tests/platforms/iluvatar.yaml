@@ -1,0 +1,60 @@
+# BI-V150 / CoreX 4.5.0 empty runtime, SGLang 0.5.18.
+platform: iluvatar
+vendor: iluvatar
+device_types:
+  bi_v150:
+    memory_gb: 32
+    tags: [cuda, fp16]
+
+engine_overrides:
+  qwen3_6:
+    27b_tp4_nograph:
+      model_path: /models/Qwen3.6-27B
+      dtype: float16
+      attention_backend: triton
+      sampling_backend: pytorch
+      mm_attention_backend: triton_attn
+    35b_a3b_tp4_nograph:
+      model_path: /models/Qwen3.6-35B-A3B
+      dtype: float16
+      attention_backend: triton
+      sampling_backend: pytorch
+      mm_attention_backend: triton_attn
+
+tolerance:
+  inference:
+    default: {rtol: 1e-3, atol: 1e-3}
+    float16: {rtol: 1e-3, atol: 1e-3}
+device_overrides: {}
+unsupported_features: [flashinfer, flash_attn]
+env_defaults:
+  SGLANG_PLATFORM: sglang_fl
+  SGLANG_PLUGINS: sglang_fl
+  SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK: '1'
+  SGLANG_IS_FLASHINFER_AVAILABLE: '0'
+  SGLANG_FL_DIST_BACKEND: flagcx
+  FLAGCX_PATH: /sgl-workspace/FlagCX
+  USE_FLAGGEMS: '1'
+  NCCL_IB_DISABLE: '1'
+
+bi_v150:
+  name: bi_v150
+  tests:
+    unit:
+      include: '*'
+      exclude: []
+    functional:
+      include: '*'
+      exclude: []
+    e2e:
+      inference:
+        qwen3_6: [27b_tp4_nograph, 35b_a3b_tp4_nograph]
+      concurrent:
+        qwen3_6: [27b_tp4_nograph, 35b_a3b_tp4_nograph]
+      serving:
+        qwen3_6: [27b_tp4_nograph, 35b_a3b_tp4_nograph]
+    benchmark:
+      # The shared smoke matrix needs Qwen3-0.6B, absent from the documented
+      # model set. Use the fixed-load benchmark driver for the Qwen3.6 models.
+      enabled: false
+      smoke: []
