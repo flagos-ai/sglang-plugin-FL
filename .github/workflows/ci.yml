@@ -1,6 +1,5 @@
 # CI workflow for the SGLang 0.5.18 development line.
-# NVIDIA, MUSA and Iluvatar use platform GPU runners.
-# Iluvatar additionally runs Python compatibility contracts on a hosted CPU runner.
+# NVIDIA and MUSA are enabled; the other backends remain temporarily disabled.
 name: CI
 
 on:
@@ -13,6 +12,7 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
+      - "examples/**"
       - "LICENSE"
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/PULL_REQUEST_TEMPLATE.md"
@@ -30,6 +30,7 @@ jobs:
   lint:
     uses: ./.github/workflows/_lint.yml
 
+  # Iluvatar also checks Python compatibility on a hosted CPU runner.
   iluvatar-cpu-contracts:
     uses: ./.github/workflows/_iluvatar_compat_test.yml
 
@@ -109,10 +110,11 @@ jobs:
       platform: thead
     secrets: inherit
 
+  # Iluvatar keeps its four-stage acceptance isolated from other backends.
   test-iluvatar:
     needs: discover
     if: contains(fromJson(needs.discover.outputs.platforms), 'iluvatar')
-    uses: ./.github/workflows/_platform_test.yml
+    uses: ./.github/workflows/_iluvatar_test.yml
     with:
       platform: iluvatar
     secrets: inherit

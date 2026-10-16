@@ -30,11 +30,6 @@ on:
         required: false
         type: string
         default: ""
-      concurrency_group:
-        description: "Optional shared GPU pool lock; empty keeps test jobs independent"
-        required: false
-        type: string
-        default: ""
       timeout:
         description: "Timeout for the job in minutes"
         required: false
@@ -46,9 +41,6 @@ jobs:
     name: "Unit (${{ inputs.platform }})"
     runs-on: ${{ fromJson(inputs.runner_labels) }}
     timeout-minutes: ${{ inputs.timeout }}
-    concurrency:
-      group: ${{ inputs.concurrency_group || format('platform-test-{0}-{1}-{2}-unit', github.run_id, github.run_attempt, inputs.platform) }}
-      cancel-in-progress: false
     container:
       image: ${{ inputs.ci_image }}
       volumes: ${{ fromJson(inputs.container_volumes) }}
@@ -76,7 +68,7 @@ jobs:
 
       - name: Run unit tests
         run: |
-          python .github/scripts/run_platform_tests.py \
+          python tests/run.py \
             --platform ${{ inputs.platform }} \
             --scope unit
 
@@ -88,4 +80,3 @@ jobs:
           path: |
             test-results-${{ inputs.platform }}.xml
             test-results-${{ inputs.platform }}.json
-            artifacts/${{ inputs.platform }}/
