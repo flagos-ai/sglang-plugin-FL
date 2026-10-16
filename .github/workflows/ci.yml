@@ -29,6 +29,7 @@ jobs:
   lint:
     uses: ./.github/workflows/_lint.yml
 
+  # Iluvatar also checks Python compatibility on a hosted CPU runner.
   iluvatar-cpu-contracts:
     uses: ./.github/workflows/_iluvatar_compat_test.yml
 
@@ -118,10 +119,11 @@ jobs:
       platform: hygon
     secrets: inherit
 
+  # Iluvatar keeps its four-stage acceptance isolated from other backends.
   test-iluvatar:
     needs: discover
     if: contains(fromJson(needs.discover.outputs.platforms), 'iluvatar')
-    uses: ./.github/workflows/_platform_test.yml
+    uses: ./.github/workflows/_iluvatar_test.yml
     with:
       platform: iluvatar
     secrets: inherit

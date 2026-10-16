@@ -16,9 +16,8 @@ runner_labels:
 cuda_visible_devices: '0,1,2,3'
 models_path: /mnt/share/user_homes/models
 
-# Shared platform workflow settings; reserve one TP4 allocation across all stages.
+# Iluvatar-only workflow settings; reserve one TP4 allocation across its stages.
 test_timeout: 180
-e2e_max_parallel: 1
 concurrency_group: iluvatar-gpu-iluvatar-cicd-vllm-plugin
 container_volumes:
   - /dev:/dev

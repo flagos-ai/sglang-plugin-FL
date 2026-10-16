@@ -1,5 +1,5 @@
 # Manual full/operator acceptance using the same platform hooks as automatic CI.
-# Automatic PR checks enter through the common _platform_test workflow.
+# Automatic PR checks enter through the dedicated _iluvatar_test workflow.
 name: Iluvatar GPU acceptance
 
 on:
@@ -104,21 +104,21 @@ jobs:
         run: bash .github/scripts/iluvatar/setup.sh
       - name: Unit contracts
         if: inputs.scope == 'full'
-        run: python .github/scripts/run_platform_tests.py --platform iluvatar --scope unit
+        run: python .github/scripts/iluvatar/run_tests.py --platform iluvatar --scope unit
       - name: All 31 GPU operator and PDL contracts
-        run: python .github/scripts/run_platform_tests.py --platform iluvatar --scope functional
+        run: python .github/scripts/iluvatar/run_tests.py --platform iluvatar --scope functional
       - name: Both profiles and graph modes plus shared inference cases
         if: inputs.scope == 'full'
-        run: python .github/scripts/run_platform_tests.py --platform iluvatar --scope e2e --task inference --device bi_v150
+        run: python .github/scripts/iluvatar/run_tests.py --platform iluvatar --scope e2e --task inference --device bi_v150
       - name: Original HTTP serving cases
         if: inputs.scope == 'full'
-        run: python .github/scripts/run_platform_tests.py --platform iluvatar --scope e2e --task serving --device bi_v150
+        run: python .github/scripts/iluvatar/run_tests.py --platform iluvatar --scope e2e --task serving --device bi_v150
       - name: Original concurrent cases
         if: inputs.scope == 'full'
-        run: python .github/scripts/run_platform_tests.py --platform iluvatar --scope e2e --task concurrent --device bi_v150
+        run: python .github/scripts/iluvatar/run_tests.py --platform iluvatar --scope e2e --task concurrent --device bi_v150
       - name: All three original benchmark smoke cases
         if: inputs.scope == 'full'
-        run: python .github/scripts/run_platform_tests.py --platform iluvatar --scope benchmark --device bi_v150
+        run: python .github/scripts/iluvatar/run_tests.py --platform iluvatar --scope benchmark --device bi_v150
       - name: Upload real CoreX test evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
