@@ -39,6 +39,11 @@ on:
         required: false
         type: string
         default: ""
+      concurrency_group:
+        description: "Optional shared GPU pool lock; empty keeps test jobs independent"
+        required: false
+        type: string
+        default: ""
       timeout:
         description: "Timeout for the job in minutes"
         required: false
@@ -55,6 +60,9 @@ jobs:
     name: "E2E ${{ inputs.task }} (${{ inputs.platform }}/${{ inputs.device }})"
     runs-on: ${{ fromJson(inputs.runner_labels) }}
     timeout-minutes: ${{ inputs.timeout }}
+    concurrency:
+      group: ${{ inputs.concurrency_group || format('platform-test-{0}-{1}-{2}-e2e-{3}-{4}', github.run_id, github.run_attempt, inputs.platform, inputs.device, inputs.task) }}
+      cancel-in-progress: false
     container:
       image: ${{ inputs.ci_image }}
       volumes: ${{ fromJson(inputs.container_volumes) }}
@@ -84,7 +92,7 @@ jobs:
         # Operator safety defaults normally come from the plugin's vendor YAML.
         # A test platform may intentionally replace them through env_defaults.
         run: |
-          python tests/run.py \
+          python .github/scripts/run_platform_tests.py \
             --platform ${{ inputs.platform }} \
             --device "${{ inputs.device }}" \
             --scope e2e \
@@ -99,3 +107,4 @@ jobs:
           path: |
             test-results-${{ inputs.platform }}.xml
             test-results-${{ inputs.platform }}.json
+            artifacts/${{ inputs.platform }}/

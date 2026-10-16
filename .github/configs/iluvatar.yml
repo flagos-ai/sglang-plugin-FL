@@ -15,9 +15,15 @@ runner_labels:
 # Devices must be reserved by the runner; busy memory fails instead of changing GPUs.
 cuda_visible_devices: '0,1,2,3'
 models_path: /mnt/share/user_homes/models
+
+# Shared platform workflow settings; reserve one TP4 allocation across all stages.
+test_timeout: 180
+e2e_max_parallel: 1
+concurrency_group: iluvatar-gpu-iluvatar-cicd-vllm-plugin
 container_volumes:
   - /dev:/dev
   - /lib/modules:/lib/modules
+  - /mnt/share/user_homes/models:/models:ro
   - /usr/local/corex-4.5.0/lib64/libcuda.so.1:/usr/local/corex/lib64/libcuda.so.1
   - /usr/local/corex-4.5.0/lib64/libixml.so:/usr/local/corex/lib64/libixml.so
 
@@ -29,3 +35,16 @@ container_options: >-
   --user root
   --init
   --env GEMS_VENDOR=iluvatar
+  --env CUDA_VISIBLE_DEVICES=0,1,2,3
+  --env SGLANG_PLATFORM=sglang_fl
+  --env SGLANG_PLUGINS=sglang_fl
+  --env SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1
+  --env SGLANG_IS_FLASHINFER_AVAILABLE=0
+  --env SGLANG_FL_DIST_BACKEND=flagcx
+  --env FLAGCX_PATH=/sgl-workspace/FlagCX
+  --env USE_FLAGGEMS=1
+  --env NCCL_IB_DISABLE=1
+  --env TORCH_COMPILE_DISABLE=1
+  --env PYTHONDONTWRITEBYTECODE=1
+  --env CONCURRENT_N=16
+  --env MAX_TOKENS=256

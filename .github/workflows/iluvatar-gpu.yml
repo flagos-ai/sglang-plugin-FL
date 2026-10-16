@@ -1,5 +1,5 @@
-# Shared GPU acceptance: automatic full CI plus optional manual resource overrides.
-# Hardware resources are loaded through the same config loader as other platforms.
+# Manual full/operator acceptance using the same platform hooks as automatic CI.
+# Automatic PR checks enter through the common _platform_test workflow.
 name: Iluvatar GPU acceptance
 
 on:
@@ -70,10 +70,10 @@ jobs:
     name: Iluvatar ${{ inputs.scope }} acceptance (GPU)
     needs: validate
     runs-on: ${{ fromJson(needs.validate.outputs.runner_labels) }}
-    timeout-minutes: 180
+    timeout-minutes: ${{ inputs.scope == 'full' && 360 || 180 }}
     concurrency:
       # Serialize the same runner-label pool; GPU allocation must still be reserved.
-      group: iluvatar-gpu-${{ needs.validate.outputs.runner_labels }}
+      group: iluvatar-gpu-${{ join(fromJson(needs.validate.outputs.runner_labels), ',') }}
       cancel-in-progress: false
     container:
       image: ${{ needs.validate.outputs.ci_image }}
@@ -94,119 +94,35 @@ jobs:
       PYTHONDONTWRITEBYTECODE: '1'
       CONCURRENT_N: '16'
       MAX_TOKENS: '256'
+      SGLANG_ILUVATAR_MIN_DEVICES: ${{ inputs.scope == 'full' && '4' || '1' }}
     steps:
       - name: Checkout tested revision
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Require idle memory on every explicitly allocated GPU
-        run: |
-          mkdir -p artifacts
-          python scripts/iluvatar/require_idle_gpus.py | tee artifacts/idle-memory.log
-      - name: Require both mounted model configurations for full acceptance
+      - name: Check allocated CoreX devices
+        run: bash .github/scripts/iluvatar/check.sh
+      - name: Install this checkout and verify both backend profiles
+        run: bash .github/scripts/iluvatar/setup.sh
+      - name: Unit contracts
         if: inputs.scope == 'full'
-        run: |
-          test -f /models/Qwen3.6-27B/config.json
-          test -f /models/Qwen3.6-35B-A3B/config.json
-      - name: Require real CoreX hardware before installing the addon
-        run: |
-          python - <<'PY'
-          import torch
-          assert hasattr(torch, 'corex'), 'A CoreX vendor Torch image is required'
-          assert torch.cuda.is_available(), 'Allocated CoreX GPUs must be visible'
-          print(torch.__version__, torch.cuda.device_count(), torch.cuda.get_device_name(0))
-          PY
-      - name: Install this revision without resolving vendor dependencies
-        run: |
-          python -m pip install --no-deps --no-build-isolation --force-reinstall \
-            -e . ./addon/iluvatar-compat
-      - name: Verify vendor profile and CUDA-alias runtime imports
-        run: |
-          mkdir -p artifacts
-          python scripts/iluvatar/verify_environment.py --min-devices 1 --fused-profile vendor \
-            | tee artifacts/iluvatar-vendor-environment.log
-      - name: Verify FlagOS profile
-        env:
-          SGLANG_FL_PER_OP: 'gemma_rms_norm=reference;fused_moe=flagos;chunk_gated_delta_rule=flagos;fused_recurrent_gated_delta_rule=flagos;fused_recurrent_gated_delta_rule_packed_decode=flagos'
-        run: |
-          python scripts/iluvatar/verify_environment.py --min-devices 1 --fused-profile flagos \
-            | tee artifacts/iluvatar-flagos-environment.log
-      - name: Run both numerical and graph backends plus the CoreX PDL probe
-        run: |
-          python - <<'PY'
-          import sglang
-          import pytest
-          raise SystemExit(pytest.main([
-              '-q', '-p', 'no:cacheprovider', '-m', 'gpu',
-              '--junitxml=artifacts/iluvatar-gpu.xml',
-              'tests/functional_tests/ops/test_iluvatar_empty_ops.py',
-              'tests/unit_tests/platform/test_iluvatar_runtime.py',
-          ]))
-          PY
-      - name: Require all 30 operator contracts and the PDL probe without skips
-        if: always()
-        run: python scripts/iluvatar/check_ci_results.py artifacts/iluvatar-gpu.xml --min-tests 31
-      - name: Full vendor model acceptance (offline and concurrent, both graph modes)
+        run: python .github/scripts/run_platform_tests.py --platform iluvatar --scope unit
+      - name: All 31 GPU operator and PDL contracts
+        run: python .github/scripts/run_platform_tests.py --platform iluvatar --scope functional
+      - name: Both profiles and graph modes plus shared inference cases
         if: inputs.scope == 'full'
-        env:
-          FUSED_PROFILE: vendor
-          TP_SIZE: '4'
-          OUTPUT_DIR: artifacts/models-vendor
-        run: bash scripts/iluvatar/run_single_node_acceptance.sh
-      - name: Full FlagOS model acceptance (offline and concurrent, both graph modes)
+        run: python .github/scripts/run_platform_tests.py --platform iluvatar --scope e2e --task inference --device bi_v150
+      - name: Original HTTP serving cases
         if: inputs.scope == 'full'
-        env:
-          FUSED_PROFILE: flagos
-          TP_SIZE: '4'
-          OUTPUT_DIR: artifacts/models-flagos
-        run: bash scripts/iluvatar/run_single_node_acceptance.sh
-      - name: HTTP serving for Qwen3.6-27B (configured vendor profile)
+        run: python .github/scripts/run_platform_tests.py --platform iluvatar --scope e2e --task serving --device bi_v150
+      - name: Original concurrent cases
         if: inputs.scope == 'full'
-        run: |
-          python tests/run.py --platform iluvatar --device bi_v150 --scope e2e \
-            --task serving --model qwen3_6 --case 27b_tp4_nograph -- \
-            --junitxml=artifacts/serving-27b.xml
-      - name: Require all five 27B HTTP assertions without skips
-        if: always() && inputs.scope == 'full'
-        run: python scripts/iluvatar/check_ci_results.py artifacts/serving-27b.xml --min-tests 5
-      - name: HTTP serving for Qwen3.6-35B-A3B (configured vendor profile)
+        run: python .github/scripts/run_platform_tests.py --platform iluvatar --scope e2e --task concurrent --device bi_v150
+      - name: All three original benchmark smoke cases
         if: inputs.scope == 'full'
-        run: |
-          python tests/run.py --platform iluvatar --device bi_v150 --scope e2e \
-            --task serving --model qwen3_6 --case 35b_a3b_tp4_nograph -- \
-            --junitxml=artifacts/serving-35b.xml
-      - name: Require all five 35B HTTP assertions without skips
-        if: always() && inputs.scope == 'full'
-        run: python scripts/iluvatar/check_ci_results.py artifacts/serving-35b.xml --min-tests 5
-      - name: Run the original throughput, latency and serving benchmark smoke cases
-        if: inputs.scope == 'full'
-        run: |
-          for benchmark in throughput latency serve; do
-            python tests/run.py --platform iluvatar --device bi_v150 \
-              --scope benchmark --benchmark "$benchmark" -- \
-              --junitxml="artifacts/benchmark-${benchmark}.xml"
-          done
-      - name: Require all three benchmark reports without skips
-        if: always() && inputs.scope == 'full'
-        run: |
-          for benchmark in throughput latency serve; do
-            python scripts/iluvatar/check_ci_results.py \
-              "artifacts/benchmark-${benchmark}.xml" --min-tests 1
-          done
-      - name: Require every requested model and graph log
-        if: inputs.scope == 'full'
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          for profile in ('vendor', 'flagos'):
-              for model in ('27b', '35b_a3b'):
-                  for disabled in (1, 0):
-                      for mode in ('offline', 'concurrent'):
-                          log = Path('artifacts') / f'models-{profile}' / f'{model}_{mode}_graph_disabled_{disabled}.log'
-                          assert log.is_file() and log.stat().st_size, f'Missing model evidence: {log}'
-          PY
+        run: python .github/scripts/run_platform_tests.py --platform iluvatar --scope benchmark --device bi_v150
       - name: Upload real CoreX test evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: iluvatar-gpu-contracts
-          path: artifacts/
+          path: artifacts/iluvatar/
           if-no-files-found: error
