@@ -121,6 +121,7 @@ jobs:
   test-iluvatar:
     needs: discover
     if: contains(fromJson(needs.discover.outputs.platforms), 'iluvatar')
-    uses: ./.github/workflows/iluvatar-gpu.yml
+    uses: ./.github/workflows/_platform_test.yml
     with:
-      scope: full
+      platform: iluvatar
+    secrets: inherit

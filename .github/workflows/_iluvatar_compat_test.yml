@@ -28,7 +28,9 @@ jobs:
           python -m pip install numpy pytest pyyaml build
           python -m pip install --no-deps --no-build-isolation -e .
       - name: Validate CI evidence and idle-allocation guards
-        run: python -m unittest discover -s .github/scripts/iluvatar -p 'test_*.py'
+        run: |
+          python -m unittest discover -s .github/scripts -p 'test_run_platform_tests.py'
+          python -m unittest discover -s .github/scripts/iluvatar -p 'test_*.py'
       - name: Build and install the explicit import compatibility addon
         run: |
           python -m build --wheel --outdir artifacts/iluvatar-compat addon/iluvatar-compat

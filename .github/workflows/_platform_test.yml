@@ -66,6 +66,9 @@ jobs:
       - name: Check Hygon CI allocation and image guards
         if: inputs.platform == 'hygon'
         run: python -m unittest discover -s .github/scripts/hygon -p 'test_ci_*.py'
+      - name: Check Iluvatar CI helpers
+        if: inputs.platform == 'iluvatar'
+        run: python -m unittest discover -s .github/scripts/iluvatar -p 'test_*.py'
       - id: changes
         name: Detect changed files (PR only)
         run: |
@@ -94,8 +97,9 @@ jobs:
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
+      concurrency_group: ${{ fromJson(needs.setup.outputs.config).concurrency_group || '' }}
       # Include cold initialization of the vendor image in the job timeout.
-      timeout: ${{ inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 90 || 30 }}
+      timeout: ${{ fromJson(needs.setup.outputs.config).test_timeout || (inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 90 || 30) }}
 
   functional:
     needs: [setup, unit]
@@ -106,16 +110,16 @@ jobs:
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
-      timeout: ${{ inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 60 || 15 }}
+      concurrency_group: ${{ fromJson(needs.setup.outputs.config).concurrency_group || '' }}
+      timeout: ${{ fromJson(needs.setup.outputs.config).test_timeout || (inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 60 || 15) }}
 
   e2e:
     needs: [setup, functional]
     if: needs.setup.outputs.e2e_matrix != '[]'
     strategy:
       fail-fast: false
-      # MUSA, Ascend and Hygon groups share fixed per-platform GPU allocations.
-      # Keep each platform's E2E groups serial.
-      max-parallel: ${{ (inputs.platform == 'musa' || inputs.platform == 'ascend' || inputs.platform == 'hygon') && 1 || 256 }}
+      # A platform may serialize model groups that share one GPU allocation.
+      max-parallel: ${{ fromJson(needs.setup.outputs.config).e2e_max_parallel || ((inputs.platform == 'musa' || inputs.platform == 'ascend' || inputs.platform == 'hygon') && 1 || 256) }}
       matrix:
         test: ${{ fromJson(needs.setup.outputs.e2e_matrix) }}
     uses: ./.github/workflows/_e2e_test.yml
@@ -128,7 +132,8 @@ jobs:
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
-      timeout: ${{ inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 120 || inputs.platform == 'hygon' && 120 || matrix.test.timeout || 60 }}
+      concurrency_group: ${{ fromJson(needs.setup.outputs.config).concurrency_group || '' }}
+      timeout: ${{ fromJson(needs.setup.outputs.config).test_timeout || (inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 120 || inputs.platform == 'hygon' && 120 || matrix.test.timeout || 60) }}
 
   benchmark:
     needs: [setup, e2e]
@@ -139,7 +144,8 @@ jobs:
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
-      timeout: ${{ inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 60 || 30 }}
+      concurrency_group: ${{ fromJson(needs.setup.outputs.config).concurrency_group || '' }}
+      timeout: ${{ fromJson(needs.setup.outputs.config).test_timeout || (inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 60 || 30) }}
 
   notify:
     needs: [unit, functional, e2e, benchmark]

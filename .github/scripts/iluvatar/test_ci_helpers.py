@@ -4,6 +4,7 @@
 
 import importlib.util
 import json
+import shlex
 from pathlib import Path
 import tempfile
 import unittest
@@ -181,8 +182,87 @@ class TestConfiguredResources(unittest.TestCase):
         )
         self.assertIs(registry["platforms"]["iluvatar"]["enabled"], True)
         job = workflow["jobs"]["test-iluvatar"]
-        self.assertEqual(job["uses"], "./.github/workflows/iluvatar-gpu.yml")
-        self.assertEqual(job["with"]["scope"], "full")
+        self.assertEqual(job["uses"], "./.github/workflows/_platform_test.yml")
+        self.assertEqual(job["with"]["platform"], "iluvatar")
+        for scope, filename in (
+            ("unit", "_unit_test.yml"),
+            ("functional", "_functional_test.yml"),
+            ("e2e", "_e2e_test.yml"),
+            ("benchmark", "_benchmark_test.yml"),
+        ):
+            data = yaml.safe_load(
+                (self.repo / ".github/workflows" / filename).read_text(encoding="utf8")
+            )
+            commands = "\n".join(
+                str(step.get("run", ""))
+                for stage in data["jobs"].values()
+                for step in stage.get("steps", [])
+            )
+            self.assertIn(".github/scripts/run_platform_tests.py", commands)
+            self.assertIn(f"--scope {scope}", commands)
+        spec = importlib.util.spec_from_file_location(
+            "_iluvatar_driver_contract",
+            self.repo / ".github/scripts/iluvatar/run_tests.py",
+        )
+        driver = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(driver)
+        self.assertEqual(driver.MIN_UNIT_TESTS, 148)
+        self.assertEqual(driver.MIN_FUNCTIONAL_TESTS, 31)
+        self.assertEqual(len(driver.UNIT_TESTS), 10)
+        self.assertEqual(
+            driver.FUNCTIONAL_TESTS,
+            (
+                "tests/functional_tests/ops/test_iluvatar_empty_ops.py",
+                "tests/unit_tests/platform/test_iluvatar_runtime.py",
+            ),
+        )
+        self.assertEqual(driver.BENCHMARKS, ("throughput", "latency", "serve"))
+
+    @staticmethod
+    def device_env(options):
+        tokens = shlex.split(options)
+        values = []
+        for index, token in enumerate(tokens):
+            if token == "--env":
+                value = tokens[index + 1]
+            elif token.startswith("--env="):
+                value = token.removeprefix("--env=")
+            else:
+                continue
+            if value.startswith("CUDA_VISIBLE_DEVICES="):
+                values.append(value.split("=", 1)[1])
+        return values
+
+    def test_standard_config_directly_carries_model_mount_and_gpu_env(self):
+        self.assertIn(
+            "/mnt/share/user_homes/models:/models:ro", self.config["container_volumes"]
+        )
+        self.assertEqual(self.device_env(self.config["container_options"]), ["0,1,2,3"])
+        resolved = resources.resolve_resources(self.config)
+        self.assertEqual(
+            resolved["container_options"].count(
+                "/mnt/share/user_homes/models:/models:ro"
+            ),
+            1,
+        )
+
+    def test_manual_model_mount_replaces_the_standard_source_once(self):
+        resolved = resources.resolve_resources(
+            self.config, overrides={"models_path": "/srv/ci-models"}
+        )
+        mounts = [
+            token.removeprefix("--volume=")
+            for token in shlex.split(resolved["container_options"])
+            if token.startswith("--volume=") and ":/models:" in token
+        ]
+        self.assertEqual(mounts, ["/srv/ci-models:/models:ro"])
+
+    def test_operators_remove_models_and_manual_gpu_env_replaces_old_allocation(self):
+        resolved = resources.resolve_resources(
+            self.config, scope="operators", overrides={"cuda_visible_devices": "7"}
+        )
+        self.assertNotIn(":/models", resolved["container_options"])
+        self.assertEqual(self.device_env(resolved["container_options"]), ["7"])
 
 
 if __name__ == "__main__":

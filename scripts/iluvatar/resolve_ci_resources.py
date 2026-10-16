@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import PurePosixPath
 import re
+import shlex
 
 
 def resolve_resources(config, *, scope="full", overrides=None):
@@ -41,6 +42,15 @@ def resolve_resources(config, *, scope="full", overrides=None):
     if len(set(ids)) != len(ids) or (scope == "full" and len(ids) < 4):
         raise ValueError("Full acceptance needs at least four unique allocated GPUs")
     volumes = list(config.get("container_volumes", []))
+    # The standard config already mounts /models. A manual override replaces
+    # that target, and operator-only checks do not require any model mount.
+    volumes = [
+        volume
+        for volume in volumes
+        if not isinstance(volume, str)
+        or len(volume.split(":")) < 2
+        or volume.split(":")[1] != "/models"
+    ]
     if scope == "full":
         models = str(
             overrides.get("models_path") or config.get("models_path", "")
@@ -60,7 +70,25 @@ def resolve_resources(config, *, scope="full", overrides=None):
     options = str(config.get("container_options", "")).strip()
     if "\n" in options or "\r" in options:
         raise ValueError("Container options must be a single line")
-    options = " ".join([options, *(f"--volume={volume}" for volume in volumes)]).strip()
+    # Keep the explicit allocation consistent with the standard container env,
+    # including when a manual dispatch changes the configured GPU indices.
+    tokens = shlex.split(options)
+    kept = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in ("--env", "-e") and index + 1 < len(tokens):
+            if tokens[index + 1].startswith("CUDA_VISIBLE_DEVICES="):
+                index += 2
+                continue
+        if token.startswith("--env=CUDA_VISIBLE_DEVICES="):
+            index += 1
+            continue
+        kept.append(token)
+        index += 1
+    kept.extend(["--env", f"CUDA_VISIBLE_DEVICES={devices}"])
+    kept.extend(f"--volume={volume}" for volume in volumes)
+    options = shlex.join(kept)
     return {
         "runner_labels": json.dumps(sorted(set(labels))),
         "ci_image": image,

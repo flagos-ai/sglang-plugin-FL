@@ -200,21 +200,38 @@ harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:8cc9b2ecd0b99f200eadde5bc13e556
 主 `CI` workflow 自动调用 `Iluvatar compatibility (CPU)`，在 GitHub 托管
 runner 上构建导入兼容包并执行 CPU 合约和 CI 守卫测试。该作业不代表硬件验收。
 
-主 CI 沿用 main 的平台注册与配置加载机制：
-`.github/configs/platforms.yml` 启用天数，`test-iluvatar` 自动调用可复用的
-`Iluvatar GPU acceptance` workflow，硬件资源集中定义于
-`.github/configs/iluvatar.yml`。runner 标签、0–3 四卡、CoreX 挂载和模型源
-参考现有 vLLM main 天数 CI 配置。默认 runner 标签只使用已配置的
-`iluvatar-cicd-vllm-plugin`，不额外要求 ARC 不支持的 `self-hosted`。
-默认 `scope=full`，依次执行两种后端的
-30 项算子测试、1 项真实 PDL 编译探针、TP4 双模型 offline/并发的两种 graph
-模式；自动验收使用原并发例子的 16 请求及 256-token 生成上限。再执行
-默认原生后端的两项原 HTTP serving 用例和三项原 benchmark
-smoke。JUnit 门禁要求各阶段实际执行、零跳过、零失败。
+主 CI 沿用其他 backend 的统一入口：
+`.github/configs/platforms.yml` 启用天数，`ci.yml` 的 `test-iluvatar` 调用
+`_platform_test.yml`，由同一个配置加载器读取 `.github/configs/iluvatar.yml`，
+依次调度 unit、functional、E2E 和 benchmark。标准 `container_volumes` 和
+`container_options` 直接携带模型只读挂载、CoreX 驱动库、GPU 0–3 及运行环境。
+资源参考现有 vLLM main 天数配置；runner 标签只使用
+`iluvatar-cicd-vllm-plugin`。配置中的 `test_timeout`、`e2e_max_parallel` 和
+`concurrency_group` 控制冷启动超时、模型矩阵串行及同一 runner 池的阶段互斥。
 
-手动入口允许覆盖预留的 runner、已发布镜像、物理 GPU 索引及模型目录；
-`scope=operators` 只验算子，不执行模型。PR 上的自动调用使用
-`workflow_call`，不依赖新手动入口先进入默认分支。
+通用工作流调用 `.github/scripts/iluvatar/check.sh` 和 `setup.sh`，严格检查
+显式分配的真实 CoreX 设备，仅安装当前 checkout 和显式导入兼容包，并保留
+vendor Torch、FlagTree 和原有 CoreX Python 路径。两个后端 profile 都执行完整
+运行环境与路由预检，后续默认 profile 仍为 vendor。
+
+通用测试驱动对已有 backend 保持原 `tests/run.py` 行为；天数使用平台驱动：
+
+- unit 执行托管 CPU 合约中的同组用例，GPU 项明确 deselect；至少 148 项执行且零跳过。
+- functional 单独执行 30 项数值与 graph 合约和 1 项真实 CoreX PDL 编译探针。
+- E2E 使用原双模型 inference、HTTP serving 和 concurrent 矩阵；每 case 独立
+  JUnit，HTTP 每模型至少 5 项，其余每 case 至少 1 项，全部零跳过、零失败。
+  inference 阶段还执行 vendor/FlagOS 两种 profile、双模型、双 graph 的原始
+  offline/并发例子，共 16 份模型日志，并验证原生 FlagCX；保持 16 请求及
+  256-token 生成上限。
+- benchmark 执行原 throughput、latency、serve 三个 dummy smoke 入口，每个入口
+  独立报告并要求至少 1 项实际执行。该 smoke 不作为真实权重性能验收。
+
+报告按阶段和 case 单独保存于 `artifacts/iluvatar/`，严格拒绝缺失、空、跳过或
+失败的报告，避免多个 pytest 子进程覆盖同一个 XML 或复用旧报告。
+
+手动 `Iluvatar GPU acceptance` 入口保留 runner、镜像、GPU 索引和模型目录覆盖，
+与自动 CI 复用相同的平台 hooks 和阶段驱动。`scope=full` 执行完整阶段；
+`scope=operators` 只执行环境预检及 31 项 GPU 合约，不执行模型。
 
 GPU 工作流启动前通过 `ixsmi` 检查每张显式选卡，已用显存超过 512 MiB 则
 失败；不自动改选其它设备或停止现有进程。该检查只是单次闲置显存检查，
