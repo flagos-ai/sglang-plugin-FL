@@ -1,0 +1,241 @@
+# 天数 CoreX：SGLang 0.5.18 empty 适配
+
+以《天数智芯 empty使用文档》的 BI-V150 环境为基础，保留 CoreX 驱动、
+厂商 PyTorch、FlagTree 和 FlagCX，升级 SGLang 到 **0.5.18**。
+当前插件基线为 `9dc518f478`，已包含合并的
+[天数原生适配 #132](https://github.com/flagos-ai/sglang-plugin-FL/pull/132)；
+保留其中的独立 GDN 和 MoE 实现作为默认融合算子路径。
+镜像、环境检查和验收组织方式同时参考
+[Ascend #131](https://github.com/flagos-ai/sglang-plugin-FL/pull/131) 和
+[MUSA #95](https://github.com/flagos-ai/sglang-plugin-FL/pull/95)。
+
+| 组件 | 目标 |
+| --- | --- |
+| GPU | BI-V150，单卡 32 GiB；完整模型验收目标为 TP4 |
+| Driver / CoreX | 4.5.0 / 4.5.0.20260629，沿用基线镜像 |
+| PyTorch | 2.10.0+corex.4.5.0.20260629，沿用厂商版本 |
+| FlagTree | 0.6.2a3+iluvatar3.6，提供 `triton` 模块 |
+| FlagGems | 5.3.4，`f7c55cb2fe1fb90fc713eafa6f63d7cbb73453a9` |
+| FlagCX | 0.13.0，沿用基线镜像 |
+| SGLang | 0.5.18，`pyproject_other.toml` 的 `srt_empty` extra |
+
+FlagGems 按使用文档保留源码 editable 安装。实机检查确认该版本普通 wheel
+未包含 `flag_gems.fused.DSA`，会在插件初始化时失败；镜像配方使用
+`pip install -e /opt/FlagGems` 避免这一打包缺口。
+
+0.5.18 已包含 `srt_empty`，无需再应用旧文档的 0.5.11 empty patch。
+不安装 NVIDIA Triton、sgl-kernel、FlashInfer、FlashAttention 或 ixformer。
+独立的 [导入兼容包](../../addon/iluvatar-compat/README.md) 只提供上游
+0.5.18 的有限导入符号；误入没有实现的 kernel 路径会明确报错。
+它只在本平台显式安装，不是主插件的依赖。
+
+## 构建独立镜像
+
+从仓库根目录运行；保留原来的 0.5.11 容器便于对比。远程的构建、安装、
+下载和测试任务均使用 tmux，防止 SSH 断开中止任务。
+
+```bash
+tmux new-session -d -s iluvatar-build \
+  'docker build --target test -f docker/iluvatar/empty-0.5.18.containerfile -t sglang-fl:0.5.18-iluvatar . > /tmp/iluvatar-build.log 2>&1'
+tmux capture-pane -t iluvatar-build -p
+tail -n 60 /tmp/iluvatar-build.log
+```
+
+```bash
+docker run -itd --name sglang-fl-iluvatar-0518 \
+  --privileged --ipc=host --network=host --shm-size=128g \
+  -v /mnt/share/models:/models \
+  sglang-fl:0.5.18-iluvatar sleep infinity
+docker exec -it sglang-fl-iluvatar-0518 bash
+```
+
+在已有隔离环境中安装时，先用上面的构建文件核对版本与依赖；以下安装命令在已建立的 tmux 会话内运行：
+
+```bash
+python -m pip install --no-deps ./addon/iluvatar-compat
+python -m pip install --no-deps .
+export SGLANG_PLATFORM=sglang_fl
+export SGLANG_PLUGINS=sglang_fl
+export SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1
+export SGLANG_IS_FLASHINFER_AVAILABLE=0
+export FLAGCX_PATH=/sgl-workspace/FlagCX
+export SGLANG_FL_DIST_BACKEND=flagcx
+export USE_FLAGGEMS=1
+
+# 当前 211 隔离容器中的小算子检查只使用物理 GPU 15。
+export CUDA_VISIBLE_DEVICES=15
+python scripts/iluvatar/verify_environment.py --min-devices 1 --fused-profile vendor
+```
+
+`SGLANG_IS_FLASHINFER_AVAILABLE=0` 必须在启动 Python 前设置，确保 spawn
+子进程不会因兼容包的存在而启用 FlashInfer。插件默认将 attention、sampling、
+vision attention 分别设为 `triton`、`pytorch`、`triton_attn`，关闭 NVIDIA
+custom all-reduce 和 piecewise graph。常规 decode graph 不被强制关闭，
+其结果仍需独立验收。BF16 支持通过厂商 Torch 查询，显式 FP16/FP32
+不受 NVIDIA SM 门槛影响。
+
+SGLang 0.5.18 的 decode graph 批量上限字段为
+`cuda_graph_max_bs_decode`，替代旧的 `cuda_graph_max_bs`。
+当前例子使用新字段；单机 offline 和 concurrent 例子将
+`DISABLE_CUDA_GRAPH=1/0` 真实传入引擎，分别用于关闭和开启 decode graph 的验收。
+
+## 算子配置与状态语义
+
+`sglang_fl/dispatch/config/iluvatar.yaml` 自动加载天数配置：
+
+- ATen 黑名单为 `max`、`masked_scatter_`。
+- 仅禁用 `vendor.cuda`，保留 `vendor.iluvatar`。
+- Gemma RMSNorm 使用 `reference`。
+- chunk、recurrent、packed decode GDN 和 Fused MoE 优先使用
+  PR #132 的 `vendor.iluvatar`，其余融合算子按 FlagOS 优先策略选择。
+
+无需复制旧文档的长环境变量串；旧配置中的
+`SGLANG_FL_DENY_VENDORS=cuda,iluvatar` 会移除当前默认的原生路径。
+手工覆盖时路由算子名是 **`topk`**，不是旧文档中的 `top_k`。
+
+本次保留 PR #132 的独立原生计算，并对齐 SGLang 0.5.18 的公共契约：
+state 使用 `[V,K]`；public recurrent 保持输入 state 不变，返回 FP32
+final state；chunk 返回 `(output, None, h)`，`h` 为每 64-token chunk
+起始状态，形状精确匹配上游；packed decode 原地写入调用者提供的
+cache 和 `out`，负 cache 槽的输出遵循上游写零语义。
+
+另提供 FlagGems 5.3.4 的 chunk、recurrent、packed decode 和 MoE 实现。
+验收脚本默认 `FUSED_PROFILE=vendor`；设置 `FUSED_PROFILE=flagos` 时，
+脚本通过 `SGLANG_FL_PER_OP` 将上述四类融合算子切换到 FlagOS，Gemma
+RMSNorm 仍使用 reference。未量化标准 gated SiLU 是 MoE 的支持范围；
+量化、EP 映射或特殊激活配置在执行前明确拒绝。
+环境检查的 `--fused-profile vendor|flagos` 核对 `resolved` 中的实际路由，
+不会自行改变算子配置。
+
+PR #132 的已有验证属于其原生实现；它不能替代本次 FlagGems 路径的精度、
+graph 或模型验收。两条路径需要分别保存版本、路由和测试结果。
+
+CoreX 运行补丁还将位置 clamp 切换到 PyTorch，替换 NVIDIA legacy SM dtype
+门槛，并补齐旧 Triton 扫描禁用 PDL 分支时需要的符号。真实 PDL 调用明确失败。
+
+## 验收
+
+先执行环境检查，再运行专门的算子精度及 graph 测试。这些测试在 CoreX 上
+遇到缺失 kernel、数值错误或 graph capture/replay 错误会失败，
+不会作为“可选能力”跳过。GPU 测试分别覆盖原生与 FlagGems 的支持范围。
+
+```bash
+tmux new-session -d -s iluvatar-ops \
+  'python -m pytest -q tests/unit_tests/platform/test_iluvatar*.py tests/unit_tests/dispatch/backends/test_iluvatar_fla.py tests/unit_tests/dispatch/backends/test_iluvatar_native_contracts.py tests/unit_tests/dispatch/backends/test_flagos_empty_ops.py tests/functional_tests/ops/test_iluvatar_empty_ops.py > /tmp/iluvatar-ops.log 2>&1'
+tmux capture-pane -t iluvatar-ops -p
+tail -n 60 /tmp/iluvatar-ops.log
+```
+
+以下完整验收需四张显存充足的 GPU。脚本先以原生 FlagCX 执行多卡
+all-reduce/all-gather，拒绝回退，再分别运行 Dense/MoE 的 graph 开关两种
+offline 配置和两种 graph 模式的 text、image、mixed 并发测试。可通过
+`DENSE_MODEL_PATH`、`MOE_MODEL_PATH`、`TP_SIZE`、`CONCURRENT_N`、
+`OUTPUT_DIR` 指定模型和日志目录。`CUDA_VISIBLE_DEVICES` 按实际分配的设备设置。
+
+```bash
+tmux new-session -d -s iluvatar-acceptance \
+  'FUSED_PROFILE=vendor bash scripts/iluvatar/run_single_node_acceptance.sh > /tmp/iluvatar-acceptance.log 2>&1'
+tmux capture-pane -t iluvatar-acceptance -p
+```
+
+原生验收结束并释放设备后，再验收 FlagGems 融合算子路径，保存独立日志：
+
+```bash
+tmux new-session -d -s iluvatar-acceptance-flagos \
+  'FUSED_PROFILE=flagos bash scripts/iluvatar/run_single_node_acceptance.sh > /tmp/iluvatar-acceptance-flagos.log 2>&1'
+```
+
+统一测试入口也提供 BI-V150 配置（模型挂载路径 `/models`）：
+
+```bash
+tmux new-session -d -s iluvatar-e2e \
+  'python tests/run.py --platform iluvatar --device bi_v150 --scope e2e > /tmp/iluvatar-e2e.log 2>&1'
+```
+
+两机 TP4+PP2 沿用 `examples/qwen3_6_27b_multinode.py` 和
+`examples/qwen3_6_35b_a3b_multinode.py`，两边设置相同的软件栈与上述环境，
+分别传 `--role master/worker --master-addr <主节点IP> --tp 4 --pp 2`；两机例子、服务与压测也通过 tmux 执行。
+固定负载性能对比沿用旧文档的 64 请求、并发 64、输入 1K/4K/16K、输出
+1K；服务启动后运行 `benchmarks/benchmark_throughput_serve.py --model <模型路径>`，
+保留每次原始结果。天数平台另将原 throughput、latency、serve 三项共享
+benchmark smoke 显式绑定到已有的 27B/TP4 配置，保留原始 dummy 加载方式、
+请求负载和断言；这些 smoke 验证入口能运行，不代表真实权重的性能验收。
+天数 benchmark 收集为零时会失败，不以空选择计为通过。
+
+## 当前实机状态（2026-10-15）
+
+已通过 JumpServer 的 `lxwang → u211 → new-root` 交互选择连接到 211。
+该机 16 张 BI-V150 均运行已有 vLLM 任务，每卡约占用 24 GiB / 32 GiB。
+本次另建隔离容器 `codex-iluvatar-0518-20261014`，仅设置
+`CUDA_VISIBLE_DEVICES=15` 执行小算子测试，仍与 GPU 15 上的现有任务共享显存。
+
+隔离容器已安装 SGLang 0.5.18、CoreX Torch 2.10.0、FlagGems 5.3.4 和
+FlagTree 0.6.2a3。原生和 FlagGems 两条路径合计 **30 项 GPU 测试通过**，
+覆盖 GDN 精度、64-token chunk 状态、变长和负槽语义、输入 state 所有权、
+packed decode 缓存更新与 CUDA Graph 重放，以及 MoE bias、路由权重和缩放。
+两种 profile 的完整运行时导入和实际路由检查均通过；另有 **12 项运行时测试**
+通过，包含 CoreX 上 PDL 禁用分支的真实 Triton 编译及误启分支拒绝。
+已有分布式 backend 映射的两项回归在先导入 SGLang 后通过；直接先导入
+`sglang_fl.platform` 的循环导入是 PR #132 基线已有的顺序约束。
+
+双模型 TP4、FlagCX 多卡、两机 PP 和吞吐尚未验收。当前各卡已有 vLLM
+作业，需分配空闲设备后继续；单卡小算子通过不能替代模型和性能验收。
+2026-10-15 已用缓存厂商镜像作为 `BASE_IMAGE` 构建 `test` target，构建与
+无 GPU 的包版本检查通过。本地镜像为
+`codex-sglang-iluvatar:0.5.18-test-20261015`，ID
+`sha256:8bba1f405aaa707ce3ce58cd77ad1b0c019553f79ff1c797ba552ce219d14639`。
+这验证了配方在该缓存基底上的构建；配方默认的远端 `BASE_IMAGE` 未在此次
+构建中使用。镜像现已发布为
+`harbor.baai.ac.cn/plugin/sglang-plugin-fl:0.5.18-iluvatar-ci`，CI 固定使用
+以下实际发布的 manifest digest：
+
+```text
+harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:8cc9b2ecd0b99f200eadde5bc13e556953a4a0001156864d2ae106fc3911741a
+```
+
+发布与版本检查不代表新的镜像内模型验收已经通过。
+
+## CI 接入与范围
+
+主 `CI` workflow 自动调用 `Iluvatar compatibility (CPU)`，在 GitHub 托管
+runner 上构建导入兼容包并执行 CPU 合约和 CI 守卫测试。该作业不代表硬件验收。
+
+主 CI 只新增天数专属入口：
+`.github/configs/platforms.yml` 启用天数，`ci.yml` 的 `test-iluvatar` 调用
+`_iluvatar_test.yml`，复用现有配置加载器读取 `.github/configs/iluvatar.yml`，
+依次调度 unit、functional、E2E 和 benchmark。标准 `container_volumes` 和
+`container_options` 直接携带模型只读挂载、CoreX 驱动库、GPU 0–3 及运行环境。
+资源参考现有 vLLM main 天数配置；runner 标签只使用
+`iluvatar-cicd-vllm-plugin`。天数 E2E 矩阵固定串行；配置中的 `test_timeout` 和
+`concurrency_group` 控制冷启动超时及同一 runner 池的阶段互斥。
+
+天数专属 `_iluvatar_stage_test.yml` 调用 `.github/scripts/iluvatar/check.sh` 和 `setup.sh`，严格检查
+显式分配的真实 CoreX 设备，仅安装当前 checkout 和显式导入兼容包，并保留
+vendor Torch、FlagTree 和原有 CoreX Python 路径。两个后端 profile 都执行完整
+运行环境与路由预检，后续默认 profile 仍为 vendor。
+
+天数专属工作流直接调用 `.github/scripts/iluvatar/run_tests.py`；现有其他 backend 的工作流和测试入口保持基线内容：
+
+- unit 执行托管 CPU 合约中的同组用例，GPU 项明确 deselect；至少 148 项执行且零跳过。
+- functional 单独执行 30 项数值与 graph 合约和 1 项真实 CoreX PDL 编译探针。
+- E2E 使用原双模型 inference、HTTP serving 和 concurrent 矩阵；每 case 独立
+  JUnit，HTTP 每模型至少 5 项，其余每 case 至少 1 项，全部零跳过、零失败。
+  inference 阶段还执行 vendor/FlagOS 两种 profile、双模型、双 graph 的原始
+  offline/并发例子，共 16 份模型日志，并验证原生 FlagCX；保持 16 请求及
+  256-token 生成上限。
+- benchmark 执行原 throughput、latency、serve 三个 dummy smoke 入口，每个入口
+  独立报告并要求至少 1 项实际执行。该 smoke 不作为真实权重性能验收。
+
+报告按阶段和 case 单独保存于 `artifacts/iluvatar/`，严格拒绝缺失、空、跳过或
+失败的报告，避免多个 pytest 子进程覆盖同一个 XML 或复用旧报告。
+
+手动 `Iluvatar GPU acceptance` 入口保留 runner、镜像、GPU 索引和模型目录覆盖，
+与自动 CI 复用相同的平台 hooks 和阶段驱动。`scope=full` 执行完整阶段；
+`scope=operators` 只执行环境预检及 31 项 GPU 合约，不执行模型。
+
+GPU 工作流启动前通过 `ixsmi` 检查每张显式选卡，已用显存超过 512 MiB 则
+失败；不自动改选其它设备或停止现有进程。该检查只是单次闲置显存检查，
+持续独占仍须由 runner 的设备分配保证。不同 runner 标签池若共用同一主机，
+须由基础设施统一协调。平台资源配置已提供，runner 的实际调度和完整 GPU
+CI 结果仍需核对真实作业；配置存在、排队或 CPU 作业通过均不代表 GPU
+作业已经通过。

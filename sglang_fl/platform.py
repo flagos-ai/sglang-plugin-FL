@@ -402,6 +402,12 @@ class PlatformFL(SRTPlatform):
         NVIDIA is skipped — sglang's own defaulting handles it. For other vendors,
         if the user didn't pick an attention backend, fill from _ATTN_BACKEND_MAP.
         """
+        if self._vendor_name == "iluvatar":
+            from sglang_fl.dispatch.backends.vendor.iluvatar.runtime_config import (
+                apply_iluvatar_runtime_defaults,
+            )
+
+            apply_iluvatar_runtime_defaults(server_args)
         if self._vendor_name == "mthreads":
             from sglang_fl.dispatch.backends.vendor.mthreads.runtime_config import (
                 apply_musa_runtime_defaults,

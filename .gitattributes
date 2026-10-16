@@ -1,0 +1,2 @@
+scripts/iluvatar/*.sh text eol=lf
+docker/iluvatar/*.containerfile text eol=lf

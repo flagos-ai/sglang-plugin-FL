@@ -1,0 +1,68 @@
+# This hosted gate validates Python contracts; it does not validate a GPU.
+name: Iluvatar compatibility (CPU)
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cpu-contracts:
+    name: Iluvatar compatibility (CPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Install CPU test dependencies
+        run: |
+          python -m pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install numpy pytest pyyaml build
+          python -m pip install --no-deps --no-build-isolation -e .
+      - name: Validate CI evidence and idle-allocation guards
+        run: |
+          python -m unittest discover -s .github/scripts/iluvatar -p 'test_*.py'
+      - name: Build and install the explicit import compatibility addon
+        run: |
+          python -m build --wheel --outdir artifacts/iluvatar-compat addon/iluvatar-compat
+          python -m pip install --no-deps artifacts/iluvatar-compat/*.whl
+          python - <<'PY'
+          import flashinfer
+          import sgl_kernel
+          from sgl_kernel.utils import is_arch_support_pdl
+          assert flashinfer.__flagos_import_shim__ is True
+          assert sgl_kernel.__flagos_import_shim__ is True
+          assert is_arch_support_pdl() is False
+          PY
+      - name: Run CPU contracts (GPU tests are explicitly deselected)
+        run: |
+          python -m pytest -q -p no:cacheprovider -m 'not gpu' \
+            --junitxml=artifacts/iluvatar-cpu.xml \
+            tests/unit_tests/platform/test_iluvatar_defaults.py \
+            tests/unit_tests/platform/test_iluvatar_import_shims.py \
+            tests/unit_tests/platform/test_iluvatar_runtime.py \
+            tests/unit_tests/dispatch/backends/test_iluvatar_fla.py \
+            tests/unit_tests/dispatch/backends/test_iluvatar_native_contracts.py \
+            tests/unit_tests/dispatch/backends/test_flagos_empty_ops.py \
+            tests/unit_tests/dispatch/bridge/test_fla_ops.py \
+            tests/unit_tests/test_iluvatar_example_graphs.py \
+            tests/unit_tests/test_iluvatar_test_config.py \
+            tests/unit_tests/test_iluvatar_benchmark_config.py
+      - name: Require executed CPU tests without skips
+        if: always()
+        run: python scripts/iluvatar/check_ci_results.py artifacts/iluvatar-cpu.xml
+      - name: Upload CPU results and addon wheel
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: iluvatar-cpu-contracts
+          path: artifacts/
+          if-no-files-found: error

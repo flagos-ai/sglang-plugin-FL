@@ -84,10 +84,34 @@ def register_builtins(registry) -> None:
             op_name="fused_recurrent_gated_delta_rule",
             impl_id="default.flagos",
             kind=BackendImplKind.DEFAULT,
-            fn=_bind_is_available(backend.fused_recurrent_gated_delta_rule, is_avail),
+            fn=_bind_is_available(
+                backend.fused_recurrent_gated_delta_rule,
+                functools.partial(
+                    backend.is_op_available, "fused_recurrent_gated_delta_rule"
+                ),
+            ),
             vendor=None,
             priority=BackendPriority.DEFAULT,
         ),
     ]
+
+    for op_name in (
+        "chunk_gated_delta_rule",
+        "fused_recurrent_gated_delta_rule_packed_decode",
+        "fused_moe",
+    ):
+        impls.append(
+            OpImpl(
+                op_name=op_name,
+                impl_id="default.flagos",
+                kind=BackendImplKind.DEFAULT,
+                fn=_bind_is_available(
+                    getattr(backend, op_name),
+                    functools.partial(backend.is_op_available, op_name),
+                ),
+                vendor=None,
+                priority=BackendPriority.DEFAULT,
+            )
+        )
 
     registry.register_many(impls)

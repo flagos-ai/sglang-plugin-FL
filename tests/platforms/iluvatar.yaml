@@ -1,0 +1,67 @@
+# BI-V150 / CoreX 4.5.0 empty runtime, SGLang 0.5.18.
+platform: iluvatar
+vendor: iluvatar
+device_types:
+  bi_v150:
+    memory_gb: 32
+    tags: [cuda, fp16]
+
+engine_overrides:
+  qwen3_6:
+    27b_tp4_nograph:
+      model_path: /models/Qwen3.6-27B
+      dtype: float16
+      attention_backend: triton
+      sampling_backend: pytorch
+      mm_attention_backend: triton_attn
+      disable_fast_image_processor: true
+    35b_a3b_tp4_nograph:
+      model_path: /models/Qwen3.6-35B-A3B
+      dtype: float16
+      attention_backend: triton
+      sampling_backend: pytorch
+      mm_attention_backend: triton_attn
+      disable_fast_image_processor: true
+
+tolerance:
+  inference:
+    default: {rtol: 1e-3, atol: 1e-3}
+    float16: {rtol: 1e-3, atol: 1e-3}
+device_overrides: {}
+unsupported_features: [flashinfer, flash_attn]
+env_defaults:
+  SGLANG_PLATFORM: sglang_fl
+  SGLANG_PLUGINS: sglang_fl
+  SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK: '1'
+  SGLANG_IS_FLASHINFER_AVAILABLE: '0'
+  SGLANG_FL_DIST_BACKEND: flagcx
+  FLAGCX_PATH: /sgl-workspace/FlagCX
+  USE_FLAGGEMS: '1'
+  NCCL_IB_DISABLE: '1'
+
+bi_v150:
+  name: bi_v150
+  tests:
+    unit:
+      include: '*'
+      exclude: []
+    functional:
+      include: '*'
+      exclude: []
+    e2e:
+      inference:
+        qwen3_6: [27b_tp4_nograph, 35b_a3b_tp4_nograph]
+      concurrent:
+        qwen3_6: [27b_tp4_nograph, 35b_a3b_tp4_nograph]
+      serving:
+        qwen3_6: [27b_tp4_nograph, 35b_a3b_tp4_nograph]
+    benchmark:
+      # Reuse all three shared smoke workloads and their original assertions.
+      # Bind their model fixture to the existing mounted 27B model, including
+      # TP4 for the serving template which otherwise hard-codes TP1.
+      enabled: true
+      smoke: [throughput, latency, serve]
+      model: qwen3_6
+      case: 27b_tp4_nograph
+      tp_size: 4
+      require_cases: true
