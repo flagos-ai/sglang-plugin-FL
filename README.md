@@ -95,6 +95,32 @@ cd FlagCX && make USE_NVIDIA=1
 export FLAGCX_PATH="$PWD"
 ```
 
+### DeepSeek V4.1 on v0.5.18
+
+Apply the model/runtime backport and the matching FlagGems-sglang kernel
+compatibility patch to an official SGLang v0.5.18 source checkout before
+installing SGLang. The patches are disjoint and can be checked together:
+
+```bash
+cd /path/to/sglang  # official v0.5.18 tag
+runtime_patch=/path/to/sglang-plugin-FL/sglang_fl/backports/sglang-v0.5.18-dsv41.patch
+kernel_patch=/path/to/FlagGems-sglang/src/flaggems_sglang_backport/patches/sglang-v0.5.18-dsv41-kernels.patch
+git apply --check "$runtime_patch" "$kernel_patch"
+git apply "$runtime_patch" "$kernel_patch"
+pip install -e ./python
+pip install --no-deps -e /path/to/sglang-plugin-FL
+```
+
+The backport adds the V4.1 config, model/vision, cache geometry, DSpark and
+API encoding required by the release. Install the separate FlagGems-sglang
+operator backport and TileLang 0.1.12 for native kernel compatibility. H100
+operator optimization is a second, independent change in that repository;
+its `dsv41` extra supplies the pinned common FlagGems integration.
+The kernel patch includes stable Top-K ties and FlagTree 3.6 metadata support.
+FlagCX PD registration and prefill temporary-memory optimizations remain
+runtime Python hooks. The model backport has no dependency on the FlagCX integration PRs.
+SGLang versions already supporting V4.1 only need the two PD integration changes.
+
 ### Option B: Empty Install (Multi-Chip / Non-CUDA)
 
 For running on non-NVIDIA hardware (Ascend, MUSA, etc.), use SGLang's **empty install** mode. This installs SGLang's pure Python code without pulling in CUDA-specific dependencies (torch, torchao, flashinfer, etc.), avoiding conflicts with vendor-specific PyTorch builds.
