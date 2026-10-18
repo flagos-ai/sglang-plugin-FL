@@ -73,6 +73,19 @@ were not available in the shared model directory.
 
 ## Quick Start
 
+### Native Mooncake control protocol with FlagCX transfer
+
+On SGLang versions exposing the region-registration manager API, selecting
+`--disaggregation-transfer-backend flagcx` reuses native Mooncake bootstrap,
+KV/state descriptors, completion and failure handling. FlagCX supplies the
+memory registration and data transfer. CUDA host auxiliary regions are
+registered as host memory; device regions stay on the device registration path.
+
+The transport selection follows the manager API rather than a model name.
+Older managers retain the existing FlagCX implementation. This change has no
+DSV4.1 imports, source backports or model admission policy. A model that
+restricts its supported transfer protocols can provide a separate runtime hook.
+
 ### Option A: Standard Install (NVIDIA CUDA)
 
 1. Prepare an SGLang v0.5.18 NVIDIA environment with the dependency versions

@@ -83,7 +83,13 @@ def _flagcx_class_mapping(class_type):
     select this backend.
     """
     from sglang.srt.disaggregation.base import KVArgs
+    from sglang.srt.disaggregation.mooncake.conn import MooncakeKVManager
     from sglang.srt.disaggregation.utils import KVClassType
+
+    if hasattr(MooncakeKVManager, "_registerable_regions"):
+        from .native import class_mapping
+
+        return class_mapping(class_type)
 
     from sglang_fl.disaggregation import (
         FlagcxKVBootstrapServer,
@@ -132,11 +138,41 @@ def _patch_get_kv_class() -> None:
     logger.debug("flagcx get_kv_class patched on: %s", patched)
 
 
+_http_worker_original = None
+
+
+def _flagcx_http_worker_started(config, target, sockets, stdin_fileno=None):
+    """Spawn entry: register the backend before a tokenizer worker starts."""
+    original = _http_worker_original
+    if original is None:
+        # A spawned interpreter imports this module afresh, so uvicorn still
+        # owns its original entry point here.
+        from uvicorn._subprocess import subprocess_started
+
+        original = subprocess_started
+    if getattr(config, "app", None) == "sglang.srt.entrypoints.http_server:app":
+        apply_disaggregation_patch()
+    return original(
+        config=config, target=target, sockets=sockets, stdin_fileno=stdin_fileno
+    )
+
+
+def _patch_http_worker_bootstrap():
+    global _http_worker_original
+    from uvicorn import _subprocess
+
+    if _subprocess.subprocess_started is _flagcx_http_worker_started:
+        return
+    _http_worker_original = _subprocess.subprocess_started
+    _subprocess.subprocess_started = _flagcx_http_worker_started
+
+
 def apply_disaggregation_patch() -> None:
     """Register the FlagCX transfer backend with SGLang. Idempotent."""
     _add_backend_choice()
     _add_enum_member()
     _patch_get_kv_class()
+    _patch_http_worker_bootstrap()
     logger.info(
         "FlagCX PD disaggregation backend registered "
         "(--disaggregation-transfer-backend flagcx)"
