@@ -12,10 +12,11 @@ runner_labels:
 
 # Container volumes (hardware-specific paths)
 # Model files live under the runner's model store and the test model configs reference
-# /data/models/Qwen/<model> in-container, so mount the store to that path (same pattern
-# as cuda.yml). Adjust the host side to wherever the thead runner exposes the models.
+# /data/models/Qwen/<model> in-container, so mount the store at /data/models and let
+# its Qwen/ subtree land at that path (same pattern as cuda.yml). Adjust the host
+# side to wherever the thead runner exposes the models.
 container_volumes:
-  - /mnt/airs-business/cicd/models:/data/models/Qwen
+  - /mnt/airs-business/cicd/models:/data/models
 
 # Container options.
 # PPU device access: the host docker daemon ships ONLY runc -- there is no
