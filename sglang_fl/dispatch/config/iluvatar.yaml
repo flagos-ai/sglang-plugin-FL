@@ -1,2 +1,5 @@
 # SGLang-FL Dispatch Configuration for Iluvatar platform
 prefer: flagos
+
+flagos_blacklist:
+  - masked_scatter_

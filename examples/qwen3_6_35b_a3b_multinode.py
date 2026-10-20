@@ -140,7 +140,7 @@ elif _is_corex:
         "triton",
         "--watchdog-timeout",
         "3600",
-        "--cuda-graph-max-bs",
+        "--cuda-graph-max-bs-decode",
         "16",
         "--sleep-on-idle",
     ]
