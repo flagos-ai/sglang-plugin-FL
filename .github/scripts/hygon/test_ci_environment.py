@@ -257,7 +257,8 @@ class WorkflowTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn(
-            "(inputs.platform == 'musa' || inputs.platform == 'hygon') && 1 || 256",
+            "(inputs.platform == 'musa' || inputs.platform == 'ascend' "
+            "|| inputs.platform == 'hygon') && 1 || 256",
             workflow,
         )
         self.assertIn(
