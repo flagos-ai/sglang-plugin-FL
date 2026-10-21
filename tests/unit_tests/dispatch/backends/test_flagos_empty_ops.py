@@ -8,6 +8,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 import torch
 
+from sglang_fl import utils
 from sglang_fl.dispatch.backends.flagos.flagos import FlagOSBackend
 from sglang_fl.dispatch.backends.flagos.impl import fla, fused_moe
 from sglang_fl.dispatch.backends.flagos.register_ops import register_builtins
@@ -393,6 +394,9 @@ def test_moe_rejects_quantized_weights_before_importing_kernel(dtype):
 
 
 def test_optional_kernel_capabilities_are_probed_per_operator(monkeypatch):
+    monkeypatch.setattr(
+        utils, "get_device_info", lambda: SimpleNamespace(vendor_name="iluvatar")
+    )
     monkeypatch.setattr(FlagOSBackend, "_available", True)
     monkeypatch.setattr(torch, "corex", object(), raising=False)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
@@ -421,23 +425,44 @@ def test_optional_kernel_capabilities_are_probed_per_operator(monkeypatch):
     )
     monkeypatch.setattr(fla, "_packed_decode_kernel", lambda: _fake_packed_runtime([]))
     assert impls["chunk_gated_delta_rule"][0].is_available()
+    assert impls["fused_recurrent_gated_delta_rule"][0].is_available()
     assert impls["fused_recurrent_gated_delta_rule_packed_decode"][0].is_available()
 
 
-def test_new_flagos_defaults_do_not_replace_other_vendors(monkeypatch):
+@pytest.mark.parametrize(
+    "vendor_name,recurrent_available",
+    [("nvidia", True), ("mthreads", True), ("ascend", False)],
+)
+def test_new_flagos_defaults_do_not_replace_other_vendors(
+    monkeypatch, vendor_name, recurrent_available
+):
+    monkeypatch.setattr(
+        utils, "get_device_info", lambda: SimpleNamespace(vendor_name=vendor_name)
+    )
     monkeypatch.setattr(FlagOSBackend, "_available", True)
     monkeypatch.delattr(torch, "corex", raising=False)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(fla, "is_fla_op_available", lambda name: True)
     monkeypatch.setattr(fused_moe, "is_fused_moe_available", lambda: True)
     backend = FlagOSBackend()
+    registry = OpRegistry()
+    register_builtins(registry)
+    impls = registry.snapshot().impls_by_op
     for name in (
         "chunk_gated_delta_rule",
         "fused_recurrent_gated_delta_rule_packed_decode",
         "fused_moe",
     ):
         assert not backend.is_op_available(name)
-    assert backend.is_op_available("fused_recurrent_gated_delta_rule")
+        assert not impls[name][0].is_available()
+    assert (
+        backend.is_op_available("fused_recurrent_gated_delta_rule")
+        is recurrent_available
+    )
+    assert (
+        impls["fused_recurrent_gated_delta_rule"][0].is_available()
+        is recurrent_available
+    )
 
 
 def test_recurrent_default_omits_final_state(monkeypatch):
