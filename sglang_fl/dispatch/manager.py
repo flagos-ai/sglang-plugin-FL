@@ -390,7 +390,9 @@ class OpManager:
     def _invoke_impl(impl: OpImpl | None, fn: Callable, *args, **kwargs):
         from sglang_fl.mode import is_platform_profile_mode
 
-        if is_platform_profile_mode():
+        if is_platform_profile_mode() or os.environ.get(
+            "SGLANG_FL_PROFILE_EVIDENCE_DIR"
+        ):
             if impl is None:
                 raise RuntimeError(
                     "platform_profile could not identify the selected OpImpl; "

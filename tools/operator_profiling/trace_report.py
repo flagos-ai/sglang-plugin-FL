@@ -902,6 +902,7 @@ def _mapping_key(
 class TraceAggregate:
     """Lossless aggregate of every included physical compute-kernel event."""
 
+    preserve_kernel_names: bool = False
     trace_files: list[str] = field(default_factory=list)
     ranks: set[int] = field(default_factory=set)
     cpu_event_count: int = 0
@@ -1130,7 +1131,9 @@ class TraceAggregate:
                 self.excluded_ns[category] += duration
                 continue
 
-            kernel_name = stable_kernel_name(raw_name)
+            kernel_name = (
+                raw_name if self.preserve_kernel_names else stable_kernel_name(raw_name)
+            )
             link = _mapping(event_id, cpu_by_external_id)
             marker_link = _marker_mapping(correlation_id, marker_by_correlation_id)
             dispatch_link = _marker_mapping(correlation_id, dispatch_by_correlation_id)
@@ -1158,6 +1161,10 @@ class TraceAggregate:
                     link[field_name] = dispatch_link.get(field_name)
             operator_name = link.get("operator_name")
             is_communication = _is_communication(raw_name, operator_name)
+            if link.get("source_library") == "flagcx":
+                # A collective wrapper may also allocate/copy tensors. Only
+                # actual communication kernels establish FlagCX coverage.
+                is_communication = _is_communication(raw_name, None)
             is_fused_communication_compute = (
                 is_communication
                 and _is_fused_communication_compute(raw_name, operator_name)

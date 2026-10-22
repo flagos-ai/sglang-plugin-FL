@@ -394,6 +394,11 @@ def _setup_flaggems(config: dict = None):
 
     import flag_gems
 
+    if os.environ.get("SGLANG_FL_PROFILE_EVIDENCE_DIR"):
+        from sglang_fl.profiling_evidence import instrument_flaggems_registrations
+
+        instrument_flaggems_registrations(flag_gems)
+
     # Whitelist/blacklist: env > YAML config
     if config is not None:
         record = config.get("flaggems_record", False)
@@ -786,7 +791,7 @@ def load_plugin():
     from sglang_fl.mode import is_platform_profile_mode
 
     platform_profile = is_platform_profile_mode()
-    if platform_profile:
+    if platform_profile or os.environ.get("SGLANG_FL_PROFILE_EVIDENCE_DIR"):
         from sglang_fl.profiling_hooks import setup_operator_profile_hooks
 
         setup_operator_profile_hooks()

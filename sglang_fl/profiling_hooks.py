@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from typing import Any
 
 import torch
@@ -188,13 +189,18 @@ def _forward_around_hook(original_fn, self, *args, **kwargs):
 
 def _triton_run_around_hook(original_fn, self, *args, grid, warmup, **kwargs):
     def invoke(instance, *call_args, **call_kwargs):
-        return original_fn(
+        result = original_fn(
             instance,
             *call_args,
             grid=grid,
             warmup=warmup,
             **call_kwargs,
         )
+        if not warmup and os.environ.get("SGLANG_FL_PROFILE_EVIDENCE_DIR"):
+            from sglang_fl.profiling_evidence import record_triton_launch
+
+            record_triton_launch(result, getattr(instance, "fn", None))
+        return result
 
     if warmup:
         return invoke(self, *args, **kwargs)
@@ -244,8 +250,26 @@ def _tvm_function_call_around_hook(original_fn, self, *args, **kwargs):
     )
 
 
+def _flagcx_around_hook(original_fn, self, *args, **kwargs):
+    if getattr(self, "disabled", True):
+        return original_fn(self, *args, **kwargs)
+    return _record_call(
+        original_fn,
+        self,
+        args,
+        kwargs,
+        operator_name="flagcx::" + original_fn.__name__,
+        source="flagcx_runtime",
+        extra_metadata={
+            "source_category": "third_party",
+            "source_library": "flagcx",
+            "classification_rule": "active_flagcx_communicator",
+        },
+    )
+
+
 def setup_operator_profile_hooks() -> None:
-    """Register eager-only correlation hooks."""
+    """Register correlation hooks for profiler-visible launches."""
 
     from sglang.srt.plugins.hook_registry import HookRegistry, HookType
 
@@ -273,6 +297,23 @@ def setup_operator_profile_hooks() -> None:
         _tvm_function_call_around_hook,
         HookType.AROUND,
     )
+    if os.environ.get("SGLANG_FL_PROFILE_EVIDENCE_DIR"):
+        for method in (
+            "all_reduce",
+            "all_gather",
+            "reduce_scatter",
+            "reduce_scatterv",
+            "all_gatherv",
+            "broadcast",
+            "send",
+            "recv",
+        ):
+            HookRegistry.register(
+                "sglang_fl.distributed.device_communicators.flagcx.FlagCXCommunicator."
+                + method,
+                _flagcx_around_hook,
+                HookType.AROUND,
+            )
 
 
 __all__ = ["profile_dispatch_impl_call", "setup_operator_profile_hooks"]

@@ -100,6 +100,7 @@ def validate_profiling_environment(
     tp_size: int,
     repository_root: str | Path | None = None,
     require_validated_versions: bool = False,
+    implementation: str = "platform",
 ) -> dict[str, Any]:
     """Validate hard runtime prerequisites and return auditable metadata.
 
@@ -120,7 +121,12 @@ def validate_profiling_environment(
     versions = {name: _distribution_version(name) for name in VALIDATED_VERSIONS}
     versions["sglang_fl"] = _distribution_version("sglang_fl")
     versions["transformers"] = _distribution_version("transformers")
-    for name in ("sglang", "sglang_fl", "torch", "transformers", "flagtree"):
+    required = ("sglang", "torch", "transformers")
+    if implementation != "native":
+        required += ("sglang_fl",)
+    if implementation == "platform":
+        required += ("flagtree",)
+    for name in required:
         if versions.get(name) is None:
             errors.append(f"required distribution is not installed: {name}")
 
@@ -128,7 +134,7 @@ def validate_profiling_environment(
     for group, expected_value in _REQUIRED_ENTRY_POINTS.items():
         values = _entry_point_values(group, "sglang_fl")
         entry_points[group] = values
-        if expected_value not in values:
+        if implementation != "native" and expected_value not in values:
             errors.append(
                 f"missing entry point {group}: sglang_fl={expected_value}; "
                 "install this checkout with `python -m pip install -e . --no-deps`"
@@ -139,10 +145,14 @@ def validate_profiling_environment(
         for name in ("sglang", "sglang_fl", "torch", "triton")
     }
     for name, origin in module_origins.items():
-        if origin is None:
+        if origin is None and not (name == "sglang_fl" and implementation == "native"):
             errors.append(f"required Python module is not importable: {name}")
 
-    if repository_root is not None and module_origins["sglang_fl"] is not None:
+    if (
+        implementation != "native"
+        and repository_root is not None
+        and module_origins["sglang_fl"] is not None
+    ):
         expected_package = Path(repository_root).resolve() / "sglang_fl"
         actual_origin = Path(module_origins["sglang_fl"])
         if not _is_relative_to(actual_origin, expected_package):
@@ -152,13 +162,43 @@ def validate_profiling_environment(
             )
 
     triton_providers = sorted(metadata.packages_distributions().get("triton", []))
-    if "flagtree" not in {
+    if implementation == "platform" and "flagtree" not in {
         provider.lower().replace("-", "_") for provider in triton_providers
     }:
         errors.append(
             "the `triton` import namespace is not provided by FlagTree; "
             f"detected providers: {triton_providers or ['none']}"
         )
+
+    provider = None
+    if implementation != "platform":
+        # Resolve the imported file, not just installed distribution names:
+        # a native virtualenv may coexist with system FlagTree metadata.
+        matches = []
+        for name in ("triton", "flagtree"):
+            try:
+                dist = metadata.distribution(name)
+            except metadata.PackageNotFoundError:
+                continue
+            if (
+                str(Path(dist.locate_file("triton/__init__.py")).resolve())
+                == module_origins["triton"]
+            ):
+                matches.append(
+                    {
+                        "name": name,
+                        "version": dist.version,
+                        "module_path": module_origins["triton"],
+                    }
+                )
+        if len(matches) == 1:
+            provider = matches[0]
+        if implementation == "native" and (
+            provider is None or provider["name"] != "triton"
+        ):
+            errors.append(
+                "native baseline requires an unambiguous stock Triton namespace; use a separate environment"
+            )
 
     cuda: dict[str, Any] = {"available": False, "device_count": 0, "device_names": []}
     try:
@@ -223,6 +263,7 @@ def validate_profiling_environment(
         "module_origins": module_origins,
         "entry_points": entry_points,
         "triton_namespace_providers": triton_providers,
+        "triton_provider": provider,
         "cuda": cuda,
         "engine_api": engine_api,
         "warnings": warnings,
