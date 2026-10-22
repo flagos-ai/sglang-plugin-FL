@@ -20,6 +20,8 @@ matrix and artifact format; they do not claim measured performance results.
 | `qwen3_6_27b_multinode.py` | Two-node server plus text/vision validation | CLI-controlled |
 | `qwen3_6_35b_a3b_multinode.py` | Two-node server plus text/vision validation | CLI-controlled |
 
+The Hygon MTP profile uses TP=2; see the Hygon section below.
+
 Ascend is detected through `torch.npu`. The examples select `device=npu`,
 `attention_backend=ascend`, and BF16 without assuming CUDA. MTP cache cleanup
 also uses the active accelerator rather than calling CUDA unconditionally.
@@ -196,12 +198,13 @@ python3 examples/qwen3_6_27b_mtp_inference.py \
 For precision comparison across plugin modes, use
 `tests/test_precision_align.py` or `tests/validate.sh`.
 
-## Hygon MTP (full model acceptance pending)
+## Hygon MTP (single-node eager validated)
 
-The MTP implementation includes a controlled Hygon path for original BF16
-Qwen3.6-27B and Qwen3.6-35B-A3B checkpoints with complete MTP heads. Full model
-acceptance is still pending. Rebuild from the current MTP checkout, or mount and
-install that checkout into the prepared 0.5.18 Hygon image with
+[PR #149](https://github.com/flagos-ai/sglang-plugin-FL/pull/149) adds a Hygon path
+for original BF16 Qwen3.6-27B and Qwen3.6-35B-A3B checkpoints with complete MTP
+heads. Runtime commit `c46d2258b2362f0ea171b30781683138f8c8de1b` passed the manual
+checks below; the PR is not merged. Rebuild from that checkout, or mount and
+install it into the prepared 0.5.18 Hygon image with
 `python -m pip install --no-deps --no-build-isolation -e .`.
 The published CI image alone does not contain these new plugin changes. See the
 [Hygon setup and MTP guide](../docker/hygon/README.md) for vendor-stack checks and
@@ -241,8 +244,8 @@ Each Hygon engine construction reasserts vendor entry-point isolation for its
 spawned workers. Keep the environment setting before starting Python as shown.
 
 MTP graph, branching topk>1 trees and overlap are explicitly rejected by the
-current implementation. Other topologies and MTP vision/concurrency/HTTP paths
-remain outside its validated scope. These are software and validation boundaries.
+current implementation. Engine B4 batched text is validated. Other topologies
+and MTP vision/C64/HTTP paths remain outside its validated scope. These are software and validation boundaries.
 Other platforms' defaults and ordinary non-MTP graph use are unchanged.
 
 Keep the baseline enabled for full acceptance. All semantic contracts, the
@@ -251,3 +254,26 @@ scheduler's acceptance length strictly greater than two must pass, with raw
 exit and cleanup evidence retained. Missing head weights or acceptance data
 fail. Component tests and single-request token/s are not full model acceptance
 or controlled performance results.
+### Hardware validation (2026-10-23)
+
+| Check | Qwen3.6-27B | Qwen3.6-35B-A3B |
+| --- | --- | --- |
+| Full MTP/baseline example | 30 calls, 24 semantic checks passed | 30 calls, 24 semantic checks passed |
+| Teacher-force comparison | 64 tokens; max logprob delta 0.242519; 0 near ties, 0 violations | 64 tokens; max delta 0.331164; 1 near tie, 0 violations |
+| Full example scheduler acceptance window | 2.9916667 | 2.8444444 |
+| Batched MTP | 4 batches of 4: all 16 semantic/token/logprob/top5/counter checks passed | Same 16 checks passed |
+| Separate statistics probe | 256 actual output tokens, 91 verifies | 256 actual output tokens, 100 verifies |
+
+The separate probes are excluded from the 16 batch requests. Original numerical
+and acceptance gates are unchanged. All 236 Hygon unit tests and 19 actual GPU
+numerical tests passed with no skips. Source hashes, responses, raw driver and
+docker-exec exits (all zero), and cleanup were independently audited. Assigned
+GPUs were at about 2 MiB before and after the intentional container stop;
+scheduler diagnostics and resource-tracker warnings remain in the evidence.
+This does not establish natural exit of every rank or absence of IPC leaks.
+
+Every generating call had its direct output IDs and lengths checked; numerical
+rescoring covered 64 teacher-forced tokens per model. These results establish
+correctness for the stated profile, without a controlled MTP speedup claim.
+Latest-head GitHub hardware CI, including the new eager MTP group, is reported
+separately in the PR.

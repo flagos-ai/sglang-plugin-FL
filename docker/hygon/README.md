@@ -148,10 +148,21 @@ MODEL_PATH=/models/Qwen3.6-35B-A3B TP_SIZE=2 \
 这些验收配置不会自动选择 GPU。运行前确认 `HIP_VISIBLE_DEVICES` 对应已分配的
 空闲设备；直接运行示例同样需要在 `import torch` 之前设置自动加载开关。
 
-## MTP：Qwen3.6-27B / 35B-A3B（完整模型验收待完成）
+## MTP：Qwen3.6-27B / 35B-A3B（单机 eager 已验收）
 
-本节对应包含 MTP 改动的当前源码，尚无两模型完整验收通过或加速结论。
-从当前 checkout 按上文配方重新构建即可包含这些改动；已发布的
+本节对应 [PR #149](https://github.com/flagos-ai/sglang-plugin-FL/pull/149) 的单机海光 MTP 实现。
+已验运行时代码为 `c46d2258b2362f0ea171b30781683138f8c8de1b`；PR 当前尚未合并。
+两款正式 BF16 模型在下述 eager 配置完成了批量与 MTP/baseline 文本回归。
+设备栈沿用原镜像，插件需要使用包含本次改动的源码。在已准备的容器内取得该版本：
+
+```bash
+git clone --no-checkout https://github.com/flagos-ai/sglang-plugin-FL.git sglang-plugin-FL-mtp
+cd sglang-plugin-FL-mtp
+git fetch origin refs/pull/149/head
+git checkout --detach c46d2258b2362f0ea171b30781683138f8c8de1b
+```
+
+从该 checkout 按上文配方构建；已发布的
 `0.5.18-hygon-ci-20261015` 镜像提供设备栈，需要另行安装当前插件源码。
 沿用该镜像时，在 `docker run` 中挂载当前仓库
 `-v "$PWD":/opt/sglang-plugin-fl`，并在容器内安装，保留厂商依赖：
@@ -202,13 +213,36 @@ MODEL_PATH=/models/Qwen3.6-35B-A3B TP_SIZE=2 \
 Engine 前都会重设 Torch 自动加载开关；启动 Python 前仍需设置上述环境。
 
 当前实现明确拒绝 MTP graph、topk>1 分叉树和启用 overlap 的配置。
-其它拓扑及 MTP 视觉、并发和 HTTP 入口尚未验收。这些边界来自当前软件实现与
+Engine B4 批量文本已验收；其它拓扑及 MTP 视觉、C64 高并发和 HTTP 入口尚未验收。这些边界来自当前软件实现与
 验证范围。普通非 MTP decode graph 的既有使用方式保持不变。
 
 完整验收保留 baseline 比较，要求语义契约、64-token teacher-forced 检查、
 实际 speculative 计数和各 scheduler 接受长度严格大于 2 的检查全部通过，
 并核对原始退出与资源清理。不要用 `--skip-baseline` 的局部结果、权重覆盖日志
 或组件测试代替完整验收；示例的单请求 tok/s 仅用于诊断。
+
+### 实机回归（2026-10-23）
+
+| 检查 | Qwen3.6-27B | Qwen3.6-35B-A3B |
+|---|---|---|
+| MTP / baseline 完整文本示例 | 30 次调用、24 项语义检查通过 | 30 次调用、24 项语义检查通过 |
+| 教师强制数值检查 | 64 token；最大 logprob 差 0.242519；近似并列 0、违规 0 | 64 token；最大 logprob 差 0.331164；近似并列 1、违规 0 |
+| 完整示例 scheduler 窗口平均接受长度 | 2.9916667 | 2.8444444 |
+| 批量 MTP | 4 批 × 4 请求，16 项语义、token、logprob、top5 与实际 speculative 计数通过 | 4 批 × 4 请求，16 项语义、token、logprob、top5 与实际 speculative 计数通过 |
+| 独立统计探针 | 实际 256 输出 token、91 次 verify；不计入 16 条批量请求 | 实际 256 输出 token、100 次 verify；不计入 16 条批量请求 |
+
+236 项海光单元测试与 19 项真实 GPU 数值测试均通过、无跳过。两模型的原始
+驱动/docker-exec 退出码均为 0，完整响应和源码哈希经独立审计；本任务容器
+停止前后已分配 GPU 均释放至约 2 MiB。scheduler 诊断和 resource_tracker
+警告保留，不能据此宣称每个 rank 自然退出或没有 IPC 泄漏。
+
+批量统计与独立探针分开计数，scheduler 窗口均值与整段 token/verify 比值分开记录。
+全部生成请求核对了实际 output IDs 和长度；数值重评分范围为每模型 64 个
+teacher-forced token。示例的单请求 tok/s 仅用于诊断，没有受控 MTP 加速比结论。
+
+海光 speculative logprob 另修复了合法 `-1` padding 的高级索引语义，并复用上游
+稳定行归一化计算，保留温度、输出 dtype、top-k 和指定 token 概率等行为。
+原 GPU 输入和 `rtol=1e-5`、`atol=2e-5` 门槛保持不变。
 
 ## 已验证范围（2026-10-14）
 
@@ -282,6 +316,14 @@ CI 在安装插件前拒绝旧的 SGLang 0.5.11 镜像。安装只使用
 设备分配以 `HIP_VISIBLE_DEVICES` 为准；仅有 ROCR/CUDA 分配时保留其顺序转为
 HIP，存在不一致的双重映射时明确失败。CI 不自动挑选或抢占其它 GPU。
 
-E2E 包含 eager/graph 与 inference/serving/concurrent 六组，每组运行两模型，
-同平台组串行执行。benchmark 保持显式启用。工作流配置完成和镜像发布不代表
-GitHub 硬件验收已通过，应以对应 PR 最新提交的实际 job 结果为准。
+E2E 保留 eager/graph × inference/serving/concurrent 的原六组，新增仅 eager 的
+`mtp` 两模型组，共七组、十四个 model case，同平台组串行执行。MTP 组核对
+真实 speculative counters、B4 输出和原 64-token teacher-force 门禁；graph
+不选择 MTP。分配好设备后可单独执行：
+
+```bash
+python tests/run.py --platform hygon --device bw1000 --scope e2e --task mtp
+```
+
+benchmark 保持显式启用。上面的 MTP 结果来自手动实机验收；工作流配置完成和
+镜像发布不代表 GitHub 硬件 CI 通过，应以对应 PR 最新提交的实际 job 结果为准。
