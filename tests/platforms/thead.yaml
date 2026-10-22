@@ -71,16 +71,28 @@ zw810e:
   name: "zw810e"
   tests:
     e2e:
-      # Add or remove test cases per model.
+      # E2E cases grouped by CI stage (pr / nightly / weekly; ported from
+      # vllm-plugin-FL #581): pr runs on every pull request (inference +
+      # serving core); nightly adds the concurrent smoke; weekly falls
+      # back to nightly when no weekly key is defined.
       # Each case points to tests/models/<model>/<case>.yaml.
-      concurrent:
-        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
-      inference:
-        qwen3: ["4b_tp2", "06b_tp1"]
-        qwen3_6: ["35b_a3b_tp4_nograph",  "27b_tp4_nograph"]
-      serving:
-        qwen3: ["4b_tp2"]
-        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      pr:
+        inference:
+          qwen3: ["4b_tp2", "06b_tp1"]
+          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+        serving:
+          qwen3: ["4b_tp2"]
+          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      nightly:
+        concurrent:
+          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+        inference:
+          qwen3: ["4b_tp2", "06b_tp1"]
+          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+        serving:
+          qwen3: ["4b_tp2"]
+          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+
 
     # Functional tests (ops correctness, graph capture, collective ops).
     # Consumed by tests/run.py --scope functional; include/exclude work like unit.
@@ -95,5 +107,11 @@ zw810e:
       exclude: []
 
     benchmark:
-      enabled: true
-      smoke: ["throughput", "latency", "serve"]
+      # Stage-keyed (vllm-plugin-FL #581): PRs smoke only the serve
+      # entrypoint; nightly runs the full trio.
+      pr:
+        enabled: true
+        types: ["serve"]
+      nightly:
+        enabled: true
+        types: ["throughput", "latency", "serve"]
