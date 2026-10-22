@@ -1,10 +1,111 @@
 # SGLang 运行时算子清单采集
 
 本目录用于采集一次真实 SGLang 推理中执行的算子 API、设备 kernel、输入 shape/dtype、
-执行次数和设备时间。当前交付的目标是为算子开发提供准确的原始清单，不计算
-FlagGems-sglang 融合算子覆盖率。
+执行次数和设备时间，并支持原生/插件 Graph 场景的 FlagOS 算子覆盖率。
 
-完整字段解释见 [MATERIAL_GUIDE.md](MATERIAL_GUIDE.md)。
+| `--implementation` | 用途 | 默认执行模式与负载 |
+|---|---|---|
+| `native` | 原生基线，禁用插件发现，要求独立 stock Triton 环境 | Graph，输入4096/输出256/并发64 |
+| `plugin` | 插件采集，记录 FlagGems/FlagTree/FlagCX 运行证据 | Graph，输入4096/输出256/并发64 |
+| `platform`（默认） | 原有开发清单，vendor调度、全rank计算kernel汇总 | eager，输入1K/4K/16K、输出1K、并发64 |
+
+## FlagOS 覆盖率工作流
+
+基于本 PR 的 trace 解析器，参考 [vLLM #422](https://github.com/flagos-ai/vllm-plugin-FL/pull/422)
+的采集/覆盖率流程及 [#593](https://github.com/flagos-ai/vllm-plugin-FL/pull/593) 的 eager 补全。
+
+- native/plugin 导出全部 TP rank，默认解析 `--rank 0`；纳入计算、通信及未知kernel，排除warmup、Graph capture、memcpy/memset活动。
+- eager参考按完整kernel名精确匹配，要求同实现、模型、负载、引擎配置、软件、硬件、provider及rank；歧义候选保留，跳过自动生成的Inductor融合kernel。
+- FlagGems/FlagTree要求成功运行证据与实际kernel相交；FlagCX还要求活跃调用关联真实通信kernel。开关或参考信息本身不能证明接管。
+- 覆盖率按唯一基线身份计算：`(有运行证据的FlagOS身份 ∩ 基线) ∪ (已核实融合目标 ∩ 基线)` 的去重数量 / 基线数量。未知项保留分母；次数、耗时不作为权重。
+- `--denominator` 默认A（原生基线），支持D（同平台原生）和显式B回退；B须填写 `--fallback-reason`。`--fusion-mappings` 接受带源码依据的显式映射，验证实测kernel及基线交集。
+
+### 采集与计算
+
+在已准备好依赖的环境运行。native使用独立stock Triton解释器；plugin环境需通过
+`python -m pip install -e . --no-deps` 注册当前checkout。独立SGLang源码可通过 `PYTHONPATH` 引入。
+下面分别以 `IMPL=native`、`IMPL=plugin` 及对应解释器执行；每轮先采eager，再采Graph。
+两款已验证模型共用此流程，选择本机对应的模型目录：
+
+| 示例 | `MODEL` |
+|---|---|
+| Qwen3.6-27B | `/models/Qwen3.6-27B` |
+| Qwen3.6-35B-A3B | `/models/Qwen3.6-35B-A3B` |
+
+```bash
+export PYTHONPATH=/path/to/sglang-plugin-FL:/path/to/sglang/python
+export CUDA_VISIBLE_DEVICES=0,1 USE_FLAGTUNE=0 SGLANG_FL_DISAGG_FLAGCX=0
+# 本轮Qwen验证使用的排除项；不修改插件默认策略。
+export SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero,mm,linear
+PYTHON=/path/to/native-env/bin/python  # plugin改为其环境的python
+IMPL=native                          # 第二轮改为plugin
+MODEL=/models/Qwen3.6-27B             # 35B改为/models/Qwen3.6-35B-A3B
+MODEL_NAME=${MODEL##*/}
+COMMON=(--implementation "$IMPL" --model-path "$MODEL" --tp-size 2
+        --input-tokens 4096 --output-tokens 256 --concurrency 64
+        --context-length 8192 --cuda-graph-max-bs 64 --length-overflow-policy error)
+"$PYTHON" tools/operator_profiling/run_operator_profile.py "${COMMON[@]}" \
+  --execution-mode eager --output-dir "tools/operator_profiling/runs/${MODEL_NAME}_${IMPL}_eager"
+# 填入上一步 RUNTIME_OPERATOR_PROFILE_PASS 打印的 results 路径。
+EAGER_RESULTS=/path/to/eager/RUN/CASE/results
+"$PYTHON" tools/operator_profiling/run_operator_profile.py "${COMMON[@]}" \
+  --execution-mode graph --eager-reference "$EAGER_RESULTS" \
+  --output-dir "tools/operator_profiling/runs/${MODEL_NAME}_${IMPL}_graph"
+```
+
+两轮完成后，传入对应Graph采集的 `results/` 目录：
+
+```bash
+python tools/operator_profiling/generate_flagos_coverage.py \
+  --baseline /path/to/native_graph/results --plugin /path/to/plugin_graph/results \
+  --output-dir "tools/operator_profiling/runs/${MODEL_NAME}_coverage"
+```
+
+若只需原始Graph清单，可省略 `--eager-reference`。35B使用相同流程，替换模型路径。
+离线重建使用 `runtime_report.py --trace-dir ... --metadata workload.json --output-dir ...`
+及可选 `--eager-reference ... --evidence-dir ...`；要保留FlagOS证据，需提供原始evidence目录。
+
+### 输出与校验
+
+| 文件 | 内容 |
+|---|---|
+| `operator_list.csv` | 5列：ID、API、kind、完整kernel名、时间占比 |
+| `kernel_shape_dtype.csv` | 固定14列：归因、shape/dtype、候选、次数/时间及5个eager参考字段；无参考填 `null` |
+| `kernel_shape_dtype_audit.csv` | 转换前明细，保留原始dtype/status及source/dispatch；eager参考优先读取此表 |
+| `kernel_time.csv`、`operator_normalization.csv` | kernel耗时、归一化身份和规则 |
+| `runtime_evidence.json`、`summary.json` | 运行证据、环境/rank/window、逐kernel守恒、参考来源及SHA-256 |
+| `operator_flagos_coverage.csv`、`operator_flagos_coverage_summary.csv` | 基线逐项证据、唯一分子/分母、待确认数及覆盖率 |
+| `flagos_operators.csv`、`fusion_mapping.csv`、`coverage_summary.json` | FlagOS身份、融合审计及输入摘要 |
+
+两张公共CSV的列名、顺序及字段约定对齐
+[指定op_profile示例](https://github.com/cyber-pioneer/op_profile/tree/main/qwen3.6_35b_a3b_plugin_graph_4096_256/results)。
+导出层统一kind分类、去除 `native_marker_` 状态前缀，并将dtype转换为profiler写法
+（如 `torch.bfloat16→c10::BFloat16`、`Scalar[int]→Scalar`）；原值留audit，身份和计数不变。
+新报告为 `flagos-runtime-v2`，校验器兼容v1。
+
+采集及覆盖率计算自动校验SHA-256、逐kernel次数/纳秒守恒和主表/audit一致性。
+独立复核使用 `runtime_report.validate_runtime_report(Path(results))`；下文的
+`validate_operator_inventory.py` 仅校验旧platform格式。
+
+### 验证记录
+
+H20-3e、TP2、SGLang0.5.11、PyTorch2.11.0+cu130；native为stock Triton3.6.0，
+plugin为FlagTree0.6.2a1/FlagGems5.0.2。输入4096/输出256/并发64，
+两模型的native/plugin × eager/Graph共8组真实采集通过。
+
+| 模型 | 原始Graph覆盖率 | Graph + eager参考 |
+|---|---|---|
+| Qwen3.6-27B | 33/63 = 52.38% | 33/50 = 66.00% |
+| Qwen3.6-35B-A3B | 36/74 = 48.65% | 36/59 = 61.02% |
+
+2026-10-22：256项测试通过；复用原始trace重建12份报告，原始明细无损，身份、次数、耗时及4组覆盖率不变。
+验证排除 `count_nonzero,mm,linear`；原生/插件输出摘要不同，本次结果不证明精度等价或性能收益。
+FlagCX仅有针对性测试，本轮实测通信为NCCL；未使用人工融合映射。完整运行材料独立保存，不纳入源码。
+
+## Platform 开发清单
+
+以下说明 `--implementation platform` 路径；其全rank、compute-only清单不可作为覆盖率基线A。
+字段解释见 [MATERIAL_GUIDE.md](MATERIAL_GUIDE.md)。
 
 仓库目录按职责拆分：
 
@@ -244,10 +345,11 @@ shape/dtype JSON、非负数值、行唯一性、各行时间占比、总次数�
 | `--require-validated-versions` | 关闭 | 要求 SGLang 0.5.11、PyTorch 2.11.0+cu130、FlagTree 0.6.2a1 |
 | `--output-dir` | `tools/operator_profiling/runs` | 结果根目录 |
 
-## 10. TODO：FlagGems-sglang 覆盖率
+## 10. 后续算子库迁移
 
-FlagGems-sglang 尚未接入当前 sglang-plugin-FL 执行路径，因此本阶段不建立融合算子功能
-目录，也不计算融合算子覆盖率。接入工作开始后再完成以下事项：
+FlagGems-sglang 独立算子库的迁移仍属于后续工作。本次覆盖率工具统计当前插件实际使用的
+`flag_gems.modules`、`flag_gems.fused` 和 ATen 替换实现，并支持有证据的显式融合映射。
+未来迁移时仍需要完成以下事项：
 
 - 将 `flagos/impl` 中当前使用的 `flag_gems.modules`、`flag_gems.fused` 实现逐项迁移到
   `flaggems_sglang`；
@@ -255,9 +357,9 @@ FlagGems-sglang 尚未接入当前 sglang-plugin-FL 执行路径，因此本阶�
   `third_party` 算子的明确映射；
 - 记录实际选择的 provider callable、成功返回、fallback 和 blacklist；
 - 校验相同 workload 下实际命中的 shape/dtype 变体；
-- 在明确映射和运行时证据齐备后计算去重、执行次数加权和设备时间加权覆盖率。
+- 为新增实现补充去重后的功能映射及运行证据。FlagOS 覆盖率按算子种类计算，调用次数与设备时间仅作为独立诊断指标。
 
-在这些条件完成之前，当前物料不输出 FlagGems-sglang 融合算子覆盖结论。
+原有 platform 物料只描述开发清单；覆盖率必须使用新工作流的 native/plugin 结果。
 
 运行目录、trace 和生成物料不提交源码 PR；本地统一保存到仓库工作区内已忽略的
 `tools/operator_profiling/runs/` 或 `tools/operator_profiling/materials/`，不使用 `/tmp` 作为交付位置。

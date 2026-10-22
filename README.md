@@ -212,13 +212,28 @@ USE_FLAGGEMS=0 python -m sglang.launch_server \
 
 ## Runtime Operator Profiling
 
+For native/plugin Graph coverage, same-environment eager references, runtime
+FlagGems/FlagTree/FlagCX evidence and auditable fusion mappings, see
+[the profiling guide](tools/operator_profiling/README.md). Use
+`--implementation native` or `--implementation plugin`; defaults are Graph,
+4096 input tokens, 256 output tokens and concurrency 64, reporting rank 0.
+Coverage counts unique baseline identities backed by runtime FlagOS evidence,
+including verified fusion mappings; unknown operators remain in the denominator.
+The public `operator_list.csv` (5 columns) and `kernel_shape_dtype.csv` (14 columns)
+follow the specified `op_profile` contract, with raw metadata retained in a separate
+audit CSV. Both Qwen3.6-27B and Qwen3.6-35B-A3B were exercised at TP2; the guide
+records the validation configuration and limitations.
+
+### Platform development inventory
+
 `tools/operator_profiling/run_operator_profile.py` uses `torch.profiler` to collect the
 operators executed by a real SGLang workload. The supported report is an
 operator inventory for development and prioritization: API and physical kernel
 names, input shapes and dtypes, execution counts, cumulative device time, and
 implementation provenance.
 
-Collection uses the plugin's `platform_profile` mode. It disables FlagGems ATen
+With the default `--implementation platform`, collection uses the plugin's
+`platform_profile` mode. It disables FlagGems ATen
 replacement and the current FlagOS fused implementations, keeps vendor dispatch
 active, and runs with global Torch Compile and CUDA Graph disabled. The warmup
 batch finishes before profiling begins. Framework-local compiled kernels that
@@ -271,20 +286,20 @@ python tools/operator_profiling/validate_operator_inventory.py \
   tools/operator_profiling/examples/qwen3_6_27b_tp4_smoke/results
 ```
 
-FlagGems-SGLang is not integrated into the current execution path. Therefore
-this version deliberately does not infer fused-operator equivalence or publish
-FlagGems-SGLang coverage. The integration, explicit mapping, runtime evidence,
-and coverage calculation are tracked as follow-up work in the profiling guide.
+Migration to the separate FlagGems-SGLang operator library remains future work.
+The new coverage workflow measures implementations currently executed by this
+plugin and requires runtime evidence or explicit fusion mappings. The original
+platform inventory above remains a separate development artifact.
 
-The workflow has been exercised on NVIDIA H20 with SGLang 0.5.11, Torch
+The platform inventory workflow has been exercised on NVIDIA H20 with SGLang 0.5.11, Torch
 2.11.0+cu130, and FlagTree 0.6.2a1 for Qwen3.6-27B and Qwen3.6-35B-A3B at TP4.
 The validated workload matrix and generated artifact inventory are recorded in
 the profiling guide.
 
 See [the profiling guide](tools/operator_profiling/README.md) for formal 27B/35B commands,
-report regeneration, validation, and TODOs. See [the artifact
-reference](tools/operator_profiling/MATERIAL_GUIDE.md) for aggregation rules and every
-published field.
+report regeneration and validation. See [the platform artifact
+reference](tools/operator_profiling/MATERIAL_GUIDE.md) for platform aggregation rules
+and fields.
 
 ## Advanced Configuration
 
