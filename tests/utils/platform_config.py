@@ -46,11 +46,21 @@ class TestFilter:
 
 
 @dataclass
-class FunctionalTests:
+class E2eTestConfig:
+    """E2E test cases grouped by CI stage, task, and model.
+
+    Ported from vllm-plugin-FL #581: the ``e2e`` block in each device's YAML
+    is keyed by CI stage (``pr`` / ``nightly`` / ``weekly``).
+    """
+
+    # stage -> task -> model -> list of case names
+    # e.g. {"pr": {"inference": {"qwen3": ["4b_tp2"]}},
+    #        "nightly": {"inference": {...}, "concurrent": {...}}}
     tests: dict[str, dict[str, list[str]]] = field(default_factory=dict)
 
     def get_cases(
         self,
+        stage: str | None = None,
         task: str | None = None,
         model: str | None = None,
         test_list: str | None = None,
@@ -58,22 +68,35 @@ class FunctionalTests:
         """Return a flat list of {task, model, case} dicts, optionally filtered.
 
         Args:
+            stage: CI stage key (``"pr"``, ``"nightly"``, ``"weekly"``).
+                   When ``None``, cases from all stages are returned.
             task: Filter by task name.
             model: Filter by model name.
             test_list: Comma-separated list of case names to include.
         """
         allowed = {t.strip() for t in test_list.split(",")} if test_list else None
         cases: list[dict[str, str]] = []
-        for task_name, models in self.tests.items():
-            if task and task_name != task:
+        for stage_key, task_models in self.tests.items():
+            if stage and stage_key != stage:
                 continue
-            for model_name, case_list in models.items():
-                if model and model_name != model:
+            if not isinstance(task_models, dict):
+                continue
+            for task_name, models in task_models.items():
+                if task and task_name != task:
                     continue
-                for case in case_list:
-                    if allowed and case not in allowed:
+                if not isinstance(models, dict):
+                    continue
+                for model_name, case_list in models.items():
+                    if model and model_name != model:
                         continue
-                    cases.append({"task": task_name, "model": model_name, "case": case})
+                    if not isinstance(case_list, list):
+                        case_list = [case_list]
+                    for case in case_list:
+                        if allowed and str(case) not in allowed:
+                            continue
+                        cases.append(
+                            {"task": task_name, "model": model_name, "case": str(case)}
+                        )
         return cases
 
 
@@ -89,6 +112,10 @@ class PlatformConfig:
     unsupported_features: list[str]
     device_tests: dict[str, dict[str, Any]]
     device: str
+    # Platform declares its runtime cannot host concurrent engines: e2e
+    # cases run serially even with many devices (see musa.yaml — MCCL dies
+    # when two TP groups initialize at once; ported from vllm-plugin-FL #581).
+    e2e_serial: bool = False
 
     @classmethod
     def load(
@@ -122,13 +149,14 @@ class PlatformConfig:
             device_types=device_types,
             tolerance=tolerance,
             engine_overrides=_ensure_mapping(
-                 raw.get("engine_overrides"), "engine_overrides"
+                raw.get("engine_overrides"), "engine_overrides"
             ),
             device_overrides=raw.get("device_overrides", {}) or {},
             env_defaults=raw.get("env_defaults", {}) or {},
             unsupported_features=raw.get("unsupported_features", []) or [],
             device_tests=device_tests,
             device=active_device,
+            e2e_serial=bool(raw.get("e2e_serial", False)),
         )
 
     def apply_env_defaults(self) -> None:
@@ -137,18 +165,29 @@ class PlatformConfig:
 
     def get_unit_filter(self) -> TestFilter:
         raw = self._tests_section("unit")
-        return TestFilter(include=raw.get("include", "*"), exclude=raw.get("exclude", []))
+        return TestFilter(
+            include=raw.get("include", "*"), exclude=raw.get("exclude", [])
+        )
 
-    def get_e2e_tests(self) -> FunctionalTests:
+    def get_e2e_tests(self) -> E2eTestConfig:
+        """Return e2e test configuration (stage-grouped) for the active device."""
         raw = self._tests_section("e2e")
-        return FunctionalTests(tests=raw)
+        return E2eTestConfig(tests=raw)
 
     def get_functional_filter(self) -> TestFilter:
         raw = self._tests_section("functional")
-        return TestFilter(include=raw.get("include", "*"), exclude=raw.get("exclude", []))
+        return TestFilter(
+            include=raw.get("include", "*"), exclude=raw.get("exclude", [])
+        )
 
-    def get_benchmark_tests(self) -> dict[str, Any]:
-        return self._tests_section("benchmark")
+    def get_benchmark_tests(self, stage: str = "nightly") -> dict[str, Any]:
+        """Return benchmark test configuration for the active device and CI stage."""
+        benchmark = self._tests_section("benchmark")
+        # New-style: keyed by stage (pr / nightly / weekly)
+        if "pr" in benchmark or "nightly" in benchmark:
+            return benchmark.get(stage) or benchmark.get("nightly", {})
+        # Legacy flat format — return as-is for backwards compatibility
+        return benchmark
 
     def get_engine_overrides(self, model: str, case: str) -> dict[str, Any]:
         """Return SGLang engine overrides for one model case.
@@ -178,14 +217,15 @@ class PlatformConfig:
             overrides.update(
                 _ensure_mapping(
                     device_model_overrides.get(case),
-                    f"device_overrides.{self.device}.engine_overrides."
-                    f"{model}.{case}",
+                    f"device_overrides.{self.device}.engine_overrides.{model}.{case}",
                 )
             )
 
         return overrides
 
-    def get_tolerance(self, category: str = "inference", dtype: str = "default") -> Tolerance:
+    def get_tolerance(
+        self, category: str = "inference", dtype: str = "default"
+    ) -> Tolerance:
         device_override = self.device_overrides.get(self.device, {})
         if isinstance(device_override, dict):
             device_tolerance = device_override.get("tolerance", {}).get(category, {})
@@ -206,7 +246,10 @@ class PlatformConfig:
         return any(token in model_name for token in self.unsupported_features)
 
     def _tests_section(self, name: str) -> dict[str, Any]:
-        return self.device_tests.get(self.device, {}).get("tests", {}).get(name, {}) or {}
+        return (
+            self.device_tests.get(self.device, {}).get("tests", {}).get(name, {}) or {}
+        )
+
 
 def _ensure_mapping(raw: Any, field_name: str) -> dict[str, Any]:
     if raw is None:
@@ -214,6 +257,7 @@ def _ensure_mapping(raw: Any, field_name: str) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError(f"{field_name} must be a mapping, got {type(raw).__name__}")
     return dict(raw)
+
 
 def _resolve_platform_file(platform: str, platforms_dir: Path) -> Path:
     direct = platforms_dir / f"{platform}.yaml"
@@ -230,6 +274,6 @@ def _resolve_platform_file(platform: str, platforms_dir: Path) -> Path:
             return candidate
 
     available = ", ".join(sorted(p.stem for p in platforms_dir.glob("*.yaml")))
-    raise FileNotFoundError(f"Platform config not found for {platform}. Available: {available}")
-
-
+    raise FileNotFoundError(
+        f"Platform config not found for {platform}. Available: {available}"
+    )

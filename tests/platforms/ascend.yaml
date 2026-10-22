@@ -64,6 +64,12 @@ device_overrides: {}
 # Common values to consider: ["flashinfer", "triton"] (Ascend uses torch_npu).
 unsupported_features: []
 
+# Concurrent engines on one 910c host die inside HCCL's AICPU kernel
+# (libccl_kernel.so execute failed, observed on the first parallel-e2e
+# device validation of this port); e2e cases run serially until the
+# runtime is proven safe for co-scheduled TP groups.
+e2e_serial: true
+
 # Default environment variables for this platform.
 # tests/run.py applies these before invoking pytest (os.environ.setdefault).
 #
@@ -82,16 +88,28 @@ env_defaults:
   name: "910c"
   tests:
     e2e:
-      # Add or remove test cases per model.
+      # E2E cases grouped by CI stage (pr / nightly / weekly; ported from
+      # vllm-plugin-FL #581): pr runs on every pull request (inference +
+      # serving core); nightly adds the concurrent smoke; weekly falls
+      # back to nightly when no weekly key is defined.
       # Each case points to tests/models/<model>/<case>.yaml.
-      concurrent:
-        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
-      inference:
-        qwen3: ["4b_tp2", "06b_tp1"]
-        qwen3_6: ["35b_a3b_tp4_nograph",  "27b_tp4_nograph"]
-      serving:
-        qwen3: ["4b_tp2"]
-        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      pr:
+        inference:
+          qwen3: ["4b_tp2", "06b_tp1"]
+          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+        serving:
+          qwen3: ["4b_tp2"]
+          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      nightly:
+        concurrent:
+          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+        inference:
+          qwen3: ["4b_tp2", "06b_tp1"]
+          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+        serving:
+          qwen3: ["4b_tp2"]
+          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+
 
     functional:
       # Reserved for future tests/functional_tests support.
@@ -106,5 +124,11 @@ env_defaults:
       exclude: []
 
     benchmark:
-      enabled: true
-      smoke: ["throughput", "latency", "serve"]
+      # Stage-keyed (vllm-plugin-FL #581): PRs smoke only the serve
+      # entrypoint; nightly runs the full trio.
+      pr:
+        enabled: true
+        types: ["serve"]
+      nightly:
+        enabled: true
+        types: ["throughput", "latency", "serve"]

@@ -56,6 +56,13 @@ device_overrides: {}
 # Test cases whose model name contains any of these strings will be skipped.
 unsupported_features: []
 
+# MCCL dies when two TP groups initialize on the same node at once (two
+# concurrent engines deadlock in collective init), so parallel e2e — the
+# per-card DeviceScheduler introduced with the CI efficiency port from
+# vllm-plugin-FL #581 — is disabled for musa; e2e cases run serially
+# (validated on the vllm side with the same MTHREADS stack).
+e2e_serial: true
+
 # Default environment variables for this platform.
 # tests/run.py applies these before invoking pytest, but existing user-provided
 # environment variables are preserved.
@@ -78,16 +85,28 @@ s5000:
   name: "s5000"
   tests:
     e2e:
-      # Add or remove test cases per model.
+      # E2E cases grouped by CI stage (pr / nightly / weekly; ported from
+      # vllm-plugin-FL #581): pr runs on every pull request (inference +
+      # serving core); nightly adds the concurrent smoke; weekly falls
+      # back to nightly when no weekly key is defined.
       # Each case points to tests/models/<model>/<case>.yaml.
-      concurrent:
-        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
-      inference:
-        qwen3: ["4b_tp2", "06b_tp1"]
-        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
-      serving:
-        qwen3: ["4b_tp2"]
-        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      pr:
+        inference:
+          qwen3: ["4b_tp2", "06b_tp1"]
+          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+        serving:
+          qwen3: ["4b_tp2"]
+          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      nightly:
+        concurrent:
+          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+        inference:
+          qwen3: ["4b_tp2", "06b_tp1"]
+          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+        serving:
+          qwen3: ["4b_tp2"]
+          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+
 
     functional:
       # Reserved for future tests/functional_tests support.
@@ -102,5 +121,11 @@ s5000:
       exclude: []
 
     benchmark:
-      enabled: true
-      smoke: ["throughput", "latency", "serve"]
+      # Stage-keyed (vllm-plugin-FL #581): PRs smoke only the serve
+      # entrypoint; nightly runs the full trio.
+      pr:
+        enabled: true
+        types: ["serve"]
+      nightly:
+        enabled: true
+        types: ["throughput", "latency", "serve"]

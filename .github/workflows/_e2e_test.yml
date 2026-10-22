@@ -9,9 +9,14 @@ on:
   workflow_call:
     inputs:
       platform:
-        description: "Platform name (e.g., cuda, ascend)"
+        description: "Platform name (e.g., nvidia, ascend)"
         required: true
         type: string
+      branch:
+        description: "Branch/ref under test (empty = caller ref)"
+        required: false
+        type: string
+        default: ""
       task:
         description: "Test task category (e.g., inference, serving, concurrent)"
         required: true
@@ -49,6 +54,11 @@ on:
         required: false
         type: string
         default: ""
+      ci_stage:
+        description: "CI stage: pr / nightly / weekly"
+        required: false
+        type: string
+        default: "nightly"
 
 jobs:
   e2e-test:
@@ -64,15 +74,21 @@ jobs:
       - name: Checkout (attempt 1)
         id: checkout1
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.branch }}
         continue-on-error: true
       - name: Checkout (attempt 2)
         id: checkout2
         if: steps.checkout1.outcome == 'failure'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.branch }}
         continue-on-error: true
       - name: Checkout (attempt 3)
         if: steps.checkout2.outcome == 'failure'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.branch }}
 
       - name: Check device availability
         run: bash .github/scripts/${{ inputs.platform }}/check.sh
@@ -82,13 +98,14 @@ jobs:
 
       - name: Run E2E tests
         # The per-arch op blacklist reaches e2e/benchmark either via env_defaults
-        # in tests/platforms/<platform>.yaml (cuda/thead/musa) or via the plugin's
+        # in tests/platforms/<platform>.yaml (nvidia/thead/musa) or via the plugin's
         # dispatch config flagos_blacklist (enflame: gcu.yaml, ascend: ascend.yaml).
         run: |
           python tests/run.py \
             --platform ${{ inputs.platform }} \
             --device "${{ inputs.device }}" \
             --scope e2e \
+            --stage ${{ inputs.ci_stage }} \
             --task ${{ inputs.task }} \
             --cases '${{ inputs.cases }}'
 

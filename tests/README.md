@@ -38,6 +38,48 @@ Platform-agnostic test suite for the sglang-plugin-FL project. Functional tests 
   health checks over `sglang.bench_offline_throughput` / `bench_one_batch` /
   `bench_serving`, using `load_format: dummy` so no real weights are needed.
 
+## CI Behavior (GitHub Actions)
+
+Mechanics ported from vllm-plugin-FL [#581](https://github.com/flagos-ai/vllm-plugin-FL/pull/581):
+
+- **Three CI stages**: platform YAMLs group e2e/benchmark cases by stage —
+  `pr` (inference + serving core; benchmark smokes the serve entrypoint
+  only) runs on every pull request; `nightly` (adds the concurrent smoke
+  and the full benchmark trio) runs daily at Beijing 02:00 via
+  `nightly.yml`; `weekly` (falls back to the nightly sets until weekly
+  keys are defined) runs Monday Beijing 02:00 via `weekly.yml`. Both
+  scheduled workflows accept a platform filter and branch override.
+- **Diff-based platform routing**: on pull requests, only platforms whose
+  `trigger_paths` in `.github/configs/platforms.yml` match the changed files
+  are tested. Shared code (`sglang_fl/`, `tests/`, `.github/`, ...) triggers
+  all enabled platforms; platform-owned files (vendor dispatch configs,
+  per-platform CI scripts, `tests/platforms/<platform>.yaml`, docker recipes)
+  route to their owning platform only. A file matching no rule falls back to
+  a full run.
+- **PR test tiers via labels**: no label (default) runs the full pr-stage
+  stack. `ci-functional` / `ci-e2e` / `ci-full` narrow the run for faster
+  iteration.
+- **Unit + functional in one job**: both scopes run in a single container per
+  platform, saving one container startup and project install per run.
+- **Parallel e2e on disjoint card groups**: within an e2e job, cases run
+  concurrently — a DeviceScheduler hands each case `tp_size × pp_size`
+  contiguous devices and pins the platform's visibility env var
+  (`CUDA_VISIBLE_DEVICES` / `TOPS_VISIBLE_DEVICES` / ...) to its own slots.
+  Platforms whose runtime cannot host concurrent engines declare
+  `e2e_serial: true` in their platform YAML (musa: MCCL dies when two TP
+  groups initialize at once).
+- **Slash commands on PRs** (each handler checks commenter permission):
+  `/rerun` re-runs failed/cancelled jobs (replaces the old
+  `/rerun-failed-ci`), `/cancel` cancels in-progress runs, `/nightly` and
+  `/weekly [platform] [branch]` trigger the scheduled workflows on a branch.
+- **ci-gate**: a single aggregate job over lint/build/discover and all
+  platform jobs; skipped platform jobs (not routed, tier label) pass, a
+  discovery failure fails the gate. Suitable as the sole required check in
+  branch protection.
+
+The NVIDIA platform is named `nvidia` throughout CI (job/config/yaml file
+names); `cuda` remains a device_type/vendor id inside dispatch configs.
+
 ## Directory Structure
 
 ```
@@ -148,30 +190,30 @@ platform YAML.
 
 ```bash
 # Run everything for a platform/device
-python tests/run.py --platform cuda --device a100
+python tests/run.py --platform nvidia --device a100
 
 # Run only unit tests (no GPU required)
-python tests/run.py --platform cuda --device a100 --scope unit
+python tests/run.py --platform nvidia --device a100 --scope unit
 
 # Run only functional tests (ops, compilation, distributed)
-python tests/run.py --platform cuda --device a100 --scope functional
+python tests/run.py --platform nvidia --device a100 --scope functional
 
 # Run only E2E tests (inference + serving + concurrent)
-python tests/run.py --platform cuda --device a100 --scope e2e
+python tests/run.py --platform nvidia --device a100 --scope e2e
 
 # Run only benchmark smoke tests
-python tests/run.py --platform cuda --device a100 --scope benchmark
+python tests/run.py --platform nvidia --device a100 --scope benchmark
 
 # Run a specific E2E task/model/case
-python tests/run.py --platform cuda --device a100 \
+python tests/run.py --platform nvidia --device a100 \
     --scope e2e --task inference --model qwen3_6 --case 27b_tp4_nograph
 
 # Run a specific benchmark type
-python tests/run.py --platform cuda --device a100 \
+python tests/run.py --platform nvidia --device a100 \
     --scope benchmark --benchmark latency
 
 # Pass extra pytest args after '--'
-python tests/run.py --platform cuda --device a100 --scope unit -- -x -v
+python tests/run.py --platform nvidia --device a100 --scope unit -- -x -v
 
 # Device alias instead of explicit platform/device
 python tests/run.py --platform a100 --scope unit
@@ -200,7 +242,7 @@ FL_TEST_MODEL=qwen3_6 FL_TEST_CASE=27b_tp4_nograph \
 
 # Benchmark smoke tests are env-driven too (FL_BENCHMARK_CASE is a JSON blob
 # assembled by run.py — prefer going through run.py for these)
-python tests/run.py --platform cuda --device a100 --scope benchmark --benchmark latency
+python tests/run.py --platform nvidia --device a100 --scope benchmark --benchmark latency
 ```
 
 ### Filter by markers
@@ -480,7 +522,7 @@ Run the case normally; `tests/run.py` selects and applies the matching override
 for E2E and benchmark tests:
 
 ```bash
-python tests/run.py --platform cuda --device a100 --scope e2e \
+python tests/run.py --platform nvidia --device a100 --scope e2e \
   --model qwen3_6 --case 27b_tp4_nograph
 ```
 
