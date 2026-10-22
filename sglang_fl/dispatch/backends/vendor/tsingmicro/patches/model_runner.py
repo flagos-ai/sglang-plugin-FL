@@ -115,13 +115,17 @@ def patch() -> None:
         _platform_synchronize()
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
-        # Extract seq_len from the forward output.
-        seq_len = _extract_seq_len(result, forward_batch)
+        # Extract the number of tokens inferred this step and the forward mode
+        # from the batch (NOT from the logits output, whose first dim is
+        # batch_size and would mislabel prefill as 1).
+        num_tokens = _extract_num_tokens(forward_batch)
+        mode = _extract_forward_mode(forward_batch)
 
         print(
             f"[INFO][SGLANG_FL_TIMER] iter={iter_num} "
             f"tp_rank={self.tp_rank} "
-            f"seq_len={seq_len} "
+            f"mode={mode} "
+            f"seq_len={num_tokens} "
             f"time={elapsed_ms:.4f}ms",
             flush=True,
         )
@@ -134,19 +138,52 @@ def patch() -> None:
     _log.applied("ModelRunner.forward patched with FL timer")
 
 
-def _extract_seq_len(result, forward_batch) -> int:
-    """Best-effort extraction of sequence length from forward output."""
+def _extract_num_tokens(forward_batch) -> int:
+    """Number of tokens inferred in *this* forward step (not cumulative).
+
+    * decode: ``batch_size`` — each request decodes exactly one token.
+    * prefill / extend / mixed: ``extend_num_tokens`` — the newly prefilled
+      tokens for this step.
+    * fallback: ``seq_lens_sum``.
+
+    Note ``seq_lens_sum`` is the *sum of full sequence lengths* (KV-cache
+    tokens), which grows by one every decode step and is therefore NOT what we
+    want here.
+    """
+    fm = getattr(forward_batch, "forward_mode", None)
+    if fm is not None:
+        try:
+            if fm.is_decode():
+                return int(getattr(forward_batch, "batch_size", 0))
+        except Exception:
+            pass
+
+    nt = getattr(forward_batch, "extend_num_tokens", None)
+    if nt is not None:
+        try:
+            return int(nt)
+        except Exception:
+            pass
+
+    return int(getattr(forward_batch, "seq_lens_sum", 0))
+
+
+def _extract_forward_mode(forward_batch) -> str:
+    """Human-readable forward mode, mapped to ``prefill`` / ``decode``.
+
+    SGLang's ``ForwardMode`` exposes ``is_decode()`` and ``is_prefill()``
+    (== ``is_extend()``, covering EXTEND / MIXED / DRAFT_EXTEND /
+    TARGET_VERIFY / SPLIT_PREFILL / DLLM_EXTEND).  Anything else (IDLE,
+    PREBUILT, …) falls back to the lower-cased enum name.
+    """
+    fm = getattr(forward_batch, "forward_mode", None)
+    if fm is None:
+        return "unknown"
     try:
-        logits_out = result.logits_output
-    except AttributeError:
-        return getattr(forward_batch, "seq_lens_sum", 0)
-
-    if logits_out is None:
-        return getattr(forward_batch, "seq_lens_sum", 0)
-
-    for attr in ("hidden_states", "next_token_logits"):
-        val = getattr(logits_out, attr, None)
-        if val is not None:
-            return val.shape[0]
-
-    return getattr(forward_batch, "seq_lens_sum", 0)
+        if fm.is_decode():
+            return "decode"
+        if fm.is_prefill():
+            return "prefill"
+    except Exception:
+        pass
+    return getattr(fm, "name", "unknown").lower()
