@@ -1,0 +1,285 @@
+# ============================================================================
+# [DEBUG ONLY — DO NOT MERGE] Throwaway probe for the 910C device-occupancy
+# incident (bm-jn-zs-bj2-910C-64G-10-113).
+#
+# Evidence so far (2026-10-21): two jobs that landed on runner -113 were
+# rejected at the device gate with the identical signature
+#   "dcmi model initialized failed, because the device is used. ret is -8020"
+#   (npu-smi rc=172) + drvGetDevNum drvRetCode=87,
+# 20+ minutes apart, while the same jobs passed on -112/-114/-115.
+#
+# This workflow runs ONE job on the flagcicd-910c fleet and dumps evidence
+# about what is holding the NPU:
+#   1. npu-smi battery + char-device open errno (container view).
+#   2. Host docker inventory via the mounted /var/run/docker.sock — READ-ONLY
+#      GET requests only: all containers on the host, their runtime/devices/
+#      start time/host PID, and `top` (host PIDs + full command lines) for
+#      running containers that hold /dev/davinci* (squatter candidates).
+#   3. A second sample ~4 minutes later, to tell persistent occupancy from a
+#      transient overlap.
+#
+# The job FAILS (exit 1) when the device is not available — failing runs are
+# the interesting ones. Runner assignment is random across the fleet: re-roll
+# (push an empty commit) until a run lands on the machine you care about; the
+# runner name is in the job page sidebar.
+#
+# NOTE: this branch also disables ci.yml's pull_request trigger so the debug
+# PR does NOT run the full platform matrix on shared device runners.
+# ============================================================================
+name: Debug Ascend Device Probe
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: debug-ascend-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: "Device occupancy probe (ascend/910c)"
+    runs-on: [self-hosted, Linux, ARM64, flagcicd-910c]
+    timeout-minutes: 15
+    # Container spec copied verbatim from .github/configs/ascend.yml on main.
+    container:
+      image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-ascend-ci
+      volumes:
+        - /mnt/airs-business/cicd/models:/data/models/Qwen
+        - /usr/local/Ascend/driver:/usr/local/Ascend/driver
+      options: >-
+        --hostname sglang-plugin-fl
+        --ipc=host
+        --shm-size=64g
+        --ulimit memlock=-1
+        --ulimit stack=67108864
+        --user root
+        --device /dev/davinci0
+        --device /dev/davinci1
+        --device /dev/davinci2
+        --device /dev/davinci3
+        --device /dev/davinci_manager
+        --device /dev/devmm_svm
+        --device /dev/hisi_hdc
+        --init
+
+    steps:
+      # `timeout` is coreutils and should exist, but never bet a device job on it.
+      - name: Container & host basics
+        continue-on-error: true
+        run: |
+          set +e
+          echo "=== [probe] identity / host-wide vitals ==="
+          date -u
+          echo "hostname=$(hostname)  user=$(whoami)"
+          uname -a
+          echo "--- host-wide loadavg & memory (not namespaced) ---"
+          cat /proc/loadavg
+          grep -E 'MemTotal|MemAvailable' /proc/meminfo
+          echo "--- relevant env ---"
+          env | grep -E '^(ASCEND|NPU|HCCL|CANN)' | sort
+          echo "--- device nodes ---"
+          ls -l /dev/davinci* /dev/devmm_svm /dev/hisi_hdc 2>&1
+          stat -c '%n mode=%A uid=%u gid=%g size=%s atime=%x mtime=%y ctime=%z' /dev/davinci0 2>&1
+
+      - name: npu-smi battery (sample 1)
+        continue-on-error: true
+        run: |
+          set +e
+          NPU_SMI=""
+          for c in "$(command -v npu-smi 2>/dev/null)" \
+                   /usr/local/Ascend/driver/tools/npu-smi \
+                   /usr/local/bin/npu-smi \
+                   /usr/local/sbin/npu-smi /usr/sbin/npu-smi; do
+            if [ -n "$c" ] && [ -x "$c" ]; then NPU_SMI="$c"; break; fi
+          done
+          echo "=== [probe] npu-smi battery (bin: ${NPU_SMI:-NOT FOUND}) ==="
+          ok=0
+          if [ -n "$NPU_SMI" ]; then
+            echo "--- $ npu-smi info ---"
+            timeout 20 "$NPU_SMI" info 2>&1; rc=$?
+            echo "[rc=$rc]"
+            [ "$rc" = "0" ] && ok=1
+            echo "--- $ npu-smi info -t usages ---"
+            timeout 20 "$NPU_SMI" info -t usages 2>&1
+            echo "[rc=$?]"
+          fi
+          echo "PROBE_NPU_SMI_OK=$ok" >> "$GITHUB_ENV"
+
+      # Talks to the host docker daemon through the socket the runner mounts
+      # into job containers. READ-ONLY GETs only — never POST/start/stop.
+      - name: Host docker inventory (sample 1, read-only)
+        continue-on-error: true
+        run: |
+          cat > /tmp/probe_docker.py <<'PY'
+          import http.client, socket, json, os, re, sys
+
+          SOCK = "/var/run/docker.sock"
+          if not os.path.exists(SOCK):
+              print(f"[probe] no docker socket at {SOCK}"); sys.exit(0)
+
+          class UnixHTTP(http.client.HTTPConnection):
+              def __init__(self):
+                  super().__init__("localhost", timeout=10)
+              def connect(self):
+                  s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                  s.settimeout(10); s.connect(SOCK); self.sock = s
+
+          def api(method, path):
+              c = UnixHTTP()
+              c.request(method, path)
+              r = c.getresponse()
+              body = r.read()
+              c.close()
+              if r.status != 200:
+                  raise RuntimeError(f"GET {path} -> HTTP {r.status}: {body[:200]!r}")
+              return json.loads(body)
+
+          def self_container_id():
+              # cgroup v1/v2: .../docker-<64hex>.scope or /docker/<64hex>
+              try:
+                  for line in open("/proc/self/cgroup"):
+                      m = re.search(r"([0-9a-f]{64})", line)
+                      if m: return m.group(1)
+              except OSError:
+                  pass
+              # bind-mount source of /etc/hostname reveals the container id
+              try:
+                  for line in open("/proc/self/mountinfo"):
+                      parts = line.split()
+                      if len(parts) > 4 and parts[4] == "/etc/hostname":
+                          m = re.search(r"([0-9a-f]{64})", parts[3])
+                          if m: return m.group(1)
+              except OSError:
+                  pass
+              return None
+
+          print("=== [probe] host docker inventory (read-only GETs) ===")
+          try:
+              v = api("GET", "/version")
+              print(f"docker {v.get('Version')} api={v.get('ApiVersion')} {v.get('Os')}/{v.get('Arch')}")
+          except Exception as e:
+              print(f"[probe] /version failed: {e}")
+
+          try:
+              containers = api("GET", "/containers/json?all=1")
+          except Exception as e:
+              print(f"[probe] container list failed: {e}"); sys.exit(0)
+
+          self_id = self_container_id()
+          if self_id:
+              print(f"self container id: {self_id[:12]} (excluded from candidates)")
+          else:
+              print("self container id: UNKNOWN (self may appear as candidate!)")
+
+          running = []
+          print(f"total containers on host: {len(containers)}")
+          for ct in containers[:40]:
+              cid = ct["Id"]
+              name = (ct.get("Names") or ["?"])[0].lstrip("/")
+              image = ct.get("Image", "?")
+              state = ct.get("State", "?"); status = ct.get("Status", "?")
+              created = (ct.get("CreatedAt") or "?")[:19]
+              try:
+                  ins = api("GET", f"/containers/{cid}/json")
+              except Exception as e:
+                  print(f"- {name}: inspect failed: {e}"); continue
+              hc = ins.get("HostConfig", {}); st = ins.get("State", {})
+              devices = ",".join(d.get("PathOnHost", "?") for d in (hc.get("Devices") or []))
+              runtime = hc.get("Runtime", "?"); pidmode = hc.get("PidMode") or "private"
+              tag = " [SELF]" if cid == self_id else ""
+              print(f"-{tag} {name}  img={image[:80]}")
+              print(f"    state={state}({status}) created={created} hostpid={st.get('Pid')} runtime={runtime} pidmode={pidmode}")
+              if devices:
+                  print(f"    devices={devices}")
+              if state == "running":
+                  running.append((cid, name, image, created, devices, runtime, ins))
+
+          cands = [r for r in running if r[0] != self_id and "davinci" in r[4]]
+          print()
+          print(f">>> RUNNING non-self containers holding /dev/davinci*: {len(cands)}")
+          for cid, name, image, created, devices, runtime, ins in cands[:8]:
+              st = ins.get("State", {}); cfg = ins.get("Config", {})
+              print(f">>> SQUATTER CANDIDATE: {name} (id={cid[:12]}) started={st.get('StartedAt')}")
+              print(f"    img={image}  runtime={runtime}  devices={devices}")
+              print(f"    cmd={cfg.get('Entrypoint')} {cfg.get('Cmd')}")
+              labels = ins.get("Config", {}).get("Labels") or {}
+              for k, val in list(labels.items())[:10]:
+                  print(f"    label {k}={str(val)[:80]}")
+              try:
+                  top = api("GET", f"/containers/{cid}/top")
+                  titles = top.get("Titles", [])
+                  print(f"    --- host-side processes (docker top) ---")
+                  for row in (top.get("Processes") or [])[:40]:
+                      line = " ".join(row)
+                      print(f"      {line[:220]}")
+              except Exception as e:
+                  print(f"    docker top failed: {e}")
+              print()
+          if not cands:
+              print(">>> (none — device is NOT held by another docker container;")
+              print("     if npu-smi still fails, suspect a host process or wedged driver)")
+          PY
+          timeout 90 python3 /tmp/probe_docker.py 2>&1
+          echo "[probe_docker rc=$?]"
+
+      - name: torch_npu availability (verdict input)
+        continue-on-error: true
+        run: |
+          set +e
+          echo "=== [probe] torch_npu availability ==="
+          timeout 240 python3 - <<'PY' 2>&1
+          import sys
+          try:
+              import torch, torch_npu  # noqa: F401
+              avail = torch.npu.is_available()
+              count = torch.npu.device_count()
+              print(f"torch_npu: is_available={avail} device_count={count}")
+              sys.exit(0 if (avail and count > 0) else 1)
+          except Exception as e:
+              print(f"torch_npu probe failed: {type(e).__name__}: {e}")
+              sys.exit(1)
+          PY
+          rc=$?
+          echo "[torch probe rc=$rc]"
+          echo "PROBE_TORCH_OK=$([ $rc = 0 ] && echo 1 || echo 0)" >> "$GITHUB_ENV"
+
+      - name: Wait 4 minutes (occupancy persistence measurement)
+        if: always()
+        run: |
+          echo "sleeping 240s before sample 2 ..."
+          sleep 240
+
+      - name: Sample 2 (t+4min)
+        continue-on-error: true
+        run: |
+          set +e
+          echo "=== [probe] sample 2 at $(date -u) ==="
+          NPU_SMI="$(command -v npu-smi 2>/dev/null || true)"
+          [ -z "$NPU_SMI" ] && [ -x /usr/local/Ascend/driver/tools/npu-smi ] && NPU_SMI=/usr/local/Ascend/driver/tools/npu-smi
+          ok=0
+          if [ -n "$NPU_SMI" ]; then
+            echo "--- $ npu-smi info (sample 2) ---"
+            timeout 20 "$NPU_SMI" info 2>&1; rc=$?
+            echo "[rc=$rc]"
+            [ "$rc" = "0" ] && ok=1
+          fi
+          echo "PROBE_NPU_SMI_OK2=$ok" >> "$GITHUB_ENV"
+          echo "--- docker inventory (sample 2) ---"
+          timeout 90 python3 /tmp/probe_docker.py 2>&1
+          echo "[probe_docker rc=$?]"
+
+      - name: Verdict
+        if: always()
+        run: |
+          echo "PROBE_NPU_SMI_OK=${PROBE_NPU_SMI_OK:-?}  PROBE_NPU_SMI_OK2=${PROBE_NPU_SMI_OK2:-?}  PROBE_TORCH_OK=${PROBE_TORCH_OK:-?}"
+          if [ "${PROBE_TORCH_OK:-0}" = "1" ] || [ "${PROBE_NPU_SMI_OK:-0}" = "1" ]; then
+            echo "PROBE-VERDICT: device looks available on this machine"
+            exit 0
+          fi
+          echo "PROBE-VERDICT: device NOT available — inspect squatter candidates / driver state above"
+          exit 1
