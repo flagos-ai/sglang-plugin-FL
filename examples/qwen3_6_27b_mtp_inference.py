@@ -1,6 +1,6 @@
 # Copyright (c) 2025 BAAI. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Qwen3.6-27B MTP (Multi-Token Prediction) inference test with sglang-plugin-FL.
+"""Qwen3.6 MTP (Multi-Token Prediction) inference test with sglang-plugin-FL.
 
 Validates that speculative decoding (EAGLE/MTP) works correctly with the OOT plugin.
 Tests include:
@@ -12,19 +12,20 @@ Tests include:
 Usage:
   python qwen3_6_27b_mtp_inference.py [--skip-baseline] [--max-tokens N]
 
-On Ascend, the validated MTP path always uses eager, synchronous execution. The
-script therefore forces CUDA graph, piecewise CUDA graph, and overlap scheduling
-off even when the corresponding command-line switches are omitted.
+On Ascend and Hygon, this example uses eager, synchronous execution. Hygon uses
+the controlled TP2 BF16 profile for either Qwen3.6-27B or Qwen3.6-35B-A3B via
+MODEL_PATH. Hardware acceptance still requires the speculative backend support.
 
 Environment variables:
   MODEL_PATH    Model path (default: /models/Qwen3.6-27B)
-  TP_SIZE       Tensor parallelism (default: 4 on Ascend/TXDA, otherwise 1)
+  TP_SIZE       Tensor parallelism (default: 2 on Hygon, 4 on Ascend/TXDA, else 1)
   MAX_TOKENS    Max generation tokens (default: 256)
 """
 
 import argparse
 import ast
 import inspect
+import json
 import math
 import os
 import re
@@ -66,7 +67,9 @@ if _is_txda:
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-27B")
-TP_SIZE = int(os.environ.get("TP_SIZE", "4" if _is_npu or _is_txda else "1"))
+TP_SIZE = int(
+    os.environ.get("TP_SIZE", "2" if _is_hcu else "4" if _is_npu or _is_txda else "1")
+)
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "256"))
 
 # ─── Diverse prompt set (covers different generation patterns) ────────────────
@@ -186,7 +189,7 @@ def _text_prompt(question: str) -> str:
 
 def _piecewise_graph_kwargs(disabled: bool):
     """Map the prefill graph switch across SGLang's old and new APIs."""
-    if not disabled:
+    if _is_hcu or not disabled:
         return {}
 
     from sglang.srt.server_args import ServerArgs
@@ -233,10 +236,24 @@ def _platform_engine_kwargs() -> dict:
         }
     if _is_hcu:
         return {
+            "nnodes": 1,
+            "pp_size": 1,
+            "attention_backend": "hcu",
+            "moe_runner_backend": "triton",
+            "speculative_moe_runner_backend": "triton",
             "dtype": "bfloat16",
             "kv_cache_dtype": "bfloat16",
             "page_size": 64,
-            "enable_breakable_cuda_graph": False,
+            "context_length": 4096,
+            "mem_fraction_static": 0.70,
+            "max_running_requests": 16,
+            "chunked_prefill_size": 4096,
+            "disable_custom_all_reduce": True,
+            "disable_cuda_graph": True,
+            "cuda_graph_backend_prefill": "disabled",
+            "cuda_graph_backend_decode": "disabled",
+            "disable_overlap_schedule": True,
+            "watchdog_timeout": 3600,
         }
     return {}
 
@@ -273,15 +290,78 @@ def _enforce_ascend_mtp_runtime_mode(args) -> None:
     args.disable_overlap_schedule = True
 
 
+def _enforce_hcu_mtp_runtime_mode(args) -> None:
+    if not _is_hcu:
+        return
+    if TP_SIZE != 2:
+        raise ValueError("The Hygon MTP example requires TP_SIZE=2")
+    if not (
+        args.disable_cuda_graph
+        and args.disable_piecewise_cuda_graph
+        and args.disable_overlap_schedule
+    ):
+        print("Hygon MTP uses the controlled TP2 eager synchronous profile.")
+    args.disable_cuda_graph = True
+    args.disable_piecewise_cuda_graph = True
+    args.disable_overlap_schedule = True
+
+
+def _checked_hcu_engine(engine, speculative: bool):
+    """Fail if normalization moves HCU outside the requested acceptance profile."""
+    if not _is_hcu:
+        return engine
+    try:
+        expected = _platform_engine_kwargs()
+        expected.update(
+            model_path=MODEL_PATH,
+            tokenizer_path=MODEL_PATH,
+            tp_size=2,
+            disable_radix_cache=True,
+            speculative_algorithm="EAGLE" if speculative else None,
+        )
+        if speculative:
+            expected.update(
+                speculative_draft_model_path=MODEL_PATH,
+                speculative_num_steps=3,
+                speculative_eagle_topk=1,
+                speculative_num_draft_tokens=4,
+            )
+        actual = {}
+        for name, value in expected.items():
+            got = getattr(engine.server_args, name)
+            got = getattr(got, "value", got)
+            if type(got) is not type(value) or got != value:
+                raise RuntimeError(
+                    f"HCU MTP runtime differs: {name}={got!r}, expected {value!r}"
+                )
+            actual[name] = got
+        graph = engine.server_args.cuda_graph_config
+        phases = {
+            phase: getattr(
+                getattr(graph, phase).backend, "value", getattr(graph, phase).backend
+            )
+            for phase in ("prefill", "decode")
+        }
+        if phases != {"prefill": "disabled", "decode": "disabled"}:
+            raise RuntimeError(f"HCU MTP must remain eager: {phases}")
+        print("HCU actual Engine profile: " + json.dumps(actual, sort_keys=True))
+    except Exception:
+        engine.shutdown()
+        raise
+    return engine
+
+
 def _make_mtp_engine(
     disable_cuda_graph=False,
     disable_piecewise_cuda_graph=False,
     disable_overlap_schedule=False,
 ):
-    """Create engine with MTP (speculative decoding) enabled."""
+    """Create the ordinary EAGLE V2 worker using the checkpoint's own MTP head."""
     from sglang.srt.entrypoints.engine import Engine
 
-    return Engine(
+    if _is_hcu and TP_SIZE != 2:
+        raise ValueError("The Hygon MTP example requires TP_SIZE=2")
+    kwargs = dict(
         model_path=MODEL_PATH,
         tp_size=TP_SIZE,
         mem_fraction_static=0.8,
@@ -293,9 +373,17 @@ def _make_mtp_engine(
         speculative_num_steps=3,
         speculative_eagle_topk=1,
         speculative_num_draft_tokens=4,
-        **_platform_engine_kwargs(),
-        **_piecewise_graph_kwargs(disable_piecewise_cuda_graph),
     )
+    kwargs.update(_platform_engine_kwargs())
+    kwargs.update(_piecewise_graph_kwargs(disable_piecewise_cuda_graph))
+    if _is_hcu:
+        kwargs.update(
+            tokenizer_path=MODEL_PATH, speculative_draft_model_path=MODEL_PATH
+        )
+        # Reassert at each Engine boundary so newly spawned workers preserve
+        # vendor entry-point isolation across sequential engine lifecycles.
+        os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
+    return _checked_hcu_engine(Engine(**kwargs), speculative=True)
 
 
 def _make_baseline_engine(
@@ -303,22 +391,91 @@ def _make_baseline_engine(
     disable_piecewise_cuda_graph=False,
     disable_overlap_schedule=False,
 ):
-    """Create engine without MTP (standard autoregressive)."""
+    """Create the same HCU runtime profile with speculative decoding disabled."""
     from sglang.srt.entrypoints.engine import Engine
 
-    return Engine(
+    if _is_hcu and TP_SIZE != 2:
+        raise ValueError("The Hygon MTP example requires TP_SIZE=2")
+    kwargs = dict(
         model_path=MODEL_PATH,
         tp_size=TP_SIZE,
         mem_fraction_static=0.8,
         disable_cuda_graph=disable_cuda_graph,
         disable_overlap_schedule=disable_overlap_schedule,
         trust_remote_code=True,
-        # MTP uses fresh prefixes. Reusing hybrid states only in the baseline
-        # changes prefill shapes and rounding, confounding greedy comparison.
+        # Match the fresh-prefix behavior of the speculative engine.
         disable_radix_cache=True,
-        **_platform_engine_kwargs(),
-        **_piecewise_graph_kwargs(disable_piecewise_cuda_graph),
     )
+    kwargs.update(_platform_engine_kwargs())
+    kwargs.update(_piecewise_graph_kwargs(disable_piecewise_cuda_graph))
+    if _is_hcu:
+        kwargs["tokenizer_path"] = MODEL_PATH
+        # Reassert at each Engine boundary so newly spawned workers preserve
+        # vendor entry-point isolation across sequential engine lifecycles.
+        os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
+    return _checked_hcu_engine(Engine(**kwargs), speculative=False)
+
+
+def _generation_metadata(result, speculative: bool = False) -> dict:
+    """Validate actual counters; never estimate tokens from words or requested caps."""
+    if not isinstance(result.get("text"), str) or not result["text"].strip():
+        raise ValueError("Generation returned no nonblank text")
+    meta = result.get("meta_info")
+    if not isinstance(meta, dict):
+        raise ValueError("Generation returned no actual metadata")
+    for key in ("prompt_tokens", "completion_tokens"):
+        if type(meta.get(key)) is not int or meta[key] <= 0:
+            raise ValueError(f"Generation returned invalid actual {key}")
+    if speculative:
+        for key in (
+            "spec_verify_ct",
+            "spec_num_proposed_drafts",
+            "spec_num_correct_drafts",
+        ):
+            if type(meta.get(key)) is not int:
+                raise ValueError(f"Missing actual speculative counter: {key}")
+        verify, proposed, accepted = (
+            meta[k]
+            for k in (
+                "spec_verify_ct",
+                "spec_num_proposed_drafts",
+                "spec_num_correct_drafts",
+            )
+        )
+        if verify <= 0 or proposed != verify * 3 or not 0 <= accepted <= proposed:
+            raise ValueError(
+                "Invalid EAGLE steps3/topk1/draft4 proposal/accept counters"
+            )
+        for key, expected in (
+            ("spec_accept_rate", accepted / proposed),
+            ("spec_accept_length", meta["completion_tokens"] / verify),
+        ):
+            got = meta.get(key)
+            if (
+                type(got) not in (int, float)
+                or not math.isfinite(got)
+                or not math.isclose(got, expected, rel_tol=1e-6, abs_tol=1e-8)
+            ):
+                raise ValueError(f"Speculative counter ratio differs: {key}")
+    return meta
+
+
+def _spec_accept_length(info) -> float:
+    states = info.get("internal_states")
+    if isinstance(states, dict):
+        states = [states]
+    if not isinstance(states, list) or not states:
+        raise ValueError("Missing scheduler speculative acceptance statistics")
+    lengths = [state.get("avg_spec_accept_length") for state in states]
+    if any(
+        type(value) not in (int, float)
+        or not math.isfinite(value)
+        or not 0 < value <= 4
+        for value in lengths
+    ):
+        raise ValueError("Invalid actual scheduler speculative acceptance length")
+    # All participating schedulers must satisfy the existing strict threshold.
+    return min(lengths)
 
 
 # ─── Inference helpers ────────────────────────────────────────────────────────
@@ -334,7 +491,8 @@ def run_inference(engine, prompts, max_tokens):
             prompt=_text_prompt(p["prompt"]), sampling_params=sampling_params
         )
         lat = time.perf_counter() - t0
-        results.append((result["text"], result.get("meta_info", {}), lat))
+        meta = _generation_metadata(result) if _is_hcu else result.get("meta_info", {})
+        results.append((result["text"], meta, lat))
         print(
             f"  Completed {index}/{len(prompts)} [{p['category']}]: "
             f"{result.get('meta_info', {}).get('completion_tokens', '?')} tokens "
@@ -344,7 +502,7 @@ def run_inference(engine, prompts, max_tokens):
     return results
 
 
-def run_long_generation(engine, prompt, max_tokens=512):
+def run_long_generation(engine, prompt, max_tokens=512, expect_speculative=False):
     """Single long generation for throughput measurement."""
     sampling_params = {"max_new_tokens": max_tokens, "temperature": 0}
     t0 = time.perf_counter()
@@ -353,8 +511,16 @@ def run_long_generation(engine, prompt, max_tokens=512):
     )
     elapsed = time.perf_counter() - t0
     text = result["text"]
-    meta = result.get("meta_info", {})
-    tokens = meta.get("completion_tokens", len(text.split()))
+    meta = (
+        _generation_metadata(result, speculative=expect_speculative)
+        if _is_hcu
+        else result.get("meta_info", {})
+    )
+    tokens = (
+        meta["completion_tokens"]
+        if _is_hcu
+        else meta.get("completion_tokens", len(text.split()))
+    )
     return text, tokens, elapsed
 
 
@@ -614,7 +780,11 @@ def run_logprob_conformance(engine) -> dict:
             top_logprobs_num=5,
             logprob_start_len=0,
         )
-        meta = generated.get("meta_info", {})
+        meta = (
+            _generation_metadata(generated, speculative=True)
+            if _is_hcu
+            else generated.get("meta_info", {})
+        )
         decode_logprobs = meta.get("output_token_logprobs") or []
         decode_top_logprobs = meta.get("output_top_logprobs") or []
         input_logprobs = meta.get("input_token_logprobs") or []
@@ -777,6 +947,7 @@ def main():
     )
     args = parser.parse_args()
     _enforce_ascend_mtp_runtime_mode(args)
+    _enforce_hcu_mtp_runtime_mode(args)
 
     if not os.path.exists(MODEL_PATH):
         print(f"Model not found: {MODEL_PATH}")
@@ -791,7 +962,7 @@ def main():
         else ("cuda_graph" if not disable_pcg else "cuda_graph(no piecewise)")
     )
     print("=" * 70)
-    print("  Qwen3.6-27B MTP (Speculative Decoding) Validation")
+    print(f"  {os.path.basename(MODEL_PATH)} MTP (Speculative Decoding) Validation")
     print("=" * 70)
     print(f"  Model: {MODEL_PATH}")
     print(f"  TP: {TP_SIZE} | max_tokens: {max_tokens} | mode: {mode_str}")
@@ -810,64 +981,63 @@ def main():
         disable_piecewise_cuda_graph=disable_pcg,
         disable_overlap_schedule=args.disable_overlap_schedule,
     )
-    print(f"  Engine loaded in {time.perf_counter() - t0:.1f}s")
-
-    # Platform compatibility defaults may resolve the requested mode (e.g.
-    # MUSA MTP). Compare against a baseline using that same effective mode.
-    effective_disable_overlap = mtp_engine.server_args.disable_overlap_schedule
-    print(f"  Effective overlap schedule: {not effective_disable_overlap}")
-
-    mtp_results = run_inference(mtp_engine, PROMPTS, max_tokens)
-
-    print("\n  Target-token logprob conformance (decode vs prefill):")
-    logprob_conformance = run_logprob_conformance(mtp_engine)
-    print(
-        "    "
-        f"tokens={logprob_conformance['scored_tokens']}, "
-        f"max_delta={logprob_conformance['max_delta']:.6f}, "
-        f"near_ties={logprob_conformance['near_ties']}/"
-        f"{logprob_conformance['near_tie_limit']}, "
-        f"large_gap_violations={logprob_conformance['large_gap_violations']}"
-    )
-    for error in logprob_conformance["errors"]:
-        print(f"    ERROR: {error}")
-
-    print(f"\n  Results ({len(PROMPTS)} prompts):")
-    for p, (text, meta, lat) in zip(PROMPTS, mtp_results):
-        tokens = meta.get("completion_tokens", "?")
-        print(f"  [{p['category']:12}] {p['prompt'][:50]}")
-        print(f"               -> {text[:120]}{'...' if len(text) > 120 else ''}")
-        print(f"               ({tokens} tokens, {lat:.2f}s)")
-        print()
-
-    # Throughput test: single long generation
-    print("  Throughput test (long generation, 512 tokens):")
-    long_text, long_tokens, long_time = run_long_generation(
-        mtp_engine,
-        "Write a detailed essay about the history of artificial intelligence, "
-        "covering key milestones from the 1950s to today.",
-        max_tokens=512,
-    )
-    throughput = long_tokens / long_time if long_time > 0 else 0
-    print(f"    {long_tokens} tokens in {long_time:.2f}s = {throughput:.1f} tok/s")
-
-    # Get accept length
-    avg_accept = None
     try:
-        info = mtp_engine.get_server_info()
-        states = info.get("internal_states", [{}])
-        avg_accept = (states[0] if isinstance(states, list) else states).get(
-            "avg_spec_accept_length", None
+        print(f"  Engine loaded in {time.perf_counter() - t0:.1f}s")
+
+        # Platform compatibility defaults may resolve the requested mode (e.g.
+        # MUSA MTP). Compare against a baseline using that same effective mode.
+        effective_disable_overlap = mtp_engine.server_args.disable_overlap_schedule
+        print(f"  Effective overlap schedule: {not effective_disable_overlap}")
+
+        mtp_results = run_inference(mtp_engine, PROMPTS, max_tokens)
+
+        print("\n  Target-token logprob conformance (decode vs prefill):")
+        logprob_conformance = run_logprob_conformance(mtp_engine)
+        print(
+            "    "
+            f"tokens={logprob_conformance['scored_tokens']}, "
+            f"max_delta={logprob_conformance['max_delta']:.6f}, "
+            f"near_ties={logprob_conformance['near_ties']}/"
+            f"{logprob_conformance['near_tie_limit']}, "
+            f"large_gap_violations={logprob_conformance['large_gap_violations']}"
         )
-    except Exception:
-        pass
+        for error in logprob_conformance["errors"]:
+            print(f"    ERROR: {error}")
 
-    if avg_accept is not None:
-        print(f"\n  avg_spec_accept_length: {avg_accept:.2f}")
+        print(f"\n  Results ({len(PROMPTS)} prompts):")
+        for p, (text, meta, lat) in zip(PROMPTS, mtp_results):
+            tokens = meta.get("completion_tokens", "?")
+            print(f"  [{p['category']:12}] {p['prompt'][:50]}")
+            print(f"               -> {text[:120]}{'...' if len(text) > 120 else ''}")
+            print(f"               ({tokens} tokens, {lat:.2f}s)")
+            print()
 
-    mtp_engine.shutdown()
-    del mtp_engine
-    _empty_device_cache()
+        # Throughput test: single long generation
+        print("  Throughput test (long generation, 512 tokens):")
+        long_text, long_tokens, long_time = run_long_generation(
+            mtp_engine,
+            "Write a detailed essay about the history of artificial intelligence, "
+            "covering key milestones from the 1950s to today.",
+            max_tokens=512,
+            expect_speculative=True,
+        )
+        throughput = long_tokens / long_time if long_time > 0 else 0
+        print(f"    {long_tokens} tokens in {long_time:.2f}s = {throughput:.1f} tok/s")
+
+        # Get accept length
+        avg_accept = None
+        try:
+            avg_accept = _spec_accept_length(mtp_engine.get_server_info())
+        except Exception as error:
+            print(f"    Acceptance statistics unavailable or invalid: {error}")
+
+        if avg_accept is not None:
+            print(f"\n  avg_spec_accept_length: {avg_accept:.2f}")
+
+    finally:
+        mtp_engine.shutdown()
+        del mtp_engine
+        _empty_device_cache()
 
     # ─── Phase 2: Baseline (optional) ────────────────────────────────────────
     baseline_results = None
@@ -882,25 +1052,27 @@ def main():
             disable_piecewise_cuda_graph=disable_pcg,
             disable_overlap_schedule=effective_disable_overlap,
         )
-        print(f"  Engine loaded in {time.perf_counter() - t0:.1f}s")
+        try:
+            print(f"  Engine loaded in {time.perf_counter() - t0:.1f}s")
 
-        baseline_results = run_inference(baseline_engine, PROMPTS, max_tokens)
+            baseline_results = run_inference(baseline_engine, PROMPTS, max_tokens)
 
-        # Baseline throughput
-        _, base_tokens, base_time = run_long_generation(
-            baseline_engine,
-            "Write a detailed essay about the history of artificial intelligence, "
-            "covering key milestones from the 1950s to today.",
-            max_tokens=512,
-        )
-        base_throughput = base_tokens / base_time if base_time > 0 else 0
-        print(
-            f"  Throughput: {base_tokens} tokens in {base_time:.2f}s = {base_throughput:.1f} tok/s"
-        )
+            # Baseline throughput
+            _, base_tokens, base_time = run_long_generation(
+                baseline_engine,
+                "Write a detailed essay about the history of artificial intelligence, "
+                "covering key milestones from the 1950s to today.",
+                max_tokens=512,
+            )
+            base_throughput = base_tokens / base_time if base_time > 0 else 0
+            print(
+                f"  Throughput: {base_tokens} tokens in {base_time:.2f}s = {base_throughput:.1f} tok/s"
+            )
 
-        baseline_engine.shutdown()
-        del baseline_engine
-        _empty_device_cache()
+        finally:
+            baseline_engine.shutdown()
+            del baseline_engine
+            _empty_device_cache()
 
     # ─── Phase 3: Validation ──────────────────────────────────────────────────
     print("\nPhase 3: Validation")

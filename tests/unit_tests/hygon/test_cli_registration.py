@@ -69,6 +69,14 @@ def registration_env(monkeypatch):
         setup_pp_output_launch_dependency=lambda: events.append(("pp",)),
     )
     stub("lifecycle", apply_hcu_lifecycle_patches=lambda: events.append(("lifecycle",)))
+    stub(
+        "patches.speculative_backend",
+        register_hcu_speculative_backends=lambda: events.append(("speculative",)),
+    )
+    stub(
+        "patches.mtp_weights",
+        register_hcu_mtp_weight_guard=lambda: events.append(("mtp_weights",)),
+    )
     original_import = builtins.__import__
 
     def guard_import(name, *args, **kwargs):
@@ -180,10 +188,24 @@ def test_vendor_patch_explicitly_registers_before_other_patch_work(registration_
     patch = env.load("patch")
     assert env.choices.count("hcu") == 1
     assert callable(env.factories["hcu"])
-    assert env.events == [("choices", ("hcu",)), ("fla",), ("pp",), ("lifecycle",)]
+    assert env.events == [
+        ("choices", ("hcu",)),
+        ("mtp_weights",),
+        ("speculative",),
+        ("fla",),
+        ("pp",),
+        ("lifecycle",),
+    ]
     patch.apply_hcu_patches()
     assert env.choices.count("hcu") == 1
-    assert env.events == [("choices", ("hcu",)), ("fla",), ("pp",), ("lifecycle",)]
+    assert env.events == [
+        ("choices", ("hcu",)),
+        ("mtp_weights",),
+        ("speculative",),
+        ("fla",),
+        ("pp",),
+        ("lifecycle",),
+    ]
     assert env.imported_kernels == []
 
 

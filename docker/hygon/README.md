@@ -148,6 +148,68 @@ MODEL_PATH=/models/Qwen3.6-35B-A3B TP_SIZE=2 \
 这些验收配置不会自动选择 GPU。运行前确认 `HIP_VISIBLE_DEVICES` 对应已分配的
 空闲设备；直接运行示例同样需要在 `import torch` 之前设置自动加载开关。
 
+## MTP：Qwen3.6-27B / 35B-A3B（完整模型验收待完成）
+
+本节对应包含 MTP 改动的当前源码，尚无两模型完整验收通过或加速结论。
+从当前 checkout 按上文配方重新构建即可包含这些改动；已发布的
+`0.5.18-hygon-ci-20261015` 镜像提供设备栈，需要另行安装当前插件源码。
+沿用该镜像时，在 `docker run` 中挂载当前仓库
+`-v "$PWD":/opt/sglang-plugin-fl`，并在容器内安装，保留厂商依赖：
+
+```bash
+cd /opt/sglang-plugin-fl
+export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+python -m pip install --no-deps --no-build-isolation -e .
+```
+
+两模型均需包含完整 MTP head 的正式 BF16 checkpoint；配置中的 MTP 字段不能
+代替实际权重。插件会检查真实 loader 加载的参数及融合分片，缺失即失败。
+模型分别只读挂载到 `/models/Qwen3.6-27B` 与 `/models/Qwen3.6-35B-A3B`。
+例如，35B 位于 `/public-flash/lishuaiao/models-hf-bf16/Qwen3.6-35B-A3B` 时，
+在 `docker run` 中另加
+`-v /public-flash/lishuaiao/models-hf-bf16/Qwen3.6-35B-A3B:/models/Qwen3.6-35B-A3B:ro`。
+
+在宿主机 `tmux` 会话中使用已准备的容器，先完成上文 GPU 环境检查，再逐模型
+执行完整示例。`HIP_VISIBLE_DEVICES` 必须是实际分配的两张空闲卡；保留每次日志
+和原始退出码。
+
+```bash
+set -euo pipefail
+cd /opt/sglang-plugin-fl
+export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+unset ROCR_VISIBLE_DEVICES CUDA_VISIBLE_DEVICES
+: "${HIP_VISIBLE_DEVICES:?先指定已分配的两张海光卡}"
+export SGLANG_PLUGINS=sglang_fl
+export SGLANG_FL_DIST_BACKEND=flagcx
+export FLAGCX_PATH=/sgl-workspace/FlagCX
+
+MODEL_PATH=/models/Qwen3.6-27B TP_SIZE=2 \
+  python examples/qwen3_6_27b_mtp_inference.py \
+    --disable-cuda-graph --disable-piecewise-cuda-graph \
+    --disable-overlap-schedule
+
+MODEL_PATH=/models/Qwen3.6-35B-A3B TP_SIZE=2 \
+  python examples/qwen3_6_27b_mtp_inference.py \
+    --disable-cuda-graph --disable-piecewise-cuda-graph \
+    --disable-overlap-schedule
+```
+
+受控配置为单机 TP2/PP1、BF16 模型及 KV、HCU attention、同步 eager 执行，
+使用 `EAGLE`、3 steps、topk=1、4 draft tokens，同一 checkpoint 提供 MTP head。
+这里的 3 steps 不是 `EAGLE3` 算法。示例固定 page64、context4096、
+`mem_fraction_static=0.70`、`max_running_requests=16`、`chunked_prefill_size=4096`，
+关闭 radix cache、两阶段 graph 与 overlap scheduling。每次创建 MTP 或 baseline
+Engine 前都会重设 Torch 自动加载开关；启动 Python 前仍需设置上述环境。
+
+当前实现明确拒绝 MTP graph、topk>1 分叉树和启用 overlap 的配置。
+其它拓扑及 MTP 视觉、并发和 HTTP 入口尚未验收。这些边界来自当前软件实现与
+验证范围。普通非 MTP decode graph 的既有使用方式保持不变。
+
+完整验收保留 baseline 比较，要求语义契约、64-token teacher-forced 检查、
+实际 speculative 计数和各 scheduler 接受长度严格大于 2 的检查全部通过，
+并核对原始退出与资源清理。不要用 `--skip-baseline` 的局部结果、权重覆盖日志
+或组件测试代替完整验收；示例的单请求 tok/s 仅用于诊断。
+
 ## 已验证范围（2026-10-14）
 
 SGLang v0.5.18 tag 对应 `71de97b264b04dcd514cf904003028aefe9775c8`。
