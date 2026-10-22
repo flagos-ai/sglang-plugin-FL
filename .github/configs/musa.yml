@@ -24,7 +24,7 @@ container_volumes:
 # --user root is required: the CI image installs libs under system paths and the
 # setup.sh step pip-installs the plugin into /usr/local.
 # --init: tini as PID 1 reaps orphan zombies from sglang TP workers on shutdown
-# (same rationale as cuda/ascend).
+# (same rationale as nvidia/ascend).
 container_options: >-
   --hostname sglang-plugin-fl
   --ipc=host
