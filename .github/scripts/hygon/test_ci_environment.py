@@ -226,7 +226,7 @@ class WorkflowTests(unittest.TestCase):
                 "Hygon cannot be enabled before a real 0.5.18 image is published",
             )
 
-    def test_both_profiles_make_six_groups_of_two_models(self):
+    def test_standard_six_groups_and_eager_mtp_select_two_models(self):
         spec = importlib.util.spec_from_file_location(
             "hygon_ci_matrix", ROOT / ".github/scripts/generate_matrix.py"
         )
@@ -234,14 +234,15 @@ class WorkflowTests(unittest.TestCase):
         spec.loader.exec_module(module)
         config = module.load_platform("hygon")
         matrix = module.build_e2e_matrix(config, module.get_device_sections(config), [])
-        self.assertEqual(len(matrix), 6)
+        self.assertEqual(len(matrix), 7)
         self.assertEqual(
             {(x["device"], x["task"]) for x in matrix},
             {
                 (device, task)
                 for device in ("bw1000", "bw1000_graph")
                 for task in ("inference", "serving", "concurrent")
-            },
+            }
+            | {("bw1000", "mtp")},
         )
         for entry in matrix:
             self.assertEqual(

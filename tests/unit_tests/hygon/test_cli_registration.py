@@ -77,6 +77,10 @@ def registration_env(monkeypatch):
         "patches.mtp_weights",
         register_hcu_mtp_weight_guard=lambda: events.append(("mtp_weights",)),
     )
+    stub(
+        "patches.mtp_logprobs",
+        register_hcu_mtp_logprob_guard=lambda: events.append(("mtp_logprobs",)),
+    )
     original_import = builtins.__import__
 
     def guard_import(name, *args, **kwargs):
@@ -191,6 +195,7 @@ def test_vendor_patch_explicitly_registers_before_other_patch_work(registration_
     assert env.events == [
         ("choices", ("hcu",)),
         ("mtp_weights",),
+        ("mtp_logprobs",),
         ("speculative",),
         ("fla",),
         ("pp",),
@@ -201,6 +206,7 @@ def test_vendor_patch_explicitly_registers_before_other_patch_work(registration_
     assert env.events == [
         ("choices", ("hcu",)),
         ("mtp_weights",),
+        ("mtp_logprobs",),
         ("speculative",),
         ("fla",),
         ("pp",),

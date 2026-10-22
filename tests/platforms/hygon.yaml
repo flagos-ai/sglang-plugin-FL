@@ -45,7 +45,7 @@ env_defaults:
 
 bw1000: &bw1000_profile
   name: bw1000
-  tests:
+  tests: &bw1000_tests
     unit:
       include: "*"
       exclude: []
@@ -53,12 +53,14 @@ bw1000: &bw1000_profile
       include: "*"
       exclude: []
     e2e:
-      inference:
+      inference: &hcu_model_cases
         qwen3_6: [27b_tp2_hygon, 35b_a3b_tp2_hygon]
       serving:
         qwen3_6: [27b_tp2_hygon, 35b_a3b_tp2_hygon]
       concurrent:
         qwen3_6: [27b_tp2_hygon, 35b_a3b_tp2_hygon]
+      # Only the eager profile runs speculative model acceptance.
+      mtp: *hcu_model_cases
     # Benchmark and two-node TP2/PP2 acceptance are separate opt-in runs.
     benchmark:
       enabled: false
@@ -67,3 +69,10 @@ bw1000: &bw1000_profile
 bw1000_graph:
   <<: *bw1000_profile
   name: bw1000_graph
+  tests:
+    <<: *bw1000_tests
+    # Explicitly retain the three standard graph tasks without inheriting MTP.
+    e2e:
+      inference: *hcu_model_cases
+      serving: *hcu_model_cases
+      concurrent: *hcu_model_cases
