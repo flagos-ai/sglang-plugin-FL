@@ -22,11 +22,10 @@ import torch
 import triton
 import triton.language as tl
 
-from sglang.srt.utils import is_cuda, is_hip, is_maca
+from sglang.srt.utils import is_cuda, is_hip
 
 _is_cuda = is_cuda()
 _is_hip = is_hip()
-_is_maca = is_maca()
 
 if _is_cuda or _is_hip:
     CUDA_CAPABILITY = torch.cuda.get_device_capability()
@@ -155,7 +154,8 @@ def context_attention_fwd(
     Lq, Lk, Lv = q.shape[-1], k.shape[-1], v.shape[-1]
     BLOCK_DMODEL = triton.next_power_of_2(Lk)
 
-    if _is_maca and not is_causal:
+    if not is_causal:
+        # Vendor selection is handled by sglang_fl._apply_vendor_patches().
         # C500X-tuned for non-causal (vision encoder) attention. Validated for
         # head_dim <= 128 (BLOCK_DMODEL <= 128), where 128/32/8/2 fits exactly in
         # the 64 KB shared-memory limit. Larger head_dim would not fit -> shrink.

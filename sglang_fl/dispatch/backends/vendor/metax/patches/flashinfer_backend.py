@@ -49,6 +49,7 @@ if is_flashinfer_available():
 
 
 import importlib
+from sglang.srt.layers.attention import flashinfer_backend as _sglang_flashinfer_backend
 from sglang.srt.layers.attention.flashinfer_backend import (
     FlashInferAttnBackend,
     WrapperDispatch,
@@ -57,9 +58,13 @@ from sglang.srt.layers.attention.flashinfer_backend import (
     PrefillMetadata,
     should_use_tensor_core,
     global_workspace_buffer,
-    global_override_indptr_cpu,
     FlashInferIndicesUpdaterPrefill,
     FlashInferIndicesUpdaterDecode,
+)
+
+_MIS_UNSUPPORTED_ERROR = (
+    "MetaX FlashInfer does not support --enable-mis"
+
 )
 
 
@@ -89,6 +94,8 @@ def patch_flashinfer_backend_classes() -> None:
 
             # Store multi-item scoring flag for efficient access
             self.enable_mis = model_runner.server_args.enable_mis
+            if self.enable_mis:
+                raise ValueError(_MIS_UNSUPPORTED_ERROR)
 
             # FIXME: remove dllm workarounds from flashinfer
             self.dllm_config = DllmConfig.from_server_args(model_runner.server_args)
@@ -962,13 +969,19 @@ def patch_flashinfer_backend_classes() -> None:
                 )
             )
 
-        global global_override_indptr_cpu
         locally_override = False
-        if seq_lens_cpu is not None and global_override_indptr_cpu is None:
+        if (
+            seq_lens_cpu is not None
+            and _sglang_flashinfer_backend.global_override_indptr_cpu is None
+        ):
             locally_override = True
-            global_override_indptr_cpu = torch.empty_like(kv_indptr, device="cpu")
-            global_override_indptr_cpu[0] = 0
-            global_override_indptr_cpu[1 : bs + 1] = torch.cumsum(seq_lens_cpu, dim=0)
+            _sglang_flashinfer_backend.global_override_indptr_cpu = torch.empty_like(
+                kv_indptr, device="cpu"
+            )
+            _sglang_flashinfer_backend.global_override_indptr_cpu[0] = 0
+            _sglang_flashinfer_backend.global_override_indptr_cpu[1 : bs + 1] = (
+                torch.cumsum(seq_lens_cpu, dim=0)
+            )
 
         wrapper.begin_forward(
             kv_indptr,
@@ -988,7 +1001,7 @@ def patch_flashinfer_backend_classes() -> None:
         )
 
         if locally_override:
-            global_override_indptr_cpu = None
+            _sglang_flashinfer_backend.global_override_indptr_cpu = None
 
     def metax_prefill_call_begin_forward(
         self,
@@ -1009,6 +1022,9 @@ def patch_flashinfer_backend_classes() -> None:
         multi_item_params: Optional[MultiItemScoringParams] = None,
         cross_attention_custom_mask: Optional[torch.Tensor] = None,
     ):
+        if multi_item_params is not None and multi_item_params.is_enabled():
+            raise ValueError(_MIS_UNSUPPORTED_ERROR)
+
         bs = len(seq_lens)
         if spec_info is None:
             assert len(seq_lens) == len(req_pool_indices)
@@ -1064,22 +1080,6 @@ def patch_flashinfer_backend_classes() -> None:
             )
 
         # cached part
-        # Conditionally set multi-item parameters
-        if multi_item_params is not None and multi_item_params.is_enabled():
-            # Multi-item scoring is active - use specialized parameters and disable generic custom_mask
-            use_custom_mask = None
-            prefix_len_ptr = multi_item_params.prefix_len_ptr
-            token_pos_in_items_ptr = multi_item_params.token_pos_in_items_ptr
-            token_pos_in_items_len = multi_item_params.token_pos_in_items_len
-            max_item_len_ptr = multi_item_params.max_item_len_ptr
-        else:
-            # No multi-item scoring - use standard parameters
-            use_custom_mask = custom_mask
-            prefix_len_ptr = None
-            token_pos_in_items_ptr = None
-            token_pos_in_items_len = 0
-            max_item_len_ptr = None
-
         wrapper_paged.begin_forward(
             qo_indptr,
             kv_indptr,
@@ -1091,13 +1091,9 @@ def patch_flashinfer_backend_classes() -> None:
             1,
             q_data_type=self.q_data_type,
             kv_data_type=self.data_type,
-            custom_mask=use_custom_mask,
+            custom_mask=custom_mask,
             non_blocking=True,
             # fixed_split_size=fixed_split_size,
-            # prefix_len_ptr=prefix_len_ptr,
-            # token_pos_in_items_ptr=token_pos_in_items_ptr,
-            # token_pos_in_items_len=token_pos_in_items_len,
-            # max_item_len_ptr=max_item_len_ptr,
         )
 
 
@@ -1108,9 +1104,6 @@ def patch_flashinfer_backend_classes() -> None:
         "patched flashinfer_backend classes: FlashInferAttnBackend, "
         "FlashInferIndicesUpdaterDecode"
     )
-
-global_override_indptr_cpu = None
-
 
 def fast_decode_plan(
     self,
@@ -1202,9 +1195,10 @@ def fast_decode_plan(
         device=self.device,
     )
 
+    # Multi-step draft decoding publishes this override in the SGLang module.
     indptr_host = (
-        global_override_indptr_cpu
-        if global_override_indptr_cpu is not None
+        _sglang_flashinfer_backend.global_override_indptr_cpu
+        if _sglang_flashinfer_backend.global_override_indptr_cpu is not None
         else indptr.cpu()
     )
 
