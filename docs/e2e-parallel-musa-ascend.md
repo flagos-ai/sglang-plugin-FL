@@ -1,6 +1,6 @@
 # e2e 并行执行:musa / ascend 串行限制根因排查
 
-> 状态:排查中(debug PR #150,E1 已完成,E2 复跑中)
+> 状态:排查完成(debug PR #150;E1 基线 + E2 同配置复跑均已完成)
 > 排查对象:#148 引入的 DeviceScheduler 并行 e2e(每用例独占 `tp_size × pp_size` 连续卡组,子进程注入平台可见性环境变量钉卡)中,`musa` 与 `ascend` 被迫声明 `e2e_serial: true` 的原因。
 > 环境变量语义:`MTHREADS_VISIBLE_DEVICES`(musa)/ `ASCEND_RT_VISIBLE_DEVICES`(ascend)按 CUDA_VISIBLE_DEVICES 惯例做每进程逻辑重映射。
 
@@ -73,7 +73,7 @@ serving 用例调度(时间线,均为钉卡模式):
 
 ### 3.3 池稳定性背景
 
-flagcicd-910c 池当天多次出现 check.sh 阶段 `drvErr=87`(get platform info failed / driver error:internal error),#148 验证期间即重掷过三次。AICPU `libccl_kernel` 错误与 drvErr=87 同属宿主驱动态问题谱系;单发、不复现、与驱动失联高发同池同时段,倾向归因为**宿主瞬时态**而非钉卡/并发的确定性缺陷。
+flagcicd-910c 池连续两日多次出现 check.sh 阶段 `drvErr=87`(get platform info failed / driver error:internal error):#148 验证期间 3 次(重掷解决)、debug E1 1 次(inference 任务)、E2 1 次(functional 任务,阻断整条 e2e 链)——两日内 ≥5 次,且全部发生在任何测试代码执行之前。AICPU `libccl_kernel` 错误与 drvErr=87 同属宿主驱动态问题谱系;单发、不复现、与驱动失联高发同池同时段,倾向归因为**宿主瞬时态**而非钉卡/并发的确定性缺陷。
 
 ### 3.4 建议
 
@@ -84,7 +84,9 @@ flagcicd-910c 池当天多次出现 check.sh 阶段 `drvErr=87`(get platform inf
 
 - debug PR #150:`FL_E2E_PIN` / `FL_E2E_STAGGER` 旋钮见 `tests/run.py` `_run_e2e_parallel`(诊断行 `E2E diag:` 打印设备数、环境可见性、模式)。
 - E1:run 39887129522(musa 双 OOM、ascend serving 钉卡通过、ascend inference 撞 drvErr=87)。
-- E2(本文档提交触发的复跑):同 E1 配置第二样本,验证 musa 失败确定性与 ascend 通过稳定性。
+- E2(run [39890037150](https://github.com/flagos-ai/sglang-plugin-FL/actions/runs/39890037150),同配置复跑):
+  - **musa 确定性 2/2**:失败逐位复现 —— 相同掩码分配、相同失败顺序(4b/06b 过,两个 tp4 在 40–70 秒 OOM)、相同错误类(`OutOfMemoryError: MUSA out of memory ... GPU 0 ... ~50–130 MiB free` 与 `memory capacity is unbalanced`)。
+  - ascend:E2 中其 functional 任务在 check.sh 阶段再撞 `drvErr=87`(两日内第 5 次,见 §3.3),e2e 链路被阻断;ascend 并行 serving 的通过样本仍以 E1 为准(1 次通过 vs 1 次 #148 失败,均为单样本)。
 
 ## 5. Owner 行动项汇总
 
