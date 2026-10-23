@@ -63,16 +63,30 @@ SGLang 的推理引擎依赖 NVIDIA 专有组件：flashinfer 用于 attention�
 | Python | 3.12 |
 | CUDA | 13.0 |
 
-## 已验证模型
+## 支持的模型与芯片
 
-理论上 sglang-plugin-FL 可以支持 SGLang 中所有模型，只要不涉及未支持的算子。
+下表汇总了当前已端到端验证的模型与芯片支持情况。
 
-| 模型 | TP | 状态 |
-|------|-----|------|
-| Qwen2.5-0.5B-Instruct | tp=1 | 已验证 |
-| Qwen2.5-14B-Instruct | tp=8 | 已验证 |
-| Qwen3.6-27B | tp=1 | 已验证 |
-| Qwen3.6-35B-A3B | tp=1 | 已验证 |
+### 支持的模型
+
+| 模型 | 状态 | 模型权重 | 参考 |
+|------|------|----------|------|
+| Qwen3.6-27B | 已支持 | [Qwen/Qwen3.6-27B](https://huggingface.co/Qwen/Qwen3.6-27B) | [示例](./examples/qwen3_6_27b_offline_inference.py) |
+| Qwen3.6-35B-A3B | 已支持 | [Qwen/Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [示例](./examples/qwen3_6_35b_a3b_offline_inference.py) |
+
+### 支持的芯片
+
+| 芯片厂商 | 状态 | 参考 |
+|----------|------|------|
+| NVIDIA | 已支持 | - |
+| 华为昇腾 (Ascend) | 已支持 | - |
+| 摩尔线程 (Moore Threads) | 已支持 | - |
+| 平头哥 (T-Head) | 已支持 | - |
+| 燧原 (Enflame) | 已支持 | - |
+| 海光 (Hygon) | 已支持 | - |
+| 天数智芯 (Iluvatar) | 已支持 | - |
+| 昆仑芯 (Kunlunxin) | 已支持 | - |
+| 清微智能 (Tsingmicro) | 已支持 | - |
 
 ## 快速开始
 

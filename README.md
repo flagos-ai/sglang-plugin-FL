@@ -47,13 +47,30 @@ Chip vendors only need to implement a backend class + `register_ops.py`. The dis
 | Python | 3.12 |
 | CUDA | 13.0 |
 
-## Verified Models
+## Supported Models and Chips
 
-| Model | TP | Status |
-|-------|-----|--------|
-| Qwen3.6-27B (Hybrid Attention + FLA + MoE) | tp=1 | Verified |
-| Qwen3.6-35B-A3B (MoE, 256 experts) | tp=1 | Verified |
-| Qwen2.5-14B-Instruct | tp=8 | Verified |
+The tables below summarize the current support status of end-to-end verified models and chips.
+
+### Supported Models
+
+| Model | Status | Weights | Reference |
+|-------|--------|---------|-----------|
+| Qwen3.6-27B | Supported | [Qwen/Qwen3.6-27B](https://huggingface.co/Qwen/Qwen3.6-27B) | [example](./examples/qwen3_6_27b_offline_inference.py) |
+| Qwen3.6-35B-A3B | Supported | [Qwen/Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [example](./examples/qwen3_6_35b_a3b_offline_inference.py) |
+
+### Supported Chips
+
+| Chip Vendor | Status | Reference |
+|-------------|--------|-----------|
+| NVIDIA | Supported | - |
+| Ascend | Supported | - |
+| Moore Threads | Supported | - |
+| T-Head | Supported | - |
+| Enflame | Supported | - |
+| Hygon | Supported | - |
+| Iluvatar | Supported | - |
+| Kunlunxin | Supported | - |
+| Tsingmicro | Supported | - |
 
 ## Quick Start
 
