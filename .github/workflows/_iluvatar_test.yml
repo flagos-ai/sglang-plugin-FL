@@ -1,0 +1,170 @@
+# Iluvatar-only CI orchestration. Other backends keep their existing workflows.
+name: Iluvatar Test
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        required: false
+        type: string
+        default: iluvatar
+    secrets:
+      FEISHU_APP_ID:
+        required: false
+      FEISHU_APP_SECRET:
+        required: false
+      FEISHU_CHAT_ID:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  setup:
+    name: Setup (Iluvatar)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    outputs:
+      config: ${{ steps.load.outputs.config }}
+      ci_image: ${{ steps.resources.outputs.ci_image }}
+      runner_labels: ${{ steps.resources.outputs.runner_labels }}
+      container_options: ${{ steps.resources.outputs.container_options }}
+      e2e_matrix: ${{ steps.matrix.outputs.e2e }}
+    steps:
+      - name: Checkout (attempt 1)
+        id: checkout1
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+        continue-on-error: true
+      - name: Checkout (attempt 2)
+        id: checkout2
+        if: steps.checkout1.outcome == 'failure'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+        continue-on-error: true
+      - name: Checkout (attempt 3)
+        if: steps.checkout2.outcome == 'failure'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Require the Iluvatar platform
+        env:
+          PLATFORM: ${{ inputs.platform }}
+        run: test "$PLATFORM" = iluvatar
+      - name: Install CI script dependencies
+        run: python -m pip install pyyaml
+      - name: Load Iluvatar CI configuration
+        id: load
+        run: python .github/scripts/load_config.py --platform iluvatar
+      - name: Resolve full CoreX allocation and model mounts
+        id: resources
+        env:
+          PLATFORM_CONFIG: ${{ steps.load.outputs.config }}
+          ACCEPTANCE_SCOPE: full
+        run: python scripts/iluvatar/resolve_ci_resources.py
+      - name: Check Iluvatar CI helpers without importing GPU runtimes
+        run: |
+          python - <<'PY'
+          import unittest
+          suite = unittest.defaultTestLoader.discover('.github/scripts/iluvatar', pattern='test_*.py')
+          assert suite.countTestCases() >= 51, 'The Iluvatar CI helper suite is incomplete'
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          raise SystemExit(0 if result.wasSuccessful() else 1)
+          PY
+      - name: Generate the complete Iluvatar model matrix
+        id: matrix
+        run: python .github/scripts/generate_matrix.py --platform iluvatar
+      - name: Require all three non-empty model task groups
+        env:
+          E2E_MATRIX: ${{ steps.matrix.outputs.e2e }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          matrix = json.loads(os.environ['E2E_MATRIX'])
+          assert len(matrix) == 3, 'Expected inference, concurrent and serving groups'
+          assert {group['task'] for group in matrix} == {'inference', 'concurrent', 'serving'}
+          for group in matrix:
+              assert group['device'] == 'bi_v150'
+              assert json.loads(group['cases']), f"Empty {group['task']} group"
+          PY
+
+  unit:
+    needs: setup
+    uses: ./.github/workflows/_iluvatar_stage_test.yml
+    with:
+      scope: unit
+      ci_image: ${{ needs.setup.outputs.ci_image }}
+      runner_labels: ${{ needs.setup.outputs.runner_labels }}
+      container_options: ${{ needs.setup.outputs.container_options }}
+      concurrency_group: ${{ fromJson(needs.setup.outputs.config).concurrency_group || 'iluvatar-gpu-iluvatar-cicd-vllm-plugin' }}
+      timeout: ${{ fromJson(needs.setup.outputs.config).test_timeout || 180 }}
+
+  functional:
+    needs: [setup, unit]
+    uses: ./.github/workflows/_iluvatar_stage_test.yml
+    with:
+      scope: functional
+      ci_image: ${{ needs.setup.outputs.ci_image }}
+      runner_labels: ${{ needs.setup.outputs.runner_labels }}
+      container_options: ${{ needs.setup.outputs.container_options }}
+      concurrency_group: ${{ fromJson(needs.setup.outputs.config).concurrency_group || 'iluvatar-gpu-iluvatar-cicd-vllm-plugin' }}
+      timeout: ${{ fromJson(needs.setup.outputs.config).test_timeout || 180 }}
+
+  e2e:
+    needs: [setup, functional]
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        test: ${{ fromJson(needs.setup.outputs.e2e_matrix) }}
+    uses: ./.github/workflows/_iluvatar_stage_test.yml
+    with:
+      scope: e2e
+      task: ${{ matrix.test.task }}
+      device: ${{ matrix.test.device }}
+      cases: ${{ matrix.test.cases }}
+      ci_image: ${{ needs.setup.outputs.ci_image }}
+      runner_labels: ${{ needs.setup.outputs.runner_labels }}
+      container_options: ${{ needs.setup.outputs.container_options }}
+      concurrency_group: ${{ fromJson(needs.setup.outputs.config).concurrency_group || 'iluvatar-gpu-iluvatar-cicd-vllm-plugin' }}
+      timeout: ${{ fromJson(needs.setup.outputs.config).test_timeout || 180 }}
+
+  benchmark:
+    needs: [setup, e2e]
+    uses: ./.github/workflows/_iluvatar_stage_test.yml
+    with:
+      scope: benchmark
+      ci_image: ${{ needs.setup.outputs.ci_image }}
+      runner_labels: ${{ needs.setup.outputs.runner_labels }}
+      container_options: ${{ needs.setup.outputs.container_options }}
+      concurrency_group: ${{ fromJson(needs.setup.outputs.config).concurrency_group || 'iluvatar-gpu-iluvatar-cicd-vllm-plugin' }}
+      timeout: ${{ fromJson(needs.setup.outputs.config).test_timeout || 180 }}
+
+  notify:
+    needs: [setup, unit, functional, e2e, benchmark]
+    if: always()
+    uses: ./.github/workflows/_notify_feishu.yml
+    with:
+      platform: iluvatar
+      status: >-
+        ${{ (needs.setup.result == 'success' &&
+             needs.unit.result == 'success' &&
+             needs.functional.result == 'success' &&
+             needs.e2e.result == 'success' &&
+             needs.benchmark.result == 'success')
+            && 'success'
+            || (needs.unit.result == 'cancelled' ||
+                needs.functional.result == 'cancelled' ||
+                needs.e2e.result == 'cancelled' ||
+                needs.benchmark.result == 'cancelled')
+               && 'cancelled'
+               || 'failure' }}
+    secrets:
+      FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+      FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+      FEISHU_CHAT_ID: ${{ secrets.FEISHU_CHAT_ID }}

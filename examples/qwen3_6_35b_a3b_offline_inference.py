@@ -10,7 +10,7 @@ Usage:
 
 Environment variables:
   MODEL_PATH    Model path (default: /models/Qwen3.6-35B-A3B)
-  TP_SIZE       Tensor parallelism (default: 4 on Ascend/TXDA, otherwise 1)
+  TP_SIZE       Tensor parallelism (default: 4 on CoreX/Ascend/TXDA, otherwise 1)
   MAX_TOKENS    Max generation tokens (default: 10)
   IMAGE_DIR     Test image directory (default: examples/test_images/ next to this file)
 """
@@ -54,7 +54,7 @@ if _is_txda:
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-35B-A3B")
-TP_SIZE = int(os.environ.get("TP_SIZE", "4" if _is_npu or _is_txda else "1"))
+TP_SIZE = int(os.environ.get("TP_SIZE", "4" if _is_npu or _is_txda or _is_corex else "1"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "10"))
 
 _HERE = Path(__file__).resolve().parent
@@ -209,13 +209,14 @@ def _image_uri(name: str) -> str:
 
 def run_engine():
 
+    _check_images()
     from sglang.srt.entrypoints.engine import Engine
 
     engine = Engine(
         model_path=MODEL_PATH,
         tp_size=TP_SIZE,
         mem_fraction_static=0.6 if _is_txda else 0.85,
-        disable_cuda_graph=True,
+        disable_cuda_graph=os.environ.get("DISABLE_CUDA_GRAPH", "1") != "0",
         **_extra_engine_kwargs,
     )
 
@@ -272,7 +273,9 @@ def validate(text_outputs, vl_outputs):
             )
 
     # VL validation
+    assert len(vl_outputs) == len(VL_CASES), "Missing required VL outputs"
     for case, text in zip(VL_CASES, vl_outputs):
+        assert text is not None, f"Missing output for required image: {case['image']}"
         assert len(text) > 0, f"Empty output for VL case: {case['image']}"
         lower = text.lower()
         matched = any(pat.lower() in lower for pat in case["expected"])
@@ -292,10 +295,9 @@ def _check_images():
         or (IMAGE_DIR / case["image"]).stat().st_size == 0
     ]
     if missing:
-        print("ERROR: Missing or empty test images:")
-        for path in missing:
-            print(f"  - {path}")
-        sys.exit(1)
+        raise FileNotFoundError(
+            "Required test images are missing or empty: " + ", ".join(missing)
+        )
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────

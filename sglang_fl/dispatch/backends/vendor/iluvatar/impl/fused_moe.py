@@ -59,6 +59,11 @@ def fused_moe_iluvatar(
             topk_ids,
         )
 
+    # SGLang applies routed scaling after combining the selected experts.
+    factor = getattr(cfg, "routed_scaling_factor", None)
+    if factor is not None and factor != 1.0:
+        output.mul_(factor)
+
     from sglang.srt.layers.moe.token_dispatcher import StandardCombineInput
 
     return StandardCombineInput(hidden_states=output)
