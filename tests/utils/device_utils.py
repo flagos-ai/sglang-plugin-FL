@@ -21,7 +21,7 @@ _PLATFORM_VISIBLE_DEVICE_ENV: dict[str, str] = {
     "hygon": "CUDA_VISIBLE_DEVICES",  # DCU stack exposes torch.cuda
     "thead": "CUDA_VISIBLE_DEVICES",  # PPU stack exposes a CUDA-shaped API
     "enflame": "TOPS_VISIBLE_DEVICES",
-    "musa": "MTHREADS_VISIBLE_DEVICES",
+    "musa": "MUSA_VISIBLE_DEVICES",  # runtime-layer (CUDA_VISIBLE_DEVICES analog); MTHREADS_* is container-layer, read at docker-create time
     "ascend": "ASCEND_RT_VISIBLE_DEVICES",
 }
 

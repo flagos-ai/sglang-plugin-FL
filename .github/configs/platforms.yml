@@ -58,7 +58,7 @@ platforms:
       - .github/configs/nvidia.yml
       - tests/platforms/nvidia.yaml
   ascend:
-    enabled: true
+    enabled: false  # musa-only experiment
     trigger_paths:
       - sglang_fl/dispatch/config/ascend.yaml
       - .github/scripts/ascend/
