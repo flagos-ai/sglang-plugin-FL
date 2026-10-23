@@ -93,6 +93,12 @@ device_overrides: {}
 # Common values may include: ["flaggems", "flashinfer", "triton", "large-model"]
 unsupported_features: []
 
+# e2e_serial: set true only if the platform runtime cannot host concurrent
+# engines (e.g. musa: MCCL deadlocks when two TP groups initialize at once).
+# By default (absent/false) tests/run.py runs e2e cases concurrently on
+# disjoint device groups via the DeviceScheduler (vllm-plugin-FL #581).
+# e2e_serial: false
+
 # Default environment variables for this platform.
 # tests/run.py applies these before invoking pytest, but existing user-provided
 # environment variables are preserved.
@@ -118,28 +124,47 @@ my_device:
       exclude: []
 
     # E2E tests require real model files and are slower.
-    # Format: task -> model family -> list of case names.
+    # Cases are grouped by CI stage (pr / nightly / weekly; ported from
+    # vllm-plugin-FL #581): pr runs on every pull request, nightly is the
+    # full regression (add e.g. a concurrent task), weekly falls back to
+    # nightly when no weekly key is defined.
+    # Format: stage -> task -> model family -> list of case names.
     # Each case points to tests/models/<model>/<case>.yaml.
     # Current structured task names are expected to align with:
     # - tests/e2e_tests/inference/test_inference_smoke.py
     # - tests/e2e_tests/serving/test_serving_smoke.py
     e2e:
-      inference:
-        qwen3: ["06b_tp1"]
-      serving:
-        qwen3: ["4b_tp2"]
+      pr:
+        inference:
+          qwen3: ["06b_tp1"]
+        serving:
+          qwen3: ["4b_tp2"]
+      nightly:
+        inference:
+          qwen3: ["06b_tp1"]
+        serving:
+          qwen3: ["4b_tp2"]
+        concurrent:
+          qwen3: ["4b_tp2"]
 
     # Benchmark smoke tests are lightweight health checks for SGLang benchmark
     # commands. The detailed CLI parameters live in:
     # tests/benchmarks/configs/smoke.yaml
     #
-    # Supported smoke names:
+    # Stage-keyed (vllm-plugin-FL #581): PRs typically smoke the serve
+    # entrypoint only; nightly runs the full set.
+    #
+    # Supported type names:
     # - throughput -> python -m sglang.bench_offline_throughput
     # - latency    -> python -m sglang.bench_one_batch
     # - serve      -> python -m sglang.launch_server + python -m sglang.bench_serving
     benchmark:
-      enabled: true
-      smoke: ["throughput", "latency", "serve"]
+      pr:
+        enabled: true
+        types: ["serve"]
+      nightly:
+        enabled: true
+        types: ["throughput", "latency", "serve"]
 
     # Functional tests: component-level GPU tests (ops correctness, graph
     # capture, collective ops). Consumed by tests/run.py --scope functional.

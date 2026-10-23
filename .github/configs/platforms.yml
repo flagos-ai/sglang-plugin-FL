@@ -1,26 +1,130 @@
 # Platform registry — controls which platforms are tested in CI.
 #
 # Each key under `platforms` must match a config file name in this directory
-# (e.g., "cuda" -> cuda.yml, "ascend" -> ascend.yml).
+# (e.g., "nvidia" -> nvidia.yml, "ascend" -> ascend.yml).
 #
 # Set `enabled: false` to skip a platform without removing its config file.
+#
+# ---- Diff-based platform routing (ported from vllm-plugin-FL #581) --------
+#
+# global_trigger_paths: PR changes matching any of these prefixes run ALL
+# enabled platforms. This is the shared-code surface of the repo.
+#
+# trigger_paths / exempt_from_global per platform: a changed file matching a
+# platform's trigger_paths runs that platform only. Paths carved out by
+# exempt_from_global never count toward global_trigger_paths, so
+# platform-owned files (vendor dispatch configs, per-platform CI scripts,
+# runner configs, docker recipes) do not fan out to every platform.
+# Every exempt entry must also appear in the same platform's trigger_paths
+# (.github/scripts/detect_platforms.py errors on an exempt-only entry: files
+# would route to no platform) and warns on a trigger-only entry under a
+# global prefix (it would over-trigger a full run).
+#
+# A changed file matching no rule at all falls back to a full run (safety
+# default). Known consequence: sglang_fl/dispatch/config/{iluvatar,kunlunxin}
+# .yaml belong to platforms not enabled here — touching them over-triggers a
+# full run; acceptable in the safe direction.
+#
+# Vendor file name → platform mapping (mirrors the FlagGems vendor ids):
+#   nvidia  <- sglang_fl/dispatch/config/nvidia.yaml, docker/cuda/
+#   musa    <- sglang_fl/dispatch/config/musa.yaml,    docker/mthreads/
+#   thead   <- sglang_fl/dispatch/config/tsingmicro.yaml, docker/thead/
+#   enflame <- sglang_fl/dispatch/config/gcu.yaml,     docker/enflame/
+
+global_trigger_paths:
+  # Shared plugin source; per-platform dispatch configs carved out below.
+  - sglang_fl/
+  - tests/
+  - benchmarks/
+  - .github/scripts/
+  - .github/configs/
+  - .github/workflows/
+  - pyproject.toml
+  - .pre-commit-config.yaml
+  - _typos.toml
 
 platforms:
-  cuda:
-    enabled: true
+  nvidia:
+    enabled: false  # debug PR: musa+ascend only
+    trigger_paths:
+      - sglang_fl/dispatch/config/nvidia.yaml
+      - .github/scripts/nvidia/
+      - .github/configs/nvidia.yml
+      - tests/platforms/nvidia.yaml
+      - docker/cuda/
+    exempt_from_global:
+      - sglang_fl/dispatch/config/nvidia.yaml
+      - .github/scripts/nvidia/
+      - .github/configs/nvidia.yml
+      - tests/platforms/nvidia.yaml
   ascend:
-    enabled: true
+    enabled: false  # musa-only experiment
+    trigger_paths:
+      - sglang_fl/dispatch/config/ascend.yaml
+      - .github/scripts/ascend/
+      - .github/configs/ascend.yml
+      - tests/platforms/ascend.yaml
+      - docker/ascend/
+    exempt_from_global:
+      - sglang_fl/dispatch/config/ascend.yaml
+      - .github/scripts/ascend/
+      - .github/configs/ascend.yml
+      - tests/platforms/ascend.yaml
   musa:
     enabled: true
+    trigger_paths:
+      - sglang_fl/dispatch/config/musa.yaml
+      - .github/scripts/musa/
+      - .github/configs/musa.yml
+      - tests/platforms/musa.yaml
+      - docker/mthreads/
+    exempt_from_global:
+      - sglang_fl/dispatch/config/musa.yaml
+      - .github/scripts/musa/
+      - .github/configs/musa.yml
+      - tests/platforms/musa.yaml
   thead:
     # Self-hosted runner pool: label flagcicd-810e (4 runners, online).
     # CI image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-thead-ci.
-    enabled: true
+    enabled: false  # debug PR: musa+ascend only
+    trigger_paths:
+      - sglang_fl/dispatch/config/tsingmicro.yaml
+      - .github/scripts/thead/
+      - .github/configs/thead.yml
+      - tests/platforms/thead.yaml
+      - docker/thead/
+    exempt_from_global:
+      - sglang_fl/dispatch/config/tsingmicro.yaml
+      - .github/scripts/thead/
+      - .github/configs/thead.yml
+      - tests/platforms/thead.yaml
   enflame:
     # Self-hosted runner pool: label ci-sglang-plugin-fl-enflame (8x S60 GCU).
     # CI image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-enflame-ci.
-    enabled: true
+    enabled: false  # debug PR: musa+ascend only
+    trigger_paths:
+      - sglang_fl/dispatch/config/gcu.yaml
+      - .github/scripts/enflame/
+      - .github/configs/enflame.yml
+      - tests/platforms/enflame.yaml
+      - docker/enflame/
+    exempt_from_global:
+      - sglang_fl/dispatch/config/gcu.yaml
+      - .github/scripts/enflame/
+      - .github/configs/enflame.yml
+      - tests/platforms/enflame.yaml
   hygon:
     # Self-hosted runner pool: label ci-sglang-plugin-fl-hygon (8x BW1000 DCU).
     # CI image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-hygon-ci.
-    enabled: true
+    enabled: false  # debug PR: musa+ascend only
+    trigger_paths:
+      - sglang_fl/dispatch/config/hygon.yaml
+      - .github/scripts/hygon/
+      - .github/configs/hygon.yml
+      - tests/platforms/hygon.yaml
+      - docker/hygon/
+    exempt_from_global:
+      - sglang_fl/dispatch/config/hygon.yaml
+      - .github/scripts/hygon/
+      - .github/configs/hygon.yml
+      - tests/platforms/hygon.yaml
