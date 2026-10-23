@@ -56,12 +56,6 @@ device_overrides: {}
 # Test cases whose model name contains any of these strings will be skipped.
 unsupported_features: []
 
-# MCCL dies when two TP groups initialize on the same node at once (two
-# concurrent engines deadlock in collective init), so parallel e2e — the
-# per-card DeviceScheduler introduced with the CI efficiency port from
-# vllm-plugin-FL #581 — is disabled for musa; e2e cases run serially
-# (validated on the vllm side with the same MTHREADS stack).
-e2e_serial: true
 
 # Default environment variables for this platform.
 # tests/run.py applies these before invoking pytest, but existing user-provided

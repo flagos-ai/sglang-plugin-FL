@@ -64,11 +64,6 @@ device_overrides: {}
 # Common values to consider: ["flashinfer", "triton"] (Ascend uses torch_npu).
 unsupported_features: []
 
-# Concurrent engines on one 910c host die inside HCCL's AICPU kernel
-# (libccl_kernel.so execute failed, observed on the first parallel-e2e
-# device validation of this port); e2e cases run serially until the
-# runtime is proven safe for co-scheduled TP groups.
-e2e_serial: true
 
 # Default environment variables for this platform.
 # tests/run.py applies these before invoking pytest (os.environ.setdefault).

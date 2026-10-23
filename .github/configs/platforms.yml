@@ -45,7 +45,7 @@ global_trigger_paths:
 
 platforms:
   nvidia:
-    enabled: true
+    enabled: false  # debug PR: musa+ascend only
     trigger_paths:
       - sglang_fl/dispatch/config/nvidia.yaml
       - .github/scripts/nvidia/
@@ -86,7 +86,7 @@ platforms:
   thead:
     # Self-hosted runner pool: label flagcicd-810e (4 runners, online).
     # CI image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-thead-ci.
-    enabled: true
+    enabled: false  # debug PR: musa+ascend only
     trigger_paths:
       - sglang_fl/dispatch/config/tsingmicro.yaml
       - .github/scripts/thead/
@@ -101,7 +101,7 @@ platforms:
   enflame:
     # Self-hosted runner pool: label ci-sglang-plugin-fl-enflame (8x S60 GCU).
     # CI image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-enflame-ci.
-    enabled: true
+    enabled: false  # debug PR: musa+ascend only
     trigger_paths:
       - sglang_fl/dispatch/config/gcu.yaml
       - .github/scripts/enflame/
@@ -116,7 +116,7 @@ platforms:
   hygon:
     # Self-hosted runner pool: label ci-sglang-plugin-fl-hygon (8x BW1000 DCU).
     # CI image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-hygon-ci.
-    enabled: true
+    enabled: false  # debug PR: musa+ascend only
     trigger_paths:
       - sglang_fl/dispatch/config/hygon.yaml
       - .github/scripts/hygon/

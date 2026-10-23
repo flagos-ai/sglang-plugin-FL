@@ -394,6 +394,21 @@ class TestRunner:
         results: dict[str, int] = {}
         results_lock = threading.Lock()
 
+        # Debug knobs for isolating parallel-e2e failure variables:
+        #   FL_E2E_PIN=nopin  — scheduler still reserves disjoint slots (no
+        #                       double-booking) but subprocesses inherit the
+        #                       ambient visibility instead of a pinned mask;
+        #                       isolates "pinned subset mask" from "concurrency".
+        #   FL_E2E_STAGGER=S  — sleep S seconds after acquiring slots before
+        #                       launching each case; isolates init races.
+        pin_mode = os.environ.get("FL_E2E_PIN", "pin").lower()
+        stagger = float(os.environ.get("FL_E2E_STAGGER", "0") or 0)
+        print(
+            f"[run] E2E diag: devices={total_devices} "
+            f"{visible_env_var}={os.environ.get(visible_env_var, '<unset>')!r} "
+            f"pin_mode={pin_mode} stagger={stagger}s"
+        )
+
         max_concurrent = max(total_devices // max(c.num_devices, 1) for c in cases)
         print()
         print("[run] " + "=" * 60)
@@ -413,15 +428,22 @@ class TestRunner:
         def _run_one(tc: TestCase) -> None:
             slots = scheduler.acquire(tc.num_devices)
             visible = ",".join(str(s) for s in slots)
+            if stagger:
+                time.sleep(stagger)
+            pin_note = (
+                f"{visible_env_var}={visible}"
+                if pin_mode != "nopin"
+                else f"{visible_env_var}=<inherited:{os.environ.get(visible_env_var, 'unset')}>"
+            )
             print(
-                f"[run] [{_ts()}] START  {tc.name}  {visible_env_var}={visible}  "
+                f"[run] [{_ts()}] START  {tc.name}  {pin_note}  "
                 f"devices={tc.num_devices}, stdout buffered until done",
                 flush=True,
             )
             status = "FAIL"
             rc = 1
             try:
-                device_env = {visible_env_var: visible}
+                device_env = {} if pin_mode == "nopin" else {visible_env_var: visible}
                 # Co-scheduled NPU-family engines each bind HCCL's default
                 # port (16666); the second bind dies with a port-in-use
                 # error. Give every case a disjoint port range derived from
