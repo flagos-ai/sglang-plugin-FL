@@ -140,7 +140,7 @@ def main():
             torch.full(shape, rank + 1, dtype=dtype, device=device), 2
         )
         if int(torch_npu.get_npu_format(static_input)) != 2:
-            raise RuntimeError("Requested ND2 input format was not realized")
+            raise RuntimeError("Requested NPU storage format 2 was not realized")
         capture_stream.wait_stream(main_stream)
         with torch.npu.stream(capture_stream):
             for _ in range(3):
