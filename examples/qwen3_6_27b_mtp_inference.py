@@ -18,7 +18,7 @@ off even when the corresponding command-line switches are omitted.
 
 Environment variables:
   MODEL_PATH    Model path (default: /models/Qwen3.6-27B)
-  TP_SIZE       Tensor parallelism (default: 4 on Ascend/TXDA, otherwise 1)
+  TP_SIZE       Tensor parallelism (default: 4 on CoreX/Ascend/TXDA, otherwise 1)
   MAX_TOKENS    Max generation tokens (default: 256)
 """
 
@@ -66,7 +66,7 @@ if _is_txda:
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-27B")
-TP_SIZE = int(os.environ.get("TP_SIZE", "4" if _is_npu or _is_txda else "1"))
+TP_SIZE = int(os.environ.get("TP_SIZE", "4" if _is_npu or _is_txda or _is_corex else "1"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "256"))
 
 # ─── Diverse prompt set (covers different generation patterns) ────────────────
@@ -229,7 +229,7 @@ def _platform_engine_kwargs() -> dict:
         return {
             "attention_backend": "triton",
             "watchdog_timeout": 3600,
-            "cuda_graph_max_bs": 16,
+            "cuda_graph_max_bs_decode": 16,
         }
     if _is_hcu:
         return {
@@ -754,8 +754,10 @@ def run_logprob_conformance(engine) -> dict:
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(*, model_label="Qwen3.6-27B"):
+    parser = argparse.ArgumentParser(
+        description=__doc__.replace("Qwen3.6-27B", model_label)
+    )
     parser.add_argument(
         "--skip-baseline", action="store_true", help="Skip baseline comparison (faster)"
     )
@@ -776,6 +778,21 @@ def main():
         help="Use synchronous scheduling (always forced on Ascend MTP)",
     )
     args = parser.parse_args()
+    if _is_corex:
+        # v0.5.18 eagle_utils enables synthetic acceptance only for values > 0.
+        # Correctness gates must use measured acceptance, and invalid/nonfinite
+        # values must fail before importing SGLang or creating an Engine.
+        try:
+            simulated_accept_length = float(
+                os.environ.get("SGLANG_SIMULATE_ACC_LEN", "-1")
+            )
+        except ValueError:
+            parser.error("SGLANG_SIMULATE_ACC_LEN must be a finite number <= 0")
+        if not math.isfinite(simulated_accept_length) or simulated_accept_length > 0:
+            parser.error(
+                "CoreX MTP correctness requires SGLANG_SIMULATE_ACC_LEN to be "
+                "finite and <= 0 (acceptance simulation disabled)"
+            )
     _enforce_ascend_mtp_runtime_mode(args)
 
     if not os.path.exists(MODEL_PATH):
@@ -791,7 +808,7 @@ def main():
         else ("cuda_graph" if not disable_pcg else "cuda_graph(no piecewise)")
     )
     print("=" * 70)
-    print("  Qwen3.6-27B MTP (Speculative Decoding) Validation")
+    print(f"  {model_label} MTP (Speculative Decoding) Validation")
     print("=" * 70)
     print(f"  Model: {MODEL_PATH}")
     print(f"  TP: {TP_SIZE} | max_tokens: {max_tokens} | mode: {mode_str}")

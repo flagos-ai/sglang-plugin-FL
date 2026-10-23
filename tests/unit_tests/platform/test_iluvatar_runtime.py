@@ -14,6 +14,7 @@ import torch
 from sglang_fl.dispatch.backends.vendor.iluvatar.patches import (
     clamp_position,
     legacy_gpu_gate,
+    speculative_tree,
 )
 
 
@@ -89,7 +90,9 @@ def test_older_vendor_bf16_query_without_keyword(monkeypatch):
     assert config.dtype == torch.bfloat16
 
 
-@pytest.mark.parametrize("dynamic_cuda", [False, True], ids=["native-module", "vendor-proxy"])
+@pytest.mark.parametrize(
+    "dynamic_cuda", [False, True], ids=["native-module", "vendor-proxy"]
+)
 def test_missing_bf16_query_requires_explicit_dtype(monkeypatch, dynamic_cuda):
     if dynamic_cuda:
         cuda = ModuleType("_vendor_cuda_proxy")
@@ -202,6 +205,11 @@ def test_overlay_runs_pdl_before_sglang_imports_and_retries(monkeypatch):
         prefix + ".triton_pdl",
         SimpleNamespace(patch_triton_pdl_intrinsics=lambda: calls.append("pdl")),
     )
+    monkeypatch.setitem(
+        sys.modules,
+        prefix + ".speculative_tree",
+        SimpleNamespace(patch_speculative_tree=lambda: calls.append("speculative")),
+    )
     monkeypatch.setattr(clamp_position, "patch_clamp_position", clamp)
     monkeypatch.setattr(
         legacy_gpu_gate,
@@ -220,7 +228,309 @@ def test_overlay_runs_pdl_before_sglang_imports_and_retries(monkeypatch):
     fail[0] = False
     module.apply_iluvatar_patches()
     module.apply_iluvatar_patches()
-    assert calls == ["pdl", "clamp", "pdl", "clamp", "legacy"]
+    assert calls == ["pdl", "clamp", "pdl", "clamp", "legacy", "speculative"]
+
+
+def _cpu_build_speculative_tree(
+    parent_list,
+    selected_index,
+    verified_seq_len,
+    tree_mask,
+    positions,
+    retrieve_index,
+    retrieve_next_token,
+    retrieve_next_sibling,
+    topk,
+    depth,
+    draft_token_num,
+    tree_mask_mode=0,
+):
+    """Small graph oracle for exercising the bridge's output-buffer contract."""
+    if tree_mask_mode == 2:
+        raise NotImplementedError("QLEN_ONLY_BITPACKING")
+    offset = 0
+    for batch, length in enumerate(verified_seq_len.tolist()):
+        selected = selected_index[batch].tolist()
+        parents = [-1]
+        for selected_token in selected:
+            block = selected_token // topk
+            parents.append(
+                0 if block == 0 else selected.index(int(parent_list[batch, block])) + 1
+            )
+        width = draft_token_num + (length if tree_mask_mode == 0 else 0)
+        mask = tree_mask[offset : offset + draft_token_num * width].view(
+            draft_token_num, width
+        )
+        for node in range(draft_token_num):
+            retrieve_index[batch, node] = batch * draft_token_num + node
+            path = []
+            ancestor = node
+            while ancestor != -1:
+                path.append(ancestor)
+                ancestor = parents[ancestor]
+            assert len(path) - 1 <= depth
+            positions[batch * draft_token_num + node] = length + len(path) - 1
+            mask[node, -draft_token_num:] = False
+            mask[node, [width - draft_token_num + index for index in path]] = True
+            children = [
+                index for index in range(1, draft_token_num) if parents[index] == node
+            ]
+            if children:
+                retrieve_next_token[batch, node] = children[0]
+                for left, right in zip(children, children[1:]):
+                    retrieve_next_sibling[batch, left] = right
+        offset += draft_token_num * width
+
+
+def _cpu_verify_speculative_tree(
+    predicts,
+    accept_index,
+    accept_token_num,
+    candidates,
+    retrieve_index,
+    retrieve_next_token,
+    retrieve_next_sibling,
+    target_predict,
+):
+    """Serial greedy tree walk, including the terminal bonus prediction."""
+    for row in range(candidates.shape[0]):
+        node = accepted = 0
+        last = int(retrieve_index[row, node])
+        accept_index[row, 0] = last
+        for slot in range(1, accept_index.shape[1]):
+            child = int(retrieve_next_token[row, node])
+            predicted = int(target_predict.flatten()[last])
+            while child != -1 and int(candidates[row, child]) != predicted:
+                child = int(retrieve_next_sibling[row, child])
+            if child == -1:
+                break
+            predicts.flatten()[last] = predicted
+            last = int(retrieve_index[row, child])
+            accept_index[row, slot] = last
+            accepted += 1
+            node = child
+        predicts.flatten()[last] = target_predict.flatten()[last]
+        accept_token_num[row] = accepted
+
+
+@pytest.fixture
+def speculative_module(monkeypatch):
+    from sglang_fl import utils
+
+    monkeypatch.setattr(speculative_tree, "_applied", False)
+    monkeypatch.setattr(
+        utils, "get_device_info", lambda: SimpleNamespace(vendor_name="iluvatar")
+    )
+    module = ModuleType(speculative_tree._MODULE)
+    module.sgl_build_tree_kernel_triton = _cpu_build_speculative_tree
+    module.verify_tree_greedy_triton = _cpu_verify_speculative_tree
+
+    def unavailable(*args, **kwargs):
+        pytest.fail("The NVIDIA import shim must not execute")
+
+    def original_verify(
+        predicts,
+        accept_index,
+        accept_token_num,
+        candidates,
+        retrieve_index,
+        retrieve_next_token,
+        retrieve_next_sibling,
+        target_predict,
+        topk=-1,
+    ):
+        unavailable()
+
+    module.sgl_build_tree_kernel_efficient = unavailable
+    module.verify_tree_greedy_func = original_verify
+    spec_utils = ModuleType(speculative_tree._SPEC_MODULE)
+    spec_utils.fast_topk = unavailable
+    common = ModuleType("sglang.srt.utils.common")
+
+    def fast_topk(values, topk, dim):
+        return (
+            torch.max(values, dim=dim, keepdim=True)
+            if topk == 1
+            else torch.topk(values, topk, dim=dim)
+        )
+
+    common.fast_topk = fast_topk
+    for item in (module, spec_utils, common):
+        monkeypatch.setitem(sys.modules, item.__name__, item)
+    return module, spec_utils
+
+
+def _speculative_buffers(mode=0):
+    lengths = torch.tensor([2, 3])
+    size = 16 * 2 + (int(lengths.sum()) * 4 if mode == 0 else 0)
+    return (
+        torch.tensor([[0, 0], [0, 1]]),
+        torch.tensor([[0, 1, 2], [0, 1, 2]]),
+        lengths,
+        torch.ones(size, dtype=torch.bool),
+        torch.full((8,), -1),
+        torch.full((2, 4), -1),
+        torch.full((2, 4), -1),
+        torch.full((2, 4), -1),
+    )
+
+
+@pytest.mark.parametrize("mode", [0, 1], ids=["full-mask", "qlen-only"])
+def test_speculative_build_retains_branch_positions_and_masks(speculative_module, mode):
+    module, _ = speculative_module
+    speculative_tree.patch_speculative_tree()
+    buffers = _speculative_buffers(mode)
+    module.sgl_build_tree_kernel_efficient(*buffers, 2, 2, 4, mode)
+    torch.testing.assert_close(buffers[4], torch.tensor([2, 3, 3, 4, 3, 4, 4, 5]))
+    torch.testing.assert_close(buffers[5], torch.arange(8).reshape(2, 4))
+    torch.testing.assert_close(
+        buffers[6], torch.tensor([[1, 3, -1, -1], [1, -1, 3, -1]])
+    )
+    torch.testing.assert_close(
+        buffers[7], torch.tensor([[-1, 2, -1, -1], [-1, 2, -1, -1]])
+    )
+    ancestry = [
+        torch.tensor(
+            [[1, 0, 0, 0], [1, 1, 0, 0], [1, 0, 1, 0], [1, 1, 0, 1]], dtype=torch.bool
+        ),
+        torch.tensor(
+            [[1, 0, 0, 0], [1, 1, 0, 0], [1, 0, 1, 0], [1, 0, 1, 1]], dtype=torch.bool
+        ),
+    ]
+    prefixes = [2, 3] if mode == 0 else [0, 0]
+    expected = torch.cat(
+        [
+            torch.cat((torch.ones(4, prefix, dtype=torch.bool), mask), dim=1).flatten()
+            for prefix, mask in zip(prefixes, ancestry)
+        ]
+    )
+    torch.testing.assert_close(buffers[3], expected)
+
+
+@pytest.mark.parametrize(
+    "root_match", [False, True], ids=["root-rejected", "full-branch"]
+)
+def test_speculative_verify_updates_acceptance_and_bonus_in_place(
+    speculative_module, root_match
+):
+    module, _ = speculative_module
+    speculative_tree.patch_speculative_tree()
+    buffers = _speculative_buffers()
+    module.sgl_build_tree_kernel_efficient(*buffers, 2, 2, 4, 0)
+    predicts = torch.full((8,), -7)
+    accepted = torch.full((2, 3), -1)
+    count = torch.full((2,), -1)
+    candidates = torch.tensor([[100, 11, 22, 33], [200, 44, 55, 66]])
+    targets = torch.tensor([[11 if root_match else 99, 33, 90, 777], [55, 80, 123, 70]])
+    result = module.verify_tree_greedy_func(
+        predicts, accepted, count, candidates, *buffers[5:], targets, topk=7
+    )
+    assert all(
+        actual is expected
+        for actual, expected in zip(result, (predicts, accepted, count))
+    )
+    torch.testing.assert_close(
+        accepted, torch.tensor([[0, 1, 3] if root_match else [0, -1, -1], [4, 6, -1]])
+    )
+    torch.testing.assert_close(count, torch.tensor([2 if root_match else 0, 1]))
+    expected = (
+        torch.tensor([11, 33, -7, 777, 55, -7, 123, -7])
+        if root_match
+        else torch.tensor([99, -7, -7, -7, 55, -7, 123, -7])
+    )
+    torch.testing.assert_close(predicts, expected)
+
+
+@pytest.mark.parametrize("topk", [1, 2])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+def test_speculative_topk_preserves_values_indices_and_shapes(
+    speculative_module, topk, dtype
+):
+    _, spec_utils = speculative_module
+    speculative_tree.patch_speculative_tree()
+    values, indices = spec_utils.fast_topk(
+        torch.tensor([[0.2, 0.8, 0.4], [0.9, 0.1, 0.3]], dtype=dtype), topk, dim=-1
+    )
+    expected_values = [[0.8], [0.9]] if topk == 1 else [[0.8, 0.4], [0.9, 0.3]]
+    expected_indices = [[1], [0]] if topk == 1 else [[1, 2], [0, 2]]
+    torch.testing.assert_close(values, torch.tensor(expected_values, dtype=dtype))
+    torch.testing.assert_close(indices, torch.tensor(expected_indices))
+
+
+def test_speculative_patch_retries_and_preserves_official_rejection(
+    monkeypatch, speculative_module
+):
+    module, _ = speculative_module
+    original_build = module.sgl_build_tree_kernel_efficient
+    module.verify_tree_greedy_triton = lambda incompatible: None
+    with pytest.raises(RuntimeError, match="0.5.18"):
+        speculative_tree.patch_speculative_tree()
+    assert not speculative_tree._applied
+    assert module.sgl_build_tree_kernel_efficient is original_build
+    module.verify_tree_greedy_triton = _cpu_verify_speculative_tree
+    speculative_tree.patch_speculative_tree()
+    original_verify = module.verify_tree_greedy_func
+    speculative_tree.patch_speculative_tree()
+    assert module.verify_tree_greedy_func is original_verify
+    buffers = _speculative_buffers()
+    with pytest.raises(NotImplementedError, match="BITPACKING"):
+        module.sgl_build_tree_kernel_efficient(*buffers, 2, 2, 4, 2)
+    assert torch.equal(buffers[4], torch.full((8,), -1))
+
+
+@pytest.mark.parametrize("vendor", [None, "nvidia", "mthreads", "ascend", "hygon"])
+def test_speculative_patch_does_not_import_or_mutate_other_vendors(
+    monkeypatch, speculative_module, vendor
+):
+    from sglang_fl import utils
+
+    module, spec_utils = speculative_module
+    before = module.verify_tree_greedy_func, spec_utils.fast_topk
+    monkeypatch.setattr(
+        utils,
+        "get_device_info",
+        lambda: None if vendor is None else SimpleNamespace(vendor_name=vendor),
+    )
+    monkeypatch.setattr(
+        speculative_tree.importlib,
+        "import_module",
+        lambda name: pytest.fail("Foreign vendor must not import speculative kernels"),
+    )
+    speculative_tree.patch_speculative_tree()
+    assert not speculative_tree._applied
+    assert before == (module.verify_tree_greedy_func, spec_utils.fast_topk)
+
+
+def test_speculative_patch_refreshes_existing_copies_without_changing_shim(
+    monkeypatch, speculative_module
+):
+    module, spec_utils = speculative_module
+    old_build, old_verify, old_topk = (
+        module.sgl_build_tree_kernel_efficient,
+        module.verify_tree_greedy_func,
+        spec_utils.fast_topk,
+    )
+    consumer = SimpleNamespace(
+        sgl_build_tree_kernel_efficient=old_build,
+        verify_tree_greedy_func=old_verify,
+        fast_topk=old_topk,
+    )
+    shim = SimpleNamespace(
+        build_tree_kernel_efficient=old_build,
+        verify_tree_greedy=old_verify,
+        fast_topk=old_topk,
+    )
+    monkeypatch.setitem(sys.modules, "sglang.srt.speculative._copied_test", consumer)
+    monkeypatch.setitem(sys.modules, "sgl_kernel", shim)
+    speculative_tree.patch_speculative_tree()
+    assert consumer.sgl_build_tree_kernel_efficient is _cpu_build_speculative_tree
+    assert consumer.verify_tree_greedy_func is module.verify_tree_greedy_func
+    assert consumer.fast_topk is spec_utils.fast_topk
+    assert (
+        shim.build_tree_kernel_efficient,
+        shim.verify_tree_greedy,
+        shim.fast_topk,
+    ) == (old_build, old_verify, old_topk)
 
 
 @pytest.mark.gpu

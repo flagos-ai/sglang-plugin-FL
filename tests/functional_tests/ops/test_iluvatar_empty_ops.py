@@ -27,6 +27,103 @@ _RTOL = 1.5e-2
 _ATOL = 3e-3
 
 
+@pytest.mark.parametrize("mask_mode", [0, 1], ids=["full-mask", "qlen-only"])
+def test_speculative_tree_upstream_triton_branch_acceptance(mask_mode):
+    """Compile the real tree/verify kernels without loading a model."""
+    from sglang_fl.dispatch.backends.vendor.iluvatar.patches.speculative_tree import (
+        patch_speculative_tree,
+    )
+
+    patch_speculative_tree()
+    eagle = import_module("sglang.srt.speculative.eagle_utils")
+    assert eagle.sgl_build_tree_kernel_efficient is eagle.sgl_build_tree_kernel_triton
+    device = "cuda"
+    lengths = torch.tensor([2, 3], device=device, dtype=torch.int64)
+    # Root -> children 1,2; the last node belongs to 1 in row 0 and 2 in row 1.
+    parent = torch.tensor([[0, 0], [0, 1]], device=device, dtype=torch.int64)
+    selected = torch.tensor([[0, 1, 2], [0, 1, 2]], device=device, dtype=torch.int64)
+    draft = torch.tensor([[11, 22, 33], [44, 55, 66]], device=device, dtype=torch.int64)
+    bonus = torch.tensor([100, 200], device=device, dtype=torch.int64)
+    mask = torch.ones(52 if mask_mode == 0 else 32, device=device, dtype=torch.bool)
+    output = eagle.build_tree_kernel_efficient(
+        bonus,
+        parent,
+        selected,
+        draft,
+        lengths,
+        5,
+        2,
+        2,
+        4,
+        tree_mask_mode=mask_mode,
+        tree_mask_buf=mask,
+    )
+    tree_mask, positions, retrieve, next_token, next_sibling, candidates = output
+    assert tree_mask is mask
+    torch.testing.assert_close(positions.cpu(), torch.tensor([2, 3, 3, 4, 3, 4, 4, 5]))
+    torch.testing.assert_close(retrieve.cpu(), torch.arange(8).reshape(2, 4))
+    torch.testing.assert_close(
+        next_token.cpu(), torch.tensor([[1, 3, -1, -1], [1, -1, 3, -1]])
+    )
+    torch.testing.assert_close(
+        next_sibling.cpu(), torch.tensor([[-1, 2, -1, -1], [-1, 2, -1, -1]])
+    )
+    ancestry = [
+        torch.tensor(
+            [[1, 0, 0, 0], [1, 1, 0, 0], [1, 0, 1, 0], [1, 1, 0, 1]], dtype=torch.bool
+        ),
+        torch.tensor(
+            [[1, 0, 0, 0], [1, 1, 0, 0], [1, 0, 1, 0], [1, 0, 1, 1]], dtype=torch.bool
+        ),
+    ]
+    prefixes = [2, 3] if mask_mode == 0 else [0, 0]
+    expected_mask = torch.cat(
+        [
+            torch.cat(
+                (torch.ones(4, prefix, dtype=torch.bool), branch), dim=1
+            ).flatten()
+            for prefix, branch in zip(prefixes, ancestry)
+        ]
+    )
+    torch.testing.assert_close(tree_mask.cpu(), expected_mask)
+    candidates = candidates.reshape(2, 4)
+    torch.testing.assert_close(
+        candidates.cpu(), torch.tensor([[100, 11, 22, 33], [200, 44, 55, 66]])
+    )
+    predicts = torch.full((8,), -7, device=device, dtype=torch.int64)
+    accepted = torch.full((2, 3), -1, device=device, dtype=torch.int64)
+    count = torch.full((2,), -1, device=device, dtype=torch.int64)
+    targets = torch.tensor(
+        [[11, 33, 90, 777], [55, 80, 123, 70]], device=device, dtype=torch.int64
+    )
+    result = eagle.verify_tree_greedy_func(
+        predicts,
+        accepted,
+        count,
+        candidates,
+        retrieve,
+        next_token,
+        next_sibling,
+        targets,
+        topk=2,
+    )
+    assert all(
+        actual is original
+        for actual, original in zip(result, (predicts, accepted, count))
+    )
+    torch.testing.assert_close(accepted.cpu(), torch.tensor([[0, 1, 3], [4, 6, -1]]))
+    torch.testing.assert_close(count.cpu(), torch.tensor([2, 1]))
+    torch.testing.assert_close(
+        predicts.cpu(), torch.tensor([11, 33, -7, 777, 55, -7, 123, -7])
+    )
+    spec_utils = import_module("sglang.srt.speculative.spec_utils")
+    scores, indices = spec_utils.fast_topk(
+        torch.tensor([[0.1, 0.8, 0.4]], device=device), 1, -1
+    )
+    torch.testing.assert_close(scores.cpu(), torch.tensor([[0.8]]))
+    torch.testing.assert_close(indices.cpu(), torch.tensor([[1]]))
+
+
 @pytest.fixture(autouse=True)
 def _require_corex():
     if not hasattr(torch, "corex"):
@@ -37,7 +134,10 @@ def _require_corex():
 
 
 @pytest.fixture(
-    params=[pytest.param("vendor", id="vendor_pr132"), pytest.param("flagos", id="flagos")]
+    params=[
+        pytest.param("vendor", id="vendor_pr132"),
+        pytest.param("flagos", id="flagos"),
+    ]
 )
 def iluvatar_ops(request, _require_corex):
     """Run the same public SGLang contracts against each implementation."""
@@ -176,7 +276,9 @@ def test_chunk_varlen_indexed_cache_output_and_64_token_states(iluvatar_ops, nor
 
 
 @pytest.mark.parametrize("with_state", [False, True])
-def test_chunk_dense_history_shape_and_initial_state_ownership(iluvatar_ops, with_state):
+def test_chunk_dense_history_shape_and_initial_state_ownership(
+    iluvatar_ops, with_state
+):
     inputs = _fla_inputs(2, 67, query_heads=2)
     initial = _random((2, 2, 16, 32), seed=21, scale=0.06, dtype=torch.float32)
     if not with_state:
@@ -185,14 +287,18 @@ def test_chunk_dense_history_shape_and_initial_state_ownership(iluvatar_ops, wit
     state = initial.cuda() if with_state else None
     before = state.clone() if state is not None else None
     actual, final_output, actual_history = iluvatar_ops.chunk(
-        **_to_gpu(inputs), scale=0.25, initial_state=state,
+        **_to_gpu(inputs),
+        scale=0.25,
+        initial_state=state,
     )
     assert final_output is None
     assert actual_history.shape == (2, 2, 2, 16, 32)
     _assert_close(actual, expected, label="dense chunk output")
     _assert_close(actual_history, history, label="dense [B,ceil(T/64),HV,V,K] history")
     if state is not None:
-        assert torch.equal(state, before), "unindexed public chunk must not mutate initial_state"
+        assert torch.equal(state, before), (
+            "unindexed public chunk must not mutate initial_state"
+        )
 
 
 @pytest.mark.parametrize(
@@ -262,7 +368,10 @@ def _packed_case(batch=3):
     log_decay = _random((value_heads,), seed=42, scale=0.4, dtype=torch.float32)
     bias = _random((value_heads,), seed=43, scale=0.3)
     cache = _random(
-        (batch + 3, value_heads, value_dim, key_dim), seed=44, scale=0.06, dtype=torch.float32
+        (batch + 3, value_heads, value_dim, key_dim),
+        seed=44,
+        scale=0.06,
+        dtype=torch.float32,
     )
     slots = torch.arange(batch, dtype=torch.int64).roll(1) + 1
     slots[0], slots[1] = batch + 1, -1
@@ -318,7 +427,9 @@ def _packed_gpu_buffers(case):
 
 
 @pytest.mark.parametrize("batch", [3, 65])
-def test_packed_decode_updates_only_selected_slots_and_caller_output(iluvatar_ops, batch):
+def test_packed_decode_updates_only_selected_slots_and_caller_output(
+    iluvatar_ops, batch
+):
     case = _packed_case(batch)
     initial_out = torch.full((batch, 1, 2, 16), -3.25, dtype=torch.float32)
     expected_out, expected_cache = _cpu_packed(*case, initial_out)
@@ -397,7 +508,9 @@ def test_moe_gated_silu_bias_routing_and_scaling_match_cpu(
     x = _random((tokens, hidden), seed=50, scale=0.5)
     w13 = _random((experts, 2 * intermediate, hidden), seed=51, scale=0.2)
     w2 = _random((experts, hidden, intermediate), seed=52, scale=0.2)
-    bias13 = _random((experts, 2 * intermediate), seed=53, scale=0.03) if with_bias else None
+    bias13 = (
+        _random((experts, 2 * intermediate), seed=53, scale=0.03) if with_bias else None
+    )
     bias2 = _random((experts, hidden), seed=54, scale=0.03) if with_bias else None
     ids = torch.tensor([[0, 2], [1, 3], [2, 0], [3, 1], [1, 2]], dtype=torch.int32)
     weights = _random((tokens, topk), seed=55, scale=0.5, dtype=torch.float32).softmax(
@@ -422,7 +535,9 @@ def test_moe_gated_silu_bias_routing_and_scaling_match_cpu(
                 expert_output = expert_output + bias2[expert].float()
             expected[token] += expert_output * (1 if route_on_input else route_weight)
     expected *= scale
-    assert expected.abs().max() > 10 * _ATOL, "MoE oracle signal is below its error budget"
+    assert expected.abs().max() > 10 * _ATOL, (
+        "MoE oracle signal is below its error budget"
+    )
 
     obj = SimpleNamespace(
         moe_runner_config=SimpleNamespace(
@@ -457,4 +572,6 @@ def test_moe_gated_silu_bias_routing_and_scaling_match_cpu(
         result.hidden_states, expected, label="MoE CPU gated-SiLU routing equation"
     )
     assert result.hidden_states.dtype == _DTYPE
-    assert torch.equal(dispatch.hidden_states, before), "MoE must not overwrite dispatch input"
+    assert torch.equal(dispatch.hidden_states, before), (
+        "MoE must not overwrite dispatch input"
+    )
