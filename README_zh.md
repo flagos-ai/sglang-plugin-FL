@@ -74,6 +74,24 @@ SGLang 的推理引擎依赖 NVIDIA 专有组件：flashinfer 用于 attention�
 | Qwen3.6-27B | 已支持 | [Qwen/Qwen3.6-27B](https://huggingface.co/Qwen/Qwen3.6-27B) | [示例](./examples/qwen3_6_27b_offline_inference.py) |
 | Qwen3.6-35B-A3B | 已支持 | [Qwen/Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [示例](./examples/qwen3_6_35b_a3b_offline_inference.py) |
 
+### FlagRelease 已发布的 SGLang 部署
+
+以下模型卡提供了 SGLang 部署说明，包括直接启动命令或启动脚本入口。
+本表索引已发布的部署文档；各条目可能依赖发布镜像中的特定 SGLang、插件版本和模型扩展，不代表当前主干已验证全部组合。完整启动命令及依赖以对应模型卡为准。
+
+| 模型 | 部署文档 |
+|------|----------|
+| GLM-5.2 | [摩尔线程](https://www.modelscope.cn/models/FlagRelease/GLM-5.2-mthreads-FlagOS) |
+| MiniCPM-V-4.7-1B (BF16) | [昇腾](https://www.modelscope.cn/models/FlagRelease/MiniCPM-V-4.7-1B-BF16-ascend-FlagOS), [摩尔线程](https://www.modelscope.cn/models/FlagRelease/MiniCPM-V-4.7-1B-BF16-mthreads-FlagOS) |
+| MiniCPM-V-4.7-35B-A3B (BF16) | [昇腾](https://www.modelscope.cn/models/FlagRelease/MiniCPM-V-4.7-35B-A3B-BF16-ascend-FlagOS), [摩尔线程](https://www.modelscope.cn/models/FlagRelease/MiniCPM-V-4.7-35B-A3B-BF16-mthreads-FlagOS) |
+| MiniCPM5-2B (BF16) | [昇腾](https://www.modelscope.cn/models/FlagRelease/MiniCPM5-2B-BF16-ascend-FlagOS), [摩尔线程](https://www.modelscope.cn/models/FlagRelease/MiniCPM5-2B-BF16-mthreads-FlagOS) |
+| MiniMax-M3 | [NVIDIA](https://www.modelscope.cn/models/FlagRelease/MiniMax-M3-nvidia-FlagOS), [昇腾](https://www.modelscope.cn/models/FlagRelease/MiniMax-M3-ascend-FlagOS), [摩尔线程](https://www.modelscope.cn/models/FlagRelease/MiniMax-M3-mthreads-FlagOS) |
+| MiniMax-M3.1-Flash (W8A8) | [昇腾](https://www.modelscope.cn/models/FlagRelease/MiniMax-M3.1-Flash-W8A8-ascend-FlagOS-Express), [摩尔线程](https://www.modelscope.cn/models/FlagRelease/MiniMax-M3.1-Flash-W8A8-mthreads-FlagOS) |
+| Qwen3.8-2.4T-A95B (INT8 / FP8) | [昇腾 INT8](https://www.modelscope.cn/models/FlagRelease/Qwen3.8-2.4T-A95B-INT8-ascend-FlagOS), [摩尔线程 FP8](https://www.modelscope.cn/models/FlagRelease/Qwen3.8-2.4T-A95B-FP8-mthreads-FlagOS) |
+| Qwen3.8-27B (BF16 / FP8) | [昇腾 BF16](https://www.modelscope.cn/models/FlagRelease/Qwen3.8-27B-BF16-ascend-FlagOS), [摩尔线程 FP8](https://www.modelscope.cn/models/FlagRelease/Qwen3.8-27B-FP8-mthreads-FlagOS) |
+| Qwen3.8-Flash-Next (BF16) | [昇腾](https://www.modelscope.cn/models/FlagRelease/Qwen3.8-Flash-Next-BF16-ascend-FlagOS), [摩尔线程](https://www.modelscope.cn/models/FlagRelease/Qwen3.8-Flash-Next-BF16-mthreads-FlagOS) |
+| Xing4.0-29B-A4B (BF16) | [昇腾](https://www.modelscope.cn/models/FlagRelease/Xing4.0-29B-A4B-BF16-ascend-FlagOS), [摩尔线程](https://www.modelscope.cn/models/FlagRelease/Xing4.0-29B-A4B-BF16-mthreads-FlagOS) |
+
 ### 支持的芯片
 
 | 芯片厂商 | 状态 | 参考 |

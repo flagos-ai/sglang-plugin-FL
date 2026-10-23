@@ -58,6 +58,24 @@ The tables below summarize the current support status of end-to-end verified mod
 | Qwen3.6-27B | Supported | [Qwen/Qwen3.6-27B](https://huggingface.co/Qwen/Qwen3.6-27B) | [example](./examples/qwen3_6_27b_offline_inference.py) |
 | Qwen3.6-35B-A3B | Supported | [Qwen/Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [example](./examples/qwen3_6_35b_a3b_offline_inference.py) |
 
+### Published FlagRelease SGLang Deployments
+
+The model cards below provide SGLang deployment instructions, including direct launch commands or launcher script entry points.
+This table indexes published deployment documentation. Entries may depend on specific SGLang versions, plugin versions, and model extensions in their release images; they do not establish validation of every combination on the current main branch. See each model card for the complete launch command and dependencies.
+
+| Model | Deployment documentation |
+|-------|--------------------------|
+| GLM-5.2 | [Moore Threads](https://www.modelscope.cn/models/FlagRelease/GLM-5.2-mthreads-FlagOS) |
+| MiniCPM-V-4.7-1B (BF16) | [Ascend](https://www.modelscope.cn/models/FlagRelease/MiniCPM-V-4.7-1B-BF16-ascend-FlagOS), [Moore Threads](https://www.modelscope.cn/models/FlagRelease/MiniCPM-V-4.7-1B-BF16-mthreads-FlagOS) |
+| MiniCPM-V-4.7-35B-A3B (BF16) | [Ascend](https://www.modelscope.cn/models/FlagRelease/MiniCPM-V-4.7-35B-A3B-BF16-ascend-FlagOS), [Moore Threads](https://www.modelscope.cn/models/FlagRelease/MiniCPM-V-4.7-35B-A3B-BF16-mthreads-FlagOS) |
+| MiniCPM5-2B (BF16) | [Ascend](https://www.modelscope.cn/models/FlagRelease/MiniCPM5-2B-BF16-ascend-FlagOS), [Moore Threads](https://www.modelscope.cn/models/FlagRelease/MiniCPM5-2B-BF16-mthreads-FlagOS) |
+| MiniMax-M3 | [NVIDIA](https://www.modelscope.cn/models/FlagRelease/MiniMax-M3-nvidia-FlagOS), [Ascend](https://www.modelscope.cn/models/FlagRelease/MiniMax-M3-ascend-FlagOS), [Moore Threads](https://www.modelscope.cn/models/FlagRelease/MiniMax-M3-mthreads-FlagOS) |
+| MiniMax-M3.1-Flash (W8A8) | [Ascend](https://www.modelscope.cn/models/FlagRelease/MiniMax-M3.1-Flash-W8A8-ascend-FlagOS-Express), [Moore Threads](https://www.modelscope.cn/models/FlagRelease/MiniMax-M3.1-Flash-W8A8-mthreads-FlagOS) |
+| Qwen3.8-2.4T-A95B (INT8 / FP8) | [Ascend INT8](https://www.modelscope.cn/models/FlagRelease/Qwen3.8-2.4T-A95B-INT8-ascend-FlagOS), [Moore Threads FP8](https://www.modelscope.cn/models/FlagRelease/Qwen3.8-2.4T-A95B-FP8-mthreads-FlagOS) |
+| Qwen3.8-27B (BF16 / FP8) | [Ascend BF16](https://www.modelscope.cn/models/FlagRelease/Qwen3.8-27B-BF16-ascend-FlagOS), [Moore Threads FP8](https://www.modelscope.cn/models/FlagRelease/Qwen3.8-27B-FP8-mthreads-FlagOS) |
+| Qwen3.8-Flash-Next (BF16) | [Ascend](https://www.modelscope.cn/models/FlagRelease/Qwen3.8-Flash-Next-BF16-ascend-FlagOS), [Moore Threads](https://www.modelscope.cn/models/FlagRelease/Qwen3.8-Flash-Next-BF16-mthreads-FlagOS) |
+| Xing4.0-29B-A4B (BF16) | [Ascend](https://www.modelscope.cn/models/FlagRelease/Xing4.0-29B-A4B-BF16-ascend-FlagOS), [Moore Threads](https://www.modelscope.cn/models/FlagRelease/Xing4.0-29B-A4B-BF16-mthreads-FlagOS) |
+
 ### Supported Chips
 
 | Chip Vendor | Status | Reference |
