@@ -1,14 +1,14 @@
 # e2e 并行执行:musa / ascend 串行限制根因排查
 
-> 状态:排查完成(debug PR #150;E1 基线 + E2 同配置复跑均已完成)
+> 状态:已解决(2026-10-23)。musa 根因确认为**钉卡用错了层的变量**,换用 `MUSA_VISIBLE_DEVICES` 后并行全绿(E3);musa 已在 #148 开启并行,六个平台全部并行。
 > 排查对象:#148 引入的 DeviceScheduler 并行 e2e(每用例独占 `tp_size × pp_size` 连续卡组,子进程注入平台可见性环境变量钉卡)中,`musa` 与 `ascend` 被迫声明 `e2e_serial: true` 的原因。
 > 环境变量语义:`MTHREADS_VISIBLE_DEVICES`(musa)/ `ASCEND_RT_VISIBLE_DEVICES`(ascend)按 CUDA_VISIBLE_DEVICES 惯例做每进程逻辑重映射。
 
 ## 结论摘要(TL;DR)
 
-| 平台 | 根因 | 置信度 | 短期处置 | owner 行动项 |
+| 平台 | 根因 | 置信度 | 处置(已完成) | owner 行动项 |
 |---|---|---|---|---|
-| musa | **每进程 `MTHREADS_VISIBLE_DEVICES` 钉卡对 sglang-on-musa 无效**:被钉到尾卡的用例 rank 实际仍落在物理 0..tp-1,与先启动的用例撞显存(OOM),并非此前以为的 MCCL 并发死锁 | 高(日志实锤,见 §2) | 保持 `e2e_serial: true`;或 harness 改用 sglang `base_gpu_id` 偏移(见 §2.4) | mthreads/torch_musa 侧确认容器内每进程可见性变量语义(§2.3) |
+| musa | **钉卡用错了层的变量**:`MTHREADS_VISIBLE_DEVICES` 是容器运行时层变量(mt-container-toolkit,`docker create` 时读一次),进程内设置无效;进程内设备选择读 `MUSA_VISIBLE_DEVICES`(CUDA_VISIBLE_DEVICES 类比)。此前被钉用例 rank 落在物理 0..tp-1 撞显存 OOM | 实锤 + 已修复验证(E3) | #148 已改用 `MUSA_VISIBLE_DEVICES` 并去掉 `e2e_serial`,E3 真机并发全绿 | 无阻塞项;建议 mthreads 在文档中显式区分两层变量,避免复用 NVIDIA_VISIBLE_DEVICES 命名直觉踩坑 |
 | ascend | 唯一一次失败(`libccl_kernel.so` AICPU 内核错误)**同配置不复现**;同池当天多次出现 `drvErr=87` 驱动不可用 flake,指向 910c runner 池宿主/驱动态不稳 | 中(单次失败样本 vs 单次通过样本) | 观察性重开并行(flake 率与 drvErr 同源),或先修池子再开 | 910c 池稳定性(drvErr=87 高频,见 §3.3) |
 
 ## 1. 排查方法
@@ -49,10 +49,11 @@ serving 用例调度(时间线,均为钉卡模式):
 
 同时排除旧假设:两次失败均为快速 OOM(71s/40s),无任何 MCCL 集合通信挂死/超时签名;"死锁"叙事在本栈不成立。
 
-### 2.4 出路
+### 2.4 解决(E3,run 于 debug 分支 b2bdc56,musa-only)
 
-- **owner 侧(根治)**:mthreads/torch_musa 确认容器(DooD,宿主 docker socket)内 `MTHREADS_VISIBLE_DEVICES` 每进程语义是否支持逻辑重映射;若不支持,给出官方多引擎隔离方案。
-- **harness 侧(绕过)**:sglang `ServerArgs` 原生支持 `base_gpu_id` + `gpu_id_step`(见 E1 日志 server_args dump)。调度器可改为对 musa 注入 `--base-gpu-id <first_slot>` 引擎参数而非可见性环境变量,不依赖 mthreads 语义。实现量小,可作为后续 PR。
+官方文档语义分层:`MTHREADS_VISIBLE_DEVICES` = 容器运行时层(mt-container-toolkit,`docker run` 时读,类比 `NVIDIA_VISIBLE_DEVICES`);`MUSA_VISIBLE_DEVICES` = MUSA 驱动/运行时层(进程内读,torch_musa 用于设备枚举与逻辑重映射,类比 `CUDA_VISIBLE_DEVICES`)。容器建好后进程内再设 `MTHREADS_*` 是空操作——这正是 E1/E2 观察的机理。
+
+E3(改用 `MUSA_VISIBLE_DEVICES` 钉卡):此前 OOM 的同款组合 `4b_tp2`(0,1)+ `35b_tp4`(2,3,4,5)**同时启动、同时通过**(08:25:26 START,08:27:57/08:31:01 PASS),inference 任务同样全绿。#148 已落地该修复并开启 musa 并行;`base_gpu_id` 方案不再需要。
 
 ## 3. ascend:失败一次性,同配置不复现;池子不稳
 
@@ -113,6 +114,6 @@ ERR02200 DIST call hccl api failed.
 
 ## 5. Owner 行动项汇总
 
-1. **musa owner(mthreads/torch_musa)**:确认容器内每进程 `MTHREADS_VISIBLE_DEVICES` 逻辑重映射是否受支持;给出多引擎同节点隔离的推荐做法。harness 侧可先行以 `base_gpu_id` 绕过。
+1. **musa owner(mthreads/torch_musa)**:已定位为变量层级误用(容器层 vs 运行时层),#148 已换用 `MUSA_VISIBLE_DEVICES` 解决。建议官方文档显式区分两层变量命名,避免按 NVIDIA_VISIBLE_DEVICES 直觉误用。
 2. **ascend owner(910c 池)**:**摘除或修复 `bm-jn-zs-bj2-910C-64G-10-113`**(自 2026-10-22 起 NPU 驱动持续不可用,该机上的 job 100% 失败,其余宿主全绿;建议重启/重装驱动后回归验证)。该池为 flagcicd-910c 共享池,建议同时排查是否有其他仓库的负载把该机打病。
-3. **CI 侧(本仓库)**:musa 维持串行直至 1 有结论;ascend 可观察性重开并行(或与池子修复同步进行)。
+3. **CI 侧(本仓库)**:已全部落地——六平台并行(musa 用 `MUSA_VISIBLE_DEVICES` 钉卡);遗留仅 910c 池 -113 宿主修复。
