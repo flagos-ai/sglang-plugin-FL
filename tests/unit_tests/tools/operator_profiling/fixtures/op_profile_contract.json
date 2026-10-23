@@ -1,0 +1,35 @@
+{
+  "source": "https://github.com/cyber-pioneer/op_profile/tree/main/qwen3.6_35b_a3b_plugin_graph_4096_256/results",
+  "retrieved": "2026-10-22",
+  "files": {
+    "operator_list.csv": {
+      "fields": [
+        "operator_id",
+        "operator_name",
+        "operator_kind",
+        "kernel_name",
+        "kernel_time_percent(%)"
+      ],
+      "sha256": "def37fcce0da6c17ea05d229438bc2d48cacf50c0d1f9884d973159c6da2de89"
+    },
+    "kernel_shape_dtype.csv": {
+      "fields": [
+        "operator_name",
+        "kernel_name",
+        "variant_index",
+        "mapping_status",
+        "input_shapes",
+        "input_dtypes",
+        "candidate_operators",
+        "kernel_event_count",
+        "kernel_time_us",
+        "eager_operator_name",
+        "eager_input_shapes",
+        "eager_input_dtypes",
+        "eager_candidates",
+        "mapping_source"
+      ],
+      "sha256": "1aa9e2cfc738fc749233719d89da1852f04fdf70225694f5f0368186b800842a"
+    }
+  }
+}

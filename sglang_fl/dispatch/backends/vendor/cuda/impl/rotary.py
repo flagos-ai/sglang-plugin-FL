@@ -47,12 +47,13 @@ def rotary_embedding_cuda(
     """
     from sgl_kernel import rotary_embedding as sgl_rotary_embedding
 
+    cos_sin_cache = torch.cat((cos, sin), dim=-1)
     sgl_rotary_embedding(
         position_ids,
         query,
         key,
-        cos,
-        sin,
-        rotary_interleaved,
+        query.shape[-1],
+        cos_sin_cache,
+        not rotary_interleaved,
     )
     return query, key
