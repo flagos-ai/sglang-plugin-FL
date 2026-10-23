@@ -28,3 +28,5 @@ unparseable = "unparseable"
 thw = "thw"
 # MUSA / flashinfer C++ header file extension (.muh), e.g. flashinfer/sampling.muh
 muh = "muh"
+# MIS means multi-item scoring in SGLang (enable_mis / --enable-mis).
+mis = "mis"
