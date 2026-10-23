@@ -124,4 +124,16 @@ def register_builtins(registry) -> None:
         ),
     ]
 
+    for name in ("shared_expert_gate_tail", "moe_sum_reduce", "allreduce_rms_norm"):
+        impls.append(
+            OpImpl(
+                op_name=name,
+                impl_id="vendor.musa",
+                kind=BackendImplKind.VENDOR,
+                fn=_bind_is_available(getattr(backend, name), is_avail),
+                vendor="mthreads",
+                priority=BackendPriority.VENDOR,
+            )
+        )
+
     registry.register_many(impls)

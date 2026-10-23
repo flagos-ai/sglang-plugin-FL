@@ -230,3 +230,22 @@ class MusaBackend(Backend):
             ssm_state_indices,
             use_qk_l2norm_in_kernel,
         )
+
+    def shared_expert_gate_tail(self, block, hidden):
+        from .impl.shared_expert_gate_tail import shared_expert_gate_tail_musa
+
+        return shared_expert_gate_tail_musa(block, hidden)
+
+    def moe_sum_reduce(
+        self, original, routed, output, routed_scaling_factor, *args, **kwargs
+    ):
+        from .patches.moe_combine import moe_sum_reduce_musa
+
+        return moe_sum_reduce_musa(
+            original, routed, output, routed_scaling_factor, *args, **kwargs
+        )
+
+    def allreduce_rms_norm(self, group, norm_module, x, residual, weight):
+        from .impl.allreduce_rms_norm import allreduce_rms_norm_musa
+
+        return allreduce_rms_norm_musa(group, norm_module, x, residual, weight)

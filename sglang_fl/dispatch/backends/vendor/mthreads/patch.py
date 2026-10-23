@@ -252,8 +252,39 @@ def apply_musa_patches() -> None:
     _patch_pp_launch_batch_add_sync()
     _patch_multimodal_mask()
     _patch_fp32_tp_all_reduce()
+    from .patches.fa3_graph_metadata import apply_musa_fa3_graph_metadata_patch
+
+    apply_musa_fa3_graph_metadata_patch()
+    from .patches.moe_workspace import apply_musa_moe_workspace_patch
+
+    apply_musa_moe_workspace_patch()
+    # R2 retained integration; keep current upstream correctness patches above.
+    from .patches.custom_allreduce_rmsnorm import apply_musa_custom_allreduce_rmsnorm_patch
+
+    apply_musa_custom_allreduce_rmsnorm_patch()
+    from .patches.fmha_schedule import apply_musa_fmha_schedule_patch
+    from .patches.moe_schedule import apply_musa_moe_schedule_patch
+    from .patches.moe_combine import apply_musa_deterministic_moe_combine_patch
+    from .patches.mrope_positions import apply_musa_mrope_device_positions_patch
+    from .patches.topk_schedule import apply_musa_topk_schedule_patch
+
+    apply_musa_fmha_schedule_patch()
+    apply_musa_moe_schedule_patch()
+    apply_musa_deterministic_moe_combine_patch()
+    apply_musa_mrope_device_positions_patch()
+    apply_musa_topk_schedule_patch()
+
+    # Install outside the combine wrapper: the original forward still owns
+    # routing, in-place addition and the post-expert TP collective.
+    from .patches.shared_expert_gate_tail import (
+        apply_musa_shared_expert_gate_tail_patch,
+    )
+
+    apply_musa_shared_expert_gate_tail_patch()
     _patches_applied = True
-    logger.info("All MUSA PP patches applied successfully")
+    # The install flow ran to completion; individual patches may still have
+    # declined or skipped based on device, environment or import contracts.
+    logger.info("MUSA patch install flow complete")
 
 
 apply_musa_patches()
