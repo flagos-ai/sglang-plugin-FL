@@ -77,10 +77,10 @@ serving 用例调度(时间线,均为钉卡模式):
 
 | 宿主(bm-jn-zs-bj2-910C-64G-10-*) | 观测到的 job | 结果 |
 |---|---|---|
-| **-113** | debug E1 inference、debug E2 functional、复验轮 inference + serving | **4/4 全部 `drvErr=87` 失败** |
+| **-113** | debug E1 inference、debug E2 functional、复验轮 att1 inference + serving、att2 inference | **5/5 全部 `drvErr=87` 失败** |
 | -112 | #148 期末 benchmark、inference | 全绿 |
 | -114 | #148 functional ×2、inference ×2、debug E1 serving | 全绿 |
-| -115 | #148 serving | 全绿 |
+| -115 | #148 serving、复验轮 att2 serving | 前者绿;后者失败为 §3.5 HCCL 端口段复用(harness 侧,与宿主无关,已修复) |
 
 即:**"概率失败"实为按宿主确定性失败**——`…-10-113` 自 2026-10-22 01:35 UTC 起持续 NPU 驱动不可用(check.sh 阶段 `get platform info failed, drvErr=87`,任何测试代码执行之前),落到该机的 job 必死,其余宿主 100% 通过。#148 验证期另有两笔 drvErr(旧 attempt 日志已被取消清理)无法直接对号,时间窗与 -113 病态期吻合。libccl 单发失败(run 39734618368,日志已清理)同理无法对号,不排除同机。AICPU `libccl_kernel` 错误与 drvErr=87 同属宿主驱动态问题谱系;单发、不复现、与驱动失联高发同池同时段,倾向归因为**宿主瞬时态**而非钉卡/并发的确定性缺陷。
 
@@ -88,6 +88,20 @@ serving 用例调度(时间线,均为钉卡模式):
 
 - 观察性重开并行(ascend 去掉 `e2e_serial`),失败按 flake 处理重掷;若 libccl 错误率显著,再回退串行并升级 910c 池排查。
 - 更优先:910c 池 drvErr=87 高发本身值得 owner 侧排查(已连续两天影响 CI,含非并行任务)。
+
+### 3.5 后续复验中的第二机理:HCCL 端口段复用(harness 侧,已在 #148 修复)
+
+复验轮(run 39892958091 attempt 2,健康宿主 -115)中,serving `4b_tp2`、`27b_tp4` 均通过,`35b_tp4` 在 `27b_tp4` 释放的**同一秒**启动并失败:
+
+```
+Communication_Error_Bind_IP_Port(EJ0003): Failed to bind the IP port. Reason: The IP address and port have been bound already.
+RuntimeError: createHCCLCommOrigin ... HcclGetRootInfo(&hcclID), error code is 7
+ERR02200 DIST call hccl api failed.
+```
+
+原因:HCCL 端口段原本按"卡组首卡号"派发(`18000 + slot×20`),先后复用同一卡组的两个 case 会拿到**同一段**,而前一个引擎的 HCCL socket 可能仍在 TIME_WAIT/迟退 → 绑定冲突。该机理与并发正交(串行同样会撞),是概率性的(取决于前引擎退出速度),解释了为何 ascend 失败"时有时无"。
+
+修复(#148,aadc8f5):端口段改为**按 case 序号唯一**(`18000 + case_index×20`),任务内永不复用;并发 case 之间天然不重叠。本地已验证同卡组连续复用与混合并发两种形态下端口段均唯一。
 
 ## 4. 复现与工具
 
