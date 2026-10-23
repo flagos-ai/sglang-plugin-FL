@@ -71,9 +71,18 @@ serving 用例调度(时间线,均为钉卡模式):
 - 同 run 的 inference 任务:`4b_tp2`(钉 `0,1`)与 `06b_tp1`(钉 `2`)**真并发**通过 —— 排除"钉卡子集掩码"与"并发"单独或组合作为确定性触发条件。
 - debug E1(run 39887129522,次日):serving `4b_tp2` 钉 `0,1` **原样配置通过**(02:07:10–02:12:56),后续 tp4 全量掩码均通过。
 
-### 3.3 池稳定性背景
+### 3.3 池稳定性背景:失败聚集在单一宿主 `…-10-113`
 
-flagcicd-910c 池连续两日多次出现 check.sh 阶段 `drvErr=87`(get platform info failed / driver error:internal error):#148 验证期间 3 次(重掷解决)、debug E1 1 次(inference 任务)、E2 1 次(functional 任务,阻断整条 e2e 链)——两日内 ≥5 次,且全部发生在任何测试代码执行之前。AICPU `libccl_kernel` 错误与 drvErr=87 同属宿主驱动态问题谱系;单发、不复现、与驱动失联高发同池同时段,倾向归因为**宿主瞬时态**而非钉卡/并发的确定性缺陷。
+对两日内全部 ascend 红/绿 job 的日志提取宿主名(`Runner name`):
+
+| 宿主(bm-jn-zs-bj2-910C-64G-10-*) | 观测到的 job | 结果 |
+|---|---|---|
+| **-113** | debug E1 inference、debug E2 functional、复验轮 inference + serving | **4/4 全部 `drvErr=87` 失败** |
+| -112 | #148 期末 benchmark、inference | 全绿 |
+| -114 | #148 functional ×2、inference ×2、debug E1 serving | 全绿 |
+| -115 | #148 serving | 全绿 |
+
+即:**"概率失败"实为按宿主确定性失败**——`…-10-113` 自 2026-10-22 01:35 UTC 起持续 NPU 驱动不可用(check.sh 阶段 `get platform info failed, drvErr=87`,任何测试代码执行之前),落到该机的 job 必死,其余宿主 100% 通过。#148 验证期另有两笔 drvErr(旧 attempt 日志已被取消清理)无法直接对号,时间窗与 -113 病态期吻合。libccl 单发失败(run 39734618368,日志已清理)同理无法对号,不排除同机。AICPU `libccl_kernel` 错误与 drvErr=87 同属宿主驱动态问题谱系;单发、不复现、与驱动失联高发同池同时段,倾向归因为**宿主瞬时态**而非钉卡/并发的确定性缺陷。
 
 ### 3.4 建议
 
@@ -91,5 +100,5 @@ flagcicd-910c 池连续两日多次出现 check.sh 阶段 `drvErr=87`(get platfo
 ## 5. Owner 行动项汇总
 
 1. **musa owner(mthreads/torch_musa)**:确认容器内每进程 `MTHREADS_VISIBLE_DEVICES` 逻辑重映射是否受支持;给出多引擎同节点隔离的推荐做法。harness 侧可先行以 `base_gpu_id` 绕过。
-2. **ascend owner(910c 池)**:排查 `drvErr=87` 高发(两天内 ≥4 次,阻塞含串行在内的各类任务);确认 2026-10-22 06:53 UTC 时段宿主 AICPU/driver 状态是否异常。
+2. **ascend owner(910c 池)**:**摘除或修复 `bm-jn-zs-bj2-910C-64G-10-113`**(自 2026-10-22 起 NPU 驱动持续不可用,该机上的 job 100% 失败,其余宿主全绿;建议重启/重装驱动后回归验证)。该池为 flagcicd-910c 共享池,建议同时排查是否有其他仓库的负载把该机打病。
 3. **CI 侧(本仓库)**:musa 维持串行直至 1 有结论;ascend 可观察性重开并行(或与池子修复同步进行)。
