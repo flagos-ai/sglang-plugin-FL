@@ -4,6 +4,7 @@ These replace the compatibility edits still required on Huawei NPU:
   - scheduler_pp: PP send/recv ordering + stream syncs (HCCL deadlock fix)
   - vision: use SGLang's SDPA fallback when CANN 8.5 fused attention cannot
     accept an unaligned head dimension
+  - vision_graph: preserve eager position interpolation and replay output ownership
   - qwen35_pp_rotary: refresh position caches on each pipeline stage
   - mamba_state_update: disable auto multi-buffering for the Qwen3.6 MTP
     state-copy tile that exceeds the 910C unified-buffer budget
@@ -27,6 +28,7 @@ from .patches.scheduler_pp import (
 )
 from .patches.mamba_state_update import patch_mamba_state_update_multibuffer
 from .patches.vision import patch_vision_ascend_attention
+from .patches.vision_graph import patch_qwen3_vl_npu_graph
 from .patches.qwen35_pp_rotary import patch_qwen35_pp_rotary_cache
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,7 @@ def apply_ascend_patches() -> None:
     patch_pp_send_recv_order()
     patch_pp_launch_batch_sync()
     patch_vision_ascend_attention()
+    patch_qwen3_vl_npu_graph()
     patch_qwen35_pp_rotary_cache()
     patch_mamba_state_update_multibuffer()
     patch_gdn_target_verify()
