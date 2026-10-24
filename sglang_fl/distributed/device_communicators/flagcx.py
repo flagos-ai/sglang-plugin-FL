@@ -93,6 +93,7 @@ class FlagCXCommunicator:
         self.available = False
 
         self._stream_cache = {}
+        self._npu_comm_stream = None
 
         # Import FlagCX wrapper
         try:
@@ -160,6 +161,11 @@ class FlagCXCommunicator:
             self.comm = self.flagcx.flagcxCommInitRank(
                 self.world_size, self.unique_id, self.rank
             )
+            if self.device.type == "npu":
+                # Create this eagerly: creating a previously unseen stream
+                # during graph capture cannot establish a safe capture fork.
+                with torch.npu.device(self.device):
+                    self._npu_comm_stream = torch.npu.Stream()
             # Warmup: small all_reduce to ensure comm is ready
             warmup_data = torch.zeros(1, device=self.device)
             self._flagcx_all_reduce(warmup_data)
@@ -227,7 +233,32 @@ class FlagCXCommunicator:
 
     def _flagcx_all_reduce(self, tensor: torch.Tensor) -> torch.Tensor:
         """Internal all_reduce using FlagCX API."""
+        # Allocate on the caller's stream. NPU graph pools retain allocations
+        # made on the capture stream, not on the communication side stream.
         out_tensor = torch.empty_like(tensor)
+        if self.device.type != "npu":
+            return self._flagcx_all_reduce_on_current_stream(tensor, out_tensor)
+
+        # HCCL may use internal streams. Calling the raw FlagCX API directly
+        # on the model's capture stream does not provide c10d's communication
+        # stream dependencies: capture can fail, or (with AIV) later eager
+        # collectives can observe incorrect results after capture succeeds.
+        # Explicitly fork/join a persistent communication stream in both eager
+        # and captured execution, without host synchronization or a fallback.
+        forward_stream = torch.npu.current_stream(self.device)
+        comm_stream = self._npu_comm_stream
+        comm_stream.wait_stream(forward_stream)
+        tensor.record_stream(comm_stream)
+        out_tensor.record_stream(comm_stream)
+        with torch.npu.stream(comm_stream):
+            self._flagcx_all_reduce_on_current_stream(tensor, out_tensor)
+        forward_stream.wait_stream(comm_stream)
+        return out_tensor
+
+    def _flagcx_all_reduce_on_current_stream(
+        self, tensor: torch.Tensor, out_tensor: torch.Tensor
+    ) -> torch.Tensor:
+        """Submit the unchanged native operation on the selected vendor stream."""
         flagcx_stream = self._get_stream()
         self.flagcx.flagcxAllReduce(
             self._buffer_type(tensor.data_ptr()),
