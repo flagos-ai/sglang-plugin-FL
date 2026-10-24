@@ -5,6 +5,7 @@ These replace the compatibility edits still required on Huawei NPU:
   - vision: use SGLang's SDPA fallback when CANN 8.5 fused attention cannot
     accept an unaligned head dimension
   - vision_graph: preserve eager position interpolation and replay output ownership
+  - linear: expose configured mm dispatch for unbiased NPU BF16 matrix inputs
   - qwen35_pp_rotary: refresh position caches on each pipeline stage
   - mamba_state_update: disable auto multi-buffering for the Qwen3.6 MTP
     state-copy tile that exceeds the 910C unified-buffer budget
@@ -21,6 +22,7 @@ new v0.5.18 behavior, so those replacements are intentionally not applied.
 import logging
 
 from .patches.logsumexp import patch_logsumexp_topk_fallback
+from .patches.linear import patch_unquantized_linear_mm
 from .patches.gdn_target_verify import patch_gdn_target_verify
 from .patches.scheduler_pp import (
     patch_pp_launch_batch_sync,
@@ -44,6 +46,7 @@ def apply_ascend_patches() -> None:
     patch_pp_launch_batch_sync()
     patch_vision_ascend_attention()
     patch_qwen3_vl_npu_graph()
+    patch_unquantized_linear_mm()
     patch_qwen35_pp_rotary_cache()
     patch_mamba_state_update_multibuffer()
     patch_gdn_target_verify()
