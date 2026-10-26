@@ -14,3 +14,6 @@ dependencies = []
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["_iluvatar_empty_compat*", "sgl_kernel*", "flashinfer*"]
+
+[tool.setuptools.package-data]
+_iluvatar_empty_compat = ["native/*.c"]

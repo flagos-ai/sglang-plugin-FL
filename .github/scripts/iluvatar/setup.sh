@@ -48,6 +48,13 @@ for package in ("sglang", "torch", "flagtree", "flag_gems", "sglang_fl", "sglang
     print(f"{package}: {version(package)}")
 PY
 
+    echo "=== Activating the native CoreX capture status/id query bridge ==="
+    export SGLANG_ILUVATAR_CAPTURE_INFO_COMPAT="${SGLANG_ILUVATAR_CAPTURE_INFO_COMPAT:-1}"
+    python -m _iluvatar_empty_compat.activate_runtime \
+        --artifact-root "$repo_root/artifacts/iluvatar/native" \
+        --activation-file "$repo_root/artifacts/iluvatar/native/activation.env"
+    source "$repo_root/artifacts/iluvatar/native/activation.env"
+
     echo "=== Verifying the default Iluvatar vendor profile ==="
     python scripts/iluvatar/verify_environment.py \
         --min-devices "$minimum" --fused-profile vendor \
