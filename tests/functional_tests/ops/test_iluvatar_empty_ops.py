@@ -674,3 +674,117 @@ print("Production cold mul_ value/alias/input and out-of-place checks passed", f
             check=False,
         )
     assert result.returncode == 0, log.read_text(encoding="utf-8", errors="replace")
+
+
+def test_iluvatar_registered_chunk_state_writeback_preserves_layout(tmp_path):
+    """Reuse the indexed-state oracle with production FlagGems ATen registration."""
+    import json
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+
+    env = os.environ.copy()
+    for key in (
+        "SGLANG_FL_CONFIG",
+        "SGLANG_FL_FLAGOS_WHITELIST",
+        "SGLANG_FL_FLAGOS_BLACKLIST",
+        "FLAGGEMS_DB_URL",
+    ):
+        env.pop(key, None)
+    env["USE_FLAGGEMS"] = "1"
+    env["FLAGGEMS_CACHE_DIR"] = str(tmp_path / "private-gems-cache")
+    log_dir = Path(env.get("ILUVATAR_CI_ARTIFACT_DIR", tmp_path)) / "chunk-writeback"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    dtype_name = str(_DTYPE).split(".")[-1]
+    prefix = log_dir / f"{dtype_name}-{os.getpid()}"
+    log = prefix.with_suffix(".log")
+    child = r"""
+import json
+import os
+from pathlib import Path
+import runpy
+import sys
+import traceback
+from types import SimpleNamespace
+
+cache = Path(os.environ["FLAGGEMS_CACHE_DIR"])
+assert not cache.exists(), "A new process must begin with a private cold cache"
+cache.mkdir()
+assert not list(cache.iterdir())
+import torch
+assert hasattr(torch, "corex") and torch.cuda.is_available()
+import sglang_fl
+config = sglang_fl._build_config()
+sglang_fl._setup_flaggems(config)
+import flag_gems
+keys = flag_gems.all_registered_keys()
+route = torch._C._dispatch_dump_table("aten::index_copy_")
+cuda_routes = [line for line in route.splitlines() if line.startswith("CUDA:")]
+assert "index_copy_" in keys, "The real FlagGems index_copy_ route must be enabled"
+assert len(cuda_routes) == 1 and "flag_gems" in cuda_routes[0].lower(), route
+namespace = runpy.run_path(sys.argv[1])
+assert namespace["_DTYPE"] == getattr(torch, sys.argv[2])
+from sglang_fl.dispatch.backends.flagos.impl.fla import chunk_gated_delta_rule_flagos
+ops = SimpleNamespace(backend="flagos", chunk=chunk_gated_delta_rule_flagos)
+print(json.dumps({"private_cache": str(cache), "cold_before_import": True,
+                  "blacklist": config["flagos_blacklist"],
+                  "dtype": str(namespace["_DTYPE"]),
+                  "index_copy_registered": "index_copy_" in keys,
+                  "actual_index_copy_cuda_dispatch": route}), flush=True)
+failures = []
+for normalize in (False, True):
+    print(json.dumps({"original_case": "indexed_chunk_state", "normalize": normalize,
+                      "event": "started"}), flush=True)
+    try:
+        namespace["test_chunk_varlen_indexed_cache_output_and_64_token_states"](
+            ops, normalize
+        )
+    except Exception:
+        failures.append(normalize)
+        traceback.print_exc()
+    else:
+        print(json.dumps({"original_case": "indexed_chunk_state", "normalize": normalize,
+                          "event": "passed"}), flush=True)
+assert not failures, f"Original indexed-state contracts failed: {failures}"
+print("Production registered chunk output, FP32 state layout and sentinel checks passed",
+      flush=True)
+"""
+    command = [
+        sys.executable,
+        "-B",
+        "-c",
+        child,
+        str(Path(__file__).resolve()),
+        dtype_name,
+    ]
+    record = {
+        "argv": command,
+        "cwd": str(Path.cwd()),
+        "private_cache": env["FLAGGEMS_CACHE_DIR"],
+        "USE_FLAGGEMS": env["USE_FLAGGEMS"],
+        "log": str(log),
+    }
+    command_path = prefix.with_suffix(".command.json")
+    command_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    try:
+        with log.open("x", encoding="utf-8") as output:
+            result = subprocess.run(
+                command,
+                cwd=Path.cwd(),
+                env=env,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                timeout=180,
+                check=False,
+            )
+        record["returncode"] = result.returncode
+        prefix.with_suffix(".exit").write_text(
+            str(result.returncode) + "\n", encoding="utf-8"
+        )
+    except subprocess.TimeoutExpired:
+        record["timeout_seconds"] = 180
+        raise
+    finally:
+        command_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    assert result.returncode == 0, log.read_text(encoding="utf-8", errors="replace")

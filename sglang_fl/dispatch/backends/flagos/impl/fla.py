@@ -153,11 +153,11 @@ def chunk_gated_delta_rule_flagos(
         chunk_size=64,
     )
     if indices is not None:
-        initial_state.index_copy_(
-            0,
-            indices[valid],
-            final_state[valid].transpose(-1, -2).to(initial_state.dtype),
-        )
+        state_to_copy = final_state[valid].transpose(-1, -2).to(initial_state.dtype)
+        if hasattr(torch, "corex"):
+            # FlagGems index_copy_ derives destination offsets from source strides.
+            state_to_copy = state_to_copy.contiguous()
+        initial_state.index_copy_(0, indices[valid], state_to_copy)
     if head_first:
         output = output.transpose(1, 2)
     return output.to(q.dtype), None, h.transpose(-1, -2).contiguous()
