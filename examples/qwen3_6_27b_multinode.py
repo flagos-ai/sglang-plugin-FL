@@ -105,8 +105,9 @@ _is_musa = hasattr(torch, "musa") and torch.musa.is_available()
 _is_npu = hasattr(torch, "npu") and torch.npu.is_available()
 _is_corex = hasattr(torch, "corex") and torch.cuda.is_available()
 _is_hcu = hasattr(torch, "__hcu_version__") and torch.cuda.is_available()
+_is_maca = "metax" in torch.__version__ and torch.cuda.is_available()
 _is_nvidia = torch.cuda.is_available() and not any(
-    (_is_txda, _is_musa, _is_npu, _is_corex, _is_hcu)
+    (_is_txda, _is_musa, _is_npu, _is_corex, _is_hcu, _is_maca)
 )
 
 # Must be set before launching sglang. Subprocesses inherit os.environ.
@@ -153,6 +154,12 @@ elif _is_hcu:
         "--disable-radix-cache",
         "--page-size",
         "64",
+    ]
+elif _is_maca:
+    _PLATFORM_SERVER_ARGS = [
+        "--attention-backend", "flashinfer",
+        "--chunked-prefill-size", "4096",
+        "--disable-radix-cache",
     ]
 elif _is_nvidia:
     _PLATFORM_SERVER_ARGS = ["--disable-overlap-schedule"]
