@@ -128,6 +128,10 @@ def test_corex_budget_reaches_all_original_vl_generation_calls(
     kwargs, calls = _capture_generation(monkeypatch, namespace, name)
     assert kwargs["tp_size"] == 4
     assert kwargs["disable_cuda_graph"] is True
+    if "concurrent" in name:
+        assert kwargs["disable_fast_image_processor"] is True
+    else:
+        assert "disable_fast_image_processor" not in kwargs
     assert {c["sampling"]["max_new_tokens"] for c in calls if c["image_data"]} == {
         expected
     }
@@ -144,7 +148,11 @@ def test_other_backends_keep_64_for_all_vl_generation_calls(
     monkeypatch, name, vendor, budget
 ):
     namespace = _load(monkeypatch, name, vendor, budget)
-    _, calls = _capture_generation(monkeypatch, namespace, name)
+    kwargs, calls = _capture_generation(monkeypatch, namespace, name)
+    if vendor == "tsingmicro":
+        assert kwargs["disable_fast_image_processor"] is True
+    else:
+        assert "disable_fast_image_processor" not in kwargs
     assert {c["sampling"]["max_new_tokens"] for c in calls if c["image_data"]} == {64}
     assert {c["sampling"]["max_new_tokens"] for c in calls if not c["image_data"]} == {
         97

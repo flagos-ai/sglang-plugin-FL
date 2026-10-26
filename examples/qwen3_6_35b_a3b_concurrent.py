@@ -112,6 +112,8 @@ elif _is_txda:
     }
 elif _is_corex:
     _extra_engine_kwargs = {
+        # Use the processor validated for CoreX concurrent image semantics.
+        "disable_fast_image_processor": True,
         "trust_remote_code": True,
         "watchdog_timeout": 3600,
         "attention_backend": "triton",
