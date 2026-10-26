@@ -575,3 +575,101 @@ def test_moe_gated_silu_bias_routing_and_scaling_match_cpu(
     assert torch.equal(dispatch.hidden_states, before), (
         "MoE must not overwrite dispatch input"
     )
+
+
+@pytest.mark.parametrize(
+    ("a_shape", "b_shape", "dtype_name"),
+    [((256, 32), (1, 32), "float32"), ((16, 256, 288), (1, 1, 288), "bfloat16")],
+    ids=["broadcast-2d-fp32", "broadcast-nd-bf16"],
+)
+def test_iluvatar_cold_mul_inplace_preserves_value_and_alias(
+    tmp_path, a_shape, b_shape, dtype_name
+):
+    """Exercise the production ATen registration in an isolated cold process."""
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+
+    env = os.environ.copy()
+    for key in (
+        "SGLANG_FL_CONFIG",
+        "SGLANG_FL_FLAGOS_WHITELIST",
+        "SGLANG_FL_FLAGOS_BLACKLIST",
+        "FLAGGEMS_DB_URL",
+    ):
+        env.pop(key, None)
+    env["USE_FLAGGEMS"] = "1"
+    env["FLAGGEMS_CACHE_DIR"] = str(tmp_path / "private-gems-cache")
+    log_dir = Path(env.get("ILUVATAR_CI_ARTIFACT_DIR", tmp_path)) / "mul-inplace"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log = log_dir / f"{dtype_name}-{os.getpid()}.log"
+    child = r"""
+import json
+import os
+from pathlib import Path
+import sys
+
+cache = Path(os.environ["FLAGGEMS_CACHE_DIR"])
+assert not cache.exists(), "A new process must begin with a private cold cache"
+cache.mkdir()
+assert not list(cache.iterdir())
+import torch
+assert hasattr(torch, "corex") and torch.cuda.is_available()
+dtype = getattr(torch, sys.argv[1])
+a_shape = tuple(json.loads(sys.argv[2]))
+b_shape = tuple(json.loads(sys.argv[3]))
+cpu_a = torch.ones(a_shape, dtype=dtype)
+cpu_b = torch.full(b_shape, 0.5, dtype=dtype)
+expected = (cpu_a.float() * cpu_b.float()).to(dtype)
+a, b = cpu_a.cuda(), cpu_b.cuda()
+import sglang_fl
+config = sglang_fl._build_config()
+sglang_fl._setup_flaggems(config)
+import flag_gems
+keys = flag_gems.all_registered_keys()
+assert "mul.Tensor" in keys, "The out-of-place FlagGems route must remain enabled"
+print(json.dumps({"private_cache": str(cache), "cold_before_import": True,
+                  "blacklist": config["flagos_blacklist"],
+                  "mul_registered": "mul.Tensor" in keys,
+                  "mul_inplace_registered": "mul_.Tensor" in keys,
+                  "actual_mul_inplace_cuda_dispatch": native_route}), flush=True)
+pointer = a.data_ptr()
+result = a.mul_(b)
+torch.cuda.synchronize()
+print(json.dumps({"cold_first_value": a.flatten()[0].item(),
+                  "expected_first_value": expected.flatten()[0].item()}), flush=True)
+torch.testing.assert_close(a.cpu(), expected, rtol=0, atol=0)
+assert result is a and result.data_ptr() == pointer
+torch.testing.assert_close(b.cpu(), cpu_b, rtol=0, atol=0)
+assert "mul_.Tensor" not in keys, "Iluvatar must retain native in-place multiply"
+fresh_a = cpu_a.cuda()
+out = torch.mul(fresh_a, b)
+torch.cuda.synchronize()
+torch.testing.assert_close(out.cpu(), expected, rtol=0, atol=0)
+torch.testing.assert_close(fresh_a.cpu(), cpu_a, rtol=0, atol=0)
+torch.testing.assert_close(b.cpu(), cpu_b, rtol=0, atol=0)
+assert out.data_ptr() != fresh_a.data_ptr()
+print("Production cold mul_ value/alias/input and out-of-place checks passed", flush=True)
+"""
+    import json
+
+    with log.open("x", encoding="utf-8") as output:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                child,
+                dtype_name,
+                json.dumps(a_shape),
+                json.dumps(b_shape),
+            ],
+            cwd=Path(__file__).resolve().parents[3],
+            env=env,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            timeout=180,
+            check=False,
+        )
+    assert result.returncode == 0, log.read_text(encoding="utf-8", errors="replace")

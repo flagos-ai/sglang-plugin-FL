@@ -59,7 +59,7 @@ def test_empty_policy_resolves_without_vendor_kernels(monkeypatch):
     monkeypatch.setattr(config_utils, "get_platform_name", lambda: "iluvatar")
     config = sglang_fl._build_config()
     assert config["deny_vendors"] == {"cuda"}
-    assert config["flagos_blacklist"] == ["max", "masked_scatter_"]
+    assert config["flagos_blacklist"] == ["max", "masked_scatter_", "mul_"]
     assert config["op_backends"]["chunk_gated_delta_rule"] == [
         "vendor:iluvatar",
         "flagos",
