@@ -25,6 +25,7 @@ UNIT_TESTS = (
     "tests/unit_tests/dispatch/backends/test_flagos_empty_ops.py",
     "tests/unit_tests/dispatch/bridge/test_fla_ops.py",
     "tests/unit_tests/test_iluvatar_example_graphs.py",
+    "tests/unit_tests/test_iluvatar_example_sampling.py",
     "tests/unit_tests/test_iluvatar_test_config.py",
     "tests/unit_tests/test_iluvatar_benchmark_config.py",
 )
@@ -80,8 +81,9 @@ def _workload(env: dict[str, str]) -> None:
             not re.fullmatch(r"[1-9][0-9]*", env[key]) or int(env[key]) < minimum
         ):
             raise ValueError(f"{key} must be an integer >= {minimum}")
-    # The shared concurrent entrypoint uses this name; retain its VL default of 64.
+    # Keep the original examples and shared concurrent VL workload at 256 by default.
     env.setdefault("FL_CONCURRENT_MAX_TOKENS", env["MAX_TOKENS"])
+    env.setdefault("FL_CONCURRENT_VL_MAX_TOKENS", "256")
 
 
 def _identifier(value: str) -> str:

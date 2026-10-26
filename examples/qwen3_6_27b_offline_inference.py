@@ -12,6 +12,7 @@ Environment variables:
   MODEL_PATH    Model path (default: /models/Qwen3.6-27B)
   TP_SIZE       Tensor parallelism (default: 4 on CoreX/Ascend/TXDA, otherwise 1)
   MAX_TOKENS    Max generation tokens (default: 10)
+  FL_CONCURRENT_VL_MAX_TOKENS  CoreX VL token limit (default: 256; other backends keep 64)
   IMAGE_DIR     Test image directory (default: examples/test_images/ next to this file)
 """
 
@@ -55,6 +56,11 @@ if _is_txda:
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-27B")
 TP_SIZE = int(os.environ.get("TP_SIZE", "4" if _is_npu or _is_txda or _is_corex else "1"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "10"))
+VL_MAX_TOKENS = 64
+if _is_corex:
+    VL_MAX_TOKENS = int(os.environ.get("FL_CONCURRENT_VL_MAX_TOKENS", "256"))
+    if VL_MAX_TOKENS < 1:
+        raise ValueError("FL_CONCURRENT_VL_MAX_TOKENS must be a positive integer")
 
 _HERE = Path(__file__).resolve().parent
 IMAGE_DIR = Path(os.environ.get("IMAGE_DIR", _HERE / "test_images"))
@@ -216,7 +222,7 @@ def run_engine():
     )
 
     sampling_params = {"max_new_tokens": MAX_TOKENS, "temperature": 0}
-    vl_sampling = {"max_new_tokens": 64, "temperature": 0}
+    vl_sampling = {"max_new_tokens": VL_MAX_TOKENS, "temperature": 0}
 
     # --- Text inference ---
     print("=== Text Inference ===")

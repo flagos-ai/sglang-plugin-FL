@@ -85,19 +85,36 @@ class TestRunTests(unittest.TestCase):
             "e2e", "--task", task, "--cases", json.dumps(_CASES), *args
         )
 
-    def test_unit_preserves_the_ten_cpu_contract_files_and_minimum(self):
+    def test_unit_includes_example_sampling_and_preserves_minimum(self):
         self.assertEqual(self.run_scope("unit", "--", "-s"), 0)
         command, cwd, _ = self.calls[0]
         self.assertEqual(command[:3], [driver.sys.executable, "-m", "pytest"])
         self.assertEqual(
             [arg for arg in command if arg.endswith(".py")], list(driver.UNIT_TESTS)
         )
-        self.assertEqual(len(driver.UNIT_TESTS), 10)
+        self.assertEqual(len(driver.UNIT_TESTS), 11)
+        self.assertIn(
+            "tests/unit_tests/test_iluvatar_example_sampling.py", driver.UNIT_TESTS
+        )
         self.assertIn("not gpu", command)
         self.assertIn("-s", command)
         self.assertEqual(cwd, str(driver.REPO_ROOT))
         self.assertEqual(_report(command), self.artifacts / "unit/contracts.xml")
         self.assertEqual(driver.MIN_UNIT_TESTS, 148)
+
+    def test_vl_budget_default_is_independent_of_text_budget(self):
+        env = {"MAX_TOKENS": "10"}
+        driver._workload(env)
+        self.assertEqual(env["FL_CONCURRENT_MAX_TOKENS"], "10")
+        self.assertEqual(env["FL_CONCURRENT_VL_MAX_TOKENS"], "256")
+
+    def test_explicit_vl_budget_reaches_shared_and_original_examples(self):
+        os.environ["FL_CONCURRENT_VL_MAX_TOKENS"] = "1024"
+        self.assertEqual(self.e2e("inference"), 0)
+        self.assertTrue(any(command[0] == "bash" for command, _, _ in self.calls))
+        self.assertTrue(any(command[0] != "bash" for command, _, _ in self.calls))
+        for _, _, env in self.calls:
+            self.assertEqual(env["FL_CONCURRENT_VL_MAX_TOKENS"], "1024")
 
     def test_functional_imports_sglang_before_pytest_and_selects_both_gpu_files(self):
         self.assertEqual(self.run_scope("functional"), 0)
@@ -128,7 +145,7 @@ class TestRunTests(unittest.TestCase):
             self.assertEqual(env["CONCURRENT_N"], "16")
             self.assertEqual(env["MAX_TOKENS"], "256")
             self.assertEqual(env["FL_CONCURRENT_MAX_TOKENS"], "256")
-            self.assertNotIn("FL_CONCURRENT_VL_MAX_TOKENS", env)
+            self.assertEqual(env["FL_CONCURRENT_VL_MAX_TOKENS"], "256")
             reports.append(_report(command))
         self.assertEqual(len(set(reports)), 2)
 
