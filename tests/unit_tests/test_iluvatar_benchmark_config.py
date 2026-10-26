@@ -66,7 +66,7 @@ def test_binding_preserves_shared_smoke_workload_and_inherits_corex_engine(bench
     params = runtime[section]
     assert params["model_path"] == "/models/Qwen3.6-27B"
     assert params["tp_size"] == 4
-    assert params["dtype"] == "float16"
+    assert params["dtype"] == "bfloat16"
     assert params["attention_backend"] == "triton"
     assert params["sampling_backend"] == "pytorch"
     assert params["mm_attention_backend"] == "triton_attn"
@@ -124,7 +124,7 @@ def test_cli_launches_each_original_pytest_with_bound_runtime_case(
     section = "server_parameters" if benchmark == "serve" else "parameters"
     assert runtime[section]["model_path"] == "/models/Qwen3.6-27B"
     assert runtime[section]["tp_size"] == 4
-    assert runtime[section]["dtype"] == "float16"
+    assert runtime[section]["dtype"] == "bfloat16"
     assert runtime[section]["attention_backend"] == "triton"
     assert runtime[section]["sampling_backend"] == "pytorch"
     assert env["SGLANG_FL_DIST_BACKEND"] == "flagcx"

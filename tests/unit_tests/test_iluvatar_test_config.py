@@ -23,7 +23,7 @@ def test_platform_paths_match_engine_and_tokenizer(case, expected):
     assert config.model == expected
     assert config.engine_kwargs()["model_path"] == expected
     assert "model" not in config.engine_kwargs()
-    assert config.engine_kwargs()["dtype"] == "float16"
+    assert config.engine_kwargs()["dtype"] == "bfloat16"
     assert overrides == original
 
 
