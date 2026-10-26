@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """CoreX compatibility patches must preserve dtype and import-order contracts."""
 
+from dataclasses import dataclass
 import importlib
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -13,6 +15,7 @@ import torch
 
 from sglang_fl.dispatch.backends.vendor.iluvatar.patches import (
     clamp_position,
+    conv_state_dtype,
     legacy_gpu_gate,
     speculative_tree,
 )
@@ -556,3 +559,150 @@ def test_corex_dead_pdl_branch_compiles_and_live_pdl_is_rejected(monkeypatch):
         causes.append(str(cause))
         cause = cause.__cause__
     assert "CUDA PDL is not supported on Iluvatar CoreX" in "\n".join(causes)
+
+
+@pytest.fixture
+def qwen_configs(monkeypatch):
+    @dataclass(frozen=True)
+    class StateDType:
+        conv: object
+        temporal: object
+
+    @dataclass(frozen=True)
+    class CacheParams:
+        dtype: StateDType
+        shape: object
+        layers: object
+
+    class Qwen3NextConfig:
+        def __init__(self):
+            self.original = CacheParams(
+                StateDType(torch.bfloat16, torch.float32), object(), [0, 2]
+            )
+
+        @property
+        def mamba2_cache_params(self):
+            return self.original
+
+    class Qwen3_5TextConfig(Qwen3NextConfig):
+        pass
+
+    class Qwen3_5MoeTextConfig(Qwen3_5TextConfig):
+        pass
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang.srt.configs.qwen3_next",
+        SimpleNamespace(Qwen3NextConfig=Qwen3NextConfig),
+    )
+    monkeypatch.delenv("SGLANG_MAMBA_CONV_DTYPE", raising=False)
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang.srt.runtime_context",
+        SimpleNamespace(
+            get_context=lambda: SimpleNamespace(override=lambda *a, **k: None)
+        ),
+    )
+    return Qwen3NextConfig, Qwen3_5TextConfig, Qwen3_5MoeTextConfig
+
+
+@pytest.mark.parametrize("subclass", [1, 2], ids=["dense", "moe"])
+@pytest.mark.parametrize(
+    "requested,supported,effective",
+    [
+        (torch.float16, None, torch.float16),
+        (torch.bfloat16, True, torch.bfloat16),
+        (torch.bfloat16, False, torch.float16),
+        (torch.float32, None, torch.float32),
+    ],
+)
+def test_final_runner_dtype_controls_only_its_conv_history(
+    monkeypatch, qwen_configs, subclass, requested, supported, effective
+):
+    def support_query(**kwargs):
+        assert supported is not None, "Explicit FP16/FP32 must not query BF16 support"
+        return supported
+
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", support_query)
+    text_config = qwen_configs[subclass]()
+    config = SimpleNamespace(dtype=requested, hf_text_config=text_config)
+    original = text_config.mamba2_cache_params
+    legacy_gpu_gate._downgrade_for_iluvatar(model_config=config)
+    actual = text_config.mamba2_cache_params
+    assert config.dtype == effective
+    assert actual.dtype.conv == effective
+    assert actual.dtype.temporal is original.dtype.temporal
+    assert actual.shape is original.shape
+    assert actual.layers is original.layers
+    assert original.dtype.conv == torch.bfloat16
+    assert isinstance(getattr(text_config, conv_state_dtype._MODEL_DTYPE), str)
+    json.dumps(
+        {
+            conv_state_dtype._MODEL_DTYPE: getattr(
+                text_config, conv_state_dtype._MODEL_DTYPE
+            )
+        }
+    )
+
+
+def test_float16_then_bfloat16_and_unmarked_configs_are_independent(
+    monkeypatch, qwen_configs
+):
+    base, dense, moe = qwen_configs
+    first, second, unmarked = dense(), moe(), base()
+    original_unmarked = unmarked.mamba2_cache_params
+    conv_state_dtype.record_model_conv_dtype(
+        SimpleNamespace(dtype=torch.float16, hf_text_config=first)
+    )
+    getter = base.mamba2_cache_params.fget
+    conv_state_dtype.record_model_conv_dtype(
+        SimpleNamespace(dtype=torch.bfloat16, hf_text_config=second)
+    )
+    conv_state_dtype.record_model_conv_dtype(
+        SimpleNamespace(dtype=torch.float16, hf_text_config=first)
+    )
+    assert base.mamba2_cache_params.fget is getter
+    assert first.mamba2_cache_params.dtype.conv == torch.float16
+    assert second.mamba2_cache_params.dtype.conv == torch.bfloat16
+    assert unmarked.mamba2_cache_params is original_unmarked
+    assert "SGLANG_MAMBA_CONV_DTYPE" not in __import__("os").environ
+
+
+@pytest.mark.parametrize("explicit", ["bfloat16", "float16", "float32", ""])
+def test_explicit_conv_state_precision_keeps_original_precedence(
+    monkeypatch, qwen_configs, explicit
+):
+    config = qwen_configs[1]()
+    original = config.mamba2_cache_params
+    monkeypatch.setenv("SGLANG_MAMBA_CONV_DTYPE", explicit)
+    conv_state_dtype.record_model_conv_dtype(
+        SimpleNamespace(dtype=torch.float16, hf_text_config=config)
+    )
+    assert config.mamba2_cache_params is original
+
+
+def test_other_configs_do_not_patch_qwen_or_gain_a_marker(qwen_configs):
+    base = qwen_configs[0]
+    original = base.mamba2_cache_params
+    other = SimpleNamespace()
+    conv_state_dtype.record_model_conv_dtype(
+        SimpleNamespace(dtype=torch.float16, hf_text_config=other)
+    )
+    assert base.mamba2_cache_params is original
+    assert not hasattr(other, conv_state_dtype._MODEL_DTYPE)
+
+
+def test_incompatible_property_can_retry_without_a_partial_marker(
+    monkeypatch, qwen_configs
+):
+    base, dense, _ = qwen_configs
+    original = base.mamba2_cache_params
+    config = dense()
+    runner = SimpleNamespace(dtype=torch.float16, hf_text_config=config)
+    monkeypatch.setattr(base, "mamba2_cache_params", object())
+    with pytest.raises(RuntimeError, match="property"):
+        conv_state_dtype.record_model_conv_dtype(runner)
+    assert not hasattr(config, conv_state_dtype._MODEL_DTYPE)
+    monkeypatch.setattr(base, "mamba2_cache_params", original)
+    conv_state_dtype.record_model_conv_dtype(runner)
+    assert config.mamba2_cache_params.dtype.conv == torch.float16

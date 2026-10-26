@@ -6,6 +6,8 @@ import importlib
 import logging
 import sys
 
+from .conv_state_dtype import record_model_conv_dtype
+
 logger = logging.getLogger(__name__)
 _TARGET_MODULE = "sglang.srt.model_executor.model_runner_components.load_model_utils"
 _MODEL_RUNNER_MODULE = "sglang.srt.model_executor.model_runner"
@@ -18,6 +20,7 @@ def _downgrade_for_iluvatar(*, model_config, server_args=None) -> None:
     import torch
 
     if model_config.dtype != torch.bfloat16:
+        record_model_conv_dtype(model_config)
         return
 
     # BI-V150 reports CUDA compatibility 7.1. Newer CoreX devices may support
@@ -34,12 +37,14 @@ def _downgrade_for_iluvatar(*, model_config, server_args=None) -> None:
         # Older vendor builds expose the same API without this keyword.
         supported = is_supported()
     if supported:
+        record_model_conv_dtype(model_config)
         return
 
     from sglang.srt.runtime_context import get_context
 
     get_context().override("ModelRunner._sm80_dtype_fallback", dtype="float16")
     model_config.dtype = torch.float16
+    record_model_conv_dtype(model_config)
     logger.info("Iluvatar: vendor torch reports no BF16 support; using float16")
 
 
