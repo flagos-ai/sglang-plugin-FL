@@ -628,6 +628,7 @@ config = sglang_fl._build_config()
 sglang_fl._setup_flaggems(config)
 import flag_gems
 keys = flag_gems.all_registered_keys()
+native_route = torch._C._dispatch_dump_table("aten::mul_.Tensor")
 assert "mul.Tensor" in keys, "The out-of-place FlagGems route must remain enabled"
 print(json.dumps({"private_cache": str(cache), "cold_before_import": True,
                   "blacklist": config["flagos_blacklist"],
