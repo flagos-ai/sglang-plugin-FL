@@ -25,6 +25,7 @@ container_volumes:
   - /mnt/share/user_homes/models:/models:ro
   - /usr/local/corex-4.5.0/lib64/libcuda.so.1:/usr/local/corex/lib64/libcuda.so.1
   - /usr/local/corex-4.5.0/lib64/libixml.so:/usr/local/corex/lib64/libixml.so
+  - /usr/local/corex-4.5.0/lib64/libixthunk.so:/usr/local/corex/lib64/libixthunk.so:ro
 
 container_options: >-
   --hostname sglang-plugin-fl
