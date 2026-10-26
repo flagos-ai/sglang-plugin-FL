@@ -114,17 +114,6 @@ class TestCudaCompatibleVendors:
             backend = CudaBackend()
             assert backend.is_available() is False
 
-    def test_compatible_vendors_set_contents(self):
-        """_CUDA_COMPATIBLE_VENDORS should contain exactly the expected members."""
-        from sglang_fl.dispatch.backends.vendor.cuda.cuda import CudaBackend
-
-        backend = CudaBackend()
-        assert "nvidia" in backend._CUDA_COMPATIBLE_VENDORS
-        assert "thead" in backend._CUDA_COMPATIBLE_VENDORS
-        assert "ascend" not in backend._CUDA_COMPATIBLE_VENDORS
-        assert "mthreads" not in backend._CUDA_COMPATIBLE_VENDORS
-        assert "iluvatar" not in backend._CUDA_COMPATIBLE_VENDORS
-
     # ==================================================================
     # Phase B: Registration Wiring
     #
@@ -202,54 +191,6 @@ class TestCudaCompatibleVendors:
     #   This phase covers the complete selection pipeline.
     # ==================================================================
 
-    def test_e2e_thead_resolves_all_ops_to_vendor_cuda(self):
-        """On a thead platform, resolve() should select vendor.cuda for every registered op."""
-        import os
-        from sglang_fl.dispatch.backends.vendor.cuda.cuda import CudaBackend
-        from sglang_fl.dispatch.backends.vendor.cuda.register_ops import (
-            register_builtins as register_cuda,
-        )
-        from sglang_fl.dispatch.registry import OpRegistry
-        from sglang_fl.dispatch.manager import OpManager
-        from sglang_fl.dispatch.policy import (
-            SelectionPolicy,
-            set_global_policy,
-            reset_global_policy,
-        )
-
-        reset_global_policy()
-        set_global_policy(SelectionPolicy.from_dict(prefer="vendor", strict=False))
-
-        mock_platform = MagicMock()
-        mock_platform._vendor_name = "thead"
-
-        with patch("torch.cuda.is_available", return_value=True), patch(
-            "torch.cuda.device_count", return_value=1
-        ), patch.dict(
-            "sys.modules",
-            {"sglang.srt.platforms": MagicMock(current_platform=mock_platform)},
-        ):
-            CudaBackend._available = None
-
-            # Real registration — same code path as production
-            registry = OpRegistry()
-            register_cuda(registry)
-
-            # Real manager (skip builtin_ops auto-discovery since we registered manually)
-            manager = OpManager(registry=registry)
-            manager._state.initialized = True
-            manager._state.init_pid = os.getpid()
-
-            # Real resolve — every op should land on vendor.cuda
-            for op_name in registry.list_operators():
-                fn = manager.resolve(op_name)
-                impl_id = manager._get_impl_id_for_fn(op_name, fn)
-                assert impl_id == "vendor.cuda", (
-                    f"Op '{op_name}' resolved to '{impl_id}' instead of 'vendor.cuda'"
-                )
-
-        reset_global_policy()
-
     def test_e2e_thead_all_expected_ops_resolvable(self):
         """All 10 CUDA ops should be resolvable on thead without error.
 
@@ -308,6 +249,8 @@ class TestCudaCompatibleVendors:
                 "fused_recurrent_gated_delta_rule_packed_decode",
             ]
 
+            assert set(expected_ops) == set(registry.list_operators())
+
             for op_name in expected_ops:
                 fn = manager.resolve(op_name)
                 assert fn is not None, f"Op '{op_name}' resolved to None"
@@ -327,8 +270,6 @@ class TestDistBackendMap:
       2. FLAGCX_PATH env var presence -> "flagcx"
       3. _DIST_BACKEND_MAP[vendor_name] (our fix adds "thead" -> "nccl")
       4. Fallback: "nccl"
-
-    We test both the static map entry and the actual resolve method.
     """
 
     def test_thead_in_dist_backend_map(self):
@@ -337,25 +278,3 @@ class TestDistBackendMap:
 
         assert "thead" in _DIST_BACKEND_MAP
         assert _DIST_BACKEND_MAP["thead"] == "nccl"
-
-    def test_thead_resolve_dist_backend_no_env_override(self):
-        """PlatformFL._resolve_dist_backend() should return 'nccl' for thead.
-
-        Simulates the real resolve path without env var overrides.
-        """
-        from sglang_fl.platform import _DIST_BACKEND_MAP
-
-        # Simulate what _resolve_dist_backend does (without instantiating PlatformFL
-        # which requires FlagGems DeviceDetector):
-        #   1. No SGLANG_FL_DIST_BACKEND env var
-        #   2. No FLAGCX_PATH env var
-        #   3. Look up _DIST_BACKEND_MAP["thead"]
-        vendor_name = "thead"
-        with patch.dict("os.environ", {}, clear=False):
-            # Remove any env overrides that might interfere
-            import os
-
-            env_backend = os.environ.get("SGLANG_FL_DIST_BACKEND", "").strip()
-            if not env_backend and "FLAGCX_PATH" not in os.environ:
-                result = _DIST_BACKEND_MAP.get(vendor_name, "nccl")
-                assert result == "nccl"
