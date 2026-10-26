@@ -65,6 +65,7 @@ _ATTN_BACKEND_MAP = {
     "kunlunxin": "kunlunxin",
     "iluvatar": "triton",
     "hygon": "hcu",
+    "tsingmicro": "txda_oot",
 }
 
 
