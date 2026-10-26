@@ -161,3 +161,90 @@ def test_corex_invalid_budget_is_rejected_before_engine(monkeypatch, name, budge
     monkeypatch.setitem(sys.modules, module.__name__, module)
     with pytest.raises(ValueError):
         _load(monkeypatch, name, "corex", budget)
+
+
+_CONCURRENT = [f"qwen3_6_{model}_concurrent.py" for model in ("27b", "35b_a3b")]
+
+
+@pytest.mark.parametrize("name", _CONCURRENT)
+def test_corex_flush_waits_for_scheduler_acknowledgement(monkeypatch, name):
+    namespace = _load(monkeypatch, name, "corex", None)
+    flush = namespace["_flush_between_modes"]
+    replies = [SimpleNamespace(success=False), SimpleNamespace(success=True)]
+    calls = []
+    sleeps = []
+    clock = SimpleNamespace(monotonic=lambda: 0.0, sleep=sleeps.append)
+    monkeypatch.setitem(flush.__globals__, "time", clock)
+
+    def request():
+        reply = replies[len(calls)]
+        calls.append(reply)
+        return reply
+
+    assert flush(SimpleNamespace(flush_cache=request)) is replies[1]
+    assert calls == replies
+    assert sleeps == [0.1]
+
+
+@pytest.mark.parametrize("name", _CONCURRENT)
+def test_corex_busy_flush_fails_when_retry_budget_expires(monkeypatch, name):
+    namespace = _load(monkeypatch, name, "corex", None)
+    flush = namespace["_flush_between_modes"]
+    ticks = iter([0.0, 31.0])
+    clock = SimpleNamespace(
+        monotonic=lambda: next(ticks),
+        sleep=lambda _: pytest.fail("Expired flush must not wait or proceed"),
+    )
+    monkeypatch.setitem(flush.__globals__, "time", clock)
+    engine = SimpleNamespace(flush_cache=lambda: SimpleNamespace(success=False))
+    with pytest.raises(RuntimeError, match="retry budget"):
+        flush(engine)
+
+
+@pytest.mark.parametrize("name", _CONCURRENT)
+@pytest.mark.parametrize("reply", [None, SimpleNamespace(), SimpleNamespace(success=1)])
+def test_corex_flush_rejects_unacknowledged_result(monkeypatch, name, reply):
+    namespace = _load(monkeypatch, name, "corex", None)
+    with pytest.raises(RuntimeError, match="explicit success state"):
+        namespace["_flush_between_modes"](SimpleNamespace(flush_cache=lambda: reply))
+
+
+@pytest.mark.parametrize("name", _CONCURRENT)
+@pytest.mark.parametrize("vendor", ["cuda", "hygon", "musa", "ascend", "tsingmicro"])
+def test_other_backends_retain_single_flush_call(monkeypatch, name, vendor):
+    namespace = _load(monkeypatch, name, vendor, None)
+    flush = namespace["_flush_between_modes"]
+    reply = SimpleNamespace(success=False)
+    calls = []
+
+    def request():
+        calls.append(True)
+        return reply
+
+    assert flush(SimpleNamespace(flush_cache=request)) is reply
+    assert calls == [True]
+
+
+@pytest.mark.parametrize("name", _CONCURRENT)
+def test_corex_flush_does_not_retry_after_sleep_exhausts_budget(monkeypatch, name):
+    namespace = _load(monkeypatch, name, "corex", None)
+    flush = namespace["_flush_between_modes"]
+    ticks = iter([0.0, 29.95, 30.01])
+    sleeps = []
+    calls = []
+    monkeypatch.setitem(
+        flush.__globals__,
+        "time",
+        SimpleNamespace(monotonic=lambda: next(ticks), sleep=sleeps.append),
+    )
+
+    def request():
+        calls.append(True)
+        if len(calls) > 1:
+            pytest.fail("An RPC must not start after the retry budget expires")
+        return SimpleNamespace(success=False)
+
+    with pytest.raises(RuntimeError, match="retry budget"):
+        flush(SimpleNamespace(flush_cache=request))
+    assert calls == [True]
+    assert sleeps == [pytest.approx(0.05)]

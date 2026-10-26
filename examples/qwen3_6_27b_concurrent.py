@@ -427,6 +427,30 @@ def validate_vl(pairs):
     print("  vl validation passed.")
 
 
+def _flush_between_modes(engine):
+    if not _is_corex:
+        return engine.flush_cache()
+
+    # CoreX can finish delivering outputs before the scheduler is fully idle.
+    # A false acknowledgement leaves both scheduler and multimodal caches intact.
+    # This bounds retries, not the duration of an individual synchronous RPC.
+    deadline = time.monotonic() + 30.0
+    while True:
+        result = engine.flush_cache()
+        success = getattr(result, "success", None)
+        if success is True:
+            print("  CoreX cache flush acknowledged.")
+            return result
+        if success is not False:
+            raise RuntimeError("CoreX cache flush returned no explicit success state")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("CoreX cache flush exhausted its 30-second retry budget")
+        time.sleep(min(0.1, remaining))
+        if time.monotonic() >= deadline:
+            raise RuntimeError("CoreX cache flush exhausted its 30-second retry budget")
+
+
 def _check_images():
     missing = [
         str(IMAGE_DIR / c["image"])
@@ -470,7 +494,7 @@ if __name__ == "__main__":
         modes = ALL_MODES if args.mode == "all" else [args.mode]
         for i, m in enumerate(modes):
             if i > 0:
-                engine.flush_cache()  # Release KV cache between modes to avoid OOM on VL prefill
+                _flush_between_modes(engine)
             print(f"\n{'=' * 60}\n=== {m}\n{'=' * 60}")
             if m == "text":
                 pairs = run_text_concurrent(engine)
