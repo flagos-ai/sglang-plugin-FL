@@ -250,7 +250,7 @@ def test_legacy_corex_mtp_keyword_is_rejected_by_current_server_args(
 
 @pytest.mark.parametrize(
     "vendor,tp",
-    [("cuda", 1), ("musa", 1), ("ascend", 4), ("tsingmicro", 4), ("hygon", 1)],
+    [("cuda", 1), ("musa", 1), ("ascend", 4), ("tsingmicro", 4), ("hygon", 2)],
 )
 def test_mtp_other_platform_defaults_remain_unchanged(monkeypatch, vendor, tp):
     monkeypatch.delenv("TP_SIZE", raising=False)

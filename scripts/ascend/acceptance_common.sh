@@ -76,6 +76,9 @@ configure_ascend_common() {
   fi
   export SGLANG_FL_WATCHDOG_DIAG="${SGLANG_FL_WATCHDOG_DIAG:-1}"
   export SGLANG_FL_DIST_BACKEND="${SGLANG_FL_DIST_BACKEND:-flagcx}"
+  # A3 AIV BF16 reductions otherwise vary their accumulation order even with
+  # fixed seeds. Match the platform default and preserve explicit overrides.
+  export HCCL_DETERMINISTIC="${HCCL_DETERMINISTIC-true}"
   export FLAGCX_PATH="${FLAGCX_PATH:-/opt/FlagCX}"
   export ASCEND_VISIBLE_DEVICES="${ASCEND_VISIBLE_DEVICES:-${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3}}"
   export ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-${ASCEND_VISIBLE_DEVICES}}"
@@ -211,6 +214,7 @@ write_environment_manifest() {
     printf 'SGLANG_NPU_USE_MULTI_STREAM=%s\n' "${SGLANG_NPU_USE_MULTI_STREAM:-<unset>}"
     printf 'STREAMS_PER_DEVICE=%s\n' "${STREAMS_PER_DEVICE:-<unset>}"
     printf 'HCCL_BUFFSIZE=%s\n' "${HCCL_BUFFSIZE:-<unset>}"
+    printf 'HCCL_DETERMINISTIC=%s\n' "${HCCL_DETERMINISTIC:-<unset>}"
     printf 'HCCL_OP_EXPANSION_MODE=%s\n' "${HCCL_OP_EXPANSION_MODE:-<unset>}"
     printf 'HCCL_SOCKET_IFNAME=%s\n' "${HCCL_SOCKET_IFNAME:-<unset>}"
     printf 'GLOO_SOCKET_IFNAME=%s\n' "${GLOO_SOCKET_IFNAME:-<unset>}"

@@ -292,6 +292,21 @@ class HCUAttnBackend(TritonAttnBackend):
         self._flash_attn_head_dim = model_runner.model_config.head_dim
         self._flash_attn_v_head_dim = model_runner.model_config.v_head_dim
 
+        algorithm = getattr(model_runner.server_args, "speculative_algorithm", None)
+        self._flash_attn_speculative_enabled = bool(algorithm)
+        self._flash_attn_speculative_phase = None
+        self._flash_attn_speculative_batch_contract = None
+        if algorithm and str(algorithm).upper() != "EAGLE":
+            raise RuntimeError(
+                "HCU MTP currently supports EAGLE speculative input only"
+            )
+        if (
+            algorithm
+            and getattr(model_runner.server_args, "speculative_eagle_topk", 1) != 1
+        ):
+            raise RuntimeError(
+                "HCU MTP supports topk=1 only; branching trees are unsupported"
+            )
         self._flash_attn_eager_page_table = None
         self._flash_attn_cuda_graph_page_table = None
         self._flash_attn_cuda_graph_seq_lens = None
@@ -325,6 +340,19 @@ class HCUAttnBackend(TritonAttnBackend):
         if graph_config[Phase.DECODE].backend not in (Backend.FULL, Backend.DISABLED):
             controlled_config_errors.append(
                 "cuda_graph_config.decode.backend must be full or disabled"
+            )
+        if (
+            self._flash_attn_speculative_enabled
+            and graph_config[Phase.DECODE].backend != Backend.DISABLED
+        ):
+            controlled_config_errors.append(
+                "HCU MTP currently requires eager execution (decode Graph disabled)"
+            )
+        if self._flash_attn_speculative_enabled and not getattr(
+            server_args, "disable_overlap_schedule", False
+        ):
+            controlled_config_errors.append(
+                "HCU MTP currently requires disable_overlap_schedule=True"
             )
         if getattr(server_args, "enable_deterministic_inference", False):
             controlled_config_errors.append(
@@ -584,6 +612,11 @@ class HCUAttnBackend(TritonAttnBackend):
         self._flash_attn_prefill_uses_paged_kv = False
         self._flash_attn_prefill_metadata_ready = False
 
+        self._flash_attn_speculative_phase = None
+        self._flash_attn_speculative_batch_contract = None
+        if self._prepare_flash_attn_speculative_metadata(forward_batch):
+            return
+
         if self._should_prepare_flash_attn_metadata(
             forward_batch.forward_mode, forward_batch.spec_info
         ):
@@ -608,6 +641,209 @@ class HCUAttnBackend(TritonAttnBackend):
 
         if self._should_prepare_flash_attn_prefill_metadata(forward_batch):
             self._prepare_flash_attn_prefill_metadata(forward_batch)
+
+    def _log_flash_attn_speculative_phase(self, phase):
+        logged = getattr(self, "_flash_attn_speculative_logged", None)
+        if logged is None:
+            logged = self._flash_attn_speculative_logged = set()
+        if phase not in logged:
+            logger.info("HCU MTP attention metadata active: phase=%s", phase)
+            logged.add(phase)
+
+    def _record_flash_attn_speculative_batch(self, forward_batch):
+        # EagerRunner.load_batch always makes a dataclasses.replace FB view,
+        # including with SGLANG_EAGER_INPUT_NO_COPY. Registry slots can acquire
+        # new backing tensors, while the non-slot SpecInput stays the same.
+        # Preserve values instead of FB identity or tensor storage addresses.
+        batch_size = forward_batch.batch_size
+        self._flash_attn_speculative_batch_contract = (
+            forward_batch.spec_info,
+            forward_batch.forward_mode,
+            batch_size,
+            forward_batch.seq_lens[:batch_size].clone(),
+            forward_batch.req_pool_indices[:batch_size].clone(),
+        )
+
+    def _get_speculative_batch_contract_error(self, forward_batch):
+        contract = getattr(self, "_flash_attn_speculative_batch_contract", None)
+        if contract is None:
+            return "speculative metadata has not been prepared"
+        spec_info, mode, batch_size, seq_lens, request_indices = contract
+        if forward_batch.spec_info is not spec_info:
+            return "speculative metadata belongs to a different speculative input"
+        if forward_batch.forward_mode != mode or forward_batch.batch_size != batch_size:
+            return "speculative mode or batch size differs from prepared metadata"
+        for field, expected in (
+            ("seq_lens", seq_lens),
+            ("req_pool_indices", request_indices),
+        ):
+            actual = getattr(forward_batch, field, None)
+            if (
+                not isinstance(actual, torch.Tensor)
+                or actual.ndim != 1
+                or actual.numel() < batch_size
+                or not torch.equal(actual[:batch_size], expected)
+            ):
+                return f"speculative {field} differs from prepared metadata"
+        return None
+
+    def _prepare_flash_attn_speculative_metadata(self, forward_batch) -> bool:
+        """Prepare eager EAGLE/MTP metadata without changing scheduler fields."""
+        spec = forward_batch.spec_info
+        if spec is None:
+            return False
+        if not getattr(self, "_flash_attn_speculative_enabled", False):
+            raise RuntimeError("HCU speculative attention requires EAGLE configuration")
+        from sglang_fl.dispatch.backends.vendor.hygon.impl.mtp_metadata import (
+            kv_indices_to_page_table,
+            validate_linear_verify_mask,
+        )
+
+        mode = forward_batch.forward_mode
+        mode_name = getattr(mode, "name", "")
+        input_type = getattr(getattr(spec, "spec_input_type", None), "name", None)
+        batch_size = forward_batch.batch_size
+        if batch_size <= 0:
+            raise RuntimeError(
+                "HCU eager MTP does not accept empty speculative batches"
+            )
+        if mode.is_decode_or_idle():
+            if input_type not in (None, "EAGLE_DRAFT"):
+                raise RuntimeError("HCU MTP decode requires EAGLE draft metadata")
+            ptr = getattr(spec, "kv_indptr", None)
+            indices = getattr(spec, "kv_indices", None)
+            if not isinstance(ptr, torch.Tensor) or not isinstance(
+                indices, torch.Tensor
+            ):
+                raise RuntimeError("HCU draft decode requires per-step KV indices")
+            if ptr.numel() != batch_size + 1:
+                raise RuntimeError(
+                    "HCU draft decode KV indptr does not match batch size"
+                )
+            table = self._get_eager_page_table(batch_size, self.max_context_len)
+            table, lengths = kv_indices_to_page_table(
+                ptr,
+                indices,
+                page_size=self._flash_attn_page_size,
+                max_pages=table.shape[1],
+                out=table,
+            )
+            # The multi-step container prepares all children before the draft
+            # loop selects out_cache_loc[i]. Validate writes at forward time.
+            self._flash_attn_speculative_decode_writes = indices[
+                ptr[1:].to(torch.long) - 1
+            ]
+            self._flash_attn_forward_page_table = table
+            self._flash_attn_forward_seq_lens = lengths
+            self._record_flash_attn_speculative_batch(forward_batch)
+            self._flash_attn_speculative_phase = "draft_decode"
+            self._log_flash_attn_speculative_phase("draft_decode")
+            return True
+
+        if mode_name == "TARGET_VERIFY":
+            if input_type not in (None, "EAGLE_VERIFY"):
+                raise RuntimeError("HCU target verify requires EAGLE verify metadata")
+            if getattr(spec, "topk", 1) != 1:
+                raise RuntimeError("HCU MTP supports topk=1 only")
+            width = int(spec.draft_token_num)
+            if width <= 0:
+                raise RuntimeError("HCU target verify requires a positive draft width")
+            prefix = forward_batch.seq_lens[:batch_size].tolist()
+            extend = [width] * batch_size
+            full = [p + width for p in prefix]
+            verify_mask = getattr(self, "_verify_mask", None)
+            validate_linear_verify_mask(
+                getattr(spec, "custom_mask", None),
+                prefix,
+                width,
+                mask_mode=getattr(verify_mask, "mode", None),
+            )
+            positions = getattr(spec, "positions", None)
+            if positions is not None:
+                expected_positions = torch.cat(
+                    [
+                        torch.arange(p, p + width, device=positions.device)
+                        for p in prefix
+                    ]
+                )
+                if not torch.equal(positions.reshape(-1), expected_positions):
+                    raise RuntimeError("HCU MTP requires consecutive chain positions")
+            phase = "target_verify"
+        elif mode_name in ("EXTEND", "DRAFT_EXTEND", "DRAFT_EXTEND_V2"):
+            if input_type not in (None, "EAGLE_DRAFT_EXTEND"):
+                raise RuntimeError(
+                    "HCU draft extend requires EAGLE draft-extend metadata"
+                )
+            prefix = getattr(forward_batch, "extend_prefix_lens_cpu", None)
+            extend = getattr(forward_batch, "extend_seq_lens_cpu", None)
+            if prefix is None or extend is None:
+                raise RuntimeError(
+                    "HCU draft extend requires scheduler prefix/extend lengths"
+                )
+            prefix, extend = list(map(int, prefix)), list(map(int, extend))
+            full = forward_batch.seq_lens[:batch_size].tolist()
+            if full != [p + n for p, n in zip(prefix, extend)]:
+                raise RuntimeError(
+                    "HCU draft extend full lengths differ from prefix + query window"
+                )
+            if mode_name == "DRAFT_EXTEND_V2":
+                width = int(spec.num_tokens_per_req)
+                if extend != [width] * batch_size:
+                    raise RuntimeError(
+                        "HCU draft extend requires the complete static draft window"
+                    )
+            phase = "draft_extend"
+        else:
+            raise RuntimeError("HCU MTP does not support this speculative forward mode")
+
+        if len(prefix) != batch_size or len(extend) != batch_size:
+            raise RuntimeError("HCU MTP sequence lengths do not match batch size")
+        if any(p < 0 or n <= 0 for p, n in zip(prefix, extend)):
+            raise RuntimeError(
+                "HCU MTP requires non-negative prefixes and positive query lengths"
+            )
+        token_map = self.req_to_token
+        if max(full) > token_map.shape[1]:
+            raise RuntimeError("HCU MTP full sequence exceeds the request token map")
+        requests = forward_batch.req_pool_indices[:batch_size].tolist()
+        if len(requests) != batch_size:
+            raise RuntimeError("HCU MTP request indices do not match batch size")
+        indices = torch.cat([token_map[r, :n] for r, n in zip(requests, full)])
+        ptr = torch.zeros(batch_size + 1, dtype=torch.int32, device=indices.device)
+        full_device = torch.tensor(full, dtype=torch.int32, device=indices.device)
+        ptr[1:] = torch.cumsum(full_device, dim=0)
+        table = self._get_eager_page_table(batch_size, max(full))
+        table, _ = kv_indices_to_page_table(
+            ptr,
+            indices,
+            page_size=self._flash_attn_page_size,
+            max_pages=table.shape[1],
+            out=table,
+        )
+        expected_writes = torch.cat(
+            [token_map[r, p : p + n] for r, p, n in zip(requests, prefix, extend)]
+        )
+        if not torch.equal(expected_writes, forward_batch.out_cache_loc.reshape(-1)):
+            raise RuntimeError("HCU MTP writes do not match the complete query window")
+        self._flash_attn_speculative_prefill_writes = expected_writes.clone()
+        cu_q = torch.zeros_like(ptr)
+        cu_q[1:] = torch.cumsum(
+            torch.tensor(extend, dtype=torch.int32, device=indices.device), dim=0
+        )
+        self._flash_attn_prefill_cu_seqlens_q = cu_q
+        self._flash_attn_prefill_cu_seqlens_k = ptr
+        self._flash_attn_prefill_max_seq_len = max(extend)
+        self._flash_attn_prefill_max_k_seq_len = max(full)
+        self._flash_attn_prefill_page_table = table
+        self._flash_attn_prefill_uses_paged_kv = True
+        self._flash_attn_prefill_metadata_ready = True
+        self._flash_attn_speculative_prefix_lens = prefix
+        self._flash_attn_speculative_extend_lens = extend
+        self._flash_attn_speculative_full_lens = full
+        self._record_flash_attn_speculative_batch(forward_batch)
+        self._flash_attn_speculative_phase = phase
+        self._log_flash_attn_speculative_phase(phase)
+        return True
 
     def _debug_validate_flash_attn_metadata(
         self, forward_batch, page_table: torch.Tensor
@@ -736,58 +972,75 @@ class HCUAttnBackend(TritonAttnBackend):
         save_kv_cache,
         sinks,
     ) -> Optional[str]:
-        if forward_batch.forward_mode != ForwardMode.EXTEND:
-            return "only ordinary EXTEND mode is supported"
-        global_forward_mode = getattr(forward_batch, "global_forward_mode", None)
-        if global_forward_mode not in (None, ForwardMode.EXTEND):
-            return "the global forward mode is not ordinary EXTEND"
         if is_in_tc_piecewise_cuda_graph():
             return "piecewise CUDA Graph prefill has not been validated"
         if is_in_breakable_cuda_graph():
             return "breakable CUDA Graph prefill has not been validated"
-        if forward_batch.spec_info is not None:
-            return "speculative prefill is not supported"
         if getattr(forward_batch, "attn_cp_metadata", None) is not None:
             return "context-parallel prefill is not supported"
-        prefix_lens = getattr(forward_batch, "extend_prefix_lens_cpu", None)
-        if prefix_lens is None:
-            return "CPU prefix lengths are unavailable"
-        if len(prefix_lens) != forward_batch.batch_size:
-            return "prefix lengths do not match the batch size"
-        if any(int(prefix_len) < 0 for prefix_len in prefix_lens):
-            return "negative prefix lengths are not supported"
-        uses_paged_kv = any(int(prefix_len) > 0 for prefix_len in prefix_lens)
-        extend_lens = getattr(forward_batch, "extend_seq_lens_cpu", None)
-        if extend_lens is None:
-            return "CPU extend lengths are unavailable"
-        if len(extend_lens) != forward_batch.batch_size:
-            return "extend lengths do not match the batch size"
-        if any(int(extend_len) <= 0 for extend_len in extend_lens):
-            return "non-positive extend lengths are not supported"
-        extend_lens_device = getattr(forward_batch, "extend_seq_lens", None)
-        if not isinstance(extend_lens_device, torch.Tensor):
-            return "device extend lengths are unavailable"
-        if extend_lens_device.numel() < forward_batch.batch_size:
-            return "device extend lengths are smaller than the batch size"
-        seq_lens = getattr(forward_batch, "seq_lens", None)
-        if not isinstance(seq_lens, torch.Tensor):
-            return "full device sequence lengths are unavailable"
-        if seq_lens.numel() < forward_batch.batch_size:
-            return "full device sequence lengths are smaller than the batch size"
-        seq_lens_cpu = getattr(forward_batch, "seq_lens_cpu", None)
-        if not isinstance(seq_lens_cpu, torch.Tensor):
-            return "full CPU sequence lengths are unavailable"
-        if seq_lens_cpu.numel() < forward_batch.batch_size:
-            return "full CPU sequence lengths are smaller than the batch size"
-        expected_full_lens = [
-            int(prefix_len) + int(extend_len)
-            for prefix_len, extend_len in zip(prefix_lens, extend_lens)
-        ]
-        actual_full_lens = [
-            int(length) for length in seq_lens_cpu[: forward_batch.batch_size].tolist()
-        ]
-        if actual_full_lens != expected_full_lens:
-            return "full sequence lengths do not match prefix plus extend lengths"
+        speculative_phase = getattr(self, "_flash_attn_speculative_phase", None)
+        if speculative_phase in ("target_verify", "draft_extend"):
+            contract_error = self._get_speculative_batch_contract_error(forward_batch)
+            if contract_error is not None:
+                return contract_error
+            out_cache_loc = getattr(forward_batch, "out_cache_loc", None)
+            if not isinstance(out_cache_loc, torch.Tensor) or not torch.equal(
+                self._flash_attn_speculative_prefill_writes,
+                out_cache_loc.reshape(-1),
+            ):
+                return "speculative prefill writes differ from prepared metadata"
+            prefix_lens = self._flash_attn_speculative_prefix_lens
+            extend_lens = self._flash_attn_speculative_extend_lens
+            expected_full_lens = self._flash_attn_speculative_full_lens
+            uses_paged_kv = True
+        else:
+            if forward_batch.forward_mode != ForwardMode.EXTEND:
+                return "only ordinary EXTEND mode is supported"
+            global_forward_mode = getattr(forward_batch, "global_forward_mode", None)
+            if global_forward_mode not in (None, ForwardMode.EXTEND):
+                return "the global forward mode is not ordinary EXTEND"
+            if forward_batch.spec_info is not None:
+                return "speculative prefill is not supported"
+            prefix_lens = getattr(forward_batch, "extend_prefix_lens_cpu", None)
+            if prefix_lens is None:
+                return "CPU prefix lengths are unavailable"
+            if len(prefix_lens) != forward_batch.batch_size:
+                return "prefix lengths do not match the batch size"
+            if any(int(prefix_len) < 0 for prefix_len in prefix_lens):
+                return "negative prefix lengths are not supported"
+            uses_paged_kv = any(int(prefix_len) > 0 for prefix_len in prefix_lens)
+            extend_lens = getattr(forward_batch, "extend_seq_lens_cpu", None)
+            if extend_lens is None:
+                return "CPU extend lengths are unavailable"
+            if len(extend_lens) != forward_batch.batch_size:
+                return "extend lengths do not match the batch size"
+            if any(int(extend_len) <= 0 for extend_len in extend_lens):
+                return "non-positive extend lengths are not supported"
+            extend_lens_device = getattr(forward_batch, "extend_seq_lens", None)
+            if not isinstance(extend_lens_device, torch.Tensor):
+                return "device extend lengths are unavailable"
+            if extend_lens_device.numel() < forward_batch.batch_size:
+                return "device extend lengths are smaller than the batch size"
+            seq_lens = getattr(forward_batch, "seq_lens", None)
+            if not isinstance(seq_lens, torch.Tensor):
+                return "full device sequence lengths are unavailable"
+            if seq_lens.numel() < forward_batch.batch_size:
+                return "full device sequence lengths are smaller than the batch size"
+            seq_lens_cpu = getattr(forward_batch, "seq_lens_cpu", None)
+            if not isinstance(seq_lens_cpu, torch.Tensor):
+                return "full CPU sequence lengths are unavailable"
+            if seq_lens_cpu.numel() < forward_batch.batch_size:
+                return "full CPU sequence lengths are smaller than the batch size"
+            expected_full_lens = [
+                int(prefix_len) + int(extend_len)
+                for prefix_len, extend_len in zip(prefix_lens, extend_lens)
+            ]
+            actual_full_lens = [
+                int(length)
+                for length in seq_lens_cpu[: forward_batch.batch_size].tolist()
+            ]
+            if actual_full_lens != expected_full_lens:
+                return "full sequence lengths do not match prefix plus extend lengths"
         if uses_paged_kv:
             if self._flash_attn_page_size not in _FLASH_ATTN_SUPPORTED_PAGE_SIZES:
                 return (
@@ -1135,8 +1388,22 @@ class HCUAttnBackend(TritonAttnBackend):
             return "K and V are required when saving the KV cache"
         if not forward_batch.forward_mode.is_decode_or_idle():
             return "the forward mode is not normal decode"
-        if forward_batch.spec_info is not None:
-            return "speculative decoding is not supported"
+        speculative_phase = getattr(self, "_flash_attn_speculative_phase", None)
+        if forward_batch.spec_info is not None or speculative_phase == "draft_decode":
+            if speculative_phase != "draft_decode":
+                return "speculative decode metadata has not been prepared"
+            contract_error = self._get_speculative_batch_contract_error(forward_batch)
+            if contract_error is not None:
+                return contract_error
+        if speculative_phase == "draft_decode":
+            if not save_kv_cache:
+                return "HCU draft decode requires saving the current KV token"
+            out_cache_loc = getattr(forward_batch, "out_cache_loc", None)
+            if out_cache_loc is None or not torch.equal(
+                self._flash_attn_speculative_decode_writes,
+                out_cache_loc.reshape(-1),
+            ):
+                return "HCU draft decode writes do not match per-step KV tails"
         if getattr(layer, "is_cross_attention", False):
             return "cross attention is not supported"
         if getattr(layer, "attn_type", AttentionType.DECODER) != AttentionType.DECODER:
@@ -1273,3 +1540,63 @@ class HCUAttnBackend(TritonAttnBackend):
             num_splits=1,
         )
         return output.reshape(batch_size, -1)
+
+
+class HCUMultiStepDraftBackend:
+    """Reuse upstream draft address generation with HCU-only attention children.
+
+    The delegated methods construct metadata only. They never instantiate or
+    execute TritonAttnBackend children or its attention kernels.
+    """
+
+    needs_cpu_seq_lens = False
+
+    def __init__(self, model_runner, topk, speculative_num_steps):
+        from sglang.srt.layers.attention.triton_backend import (
+            TritonMultiStepDraftBackend,
+        )
+
+        if topk != 1 or speculative_num_steps < 2:
+            raise RuntimeError(
+                "HCU multi-step MTP requires topk=1 and at least two steps"
+            )
+        self._metadata_backend = TritonMultiStepDraftBackend
+        self.topk = topk
+        self.speculative_num_steps = speculative_num_steps
+        self.device = model_runner.device
+        self.req_to_token_pool = model_runner.req_to_token_pool
+        self.pool_len = self.req_to_token_pool.req_to_token.shape[1]
+        self.page_size = model_runner.server_args.page_size
+        self.kv_indptr = torch.zeros(
+            (speculative_num_steps, self.req_to_token_pool.size + 1),
+            dtype=torch.int32,
+            device=self.device,
+        )
+        self.attn_backends = [
+            HCUAttnBackend(
+                model_runner, skip_prefill=True, kv_indptr_buf=self.kv_indptr[i]
+            )
+            for i in range(speculative_num_steps - 1)
+        ]
+        self.max_context_len = self.attn_backends[0].max_context_len
+        self.num_head = self.attn_backends[0].num_head
+
+    def common_template(self, forward_batch, kv_indices_buffer, call_fn):
+        return self._metadata_backend.common_template(
+            self, forward_batch, kv_indices_buffer, call_fn
+        )
+
+    def init_forward_metadata(self, forward_batch):
+        return self._metadata_backend.init_forward_metadata(self, forward_batch)
+
+    def init_cuda_graph_state(self, *args, **kwargs):
+        raise RuntimeError("HCU multi-step MTP CUDA Graph is not supported")
+
+    def init_forward_metadata_out_graph(self, *args, **kwargs):
+        raise RuntimeError("HCU multi-step MTP CUDA Graph is not supported")
+
+    def init_forward_metadata_in_graph(self, *args, **kwargs):
+        raise RuntimeError("HCU multi-step MTP CUDA Graph is not supported")
+
+    def get_cuda_graph_seq_len_fill_value(self):
+        return 1

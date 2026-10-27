@@ -5,6 +5,9 @@
 from __future__ import annotations
 
 import importlib.util
+import copy
+import os
+import runpy
 import hashlib
 import io
 import json
@@ -13,7 +16,7 @@ import unittest
 from importlib import metadata
 from contextlib import contextmanager
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -465,7 +468,7 @@ class SelectedTensorPathTests(unittest.TestCase):
 
 
 class HygonAcceptanceSelectionTests(unittest.TestCase):
-    def test_eager_and_graph_select_both_models_and_all_three_tasks(self):
+    def test_eager_adds_mtp_and_graph_retains_all_three_standard_tasks(self):
         expected_pairs = {
             (task, case)
             for task in ("inference", "serving", "concurrent")
@@ -477,9 +480,18 @@ class HygonAcceptanceSelectionTests(unittest.TestCase):
                 selected = runner.discover_tests()
                 self.assertEqual(
                     {(item.name.split("/")[1], item.case) for item in selected},
-                    expected_pairs,
+                    expected_pairs
+                    | (
+                        {
+                            ("mtp", case)
+                            for case in ("27b_tp2_hygon", "35b_a3b_tp2_hygon")
+                        }
+                        if not graph
+                        else set()
+                    ),
                 )
                 for item in selected:
+                    self.assertTrue((REPO_ROOT / item.pytest_path).is_file())
                     config = ModelConfig.load(item.model, item.case)
                     config.apply_engine_overrides(item.engine_overrides)
                     kwargs = config.engine_kwargs()
@@ -502,6 +514,256 @@ class HygonAcceptanceSelectionTests(unittest.TestCase):
         self.assertEqual(
             TestRunner("hygon", "bw1000", "benchmark").discover_tests(), []
         )
+
+
+class HygonMTPModelSmokeTests(unittest.TestCase):
+    """CPU controls for CI gates; no model or accelerator is constructed here."""
+
+    @classmethod
+    def setUpClass(cls):
+        path = REPO_ROOT / "tests/e2e_tests/mtp/test_mtp_smoke.py"
+        spec = importlib.util.spec_from_file_location("hygon_mtp_smoke_cpu", path)
+        cls.smoke = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.smoke)
+        torch = ModuleType("torch")
+        torch.cuda = SimpleNamespace(is_available=lambda: False)
+        with patch.dict(sys.modules, {"torch": torch}):
+            namespace = runpy.run_path(str(cls.smoke._EXAMPLE), run_name="mtp_ci_cpu")
+        cls.example = SimpleNamespace(**namespace)
+
+    def setUp(self):
+        print_patch = patch("builtins.print")
+        print_patch.start()
+        self.addCleanup(print_patch.stop)
+
+    @staticmethod
+    def response(text="50", rid="hcu-mtp-smoke-0"):
+        top5 = [[-0.1 - i * 0.1, i + 2, "token"] for i in range(5)]
+        return {
+            "text": text,
+            "output_ids": [2] * 5,
+            "meta_info": {
+                "id": rid,
+                "prompt_tokens": 3,
+                "completion_tokens": 5,
+                "spec_verify_ct": 2,
+                "spec_num_proposed_drafts": 6,
+                "spec_num_correct_drafts": 4,
+                "spec_accept_rate": 4 / 6,
+                "spec_accept_length": 2.5,
+                "input_token_logprobs": [
+                    [None, 0, "BOS"],
+                    [-0.2, 1, "a"],
+                    [-0.3, 2, "b"],
+                ],
+                "output_token_logprobs": [[-0.1, 2, "token"] for _ in range(5)],
+                "input_top_logprobs": [None, copy.deepcopy(top5), copy.deepcopy(top5)],
+                "output_top_logprobs": [copy.deepcopy(top5) for _ in range(5)],
+            },
+        }
+
+    def test_actual_counter_semantic_and_full_token_positive_control(self):
+        response = self.response()
+        result = self.smoke._validate_result(
+            self.example, self.example.PROMPTS[0], response, "hcu-mtp-smoke-0"
+        )
+        self.assertEqual(result["spec_verify_ct"], 2)
+        self.assertEqual(result["spec_num_correct_drafts"], 4)
+        # output_ids is API-optional; full actual logprob token IDs remain mandatory.
+        del response["output_ids"]
+        self.smoke._validate_result(
+            self.example, self.example.PROMPTS[0], response, "hcu-mtp-smoke-0"
+        )
+
+    def test_invalid_actual_metadata_token_or_semantic_evidence_fails(self):
+        mutations = (
+            ("blank", lambda r, m: r.update(text="")),
+            ("semantic", lambda r, m: r.update(text="49")),
+            ("request_order", lambda r, m: m.update(id="another-request")),
+            ("no_verify", lambda r, m: m.pop("spec_verify_ct")),
+            ("zero_verify", lambda r, m: m.update(spec_verify_ct=0)),
+            ("bad_proposed", lambda r, m: m.update(spec_num_proposed_drafts=7)),
+            ("bad_accepted", lambda r, m: m.update(spec_num_correct_drafts=7)),
+            ("bad_ratio", lambda r, m: m.update(spec_accept_rate=0.9)),
+            ("nonfinite_ratio", lambda r, m: m.update(spec_accept_length=float("nan"))),
+            ("no_output", lambda r, m: m.update(completion_tokens=0)),
+            ("cap_exceeded", lambda r, m: m.update(completion_tokens=129)),
+            ("boolean_token_count", lambda r, m: m.update(prompt_tokens=True)),
+            ("missing_input", lambda r, m: m.pop("input_token_logprobs")),
+            ("short_output", lambda r, m: m["output_token_logprobs"].pop()),
+            ("bad_ID", lambda r, m: m["output_token_logprobs"][0].__setitem__(1, -1)),
+            (
+                "boolean_ID",
+                lambda r, m: m["output_token_logprobs"][0].__setitem__(1, True),
+            ),
+            (
+                "null_scored_input",
+                lambda r, m: m["input_token_logprobs"][1].__setitem__(0, None),
+            ),
+            (
+                "nan_logprob",
+                lambda r, m: m["output_token_logprobs"][0].__setitem__(0, float("nan")),
+            ),
+            ("short_top5", lambda r, m: m["output_top_logprobs"][0].pop()),
+            (
+                "nan_top5",
+                lambda r, m: m["output_top_logprobs"][0][0].__setitem__(
+                    0, float("nan")
+                ),
+            ),
+            (
+                "duplicate_top5_ID",
+                lambda r, m: m["output_top_logprobs"][0][1].__setitem__(1, 2),
+            ),
+            (
+                "not_top1",
+                lambda r, m: m["output_top_logprobs"][0][1].__setitem__(0, 0.0),
+            ),
+            ("direct_ID_conflict", lambda r, m: r.update(output_ids=[3] * 5)),
+            ("direct_boolean_ID", lambda r, m: r.update(output_ids=[True] * 5)),
+            (
+                "top5_chosen_logprob_conflict",
+                lambda r, m: m["output_token_logprobs"][0].__setitem__(0, -10.0),
+            ),
+        )
+        for name, mutate in mutations:
+            with self.subTest(name=name):
+                response = self.response()
+                mutate(response, response["meta_info"])
+                with self.assertRaises(ValueError):
+                    self.smoke._validate_result(
+                        self.example,
+                        self.example.PROMPTS[0],
+                        response,
+                        "hcu-mtp-smoke-0",
+                    )
+
+    def run_smoke(self, conformance):
+        calls = []
+
+        def generate(**kwargs):
+            calls.append(kwargs)
+            self.assertEqual(len(kwargs["prompt"]), 4)
+            self.assertTrue(kwargs["return_logprob"])
+            self.assertEqual(kwargs["top_logprobs_num"], 5)
+            self.assertEqual(kwargs["logprob_start_len"], 0)
+            self.assertEqual(
+                kwargs["sampling_params"], {"temperature": 0, "max_new_tokens": 128}
+            )
+            return [
+                self.response(text, rid)
+                for text, rid in zip(("50", "Paris", "Jupiter", "221"), kwargs["rid"])
+            ]
+
+        example = SimpleNamespace(**vars(self.example))
+        example._text_prompt = lambda prompt: prompt
+        example.run_logprob_conformance = lambda engine: conformance
+        self.smoke._run_mtp_smoke(example, SimpleNamespace(generate=generate))
+        self.assertEqual(len(calls), 1)
+
+    def test_B4_plus_original_64_token_conformance_is_required(self):
+        self.run_smoke({"passed": True, "scored_tokens": 64})
+        for result in (
+            {"passed": False, "scored_tokens": 64},
+            {"passed": True, "scored_tokens": 63},
+            {},
+        ):
+            with self.subTest(result=result), self.assertRaises(ValueError):
+                self.run_smoke(result)
+
+    def test_hardware_route_autoload_and_finally_shutdown(self):
+        for device in ("bw1000_graph", "other"):
+            with patch.dict(
+                os.environ, {"FL_TEST_PLATFORM": "hygon", "FL_TEST_DEVICE": device}
+            ):
+                with self.assertRaisesRegex(ValueError, "eager profile"):
+                    self.smoke.test_mtp_smoke(None)
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "FL_TEST_PLATFORM": "hygon",
+                    "FL_TEST_DEVICE": "bw1000",
+                    "FL_TEST_MODEL": "",
+                    "FL_TEST_CASE": "",
+                },
+            ),
+            self.assertRaisesRegex(ValueError, "explicit model and case"),
+        ):
+            self.smoke.test_mtp_smoke(None)
+        calls = []
+        engine = SimpleNamespace(shutdown=lambda: calls.append("shutdown"))
+
+        def factory(*flags):
+            self.assertEqual(flags, (True, True, True))
+            self.assertEqual(os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"], "0")
+            self.assertEqual(os.environ["MODEL_PATH"], "/models/original")
+            self.assertEqual(os.environ["TP_SIZE"], "2")
+            calls.append("engine")
+            return engine
+
+        for failure in (False, True):
+            calls.clear()
+            example = {"_is_hcu": True, "_make_mtp_engine": factory}
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "FL_TEST_PLATFORM": "hygon",
+                        "FL_TEST_DEVICE": "bw1000",
+                        "FL_TEST_MODEL": "qwen3_6",
+                        "FL_TEST_CASE": "27b_tp2_hygon",
+                        "TORCH_DEVICE_BACKEND_AUTOLOAD": "1",
+                    },
+                ),
+                patch.object(
+                    self.smoke,
+                    "load_e2e_model_config",
+                    return_value=(
+                        "qwen3_6",
+                        "case",
+                        SimpleNamespace(model="/models/original"),
+                    ),
+                ),
+                patch.object(self.smoke.runpy, "run_path", return_value=example),
+                patch.object(self.smoke, "assert_sglang_fl_plugin_loaded_and_active"),
+                patch.object(
+                    self.smoke,
+                    "_run_mtp_smoke",
+                    side_effect=ValueError("gate") if failure else None,
+                ),
+                self.smoke.pytest.MonkeyPatch.context() as monkeypatch,
+            ):
+                if failure:
+                    with self.assertRaisesRegex(ValueError, "gate"):
+                        self.smoke.test_mtp_smoke(monkeypatch)
+                else:
+                    self.smoke.test_mtp_smoke(monkeypatch)
+            self.assertEqual(calls, ["engine", "shutdown"])
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "FL_TEST_PLATFORM": "hygon",
+                    "FL_TEST_DEVICE": "bw1000",
+                    "FL_TEST_MODEL": "qwen3_6",
+                    "FL_TEST_CASE": "27b_tp2_hygon",
+                },
+            ),
+            patch.object(
+                self.smoke,
+                "load_e2e_model_config",
+                return_value=(
+                    "qwen3_6",
+                    "case",
+                    SimpleNamespace(model="/models/original"),
+                ),
+            ),
+            patch.object(self.smoke.runpy, "run_path", return_value={"_is_hcu": False}),
+            self.smoke.pytest.MonkeyPatch.context() as monkeypatch,
+            self.assertRaisesRegex(ValueError, "actual HCU Torch"),
+        ):
+            self.smoke.test_mtp_smoke(monkeypatch)
 
 
 if __name__ == "__main__":

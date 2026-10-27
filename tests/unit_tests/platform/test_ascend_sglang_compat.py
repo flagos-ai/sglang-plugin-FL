@@ -273,8 +273,15 @@ def test_ascend_mtp_logprob_conformance_rejects_false_positives() -> None:
             if prompt is not None:
                 value = -0.03 if self.mode == "all_near_ties" else -0.1
                 return {
+                    "text": "generated tokens",
                     "meta_info": {
                         "prompt_tokens": 3,
+                        "completion_tokens": 32,
+                        "spec_verify_ct": 8,
+                        "spec_num_proposed_drafts": 24,
+                        "spec_num_correct_drafts": 24,
+                        "spec_accept_rate": 1.0,
+                        "spec_accept_length": 4.0,
                         "input_token_logprobs": [
                             (-0.2, 1, None),
                             (-0.2, 2, None),
