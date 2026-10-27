@@ -101,6 +101,67 @@ def _packed_decode_kernel():
     return kernel
 
 
+def _prepare_packed_decode_inputs(
+    mixed_qkv, a, b, A_log, dt_bias, state, out, state_indices
+):
+    """Accept grouped 2D QKV or the equal-head [B,H,2K+V] convenience ABI."""
+    if state.ndim != 4:
+        raise ValueError("packed decode state must have shape [slots,HV,V,K]")
+    value_heads, value_dim, key_dim = state.shape[-3:]
+    if min(value_heads, value_dim, key_dim) <= 0:
+        raise ValueError("packed decode head counts and dimensions must be positive")
+    if state.stride()[1:] != (value_dim * key_dim, key_dim, 1):
+        raise ValueError("packed decode state must be contiguous within each slot")
+    if mixed_qkv.ndim not in (2, 3):
+        raise ValueError("packed decode QKV must be 2D grouped or 3D per-head")
+    batch = mixed_qkv.shape[0]
+    if mixed_qkv.ndim == 3:
+        if mixed_qkv.shape[1:] != (value_heads, 2 * key_dim + value_dim):
+            raise ValueError("3D packed QKV requires equal heads and width 2*K+V")
+        query_heads = value_heads
+    else:
+        qk_dim = mixed_qkv.shape[1] - value_heads * value_dim
+        if qk_dim <= 0 or qk_dim % 2 or (qk_dim // 2) % key_dim:
+            raise ValueError("invalid packed QKV width")
+        query_heads = qk_dim // (2 * key_dim)
+        if value_heads % query_heads:
+            raise ValueError("packed value heads must be divisible by query heads")
+        if mixed_qkv.stride(1) != 1:
+            raise ValueError("2D packed QKV columns must be contiguous")
+    if a.shape != (batch, value_heads) or b.shape != a.shape:
+        raise ValueError("packed a and b must have shape [B,HV]")
+    if a.stride(-1) != 1 or b.stride(-1) != 1:
+        raise ValueError("packed a and b heads must be contiguous")
+    if A_log.shape != (value_heads,) or dt_bias.shape != A_log.shape:
+        raise ValueError("packed A_log and dt_bias must have shape [HV]")
+    if not A_log.is_contiguous() or not dt_bias.is_contiguous():
+        raise ValueError("packed A_log and dt_bias must be contiguous")
+    if state_indices.shape != (batch,) or state_indices.dtype not in (
+        torch.int32,
+        torch.int64,
+    ):
+        raise ValueError("packed state indices must be an integer vector [B]")
+    if out.shape not in (
+        (batch, value_heads, value_dim),
+        (batch, 1, value_heads, value_dim),
+    ):
+        raise ValueError("packed output must have shape [B,HV,V] or [B,1,HV,V]")
+    if not out.is_contiguous():
+        raise ValueError("packed output must be contiguous")
+    if any(
+        t.device != mixed_qkv.device
+        for t in (a, b, A_log, dt_bias, state, out, state_indices)
+    ):
+        raise ValueError("all packed decode inputs must be on the same device")
+    if mixed_qkv.ndim == 3:
+        # A plain flatten would interleave heads' Q/K/V instead of grouping Q, K, V.
+        query, key, value = mixed_qkv.split((key_dim, key_dim, value_dim), dim=-1)
+        mixed_qkv = torch.cat(
+            (query.flatten(1), key.flatten(1), value.flatten(1)), dim=-1
+        )
+    return mixed_qkv, batch, query_heads, value_heads, key_dim, value_dim
+
+
 def packed_decode_gdn(
     mixed_qkv: torch.Tensor,
     a: torch.Tensor,
@@ -113,12 +174,16 @@ def packed_decode_gdn(
     state_indices: torch.Tensor,
     use_qk_l2norm: bool,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    mixed_qkv, batch, query_heads, value_heads, key_dim, value_dim = (
+        _prepare_packed_decode_inputs(
+            mixed_qkv, a, b, A_log, dt_bias, state, out, state_indices
+        )
+    )
+    if batch == 0:
+        return out, state
+
     import triton
 
-    batch = mixed_qkv.shape[0]
-    value_heads, value_dim, key_dim = state.shape[-3:]
-    query_dim = (mixed_qkv.shape[1] - value_heads * value_dim) // 2
-    query_heads = query_dim // key_dim
     block_k = triton.next_power_of_2(key_dim)
     block_v = min(triton.next_power_of_2(value_dim), 32)
     grid = (triton.cdiv(value_dim, block_v), batch * value_heads)

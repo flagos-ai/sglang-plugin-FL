@@ -449,6 +449,68 @@ def test_packed_decode_updates_only_selected_slots_and_caller_output(
         assert torch.equal(state[slot].cpu(), case[5][slot])
 
 
+@pytest.mark.parametrize("normalize", [False, True])
+@pytest.mark.parametrize("key_dim,value_dim", [(16, 16), (16, 8)])
+def test_packed_per_head_half_state_matches_cpu(normalize, key_dim, value_dim):
+    """The 3D convenience ABI must preserve Q/K/V order and the 2D production ABI."""
+    from sglang_fl.dispatch.backends.vendor.iluvatar.iluvatar import IluvatarBackend
+
+    batch, heads = 2, 2
+    mixed = _random((batch, heads, 2 * key_dim + value_dim), seed=73, scale=0.7)
+    query, key, value = mixed.split((key_dim, key_dim, value_dim), dim=-1)
+    packed = torch.cat((query.flatten(1), key.flatten(1), value.flatten(1)), dim=-1)
+    a = _random((batch, heads), seed=74, scale=0.8)
+    b = _random((batch, heads), seed=75, scale=0.9)
+    log_decay = _random((heads,), seed=76, scale=0.4)
+    bias = _random((heads,), seed=77, scale=0.3)
+    initial = _random((3, heads, value_dim, key_dim), seed=78, scale=0.15)
+    slots = torch.tensor([2, 0], dtype=torch.int32)
+    gate = -log_decay.float().exp() * F.softplus(a.float() + bias.float())
+    expected_out, final, _ = _cpu_fla(
+        query[:, None],
+        key[:, None],
+        value[:, None],
+        gate[:, None],
+        b.float().sigmoid()[:, None],
+        initial[slots.long()],
+        scale=key_dim**-0.5,
+        normalize=normalize,
+    )
+    expected_state = initial.float().clone()
+    expected_state[slots.long()] = final
+    backend = IluvatarBackend()
+    for mixed_input, output_shape in (
+        (mixed, (batch, heads, value_dim)),
+        (packed, (batch, 1, heads, value_dim)),
+    ):
+        cache = initial.cuda()
+        output_buffer = torch.empty(output_shape, device="cuda", dtype=_DTYPE)
+        qkv = mixed_input.cuda()
+        output, state = backend.fused_recurrent_gated_delta_rule_packed_decode(
+            qkv,
+            a.cuda(),
+            b.cuda(),
+            log_decay.cuda(),
+            bias.cuda(),
+            key_dim**-0.5,
+            cache,
+            output_buffer,
+            slots.cuda(),
+            normalize,
+        )
+        assert output is output_buffer
+        assert state is cache
+        assert cache.dtype == torch.float16
+        _assert_close(
+            output.view(batch, 1, heads, value_dim),
+            expected_out,
+            label="per-head packed output",
+        )
+        _assert_close(state, expected_state, label="per-head packed half-state update")
+        assert torch.equal(state[1].cpu(), initial[1])
+        assert torch.equal(qkv.cpu(), mixed_input)
+
+
 def test_packed_graph_replay_reads_and_updates_live_cache(iluvatar_ops):
     case = _packed_case()
     buffers = _packed_gpu_buffers(case)

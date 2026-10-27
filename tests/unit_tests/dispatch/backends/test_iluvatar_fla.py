@@ -270,3 +270,68 @@ def test_backend_recurrent_forwards_false_default(monkeypatch):
     result = IluvatarBackend().fused_recurrent_gated_delta_rule(**_inputs())
     assert result is sentinel
     assert calls[0][7] is False
+
+
+def _packed_input_buffers(mixed):
+    return dict(
+        mixed_qkv=mixed,
+        a=torch.zeros(2, 2, dtype=torch.float16),
+        b=torch.zeros(2, 2, dtype=torch.float16),
+        A_log=torch.zeros(2, dtype=torch.float16),
+        dt_bias=torch.zeros(2, dtype=torch.float16),
+        state=torch.zeros(2, 2, 3, 4, dtype=torch.float16),
+        out=torch.empty(2, 2, 3, dtype=torch.float16),
+        state_indices=torch.tensor([0, 1], dtype=torch.int32),
+    )
+
+
+def test_packed_per_head_qkv_is_reordered_not_just_flattened():
+    from sglang_fl.dispatch.backends.vendor.iluvatar.impl.gdn_triton import (
+        _prepare_packed_decode_inputs,
+    )
+
+    mixed = torch.arange(44, dtype=torch.float16).reshape(2, 2, 11)
+    packed, batch, heads, value_heads, key_dim, value_dim = (
+        _prepare_packed_decode_inputs(**_packed_input_buffers(mixed))
+    )
+    expected = torch.cat(
+        (
+            mixed[..., :4].flatten(1),
+            mixed[..., 4:8].flatten(1),
+            mixed[..., 8:].flatten(1),
+        ),
+        dim=-1,
+    )
+    assert (batch, heads, value_heads, key_dim, value_dim) == (2, 2, 2, 4, 3)
+    assert torch.equal(packed, expected)
+    assert not torch.equal(packed, mixed.flatten(1))
+    # The production 2D path retains the exact caller tensor and GQA metadata.
+    args = _packed_input_buffers(packed)
+    assert _prepare_packed_decode_inputs(**args)[0] is packed
+    args["mixed_qkv"] = torch.zeros(2, 14, dtype=torch.float16)
+    assert _prepare_packed_decode_inputs(**args)[2] == 1
+
+
+@pytest.mark.parametrize(
+    "shape,match",
+    [
+        ((2, 2, 2, 11), "2D grouped or 3D per-head"),
+        ((2, 1, 11), "equal heads"),
+        ((2, 2, 12), "width 2"),
+        ((2, 5), "invalid packed QKV width"),
+        ((2, 15), "invalid packed QKV width"),
+        ((2, 18), "invalid packed QKV width"),
+        ((2, 30), "divisible by query heads"),
+    ],
+)
+def test_packed_invalid_qkv_is_rejected_before_triton_import(shape, match):
+    from sglang_fl.dispatch.backends.vendor.iluvatar.impl.gdn_triton import (
+        packed_decode_gdn,
+    )
+
+    with pytest.raises(ValueError, match=match):
+        packed_decode_gdn(
+            **_packed_input_buffers(torch.zeros(shape, dtype=torch.float16)),
+            scale=0.25,
+            use_qk_l2norm=False,
+        )
