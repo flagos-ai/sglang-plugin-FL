@@ -43,3 +43,29 @@ def rms_norm_flagos(
     epsilon = obj.variance_epsilon
 
     return gems_rms_forward(x, residual, weight, epsilon)
+
+
+def gemma_rms_norm_flagos(
+    obj,
+    x: torch.Tensor,
+    residual: Optional[torch.Tensor] = None,
+) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+    """
+    Gemma-style RMS normalization using FlagGems: norm(x) * (1 + weight).
+
+    Same semantics as sglang GemmaRMSNorm._forward_impl: with residual, both
+    tensors are updated in place (residual = x + residual, x = norm(residual)).
+    (1 + weight) is formed in fp32; bf16 cannot represent small offsets from 1.
+    """
+    import flag_gems
+    from flag_gems.fused import fused_add_rms_norm
+
+    hidden = x.shape[-1]
+    weight = obj.weight.float() + 1.0
+    epsilon = obj.variance_epsilon
+
+    if residual is not None:
+        return fused_add_rms_norm(x, residual, [hidden], weight, epsilon)
+
+    out = flag_gems.rms_norm(x.contiguous(), [hidden], weight, epsilon)
+    return out.view(x.shape)
