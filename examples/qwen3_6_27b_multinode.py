@@ -105,6 +105,7 @@ _is_musa = hasattr(torch, "musa") and torch.musa.is_available()
 _is_npu = hasattr(torch, "npu") and torch.npu.is_available()
 _is_corex = hasattr(torch, "corex") and torch.cuda.is_available()
 _is_hcu = hasattr(torch, "__hcu_version__") and torch.cuda.is_available()
+_is_kunlunxin = hasattr(torch, "xpu") and torch.cuda.is_available()
 _is_nvidia = torch.cuda.is_available() and not any(
     (_is_txda, _is_musa, _is_npu, _is_corex, _is_hcu)
 )
@@ -153,6 +154,12 @@ elif _is_hcu:
         "--disable-radix-cache",
         "--page-size",
         "64",
+    ]
+elif _is_kunlunxin:
+    _PLATFORM_SERVER_ARGS = [
+        "--trust-remote-code",
+        "--disable-radix-cache",
+        "--disable-overlap-schedule",
     ]
 elif _is_nvidia:
     _PLATFORM_SERVER_ARGS = ["--disable-overlap-schedule"]

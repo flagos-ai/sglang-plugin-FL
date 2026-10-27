@@ -23,8 +23,11 @@ import logging
 from .patches.attention_backend_choice import patch_attention_backend_choice
 from .patches.causal_conv1d import patch_causal_conv1d
 from .patches.clamp_position import patch_clamp_position
+from .patches.gdn_fused_qkv_split import patch_gdn_fused_qkv_split
 from .patches.pp_send_first import patch_pp_send_recv_and_preprocess_output_tensors
+from .patches.qwen35_attn_native import patch_qwen35_attn_native
 from .patches.suppress_pynccl import patch_suppress_pynccl
+from .patches.vocab_embed_native import patch_vocab_embed_native
 
 logger = logging.getLogger(__name__)
 _patches_applied = False
@@ -42,6 +45,9 @@ def apply_kunlunxin_patches():
     patch_suppress_pynccl()
     patch_pp_send_recv_and_preprocess_output_tensors()
     patch_attention_backend_choice()
+    patch_qwen35_attn_native()
+    patch_gdn_fused_qkv_split()
+    patch_vocab_embed_native()
 
 
 apply_kunlunxin_patches()
