@@ -3,6 +3,8 @@
 """CoreX compatibility patches must preserve dtype and import-order contracts."""
 
 from dataclasses import dataclass
+from contextlib import contextmanager
+import builtins
 import importlib
 import importlib.util
 import json
@@ -213,6 +215,13 @@ def test_overlay_runs_pdl_before_sglang_imports_and_retries(monkeypatch):
         prefix + ".speculative_tree",
         SimpleNamespace(patch_speculative_tree=lambda: calls.append("speculative")),
     )
+    monkeypatch.setitem(
+        sys.modules,
+        prefix + ".breakable_stream_capture",
+        SimpleNamespace(
+            patch_breakable_stream_capture=lambda: calls.append("stream_capture")
+        ),
+    )
     monkeypatch.setattr(clamp_position, "patch_clamp_position", clamp)
     monkeypatch.setattr(
         legacy_gpu_gate,
@@ -231,7 +240,15 @@ def test_overlay_runs_pdl_before_sglang_imports_and_retries(monkeypatch):
     fail[0] = False
     module.apply_iluvatar_patches()
     module.apply_iluvatar_patches()
-    assert calls == ["pdl", "clamp", "pdl", "clamp", "legacy", "speculative"]
+    assert calls == [
+        "pdl",
+        "clamp",
+        "pdl",
+        "clamp",
+        "legacy",
+        "stream_capture",
+        "speculative",
+    ]
 
 
 def _load_model_config_bootstrap(monkeypatch, original, loader, active, hooks=None):
@@ -967,3 +984,295 @@ def test_incompatible_property_can_retry_without_a_partial_marker(
     monkeypatch.setattr(base, "mamba2_cache_params", original)
     conv_state_dtype.record_model_conv_dtype(runner)
     assert config.mamba2_cache_params.dtype.conv == torch.float16
+
+
+class _SideStreamFakeCuda:
+    def __init__(self):
+        self.current = "original-stream"
+        self.capturing = False
+        self.error = None
+        self.events = []
+
+    @contextmanager
+    def stream(self, selected):
+        previous = self.current
+        self.events.append(("enter", selected, previous))
+        self.current = selected
+        try:
+            yield
+        finally:
+            self.current = previous
+            self.events.append(("restore", previous))
+
+    def is_current_stream_capturing(self):
+        self.events.append(("query", self.current))
+        if self.error is not None:
+            raise self.error
+        return self.capturing
+
+
+@pytest.fixture
+def side_stream_context(monkeypatch, record_property):
+    candidate = importlib.import_module(
+        "sglang_fl.dispatch.backends.vendor.iluvatar.patches.breakable_stream_capture"
+    )
+    monkeypatch.setattr(candidate, "_applied", False)
+    monkeypatch.setattr(candidate, "_original_is_stream_capturing", None)
+    cuda = _SideStreamFakeCuda()
+    torch = ModuleType("torch")
+    torch.corex = object()
+    torch.cuda = cuda
+    torch.is_hip = object()
+    torch.xpu = object()
+    from sglang_fl import utils
+
+    state = SimpleNamespace(info=SimpleNamespace(vendor_name="iluvatar"))
+    monkeypatch.setattr(utils, "get_device_info", lambda: state.info)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    target = ModuleType(candidate._TARGET_MODULE)
+    original = lambda stream: "original-result"
+    target._is_stream_capturing = original
+    imports = []
+
+    def import_target(name):
+        imports.append(name)
+        assert name == candidate._TARGET_MODULE
+        return target
+
+    monkeypatch.setattr(
+        candidate, "importlib", SimpleNamespace(import_module=import_target)
+    )
+    record_property("CPU_contract_only", True)
+    record_property("GPU_executions", 0)
+    record_property("GPU_runtime_executed", False)
+    return SimpleNamespace(
+        candidate=candidate,
+        cuda=cuda,
+        torch=torch,
+        state=state,
+        target=target,
+        original=original,
+        imports=imports,
+    )
+
+
+@pytest.mark.parametrize("answer", [False, True])
+def test_corex_side_stream_requested_stream_query_and_return_restore(
+    side_stream_context, answer
+):
+    x = side_stream_context
+    x.cuda.capturing = answer
+    original_hip, original_xpu = x.torch.is_hip, x.torch.xpu
+    assert x.candidate.patch_breakable_stream_capture() is True
+    assert x.target._is_stream_capturing is x.candidate._is_stream_capturing_corex
+    assert x.target._is_stream_capturing("selected-stream") is answer
+    assert x.cuda.events == [
+        ("enter", "selected-stream", "original-stream"),
+        ("query", "selected-stream"),
+        ("restore", "original-stream"),
+    ]
+    assert x.cuda.current == "original-stream"
+    assert (x.torch.is_hip, x.torch.xpu) == (original_hip, original_xpu)
+    assert x.candidate._original_is_stream_capturing is x.original
+    assert x.candidate._applied is True
+
+
+def test_corex_side_stream_query_exception_restores_and_propagates_exact_exception(
+    side_stream_context,
+):
+    x = side_stream_context
+    failure = RuntimeError("actual query failed")
+    x.cuda.error = failure
+    x.candidate.patch_breakable_stream_capture()
+    with pytest.raises(RuntimeError) as caught:
+        x.target._is_stream_capturing("selected-stream")
+    assert caught.value is failure
+    assert x.cuda.current == "original-stream"
+    assert x.cuda.events[-1] == ("restore", "original-stream")
+
+
+@pytest.mark.parametrize("vendor", [None, "nvidia", "ascend", "hygon", "metax"])
+def test_corex_side_stream_other_vendors_import_neither_target_nor_torch(
+    side_stream_context, monkeypatch, vendor
+):
+    x = side_stream_context
+    x.state.info = None if vendor is None else SimpleNamespace(vendor_name=vendor)
+    actual_import = builtins.__import__
+
+    def forbid_torch(name, *args, **kwargs):
+        if name == "torch" or name.startswith("torch."):
+            raise AssertionError(
+                "Non-Iluvatar compatibility path must not import Torch"
+            )
+        return actual_import(name, *args, **kwargs)
+
+    with monkeypatch.context() as local:
+        local.setattr(builtins, "__import__", forbid_torch)
+        assert x.candidate.patch_breakable_stream_capture() is False
+    assert x.imports == []
+    assert x.target._is_stream_capturing is x.original
+    assert x.candidate._original_is_stream_capturing is None
+    assert x.candidate._applied is False
+
+
+def test_corex_side_stream_iluvatar_without_corex_rejected_before_target_import(
+    side_stream_context,
+):
+    x = side_stream_context
+    del x.torch.corex
+    with pytest.raises(RuntimeError, match="requires CoreX"):
+        x.candidate.patch_breakable_stream_capture()
+    assert x.imports == []
+    assert x.target._is_stream_capturing is x.original
+    assert x.candidate._original_is_stream_capturing is None
+    assert x.candidate._applied is False
+
+
+@pytest.mark.parametrize("missing", ["cuda", "stream", "is_current_stream_capturing"])
+def test_corex_side_stream_missing_real_cuda_api_has_no_partial_patch(
+    side_stream_context, missing
+):
+    x = side_stream_context
+    if missing == "cuda":
+        del x.torch.cuda
+    else:
+        setattr(x.cuda, missing, None)
+    with pytest.raises(RuntimeError, match="APIs are required"):
+        x.candidate.patch_breakable_stream_capture()
+    assert x.imports == []
+    assert x.target._is_stream_capturing is x.original
+    assert x.candidate._original_is_stream_capturing is None
+    assert x.candidate._applied is False
+
+
+@pytest.mark.parametrize("invalid", [None, 7])
+def test_corex_side_stream_missing_or_noncallable_target_has_no_partial_patch(
+    side_stream_context, invalid
+):
+    x = side_stream_context
+    if invalid is None:
+        del x.target._is_stream_capturing
+    else:
+        x.target._is_stream_capturing = invalid
+    with pytest.raises(RuntimeError, match="binding is missing"):
+        x.candidate.patch_breakable_stream_capture()
+    assert getattr(x.target, "_is_stream_capturing", None) is invalid
+    assert x.candidate._original_is_stream_capturing is None
+    assert x.candidate._applied is False
+
+
+def test_corex_side_stream_repeated_call_preserves_original_and_replacement_identity(
+    side_stream_context,
+):
+    x = side_stream_context
+    assert x.candidate.patch_breakable_stream_capture() is True
+    replacement = x.target._is_stream_capturing
+    assert replacement is not x.original
+    assert replacement is x.candidate._is_stream_capturing_corex
+    assert x.candidate.patch_breakable_stream_capture() is True
+    assert x.target._is_stream_capturing is replacement
+    assert x.candidate._original_is_stream_capturing is x.original
+    assert x.imports == [x.candidate._TARGET_MODULE]
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("automatic_join", [False, True], ids=["explicit", "automatic"])
+def test_corex_breakable_side_stream_capture_and_replay(dtype, automatic_join):
+    """Real graph forks must query CoreX and safely join both sides of a break."""
+    import gc
+    import weakref
+
+    if not hasattr(torch, "corex") or not torch.cuda.is_available():
+        pytest.skip("CoreX hardware is required")
+    from sglang_fl.dispatch.backends.vendor.iluvatar.patch import apply_iluvatar_patches
+
+    apply_iluvatar_patches()
+    bcg = importlib.import_module(
+        "sglang.srt.model_executor.runner_backend_utils.breakable_cuda_graph."
+        "breakable_cuda_graph"
+    )
+    stream_compat = importlib.import_module(
+        "sglang_fl.dispatch.backends.vendor.iluvatar.patches.breakable_stream_capture"
+    )
+    assert bcg._is_stream_capturing is stream_compat._is_stream_capturing_corex
+    main, side = torch.cuda.Stream(), torch.cuda.Stream()
+    current = torch.cuda.current_stream().cuda_stream
+    assert bcg._is_stream_capturing(side) is False
+    assert torch.cuda.current_stream().cuda_stream == current
+    source = torch.arange(16, dtype=torch.float32, device="cpu").to(dtype).cuda()
+    torch.cuda.synchronize()
+    main.wait_stream(torch.cuda.current_stream())
+    tracked = {}
+
+    @bcg.eager_on_graph(True)
+    def bridge(x):
+        return x + 1
+
+    def forward(track=False):
+        side.wait_stream(main)
+        with torch.cuda.stream(side):
+            intermediate = source * 2
+        if track:
+            before = torch.cuda.current_stream().cuda_stream
+            assert bcg._is_stream_capturing(side) is True
+            assert torch.cuda.current_stream().cuda_stream == before
+            assert side in bcg._forked_streams_var.get()
+            tracked["tensor"] = weakref.ref(intermediate)
+            tracked["storage"] = intermediate.untyped_storage()._weak_ref()
+        if not (track and automatic_join):
+            main.wait_stream(side)
+        if track:
+            assert len(bcg._forked_streams_var.get()) == int(automatic_join)
+        middle = bridge(intermediate)
+        if track:
+            assert not bcg._forked_streams_var.get()
+        side.wait_stream(main)
+        with torch.cuda.stream(side):
+            output = middle * 3
+        if track:
+            before = torch.cuda.current_stream().cuda_stream
+            assert bcg._is_stream_capturing(side) is True
+            assert torch.cuda.current_stream().cuda_stream == before
+            assert side in bcg._forked_streams_var.get()
+            tracked["forks"] = bcg._forked_streams_var.get()
+        if not (track and automatic_join):
+            main.wait_stream(side)
+        if track:
+            assert len(bcg._forked_streams_var.get()) == int(automatic_join)
+        return output
+
+    with torch.cuda.stream(main):
+        for _ in range(3):
+            warm = forward()
+    main.synchronize()
+    del warm
+    graph, pool = bcg.BreakableCUDAGraph(), torch.cuda.graph_pool_handle()
+    try:
+        with bcg.BreakableCUDAGraphCapture(graph, pool=pool, stream=main):
+            output = forward(track=True)
+        torch.cuda.synchronize()
+        gc.collect()
+        assert len(graph._segments) == 2 and len(graph._break_fns) == 1
+        assert not tracked["forks"]
+        assert tracked["tensor"]() is None
+        assert torch.UntypedStorage._expired(tracked["storage"])
+        assert bcg._is_stream_capturing(side) is False
+        for delta in (3, 5, 7):
+            source.copy_(
+                torch.tensor([i + delta for i in range(16)], dtype=dtype, device="cpu")
+            )
+            torch.cuda.synchronize()
+            graph.replay()
+            torch.cuda.synchronize()
+            actual = output.detach().cpu()
+            expected = torch.tensor(
+                [(2 * (i + delta) + 1) * 3 for i in range(16)],
+                dtype=dtype,
+                device="cpu",
+            )
+            assert torch.isfinite(actual).all()
+            assert torch.equal(actual, expected)
+    finally:
+        if "storage" in tracked:
+            torch.UntypedStorage._free_weak_ref(tracked["storage"])

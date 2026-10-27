@@ -3,6 +3,7 @@
 """CoreX compatibility overlay, imported only for the Iluvatar vendor."""
 
 from .patches.awq_dequantize import patch_awq_dequantize
+from .patches.breakable_stream_capture import patch_breakable_stream_capture
 from .patches.clamp_position import patch_clamp_position
 from .patches.legacy_gpu_gate import patch_legacy_gpu_gate
 from .patches.speculative_tree import patch_speculative_tree
@@ -21,6 +22,7 @@ def apply_iluvatar_patches() -> None:
     patch_triton_pdl_intrinsics()
     patch_clamp_position()
     patch_legacy_gpu_gate()
+    patch_breakable_stream_capture()
     patch_speculative_tree()
     patch_awq_dequantize()
     _patches_applied = True
