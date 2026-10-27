@@ -49,6 +49,7 @@ def record(kind, **extra):
         "args": sys.argv[1:],
         "pythonpath": os.environ.get("PYTHONPATH", ""),
         "per_op": os.environ.get("SGLANG_FL_PER_OP", ""),
+        "activated": os.environ.get("ILUVATAR_FAKE_ACTIVATED", ""),
         **extra,
     }
     with open(os.environ["ILUVATAR_FAKE_CALLS"], "a", encoding="utf8") as output:
@@ -76,6 +77,20 @@ if args == ["scripts/iluvatar/require_idle_gpus.py"]:
 elif args[:3] == ["-m", "pip", "install"]:
     record("install")
     raise SystemExit(int(os.environ.get("ILUVATAR_FAKE_INSTALL_RC", "0")))
+elif args[:2] == ["-m", "_iluvatar_empty_compat.activate_runtime"]:
+    root = Path.cwd().resolve()
+    artifact_root = root / "artifacts/iluvatar/native"
+    activation = artifact_root / "activation.env"
+    assert len(args) == 6, args
+    assert args[2] == "--artifact-root" and Path(args[3]).resolve() == artifact_root, args
+    assert args[4] == "--activation-file" and Path(args[5]).resolve() == activation, args
+    record("activate", capture_info_compat=os.environ.get("SGLANG_ILUVATAR_CAPTURE_INFO_COMPAT"))
+    result = int(os.environ.get("ILUVATAR_FAKE_ACTIVATION_RC", "0"))
+    if result:
+        raise SystemExit(result)
+    activation.parent.mkdir(parents=True)
+    # Exercise setup.sh's source step without building/loading a native library.
+    activation.write_bytes(b"export ILUVATAR_FAKE_ACTIVATED=1\n")
 elif args and args[0] == "scripts/iluvatar/verify_environment.py":
     profile = args[args.index("--fused-profile") + 1]
     record("verify", profile=profile, minimum=args[args.index("--min-devices") + 1])
@@ -197,17 +212,15 @@ class IluvatarEntrypointTests(unittest.TestCase):
         binaries.mkdir()
         for name in ("python", "python3"):
             executable = binaries / name
-            executable.write_text(
-                "#!/usr/bin/env bash\n"
-                'exec "$ILUVATAR_FAKE_PYTHON" -S "$ILUVATAR_FAKE_DISPATCH" "$@"\n',
-                encoding="utf8",
+            executable.write_bytes(
+                b"#!/usr/bin/env bash\n"
+                b'exec "$ILUVATAR_FAKE_PYTHON" -S "$ILUVATAR_FAKE_DISPATCH" "$@"\n'
             )
             executable.chmod(0o755)
         for name in ("pip", "pip3", "ixsmi"):
             executable = binaries / name
-            executable.write_text(
-                '#!/usr/bin/env bash\necho "Unexpected real-tool invocation" >&2\nexit 97\n',
-                encoding="utf8",
+            executable.write_bytes(
+                b'#!/usr/bin/env bash\necho "Unexpected real-tool invocation" >&2\nexit 97\n'
             )
             executable.chmod(0o755)
         self.calls = self.base / "calls.jsonl"
@@ -365,8 +378,9 @@ class IluvatarEntrypointTests(unittest.TestCase):
         events = self.run_entrypoint("setup.sh")
         self.assertEqual(
             [event["kind"] for event in events],
-            ["install", "inline", "verify", "verify"],
+            ["install", "inline", "activate", "verify", "verify"],
         )
+        self.assertEqual(events[2]["capture_info_compat"], "1")
         install = events[0]["args"]
         self.assertTrue(
             {"--no-index", "--no-deps", "--no-build-isolation", "--force-reinstall"}
@@ -379,6 +393,7 @@ class IluvatarEntrypointTests(unittest.TestCase):
         profiles = [event for event in events if event["kind"] == "verify"]
         self.assertEqual([event["profile"] for event in profiles], ["vendor", "flagos"])
         self.assertEqual([event["minimum"] for event in profiles], ["4", "4"])
+        self.assertEqual([event["activated"] for event in profiles], ["1", "1"])
         self.assertEqual(profiles[0]["per_op"], _ORIGINAL_PER_OP)
         self.assertEqual(
             dict(pair.split("=", 1) for pair in profiles[1]["per_op"].split(";")),
@@ -428,6 +443,21 @@ class IluvatarEntrypointTests(unittest.TestCase):
         )
         self.assertEqual([event["kind"] for event in events], ["install", "inline"])
 
+    def test_setup_activation_failure_stops_both_profiles(self):
+        events = self.run_entrypoint(
+            "setup.sh", updates={"ILUVATAR_FAKE_ACTIVATION_RC": "29"}, expected=29
+        )
+        self.assertEqual(
+            [event["kind"] for event in events], ["install", "inline", "activate"]
+        )
+        self.assertFalse(
+            (self.repo / "artifacts/iluvatar/native/activation.env").exists()
+        )
+        for profile in ("vendor", "flagos"):
+            self.assertFalse(
+                (self.repo / f"artifacts/iluvatar/{profile}-environment.log").exists()
+            )
+
     def test_setup_stale_addon_is_rejected_before_profiles(self):
         events = self.run_entrypoint(
             "setup.sh", updates={"ILUVATAR_FAKE_STALE_MODULE": "sgl_kernel"}, expected=1
@@ -439,7 +469,8 @@ class IluvatarEntrypointTests(unittest.TestCase):
             "setup.sh", updates={"ILUVATAR_FAKE_PROFILE_FAIL": "vendor"}, expected=23
         )
         self.assertEqual(
-            [event["kind"] for event in events], ["install", "inline", "verify"]
+            [event["kind"] for event in events],
+            ["install", "inline", "activate", "verify"],
         )
         self.assertEqual(events[-1]["profile"], "vendor")
         self.assertFalse(
@@ -452,7 +483,7 @@ class IluvatarEntrypointTests(unittest.TestCase):
         )
         self.assertEqual(
             [event["kind"] for event in events],
-            ["install", "inline", "verify", "verify"],
+            ["install", "inline", "activate", "verify", "verify"],
         )
         self.assertEqual(events[-1]["profile"], "flagos")
 

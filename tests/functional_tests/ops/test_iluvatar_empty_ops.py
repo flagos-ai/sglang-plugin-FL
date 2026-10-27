@@ -580,7 +580,7 @@ def test_moe_gated_silu_bias_routing_and_scaling_match_cpu(
 @pytest.mark.parametrize(
     ("a_shape", "b_shape", "dtype_name"),
     [((256, 32), (1, 32), "float32"), ((16, 256, 288), (1, 1, 288), "bfloat16")],
-    ids=["broadcast-2d-fp32", "broadcast-nd-bf16"],
+    ids=["broadcast-2d-fp32", "broadcast-multidimensional-bf16"],
 )
 def test_iluvatar_cold_mul_inplace_preserves_value_and_alias(
     tmp_path, a_shape, b_shape, dtype_name

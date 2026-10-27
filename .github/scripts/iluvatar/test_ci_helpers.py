@@ -331,7 +331,10 @@ class TestConfiguredResources(unittest.TestCase):
         spec.loader.exec_module(driver)
         self.assertEqual(driver.MIN_UNIT_TESTS, 148)
         self.assertEqual(driver.MIN_FUNCTIONAL_TESTS, 31)
-        self.assertEqual(len(driver.UNIT_TESTS), 10)
+        self.assertEqual(len(driver.UNIT_TESTS), 11)
+        self.assertIn(
+            "tests/unit_tests/test_iluvatar_example_sampling.py", driver.UNIT_TESTS
+        )
         self.assertEqual(
             driver.FUNCTIONAL_TESTS,
             (
