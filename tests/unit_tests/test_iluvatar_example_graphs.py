@@ -139,6 +139,7 @@ class _ServerArgs0518:
     attention_backend: str | None = None
     watchdog_timeout: float = 300
     cuda_graph_max_bs_decode: int | None = None
+    max_running_requests: int | None = None
     disable_prefill_cuda_graph: bool = False
     speculative_algorithm: str | None = None
     speculative_num_steps: int | None = None
@@ -215,6 +216,7 @@ def test_corex_mtp_factories_use_current_server_args(monkeypatch, factory, tp, e
     assert args.attention_backend == "triton"
     assert args.watchdog_timeout == 3600
     assert args.cuda_graph_max_bs_decode == 16
+    assert args.max_running_requests == 16
     assert args.disable_cuda_graph is eager
     assert args.disable_prefill_cuda_graph is eager
     assert args.disable_overlap_schedule is eager
@@ -259,7 +261,9 @@ def test_mtp_other_platform_defaults_remain_unchanged(monkeypatch, vendor, tp):
     monkeypatch.delenv("TP_SIZE", raising=False)
     namespace = _load_mtp_example(monkeypatch, vendor)
     assert namespace["TP_SIZE"] == tp
-    assert "cuda_graph_max_bs_decode" not in namespace["_platform_engine_kwargs"]()
+    kwargs = namespace["_platform_engine_kwargs"]()
+    assert "cuda_graph_max_bs_decode" not in kwargs
+    assert kwargs.get("max_running_requests") == (16 if vendor == "hygon" else None)
 
 
 @pytest.mark.parametrize("label", [None, "Qwen3.6-35B-A3B"])

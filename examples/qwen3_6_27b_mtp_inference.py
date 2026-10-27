@@ -235,6 +235,9 @@ def _platform_engine_kwargs() -> dict:
             "attention_backend": "triton",
             "watchdog_timeout": 3600,
             "cuda_graph_max_bs_decode": 16,
+            # The speculative default of 48 over-reserves hybrid state on 32 GiB
+            # cards. Keep the same explicit C16 capacity for MTP and baseline.
+            "max_running_requests": 16,
         }
     if _is_hcu:
         return {
