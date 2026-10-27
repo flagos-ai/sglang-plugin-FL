@@ -96,8 +96,8 @@ platforms:
       - .github/configs/iluvatar.yml
   thead:
     # Self-hosted runner pool: label flagcicd-810e (4 runners, online).
-    # CI image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-thead-ci.
-    enabled: false
+    # SGLang 0.5.18 CI image is configured in thead.yml.
+    enabled: true
     trigger_paths:
       - sglang_fl/dispatch/config/tsingmicro.yaml
       - .github/scripts/thead/
