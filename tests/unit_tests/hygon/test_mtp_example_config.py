@@ -22,6 +22,8 @@ def load_example(monkeypatch, model="/models/Qwen3.6-27B", vendor="hcu", tp=None
         torch.__hcu_version__ = "3.6"
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setenv("MODEL_PATH", model)
+    # The example detects T-Head PPU from PPU_SDK; keep a PPU host from leaking in.
+    monkeypatch.delenv("PPU_SDK", raising=False)
     if tp is None:
         monkeypatch.delenv("TP_SIZE", raising=False)
     else:
