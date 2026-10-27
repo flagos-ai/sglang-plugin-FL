@@ -1,6 +1,6 @@
 # Copyright 2026 FlagOS Contributors
 # SPDX-License-Identifier: Apache-2.0
-"""SGLang 0.5.18 import declarations; all kernel calls fail explicitly."""
+"""SGLang imports plus CoreX non-owning tensor metadata; kernels fail explicitly."""
 
 from _iluvatar_empty_compat import bind_unavailable as _bind_unavailable
 
@@ -91,9 +91,12 @@ _bind_unavailable(
         "tree_speculative_sampling_target_only",
         "verify_tree_greedy",
         "verify_tree_greedy_cpu",
-        "weak_ref_tensor",
     ),
 )
 del _bind_unavailable
 
 from .version import __version__  # noqa: E402,F401
+
+from _iluvatar_empty_compat.memory import weak_ref_tensor  # noqa: E402,F401
+
+__all__.append("weak_ref_tensor")

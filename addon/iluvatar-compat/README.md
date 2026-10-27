@@ -3,7 +3,9 @@
 This optional package supplies a bounded import face for SGLang **0.5.18** on
 Iluvatar CoreX, where `torch.cuda` is available but NVIDIA `sgl_kernel` and
 FlashInfer builds are unavailable. It contains **no accelerator kernels**.
-Every declared kernel raises `RuntimeError` if called. Unknown symbols remain
+Every unimplemented kernel raises `RuntimeError` if called. The
+`weak_ref_tensor` metadata operation uses CoreX Torch's non-owning storage
+constructors; it does not supply an accelerator kernel. Unknown symbols remain
 absent, so capability checks using `hasattr` cannot invent kernel support.
 
 Install this addon **explicitly**, only inside a dedicated Iluvatar empty
@@ -30,7 +32,7 @@ probe tests package presence, which this import compatibility package provides.
 
 The reviewed import names come from `python/sglang/srt` and
 `python/sglang/kernels/ops` in upstream tag `v0.5.18`; see `import_manifest.py`.
-The only working capability function is
+The working capability function is
 `sgl_kernel.utils.is_arch_support_pdl()`, which truthfully returns `False`.
 `scalar_type.py` preserves upstream's pure-Python scalar type metadata and
 license. `FlashMLASchedMeta` can be used in annotations but refuses construction.
@@ -88,3 +90,17 @@ and the helper appends `GEMS_VENDOR`, the opt-in and `LD_PRELOAD` to `GITHUB_ENV
 when present. A manual caller must source the generated activation again after
 `bash .github/scripts/iluvatar/setup.sh`, since that child shell cannot update
 the caller's environment. Setting the opt-in to `0` keeps native calls unchanged.
+
+## Non-owning tensor metadata
+
+`sgl_kernel.weak_ref_tensor` uses the same two native metadata constructors as
+CoreX Torch's CUDA graph trees. It preserves dtype, device, shape, strides and
+storage offset in an independent storage object without retaining the source
+Tensor or Storage. It allocates no accelerator buffer and copies no values.
+The graph pool or caller must own the memory for every subsequent use; the
+returned tensor must not be read after that allocation has been released.
+
+The operation imports Torch only when called and requires CoreX, a strided CUDA
+tensor without lazy conjugate/negative view bits, and both reconstruction APIs.
+Missing support raises explicitly; it never substitutes a strong alias or a
+Python weakref proxy. Other import-only kernels remain unavailable.
