@@ -61,7 +61,9 @@ _ATTN_BACKEND_MAP = {
     "ascend": "ascend",
     "mthreads": "fa3",
     "enflame": "fa3",
-    "thead": "fa3",
+    # PPU's sgl_kernel.flash_attn imports sglang.srt.utils.is_ppu, which upstream
+    # SGLang does not define, so fa3 cannot load on PPU; triton is validated.
+    "thead": "triton",
     "kunlunxin": "kunlunxin",
     "iluvatar": "triton",
     "hygon": "hcu",
@@ -441,6 +443,12 @@ class PlatformFL(SRTPlatform):
             )
 
             apply_musa_runtime_defaults(server_args)
+        if self._vendor_name == "thead":
+            from sglang_fl.dispatch.backends.vendor.thead.runtime_config import (
+                apply_thead_runtime_defaults,
+            )
+
+            apply_thead_runtime_defaults(server_args)
         if self._vendor_name == "kunlunxin":
             server_args.mm_attention_backend = "sdpa"
             server_args.disable_cuda_graph = False
