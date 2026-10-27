@@ -101,6 +101,7 @@ def test_other_cuda_default_tp_stays_one(monkeypatch, name, factory):
         namespace[factory]()
     assert captured["tp_size"] == 1
     assert "cuda_graph_max_bs_decode" not in captured
+    assert "disable_fast_image_processor" not in captured
 
 
 @pytest.mark.parametrize("concurrency", [1, 8, 16, 32, 64])
@@ -114,6 +115,7 @@ def test_corex_graph_limit_covers_concurrent_requests(monkeypatch, concurrency, 
     namespace = _load_example(monkeypatch, name)
     engine = namespace["_make_engine"]()
     assert engine.server_args.cuda_graph_max_bs_decode == concurrency
+    assert engine.server_args.disable_fast_image_processor is True
 
 
 @dataclass
@@ -131,6 +133,7 @@ class _ServerArgs0518:
     mem_fraction_static: float = 0.8
     disable_cuda_graph: bool = False
     disable_overlap_schedule: bool = False
+    disable_fast_image_processor: bool = False
     trust_remote_code: bool = False
     disable_radix_cache: bool = False
     attention_backend: str | None = None
