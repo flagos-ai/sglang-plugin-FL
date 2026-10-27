@@ -21,6 +21,7 @@ from sglang_fl.dispatch.backends.vendor.iluvatar.impl import (
     gdn_triton,
     moe_triton,
 )
+from sglang_fl.dispatch.backends.vendor.iluvatar.patches import awq_dequantize
 
 
 class _Array(np.ndarray):
@@ -301,3 +302,128 @@ def test_moe_unsupported_configuration_is_rejected_before_kernel(
     )
     with pytest.raises(NotImplementedError, match="unsupported Iluvatar fused MoE"):
         fused_moe.fused_moe_iluvatar(obj, layer, dispatch)
+
+
+@pytest.fixture
+def awq_patch_modules(monkeypatch):
+    """Isolate installer contracts; these stubs do not validate SGLang cold load."""
+    from sglang_fl import utils
+
+    monkeypatch.setattr(awq_dequantize, "_applied", False)
+    monkeypatch.setattr(
+        utils, "get_device_info", lambda: SimpleNamespace(vendor_name="iluvatar")
+    )
+    target = ModuleType("sglang.srt.hardware_backend.gpu.quantization.awq_kernels")
+    triton = ModuleType("sglang.kernels.ops.quantization.awq_triton")
+    custom_op = ModuleType("sglang.kernels.ops.quantization.awq_dequantize")
+    original = lambda *args: ("original", args)
+    replacement = lambda *args: ("triton", args)
+    target.awq_dequantize = original
+    triton.awq_dequantize_triton = replacement
+    # The registered op and other AWQ kernels retain their own bindings.
+    custom_op.awq_dequantize = original
+    monkeypatch.setitem(sys.modules, custom_op.__name__, custom_op)
+    target.AWQLinearKernel = SimpleNamespace(
+        apply=lambda *args: target.awq_dequantize(*args)
+    )
+    target.AWQMarlinLinearKernel = SimpleNamespace(apply=object())
+    target.AWQMoEKernel = SimpleNamespace(apply=object())
+    imports = []
+
+    def import_module(name):
+        imports.append(name)
+        # An unexpected eager import must fail instead of reaching real kernels.
+        return {target.__name__: target, triton.__name__: triton}[name]
+
+    monkeypatch.setattr(
+        awq_dequantize, "importlib", SimpleNamespace(import_module=import_module)
+    )
+    return SimpleNamespace(
+        target=target,
+        triton=triton,
+        custom_op=custom_op,
+        original=original,
+        replacement=replacement,
+        imports=imports,
+    )
+
+
+@pytest.mark.parametrize("vendor", [None, "nvidia"])
+def test_awq_patch_ignores_other_or_missing_device(
+    monkeypatch, awq_patch_modules, vendor
+):
+    from sglang_fl import utils
+
+    info = None if vendor is None else SimpleNamespace(vendor_name=vendor)
+    monkeypatch.setattr(utils, "get_device_info", lambda: info)
+    awq_dequantize.patch_awq_dequantize()
+    assert awq_patch_modules.imports == []
+    assert awq_patch_modules.target.awq_dequantize is awq_patch_modules.original
+    assert not awq_dequantize._applied
+
+
+def test_awq_patch_changes_only_ordinary_binding_and_is_idempotent(awq_patch_modules):
+    modules = awq_patch_modules
+    before = vars(modules.target).copy()
+    ordinary_apply = modules.target.AWQLinearKernel.apply
+    marlin_apply = modules.target.AWQMarlinLinearKernel.apply
+    moe_apply = modules.target.AWQMoEKernel.apply
+    assert ordinary_apply(1, 2, 3) == ("original", (1, 2, 3))
+
+    awq_dequantize.patch_awq_dequantize()
+    assert ordinary_apply(1, 2, 3) == ("triton", (1, 2, 3))
+    assert modules.target.awq_dequantize is modules.replacement
+    assert vars(modules.target).keys() == before.keys()
+    for name, value in before.items():
+        if name != "awq_dequantize":
+            assert vars(modules.target)[name] is value
+    assert modules.target.AWQLinearKernel.apply is ordinary_apply
+    assert modules.target.AWQMarlinLinearKernel.apply is marlin_apply
+    assert modules.target.AWQMoEKernel.apply is moe_apply
+    assert modules.custom_op.awq_dequantize is modules.original
+    assert awq_dequantize._applied
+
+    awq_dequantize.patch_awq_dequantize()
+    assert modules.imports == [modules.target.__name__, modules.triton.__name__]
+    assert modules.target.awq_dequantize is modules.replacement
+
+
+@pytest.mark.parametrize("binding", ["original", "replacement"])
+@pytest.mark.parametrize("invalid", ["missing", "noncallable"])
+def test_awq_patch_rejects_missing_binding_without_partial_install(
+    awq_patch_modules, binding, invalid
+):
+    modules = awq_patch_modules
+    module, name, valid = (
+        (modules.target, "awq_dequantize", modules.original)
+        if binding == "original"
+        else (modules.triton, "awq_dequantize_triton", modules.replacement)
+    )
+    if invalid == "missing":
+        delattr(module, name)
+    else:
+        setattr(module, name, None)
+    before = vars(modules.target).copy()
+    with pytest.raises(
+        RuntimeError, match="requires SGLang's AWQ dequantization bindings"
+    ):
+        awq_dequantize.patch_awq_dequantize()
+    assert vars(modules.target) == before
+    assert not awq_dequantize._applied
+    assert modules.custom_op.awq_dequantize is modules.original
+
+    setattr(module, name, valid)
+    awq_dequantize.patch_awq_dequantize()
+    assert modules.target.awq_dequantize is modules.replacement
+    assert awq_dequantize._applied
+
+
+def test_awq_patch_propagates_import_failure(monkeypatch, awq_patch_modules):
+    def unavailable(name):
+        raise ImportError("missing AWQ runtime dependency")
+
+    monkeypatch.setattr(awq_dequantize.importlib, "import_module", unavailable)
+    with pytest.raises(ImportError, match="missing AWQ runtime dependency"):
+        awq_dequantize.patch_awq_dequantize()
+    assert not awq_dequantize._applied
+    assert awq_patch_modules.target.awq_dequantize is awq_patch_modules.original

@@ -8,6 +8,13 @@ flagos_blacklist:
   # Cold FlagGems autotuning mutates aliased inputs repeatedly on CoreX.
   # Keep out-of-place mul on FlagGems; use native Torch for in-place mul.
   - mul_
+  # Native CoreX dense GEMM path: exclude decomposed calls as well as linear.
+  # FlagGems matches implementation function names, including *_out.
+  - linear
+  - mm
+  - mm_out
+  - addmm
+  - addmm_out
 
 # Preserve the native paths introduced by PR #132; FlagGems remains selectable.
 op_backends:
