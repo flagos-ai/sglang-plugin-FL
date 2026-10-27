@@ -234,6 +234,267 @@ def test_overlay_runs_pdl_before_sglang_imports_and_retries(monkeypatch):
     assert calls == ["pdl", "clamp", "pdl", "clamp", "legacy", "speculative"]
 
 
+def _load_model_config_bootstrap(monkeypatch, original, loader, active, hooks=None):
+    import sglang_fl
+
+    class ModelConfig:
+        from_server_args = staticmethod(original)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang.srt.configs.model_config",
+        SimpleNamespace(ModelConfig=ModelConfig),
+    )
+    monkeypatch.setitem(
+        sys.modules, "sglang.srt.plugins", SimpleNamespace(load_plugins=loader)
+    )
+    if hooks is None:
+        hooks = SimpleNamespace(
+            _hooks={
+                "owned.target": [
+                    (None, lambda: None, SimpleNamespace(plugin_name="sglang_fl"))
+                ]
+            },
+            _patched={"owned.target"},
+        )
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang.srt.plugins.hook_registry",
+        SimpleNamespace(HookRegistry=hooks),
+    )
+    monkeypatch.setattr(sglang_fl, "is_plugin_active", lambda: active[0])
+    path = Path(legacy_gpu_gate.__file__).parents[1] / "register_platform.py"
+    spec = importlib.util.spec_from_file_location(
+        "sglang_fl.dispatch.backends.vendor.iluvatar._test_register_platform", path
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return ModelConfig, module
+
+
+def test_low_level_model_config_loads_plugin_before_copied_dtype_gate(monkeypatch):
+    calls, active = [], [False]
+    config = SimpleNamespace(dtype=torch.bfloat16)
+    server_args = object()
+
+    def nvidia_gate(**kwargs):
+        raise RuntimeError("SGLang only supports sm75 and above.")
+
+    helper = SimpleNamespace(maybe_downgrade_dtype_for_legacy_gpu=nvidia_gate)
+    runner = SimpleNamespace(maybe_downgrade_dtype_for_legacy_gpu=nvidia_gate)
+    monkeypatch.setitem(sys.modules, legacy_gpu_gate._TARGET_MODULE, helper)
+    monkeypatch.setitem(sys.modules, legacy_gpu_gate._MODEL_RUNNER_MODULE, runner)
+    monkeypatch.setattr(legacy_gpu_gate, "_patched", False)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda **kw: True)
+
+    def loader():
+        calls.append("load_plugins")
+        legacy_gpu_gate.patch_legacy_gpu_gate()
+        calls.append("apply_hooks")
+        active[0] = True
+
+    def original(args, *, is_draft_model=False):
+        calls.append("model_config")
+        assert args is server_args and is_draft_model is True
+        runner.maybe_downgrade_dtype_for_legacy_gpu(
+            server_args=args, model_config=config
+        )
+        return config
+
+    cls, module = _load_model_config_bootstrap(monkeypatch, original, loader, active)
+    assert calls == []  # Installation during ModelRunner import must be deferred.
+    wrapped = cls.__dict__["from_server_args"]
+    assert isinstance(wrapped, staticmethod)
+    module._install_model_config_bootstrap()
+    assert cls.__dict__["from_server_args"] is wrapped
+    for _ in range(2):
+        assert cls.from_server_args(server_args, is_draft_model=True) is config
+        assert config.dtype is torch.bfloat16
+    assert calls == ["load_plugins", "apply_hooks", "model_config", "model_config"]
+
+
+def test_active_engine_model_config_preserves_arguments_without_reentry(monkeypatch):
+    calls, active = [], [True]
+    arguments, result = object(), object()
+
+    def unexpected_loader():
+        raise AssertionError("An active Engine must not reenter plugin loading")
+
+    def original(*args, **kwargs):
+        calls.append((args, kwargs))
+        return result
+
+    cls, _ = _load_model_config_bootstrap(
+        monkeypatch, original, unexpected_loader, active
+    )
+    assert cls.from_server_args(arguments, model_path="draft") is result
+    assert calls == [((arguments,), {"model_path": "draft"})]
+
+
+@pytest.mark.parametrize("failure", ["inactive", "import", "hook", "swallowed_hook"])
+def test_low_level_model_config_rejects_incomplete_plugin(monkeypatch, failure):
+    calls, active = [], [False]
+
+    def original(*args, **kwargs):
+        calls.append("model_config")
+
+    def loader():
+        calls.append("load_plugins")
+        if failure == "import":
+            raise ImportError("missing runtime dependency")
+        if failure == "hook":
+            active[0] = True
+            raise RuntimeError("hook application failed")
+        if failure == "swallowed_hook":
+            active[0] = True
+        # Includes filtered plugins, or exceptions swallowed by SGLang's loader.
+
+    hooks = SimpleNamespace(
+        _hooks={
+            "owned.target": [
+                (None, lambda: None, SimpleNamespace(plugin_name="sglang_fl"))
+            ]
+        },
+        _patched=set(),
+    )
+    cls, _ = _load_model_config_bootstrap(monkeypatch, original, loader, active, hooks)
+    error = ImportError if failure == "import" else RuntimeError
+    with pytest.raises(error):
+        cls.from_server_args(object())
+    with pytest.raises(RuntimeError, match="previously failed"):
+        cls.from_server_args(object())
+    assert calls == ["load_plugins"]
+
+
+def test_low_level_model_config_ignores_unrelated_plugin_hook_failure(monkeypatch):
+    hooks = SimpleNamespace(
+        _hooks={
+            "owned.target": [
+                (None, lambda: None, SimpleNamespace(plugin_name="sglang_fl"))
+            ],
+            "other.target": [
+                (None, lambda: None, SimpleNamespace(plugin_name="another_plugin"))
+            ],
+        },
+        _patched={"owned.target"},
+    )
+    result = object()
+    cls, _ = _load_model_config_bootstrap(
+        monkeypatch, lambda value: result, lambda: None, [True], hooks
+    )
+    assert cls.from_server_args(object()) is result
+
+
+@pytest.mark.parametrize("reset", ["active", "hooks"])
+def test_low_level_model_config_rejects_reset_after_initialization(monkeypatch, reset):
+    active, calls = [True], []
+    hooks = SimpleNamespace(
+        _hooks={
+            "owned.target": [
+                (None, lambda: None, SimpleNamespace(plugin_name="sglang_fl"))
+            ]
+        },
+        _patched={"owned.target"},
+    )
+    cls, _ = _load_model_config_bootstrap(
+        monkeypatch, lambda value: calls.append(value), lambda: None, active, hooks
+    )
+    cls.from_server_args("before")
+    if reset == "active":
+        active[0] = False
+    else:
+        hooks._hooks.clear()
+        hooks._patched.clear()
+    with pytest.raises(RuntimeError):
+        cls.from_server_args("after")
+    assert calls == ["before"]
+
+
+def test_low_level_model_config_waits_for_hooks_after_active_flag(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+
+    active, calls = [False], []
+    active_set, finish_hooks = threading.Event(), threading.Event()
+    second_entered, second_returned = threading.Event(), threading.Event()
+
+    def loader():
+        calls.append("load_plugins")
+        active[0] = True
+        active_set.set()
+        assert finish_hooks.wait(5)
+        calls.append("apply_hooks")
+
+    def original(value):
+        assert "apply_hooks" in calls
+        calls.append(value)
+        return value
+
+    cls, _ = _load_model_config_bootstrap(monkeypatch, original, loader, active)
+
+    def second_call():
+        second_entered.set()
+        value = cls.from_server_args("second")
+        second_returned.set()
+        return value
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(cls.from_server_args, "first")
+        second = None
+        try:
+            assert active_set.wait(5)
+            second = pool.submit(second_call)
+            assert second_entered.wait(5)
+            assert not second_returned.wait(0.1)
+        finally:
+            finish_hooks.set()
+        assert first.result(timeout=5) == "first"
+        assert second.result(timeout=5) == "second"
+    assert calls[:2] == ["load_plugins", "apply_hooks"]
+    assert sorted(calls[2:]) == ["first", "second"]
+
+
+def test_low_level_model_config_rejects_recursive_bootstrap(monkeypatch):
+    active, calls = [False], []
+
+    def loader():
+        active[0] = True
+        cls.from_server_args("recursive")
+
+    cls, _ = _load_model_config_bootstrap(
+        monkeypatch, lambda value: calls.append(value), loader, active
+    )
+    with pytest.raises(RuntimeError, match="Recursive"):
+        cls.from_server_args("outer")
+    with pytest.raises(RuntimeError, match="previously failed"):
+        cls.from_server_args("later")
+    assert calls == []
+
+
+def test_low_level_model_config_preserves_plugin_opt_out_environment(monkeypatch):
+    import os
+
+    active = [False]
+    expected = {
+        "USE_FLAGGEMS": "0",
+        "SGLANG_FL_OOT_ENABLED": "0",
+        "SGLANG_PLUGINS": "sglang_fl",
+    }
+    for key, value in expected.items():
+        monkeypatch.setenv(key, value)
+
+    def loader():
+        assert {key: os.environ[key] for key in expected} == expected
+        active[0] = True
+
+    result = object()
+    cls, _ = _load_model_config_bootstrap(
+        monkeypatch, lambda args: result, loader, active
+    )
+    assert cls.from_server_args(object()) is result
+    assert {key: os.environ[key] for key in expected} == expected
+
+
 def _cpu_build_speculative_tree(
     parent_list,
     selected_index,
