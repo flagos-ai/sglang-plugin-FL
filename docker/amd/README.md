@@ -8,7 +8,6 @@ Verified on **AMD Radeon AI PRO R9700** (gfx1201, 32 GB), ROCm 7.2.4, PyTorch 2.
 | Qwen3.5-9B | TP=1, TP=2 (FlagCX) | Verified |
 | Qwen3.6-27B | TP=2 (FlagCX) | Verified (`--mem-fraction-static 0.92`) |
 | Qwen3.6-35B-A3B-FP8 | TP=2 (FlagCX) | Verified |
-| Qwen3.6-35B-A3B (bf16) | TP=4 | Not verified yet (67 GB of weights do not fit in 2 × 32 GB) |
 
 ## Setup
 
