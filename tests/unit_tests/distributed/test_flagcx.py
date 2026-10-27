@@ -130,3 +130,90 @@ def test_disabled_send_recv_broadcast_return_early() -> None:
     assert comm.broadcast(tensor, src=0) is None
     assert comm.send(tensor, dst=1) is None
     assert comm.recv(tensor, src=0) is None
+
+
+_FAKE_WRAPPER_SOURCE = """
+FLAGCXLibrary = "{tag}"
+buffer_type = object
+flagcxComm_t = object
+flagcxDataTypeEnum = object
+flagcxRedOpTypeEnum = object
+flagcxUniqueId = object
+flagcxStream_t = object
+"""
+
+
+def _write_wrapper(path: Path, tag: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_FAKE_WRAPPER_SOURCE.format(tag=tag))
+
+
+@pytest.fixture
+def _clean_wrapper_modules():
+    import sys
+
+    from sglang_fl.distributed.device_communicators import flagcx as flagcx_mod
+
+    names = (flagcx_mod._FLAGCX_API_MODULE, "plugin", "plugin.interservice",
+             "plugin.interservice.flagcx_wrapper")
+    saved_path = list(sys.path)
+    for name in names:
+        sys.modules.pop(name, None)
+    yield
+    for name in names:
+        sys.modules.pop(name, None)
+    sys.path[:] = saved_path
+
+
+def test_import_flagcx_wrapper_uses_src_api(
+    monkeypatch, tmp_path: Path, _clean_wrapper_modules
+) -> None:
+    from sglang_fl.distributed.device_communicators.flagcx import _import_flagcx_wrapper
+
+    _write_wrapper(tmp_path / "src" / "flagcx" / "api.py", "src_api")
+    monkeypatch.setenv("FLAGCX_PATH", str(tmp_path))
+
+    assert _import_flagcx_wrapper()[0] == "src_api"
+
+
+def test_import_flagcx_wrapper_prefers_legacy_wrapper(
+    monkeypatch, tmp_path: Path, _clean_wrapper_modules
+) -> None:
+    from sglang_fl.distributed.device_communicators.flagcx import _import_flagcx_wrapper
+
+    _write_wrapper(tmp_path / "plugin" / "interservice" / "flagcx_wrapper.py", "legacy")
+    (tmp_path / "plugin" / "__init__.py").write_text("")
+    (tmp_path / "plugin" / "interservice" / "__init__.py").write_text("")
+    _write_wrapper(tmp_path / "src" / "flagcx" / "api.py", "src_api")
+    monkeypatch.setenv("FLAGCX_PATH", str(tmp_path))
+
+    assert _import_flagcx_wrapper()[0] == "legacy"
+
+
+def test_import_flagcx_wrapper_caches_src_api(
+    monkeypatch, tmp_path: Path, _clean_wrapper_modules
+) -> None:
+    from sglang_fl.distributed.device_communicators import flagcx as flagcx_mod
+
+    _write_wrapper(tmp_path / "src" / "flagcx" / "api.py", "src_api")
+    monkeypatch.setenv("FLAGCX_PATH", str(tmp_path))
+
+    first = flagcx_mod._load_flagcx_wrapper_module()
+    assert flagcx_mod._load_flagcx_wrapper_module() is first
+
+
+@pytest.mark.parametrize("dtype", [torch.bool, torch.float8_e4m3fn, torch.float8_e5m2])
+def test_reduce_dtype_rejects_byte_only_types(dtype) -> None:
+    comm = _disabled_comm()
+
+    with pytest.raises(ValueError, match="does not support"):
+        comm._reduce_dtype(dtype)
+
+
+def test_reduce_dtype_passes_through_float_types() -> None:
+    comm = _disabled_comm()
+    comm._dtype_enum = Mock()
+    comm._dtype_enum.from_torch.return_value = 9
+
+    assert comm._reduce_dtype(torch.bfloat16) == 9
+    comm._dtype_enum.from_torch.assert_called_once_with(torch.bfloat16)

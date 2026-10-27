@@ -23,7 +23,10 @@ Adapted from vllm-plugin-FL's PyFlagcxCommunicator pattern:
 Requirements:
   - FLAGCX_PATH env var pointing to FlagCX installation
   - libflagcx.so built at $FLAGCX_PATH/build/lib/
-  - FlagCX Python wrapper at $FLAGCX_PATH/plugin/interservice/flagcx_wrapper.py
+  - FlagCX Python wrapper, one of:
+      $FLAGCX_PATH/plugin/interservice/flagcx_wrapper.py   (FlagCX <= 0.13)
+      $FLAGCX_PATH/src/flagcx/api.py                       (FlagCX >= 0.14)
+      an installed ``flagcx`` package providing ``flagcx.api``
 
 Usage:
   SGLANG_FL_DIST_BACKEND=flagcx FLAGCX_PATH=/path/to/FlagCX \
@@ -32,6 +35,8 @@ Usage:
 
 import contextlib
 import ctypes
+import importlib
+import importlib.util
 import logging
 import os
 import sys
@@ -41,9 +46,17 @@ import torch.distributed as dist
 
 logger = logging.getLogger(__name__)
 
+_FLAGCX_API_MODULE = "sglang_fl._flagcx_api"
 
-def _import_flagcx_wrapper():
-    """Import FlagCX wrapper, adding FLAGCX_PATH to sys.path if needed."""
+_FP8_DTYPES = tuple(
+    getattr(torch, name)
+    for name in ("float8_e4m3fn", "float8_e5m2", "float8_e4m3fnuz", "float8_e5m2fnuz")
+    if hasattr(torch, name)
+)
+
+
+def _load_flagcx_wrapper_module():
+    """Locate and import the FlagCX Python wrapper module under FLAGCX_PATH."""
     flagcx_path = os.getenv("FLAGCX_PATH")
     if not flagcx_path:
         raise RuntimeError(
@@ -53,25 +66,44 @@ def _import_flagcx_wrapper():
     if not os.path.isdir(flagcx_path):
         raise RuntimeError(f"FLAGCX_PATH={flagcx_path} is not a valid directory.")
 
-    if flagcx_path not in sys.path:
-        sys.path.append(flagcx_path)
-
-    from plugin.interservice.flagcx_wrapper import (
-        FLAGCXLibrary,
-        buffer_type,
-        flagcxComm_t,
-        flagcxDataTypeEnum,
-        flagcxRedOpTypeEnum,
-        flagcxUniqueId,
+    legacy_wrapper = os.path.join(
+        flagcx_path, "plugin", "interservice", "flagcx_wrapper.py"
     )
+    if os.path.isfile(legacy_wrapper):
+        if flagcx_path not in sys.path:
+            sys.path.append(flagcx_path)
+        return importlib.import_module("plugin.interservice.flagcx_wrapper")
 
+    api_path = os.path.join(flagcx_path, "src", "flagcx", "api.py")
+    if os.path.isfile(api_path):
+        module = sys.modules.get(_FLAGCX_API_MODULE)
+        if module is not None:
+            return module
+        # Load by file path: importing the ``flagcx`` package would also load
+        # its compiled torch extension, which a plain source build lacks.
+        spec = importlib.util.spec_from_file_location(_FLAGCX_API_MODULE, api_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[_FLAGCX_API_MODULE] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            sys.modules.pop(_FLAGCX_API_MODULE, None)
+            raise
+        return module
+
+    return importlib.import_module("flagcx.api")
+
+
+def _import_flagcx_wrapper():
+    """Import the FlagCX wrapper and return the symbols this plugin uses."""
+    wrapper = _load_flagcx_wrapper_module()
     return (
-        FLAGCXLibrary,
-        buffer_type,
-        flagcxComm_t,
-        flagcxDataTypeEnum,
-        flagcxRedOpTypeEnum,
-        flagcxUniqueId,
+        wrapper.FLAGCXLibrary,
+        wrapper.buffer_type,
+        wrapper.flagcxComm_t,
+        wrapper.flagcxDataTypeEnum,
+        wrapper.flagcxRedOpTypeEnum,
+        wrapper.flagcxUniqueId,
     )
 
 
@@ -206,8 +238,7 @@ class FlagCXCommunicator:
         cached = self._stream_cache.get(handle)
         if cached is not None:
             return cached
-        from plugin.interservice.flagcx_wrapper import flagcxStream_t
-        new_stream = flagcxStream_t()
+        new_stream = _load_flagcx_wrapper_module().flagcxStream_t()
         self.flagcx.FLAGCX_CHECK(
             self.flagcx.devHandle.contents.streamCopy(
                 ctypes.byref(new_stream),
@@ -217,6 +248,12 @@ class FlagCXCommunicator:
         self._stream_cache[handle] = new_stream
         return new_stream
 
+    def _reduce_dtype(self, dtype: torch.dtype) -> int:
+        """FlagCX dtype for a SUM reduction; bool/fp8 only travel as raw bytes."""
+        if dtype == torch.bool or dtype in _FP8_DTYPES:
+            raise ValueError(f"FlagCX SUM reduction does not support {dtype}")
+        return self._dtype_enum.from_torch(dtype)
+
     def _flagcx_all_reduce(self, tensor: torch.Tensor) -> torch.Tensor:
         """Internal all_reduce using FlagCX API."""
         out_tensor = torch.empty_like(tensor)
@@ -225,7 +262,7 @@ class FlagCXCommunicator:
             self._buffer_type(tensor.data_ptr()),
             self._buffer_type(out_tensor.data_ptr()),
             tensor.numel(),
-            self._dtype_enum.from_torch(tensor.dtype),
+            self._reduce_dtype(tensor.dtype),
             self._redop_enum.from_torch(torch.distributed.ReduceOp.SUM),
             self.comm,
             flagcx_stream,
@@ -258,7 +295,7 @@ class FlagCXCommunicator:
             self._buffer_type(input_.data_ptr()),
             self._buffer_type(output.data_ptr()),
             output.numel(),
-            self._dtype_enum.from_torch(input_.dtype),
+            self._reduce_dtype(input_.dtype),
             self._redop_enum.from_torch(torch.distributed.ReduceOp.SUM),
             self.comm,
             flagcx_stream,
@@ -305,7 +342,7 @@ class FlagCXCommunicator:
                 self._buffer_type(chunk.data_ptr()),
                 self._buffer_type(output.data_ptr()),
                 chunk.numel(),
-                self._dtype_enum.from_torch(input_.dtype),
+                self._reduce_dtype(input_.dtype),
                 self._redop_enum.from_torch(torch.distributed.ReduceOp.SUM),
                 root,
                 self.comm,
