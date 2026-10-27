@@ -3,8 +3,10 @@
 
 platform: thead
 
-# Docker image for this hardware
-ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-thead-ci
+# Docker image for this hardware: SGLang 0.5.18 empty mode, built from
+# docker/thead/empty-0.5.18.containerfile on the PPU empty base image.
+# TODO: build and push this tag, then pin it by digest (as hygon.yml does).
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-ci
 
 # Runner labels for this hardware
 runner_labels:
