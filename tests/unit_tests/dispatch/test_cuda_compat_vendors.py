@@ -38,6 +38,8 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+from sglang_fl.dispatch.types import BackendImplKind
+
 
 class TestCudaCompatibleVendors:
     """Test that CUDA-compatible vendors (thead, etc.) are correctly routed to CUDA implementations."""
@@ -174,6 +176,12 @@ class TestCudaCompatibleVendors:
             for op_name in registered_ops:
                 for impl in registry.get_implementations(op_name):
                     assert impl.impl_id == "vendor.cuda"
+                    # vendor.cuda is a dispatch-path adapter around the
+                    # existing SGLang CUDA implementation.  Keep logical
+                    # dispatch ownership separate from physical provenance.
+                    assert impl.kind == BackendImplKind.VENDOR
+                    assert impl.runtime_source_category == "third_party"
+                    assert impl.runtime_source_library == "sglang"
                     assert hasattr(impl.fn, "_is_available"), (
                         f"Op '{op_name}' missing _is_available binding"
                     )

@@ -47,6 +47,8 @@ def register_builtins(registry) -> None:
             fn=_bind_is_available(backend.silu_and_mul, is_avail),
             vendor="cuda",
             priority=BackendPriority.VENDOR,
+            runtime_source_category="third_party",
+            runtime_source_library="sglang",
         ),
         OpImpl(
             op_name="rms_norm",
@@ -55,6 +57,8 @@ def register_builtins(registry) -> None:
             fn=_bind_is_available(backend.rms_norm, is_avail),
             vendor="cuda",
             priority=BackendPriority.VENDOR,
+            runtime_source_category="third_party",
+            runtime_source_library="sglang",
         ),
         OpImpl(
             op_name="gemma_rms_norm",
@@ -63,6 +67,8 @@ def register_builtins(registry) -> None:
             fn=_bind_is_available(backend.gemma_rms_norm, is_avail),
             vendor="cuda",
             priority=BackendPriority.VENDOR,
+            runtime_source_category="third_party",
+            runtime_source_library="sglang",
         ),
         OpImpl(
             op_name="rotary_embedding",
@@ -71,6 +77,8 @@ def register_builtins(registry) -> None:
             fn=_bind_is_available(backend.rotary_embedding, is_avail),
             vendor="cuda",
             priority=BackendPriority.VENDOR,
+            runtime_source_category="third_party",
+            runtime_source_library="sglang",
         ),
         OpImpl(
             op_name="mrotary_embedding",
@@ -79,6 +87,8 @@ def register_builtins(registry) -> None:
             fn=_bind_is_available(backend.mrotary_embedding, is_avail),
             vendor="cuda",
             priority=BackendPriority.VENDOR,
+            runtime_source_category="third_party",
+            runtime_source_library="sglang",
         ),
         OpImpl(
             op_name="topk",
@@ -87,6 +97,8 @@ def register_builtins(registry) -> None:
             fn=_bind_is_available(backend.topk, is_avail),
             vendor="cuda",
             priority=BackendPriority.VENDOR,
+            runtime_source_category="third_party",
+            runtime_source_library="sglang",
         ),
         OpImpl(
             op_name="fused_moe",
@@ -95,6 +107,8 @@ def register_builtins(registry) -> None:
             fn=_bind_is_available(backend.fused_moe, is_avail),
             vendor="cuda",
             priority=BackendPriority.VENDOR,
+            runtime_source_category="third_party",
+            runtime_source_library="sglang",
         ),
         OpImpl(
             op_name="chunk_gated_delta_rule",
@@ -103,6 +117,8 @@ def register_builtins(registry) -> None:
             fn=_bind_is_available(backend.chunk_gated_delta_rule, is_avail),
             vendor="cuda",
             priority=BackendPriority.VENDOR,
+            runtime_source_category="third_party",
+            runtime_source_library="sglang",
         ),
         OpImpl(
             op_name="fused_recurrent_gated_delta_rule",
@@ -111,6 +127,8 @@ def register_builtins(registry) -> None:
             fn=_bind_is_available(backend.fused_recurrent_gated_delta_rule, is_avail),
             vendor="cuda",
             priority=BackendPriority.VENDOR,
+            runtime_source_category="third_party",
+            runtime_source_library="sglang",
         ),
         OpImpl(
             op_name="fused_recurrent_gated_delta_rule_packed_decode",
@@ -121,6 +139,8 @@ def register_builtins(registry) -> None:
             ),
             vendor="cuda",
             priority=BackendPriority.VENDOR,
+            runtime_source_category="third_party",
+            runtime_source_library="sglang",
         ),
     ]
 
