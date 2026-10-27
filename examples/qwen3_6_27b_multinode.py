@@ -181,10 +181,9 @@ def _check_images():
         if not (IMG_DIR / name).is_file() or (IMG_DIR / name).stat().st_size == 0
     ]
     if missing:
-        print("ERROR: Missing or empty test images:")
-        for path in missing:
-            print(f"  - {path}")
-        sys.exit(1)
+        raise FileNotFoundError(
+            "Required test images are missing or empty: " + ", ".join(missing)
+        )
 
 
 # ─── Argument parsing ────────────────────────────────────────────────────────
@@ -367,6 +366,7 @@ def run_tests(
     request_timeout: int = 300,
 ) -> bool:
     """Run all verification tests. Returns True if all passed."""
+    _check_images()
     t = TestRunner()
 
     # Test 1: Text Inference (Sequential)
@@ -578,6 +578,7 @@ def run_tests(
 
 def run_master(args):
     """Launch server, wait for ready, run tests, shutdown."""
+    _check_images()
     node_rank = args.node_rank if args.node_rank is not None else 0
 
     # Validate TP size for this model

@@ -32,8 +32,8 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _TESTS_DIR = _REPO_ROOT / "tests"
 sys.path.insert(0, str(_REPO_ROOT))
 
-from tests.utils.model_config import ModelConfig
-from tests.utils.platform_config import PlatformConfig
+from tests.utils.model_config import ModelConfig  # noqa: E402 - repo path bootstrap
+from tests.utils.platform_config import PlatformConfig  # noqa: E402 - repo path bootstrap
 
 
 def load_structured_config(path: Path) -> dict[str, Any]:
@@ -89,6 +89,11 @@ class TestRunner:
         cases = self.discover_tests()
         if not cases:
             print("[run] No test cases selected.")
+            if self.scope == "benchmark" and self.config.get_benchmark_tests().get(
+                "require_cases", False
+            ):
+                print("[run] This platform requires a non-empty benchmark selection.")
+                return 1
             return 0
 
         print(f"[run] Platform: {self.config.platform}")
@@ -220,8 +225,14 @@ class TestRunner:
 
             for raw_case in case_list:
                 runtime_case = dict(raw_case)
-                model_name = runtime_case.pop("model", self.model)
-                case_name = runtime_case.pop("case", self.case)
+                # A platform can bind the shared smoke workload to an existing
+                # model fixture without changing the benchmark entrypoints.
+                model_name = benchmark_cfg.get(
+                    "model", runtime_case.pop("model", self.model)
+                )
+                case_name = benchmark_cfg.get(
+                    "case", runtime_case.pop("case", self.case)
+                )
                 if not model_name or not case_name:
                     print(
                         f"[run] Skipping benchmark/{bench_type}: "
@@ -243,6 +254,10 @@ class TestRunner:
                 model_cfg.apply_engine_overrides(engine_overrides)
 
                 self._inject_model_config(runtime_case, model_cfg)
+                if "tp_size" in benchmark_cfg:
+                    for section in ("parameters", "server_parameters"):
+                        if section in runtime_case:
+                            runtime_case[section]["tp_size"] = int(benchmark_cfg["tp_size"])
                 name = str(runtime_case.get("name", f"{bench_type}_smoke"))
                 cases.append(
                     TestCase(

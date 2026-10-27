@@ -16,9 +16,10 @@ Modes:
 
 Environment variables:
   MODEL_PATH       Model path (default: /models/Qwen3.6-27B)
-  TP_SIZE          Tensor parallelism (default: 4 on Ascend/TXDA, otherwise 1)
+  TP_SIZE          Tensor parallelism (default: 4 on CoreX/Ascend/TXDA, otherwise 1)
   MAX_TOKENS       Max generation tokens for text (default: 256)
   CONCURRENT_N     Concurrent request count (default: 16)
+  FL_CONCURRENT_VL_MAX_TOKENS  CoreX VL token limit (default: 256; other backends keep 64)
   IMAGE_DIR        Test image directory (default: examples/test_images/)
 """
 
@@ -64,9 +65,16 @@ if _is_txda:
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-27B")
-TP_SIZE = int(os.environ.get("TP_SIZE", "4" if _is_npu or _is_txda else "1"))
+TP_SIZE = int(os.environ.get("TP_SIZE", "4" if _is_npu or _is_txda or _is_corex else "1"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "256"))
+VL_MAX_TOKENS = 64
+if _is_corex:
+    VL_MAX_TOKENS = int(os.environ.get("FL_CONCURRENT_VL_MAX_TOKENS", "256"))
+    if VL_MAX_TOKENS < 1:
+        raise ValueError("FL_CONCURRENT_VL_MAX_TOKENS must be a positive integer")
 CONCURRENT_N = int(os.environ.get("CONCURRENT_N", "16"))
+if CONCURRENT_N < 1:
+    raise ValueError("CONCURRENT_N must be a positive integer")
 
 _HERE = Path(__file__).resolve().parent
 IMAGE_DIR = Path(os.environ.get("IMAGE_DIR", _HERE / "test_images"))
@@ -104,10 +112,12 @@ elif _is_txda:
     }
 elif _is_corex:
     _extra_engine_kwargs = {
+        # Use the processor validated for CoreX concurrent image semantics.
+        "disable_fast_image_processor": True,
         "trust_remote_code": True,
         "watchdog_timeout": 3600,
         "attention_backend": "triton",
-        "cuda_graph_max_bs_decode": 16,
+        "cuda_graph_max_bs_decode": max(1, CONCURRENT_N),
     }
 elif _is_hcu:
     _extra_engine_kwargs = {
@@ -235,7 +245,7 @@ def _make_engine():
         model_path=MODEL_PATH,
         tp_size=TP_SIZE,
         mem_fraction_static=0.6 if _is_txda else 0.85,
-        disable_cuda_graph=True,
+        disable_cuda_graph=os.environ.get("DISABLE_CUDA_GRAPH", "1") != "0",
         **_extra_engine_kwargs,
     )
 
@@ -243,7 +253,7 @@ def _make_engine():
 # ─── Sampling params ─────────────────────────────────────────────────────────
 
 _TEXT_SAMPLING = {"max_new_tokens": MAX_TOKENS, "temperature": 0}
-_VL_SAMPLING = {"max_new_tokens": 64, "temperature": 0}
+_VL_SAMPLING = {"max_new_tokens": VL_MAX_TOKENS, "temperature": 0}
 
 # ─── Stats helpers ───────────────────────────────────────────────────────────
 
@@ -419,6 +429,30 @@ def validate_vl(pairs):
     print("  vl validation passed.")
 
 
+def _flush_between_modes(engine):
+    if not _is_corex:
+        return engine.flush_cache()
+
+    # CoreX can finish delivering outputs before the scheduler is fully idle.
+    # A false acknowledgement leaves both scheduler and multimodal caches intact.
+    # This bounds retries, not the duration of an individual synchronous RPC.
+    deadline = time.monotonic() + 30.0
+    while True:
+        result = engine.flush_cache()
+        success = getattr(result, "success", None)
+        if success is True:
+            print("  CoreX cache flush acknowledged.")
+            return result
+        if success is not False:
+            raise RuntimeError("CoreX cache flush returned no explicit success state")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("CoreX cache flush exhausted its 30-second retry budget")
+        time.sleep(min(0.1, remaining))
+        if time.monotonic() >= deadline:
+            raise RuntimeError("CoreX cache flush exhausted its 30-second retry budget")
+
+
 def _check_images():
     missing = [
         str(IMAGE_DIR / c["image"])
@@ -454,7 +488,7 @@ if __name__ == "__main__":
 
     print(
         f"Model: {MODEL_PATH} | TP: {TP_SIZE} | CONCURRENT_N: {CONCURRENT_N}\n"
-        f"cuda_graph disabled — throughput numbers reflect that.\n"
+        f"cuda_graph disabled: {os.environ.get('DISABLE_CUDA_GRAPH', '1') != '0'}\n"
     )
 
     engine = _make_engine()
@@ -462,7 +496,7 @@ if __name__ == "__main__":
         modes = ALL_MODES if args.mode == "all" else [args.mode]
         for i, m in enumerate(modes):
             if i > 0:
-                engine.flush_cache()  # Release KV cache between modes to avoid OOM on VL prefill
+                _flush_between_modes(engine)
             print(f"\n{'=' * 60}\n=== {m}\n{'=' * 60}")
             if m == "text":
                 pairs = run_text_concurrent(engine)

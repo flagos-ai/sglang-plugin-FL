@@ -18,7 +18,7 @@ MODEL_PATH. Hardware acceptance still requires the speculative backend support.
 
 Environment variables:
   MODEL_PATH    Model path (default: /models/Qwen3.6-27B)
-  TP_SIZE       Tensor parallelism (default: 2 on Hygon, 4 on Ascend/TXDA, else 1)
+  TP_SIZE       Tensor parallelism (default: 2 on Hygon, 4 on CoreX/Ascend/TXDA, else 1)
   MAX_TOKENS    Max generation tokens (default: 256)
 """
 
@@ -68,7 +68,9 @@ if _is_txda:
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-27B")
 TP_SIZE = int(
-    os.environ.get("TP_SIZE", "2" if _is_hcu else "4" if _is_npu or _is_txda else "1")
+    os.environ.get(
+        "TP_SIZE", "2" if _is_hcu else "4" if _is_npu or _is_txda or _is_corex else "1"
+    )
 )
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "256"))
 
@@ -232,7 +234,10 @@ def _platform_engine_kwargs() -> dict:
         return {
             "attention_backend": "triton",
             "watchdog_timeout": 3600,
-            "cuda_graph_max_bs": 16,
+            "cuda_graph_max_bs_decode": 16,
+            # The speculative default of 48 over-reserves hybrid state on 32 GiB
+            # cards. Keep the same explicit C16 capacity for MTP and baseline.
+            "max_running_requests": 16,
         }
     if _is_hcu:
         return {
@@ -924,8 +929,10 @@ def run_logprob_conformance(engine) -> dict:
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(*, model_label="Qwen3.6-27B"):
+    parser = argparse.ArgumentParser(
+        description=__doc__.replace("Qwen3.6-27B", model_label)
+    )
     parser.add_argument(
         "--skip-baseline", action="store_true", help="Skip baseline comparison (faster)"
     )
@@ -946,6 +953,21 @@ def main():
         help="Use synchronous scheduling (always forced on Ascend MTP)",
     )
     args = parser.parse_args()
+    if _is_corex:
+        # v0.5.18 eagle_utils enables synthetic acceptance only for values > 0.
+        # Correctness gates must use measured acceptance, and invalid/nonfinite
+        # values must fail before importing SGLang or creating an Engine.
+        try:
+            simulated_accept_length = float(
+                os.environ.get("SGLANG_SIMULATE_ACC_LEN", "-1")
+            )
+        except ValueError:
+            parser.error("SGLANG_SIMULATE_ACC_LEN must be a finite number <= 0")
+        if not math.isfinite(simulated_accept_length) or simulated_accept_length > 0:
+            parser.error(
+                "CoreX MTP correctness requires SGLANG_SIMULATE_ACC_LEN to be "
+                "finite and <= 0 (acceptance simulation disabled)"
+            )
     _enforce_ascend_mtp_runtime_mode(args)
     _enforce_hcu_mtp_runtime_mode(args)
 
@@ -962,7 +984,10 @@ def main():
         else ("cuda_graph" if not disable_pcg else "cuda_graph(no piecewise)")
     )
     print("=" * 70)
-    print(f"  {os.path.basename(MODEL_PATH)} MTP (Speculative Decoding) Validation")
+    print(
+        f"  {model_label if _is_corex else os.path.basename(MODEL_PATH)} "
+        "MTP (Speculative Decoding) Validation"
+    )
     print("=" * 70)
     print(f"  Model: {MODEL_PATH}")
     print(f"  TP: {TP_SIZE} | max_tokens: {max_tokens} | mode: {mode_str}")
