@@ -31,6 +31,10 @@ RUN SGLANG_VERSION=${SGLANG_VERSION} SGLANG_SRC=/opt/sglang-${SGLANG_VERSION} \
     bash /opt/sglang-plugin-fl/docker/thead/install-sglang-0.5.18-empty.sh && \
     pip cache purge
 
+# Test toolchain baked in so CI does not depend on PyPI at job time
+# (.github/scripts/thead/setup.sh still re-installs the plugin under test).
+RUN pip install --no-cache-dir pytest pytest-timeout pyyaml
+
 # Runtime defaults for the empty runtime (match the validated 0.5.11 empty env).
 #   SGLANG_IS_FLASHINFER_AVAILABLE=false: FlashInfer is not installed; the plugin also
 #     serves an import placeholder (vendor/thead/import_guard.py) for module-level imports.
