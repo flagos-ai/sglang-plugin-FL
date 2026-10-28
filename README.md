@@ -71,7 +71,7 @@ The tables below summarize the current support status of end-to-end verified mod
 | Iluvatar | Supported | - |
 | Kunlunxin | Supported | - |
 | Tsingmicro | Supported | - |
-| AMD (Radeon AI PRO R9700) | Supported | [docker/amd](./docker/amd/README.md) |
+| AMD (Radeon GPU) | Supported | [docker/amd](./docker/amd/README.md) |
 
 ## Quick Start
 
