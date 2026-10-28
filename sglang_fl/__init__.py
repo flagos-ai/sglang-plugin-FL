@@ -786,6 +786,17 @@ def load_plugin():
         from sglang_fl.dispatch.rotary_patch import patch_rotary_embedding_init
 
         patch_rotary_embedding_init()
+
+        # BCG-captured KDA prefill extend (ported from sglang 9a1aeacc3b).
+        try:
+            from sglang.srt.layers.attention.linear import kda_pg_install, kda_pg_hybrid
+
+            kda_pg_install.install()
+            kda_pg_hybrid.install()
+        except Exception as _kda_e:
+            import logging as _lg
+
+            _lg.getLogger(__name__).warning("kda pg install skipped: %r", _kda_e)
     else:
         logger.info("Layer 2 (Fused Ops) disabled (SGLANG_FL_OOT_ENABLED=0)")
 
