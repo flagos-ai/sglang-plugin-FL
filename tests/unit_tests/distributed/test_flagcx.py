@@ -217,3 +217,21 @@ def test_reduce_dtype_passes_through_float_types() -> None:
 
     assert comm._reduce_dtype(torch.bfloat16) == 9
     comm._dtype_enum.from_torch.assert_called_once_with(torch.bfloat16)
+
+
+@pytest.mark.parametrize(
+    "dtype, sent_as",
+    [
+        (torch.bool, torch.uint8),
+        (torch.float8_e4m3fn, torch.uint8),
+        (torch.float8_e5m2, torch.uint8),
+        (torch.bfloat16, torch.bfloat16),
+    ],
+)
+def test_transfer_dtype_sends_byte_only_types_as_uint8(dtype, sent_as) -> None:
+    comm = _disabled_comm()
+    comm._dtype_enum = Mock()
+    comm._dtype_enum.from_torch.return_value = 1
+
+    assert comm._transfer_dtype(dtype) == 1
+    comm._dtype_enum.from_torch.assert_called_once_with(sent_as)

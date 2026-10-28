@@ -254,6 +254,12 @@ class FlagCXCommunicator:
             raise ValueError(f"FlagCX SUM reduction does not support {dtype}")
         return self._dtype_enum.from_torch(dtype)
 
+    def _transfer_dtype(self, dtype: torch.dtype) -> int:
+        """FlagCX dtype for ops that only move bytes: bool/fp8 travel as uint8."""
+        if dtype == torch.bool or dtype in _FP8_DTYPES:
+            dtype = torch.uint8
+        return self._dtype_enum.from_torch(dtype)
+
     def _flagcx_all_reduce(self, tensor: torch.Tensor) -> torch.Tensor:
         """Internal all_reduce using FlagCX API."""
         out_tensor = torch.empty_like(tensor)
@@ -314,7 +320,7 @@ class FlagCXCommunicator:
             self._buffer_type(input_.data_ptr()),
             self._buffer_type(output.data_ptr()),
             input_.numel(),
-            self._dtype_enum.from_torch(input_.dtype),
+            self._transfer_dtype(input_.dtype),
             self.comm,
             flagcx_stream,
         )
@@ -374,7 +380,7 @@ class FlagCXCommunicator:
                 self._buffer_type(input_.data_ptr()),
                 self._buffer_type(dst_slice.data_ptr()),
                 dst_slice.numel(),
-                self._dtype_enum.from_torch(input_.dtype),
+                self._transfer_dtype(input_.dtype),
                 root,
                 self.comm,
                 flagcx_stream,
@@ -401,7 +407,7 @@ class FlagCXCommunicator:
             sendbuff,
             recvbuff,
             tensor.numel(),
-            self._dtype_enum.from_torch(tensor.dtype),
+            self._transfer_dtype(tensor.dtype),
             src,
             self.comm,
             flagcx_stream,
@@ -419,7 +425,7 @@ class FlagCXCommunicator:
         self.flagcx.flagcxSend(
             self._buffer_type(tensor.data_ptr()),
             tensor.numel(),
-            self._dtype_enum.from_torch(tensor.dtype),
+            self._transfer_dtype(tensor.dtype),
             dst,
             self.comm,
             flagcx_stream,
@@ -437,7 +443,7 @@ class FlagCXCommunicator:
         self.flagcx.flagcxRecv(
             self._buffer_type(tensor.data_ptr()),
             tensor.numel(),
-            self._dtype_enum.from_torch(tensor.dtype),
+            self._transfer_dtype(tensor.dtype),
             src,
             self.comm,
             flagcx_stream,
