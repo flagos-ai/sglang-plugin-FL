@@ -127,3 +127,9 @@ class ReferenceBackend(Backend):
         from .impl.mrotary_embedding import mrotary_embedding_torch
 
         return mrotary_embedding_torch(obj, positions, query, key)
+
+    def mhc_sinkhorn(self, comb: torch.Tensor, eps: float, repeat: int) -> torch.Tensor:
+        """Apply fused Sinkhorn normalization; see impl/mhc.py for details."""
+        from .impl.mhc import mhc_sinkhorn_torch
+
+        return mhc_sinkhorn_torch(comb, eps, repeat)
