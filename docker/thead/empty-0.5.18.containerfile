@@ -60,4 +60,20 @@ ENV SGLANG_PLUGINS=sglang_fl \
     SGLANG_IS_FLASHINFER_AVAILABLE=false \
     SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1
 
+# CI runs offline against the mounted model store (/data/models/Qwen, see
+# .github/configs/thead.yml). HF_HOME is pinned because the runner overrides
+# HOME=/github/home at job time. Same settings as docker/thead/containerfile.
+ENV HF_HOME=/opt/hf-cache \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+
+# The base image adds /opt/accl-p (PPU pccl libraries) to LD_LIBRARY_PATH only in
+# /root/.bashrc. GitHub Actions steps run `bash --noprofile --norc`, so bake it
+# into the image env to match the validated runtime.
+ENV LD_LIBRARY_PATH=/opt/accl-p:${LD_LIBRARY_PATH}
+
+# Fail the build if the vendor FlagCX tree from the base image is incomplete.
+RUN test -f "${FLAGCX_PATH}/build/lib/libflagcx.so" && \
+    test -f "${FLAGCX_PATH}/plugin/interservice/flagcx_wrapper.py"
+
 WORKDIR /opt/sglang-plugin-fl
