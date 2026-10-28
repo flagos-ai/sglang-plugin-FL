@@ -18,15 +18,22 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 ARG SGLANG_VERSION=0.5.18
+# pip index: official PyPI, as in docker/thead/containerfile (the base image's
+# aiext mirror is PPU/ML-focused). Override with --build-arg PIP_INDEX_URL=<url>.
+# Longer timeout and retries because files.pythonhosted.org can be slow from the
+# PPU build hosts.
 ARG PIP_INDEX_URL=https://pypi.org/simple
-ENV PIP_INDEX_URL=${PIP_INDEX_URL}
+ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
+    PIP_DEFAULT_TIMEOUT=300 \
+    PIP_RETRIES=10
 
 # A stale plugin copy in the base must not shadow the editable install below.
 RUN pip uninstall -y sglang_fl 2>/dev/null || true
 
 COPY . /opt/sglang-plugin-fl
 # No PPU devices at build time: skip the runtime activation check.
-RUN SGLANG_VERSION=${SGLANG_VERSION} SGLANG_SRC=/opt/sglang-${SGLANG_VERSION} \
+RUN echo "pip index: ${PIP_INDEX_URL}" && \
+    SGLANG_VERSION=${SGLANG_VERSION} SGLANG_SRC=/opt/sglang-${SGLANG_VERSION} \
     PLUGIN_SRC=/opt/sglang-plugin-fl SKIP_DEVICE_CHECK=1 \
     bash /opt/sglang-plugin-fl/docker/thead/install-sglang-0.5.18-empty.sh && \
     pip cache purge
