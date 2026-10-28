@@ -74,6 +74,7 @@ verified FlagGems master snapshot handles `to_copy` on H100.
 |-------|-----|--------|
 | Qwen3.6-27B (Hybrid Attention + FLA) | tp=2 | Verified on H100 with v0.5.18 |
 | Qwen3.6-35B-A3B (MoE, 256 experts) | tp=2 | Verified on H100 with v0.5.18 |
+| MiniMax-M3 BF16 (Sparse Attention + MoE) | TP8 x PP2 | Moore Threads S5000 integration; current branch hardware rerun pending; [example](./examples/minimax_m3_musa_multinode.sh) |
 | Qwen2.5-14B-Instruct | tp=8 | v0.5.18 rerun pending |
 
 The v0.5.18 H100 validation kept both FlagGems ATen replacement and fused-op

@@ -348,8 +348,9 @@ def apply_musa_patches() -> None:
     if _patches_applied:
         return
 
-    from .triton_compat import patch_triton_pdl_symbols
     from .lifecycle import apply_musa_lifecycle_patches
+    from .patches.minimax_m3 import install_minimax_m3_patches
+    from .triton_compat import patch_triton_pdl_symbols
 
     patch_triton_pdl_symbols()
     _patch_gdn_packed_decode_precision()
@@ -358,6 +359,7 @@ def apply_musa_patches() -> None:
     _patch_pp_launch_batch_add_sync()
     _patch_multimodal_mask()
     _patch_fp32_tp_all_reduce()
+    install_minimax_m3_patches()
     apply_musa_lifecycle_patches()
     _patches_applied = True
     logger.info("All MUSA PP patches applied successfully")
