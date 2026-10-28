@@ -104,6 +104,14 @@ def register_builtins(registry) -> None:
             vendor="ascend",
             priority=BackendPriority.VENDOR,
         ),
+        OpImpl(
+            op_name="mhc_sinkhorn",
+            impl_id="vendor.ascend",
+            kind=BackendImplKind.VENDOR,
+            fn=_bind_is_available(backend.mhc_sinkhorn, is_avail),
+            vendor="ascend",
+            priority=BackendPriority.VENDOR,
+        ),
     ]
 
     registry.register_many(impls)
