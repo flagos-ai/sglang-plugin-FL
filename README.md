@@ -47,6 +47,72 @@ Chip vendors only need to implement a backend class + `register_ops.py`. The dis
 | Python | 3.12 |
 | CUDA | 13.0 |
 
+## Hy4-preview text and NextN adaptation
+
+Set `SGLANG_HY4_ENABLE=1` before plugin initialization to register the causal
+text model, the checkpoint's text-only `HYV4VLForConditionalGeneration` alias,
+and its bundled single NextN block. These adapters use the SGLang 0.5.18 API
+family. Image/video inputs are rejected; no media processor or encoder is built.
+
+Select `flashmla_sparse` for both DSA prefill and decode to retain per-head
+attention sinks. `HY4_INDEXER_DTYPE` accepts `auto`, `fp8` or `int8`; auto keeps
+FP8 on NVIDIA SM90+ and selects INT8 elsewhere. INT8 uses the published quantize/cache-store/paged-logits APIs in
+[FlagGems #7782](https://github.com/flagos-ai/FlagGems/pull/7782). Install the
+exact public revision when selecting INT8:
+
+```sh
+pip install --no-deps "flag_gems @ git+https://github.com/CherryLemon/FlagGems.git@b3cb254c55b52c450131ada0ba87109ca18c6c25"
+```
+
+The API retains finite BF16/FP16/FP32 inputs and the packed cache layout.
+An isolated H100 public-wheel run at prior Core revision
+`bfb7b3fab3487a20e37ffb535ee3854eeefcff95` recorded 51 passes and one failure:
+the strict FP32 nextafter power-of-two quantization scale was half the independent
+reference. That failure is preserved. The pinned corrected Core wheel passed all
+72 component-packet tests on H100/SM90 with Torch 2.13.0+cu129 and Triton 3.6.0,
+including strict query/cache scale boundaries and ordinary mutable-input graph
+replay for the three public INT8 APIs. This total includes CPU reference and
+metadata tests; it is not 72 GPU mathematics cases. The run used the real installed
+package and did not execute this framework adapter. Combined-package GPU math,
+framework graph replay and whole-model equivalence remain unqualified. NVIDIA
+SM90+ auto selection retains the native FP8 indexer; this dependency update does
+not change the framework's precision policy.
+
+
+
+
+The optional [FlagGems-sglang #228](https://github.com/flagos-ai/FlagGems-sglang/pull/228)
+sparse-MLA provider uses the existing `OpManager` selection. Install its published
+revision when selecting that provider:
+
+```sh
+pip install --no-deps "flaggems_sglang @ git+https://github.com/CherryLemon/FlagGems-sglang.git@90f01e1b9a1e77f55206eacb2d868990a452d820"
+```
+ Native FlashMLA
+remains the default and reference route. Select `vendor:nvidia` or
+`impl:hy4.flaggems` in the per-op order for `sparse_mla_active_split` to opt in;
+preference and vendor allow/deny filters remain effective. The provider is
+limited to SM90, one/four query rows and four active heads with the supported
+cache layout. Unsupported metadata declines before launch; numerical failures
+propagate. Model iHC formulas retain the ordinary reference route when optional
+HPC APIs are absent; an HPC launch failure is never retried with another provider.
+
+NextN draft factories retain the same sink-aware backend and bounded causal
+length/cache-row preparation for the supported Hy4 draft role and layouts.
+Registration constructs these related wrappers together and rolls back all
+changed owners if publication fails. No separate graph or mRoPE experiment is
+installed.
+
+Kernel ownership follows the implementation language: TileLang kernels stay
+in the framework; generic Triton kernels belong to FlagGems and framework-specific
+Triton kernels to its companion library. Existing native backend calls are reused.
+
+The direct indexer `torch.mm`, small-M gate and unavailable iHC boundary
+experiments are excluded. Current checks cover CPU contracts, actual SGLang
+registration/text fixtures and Python wheel contents. Current combined-package
+GPU math, graph replay, full-model accuracy and serving performance remain
+unqualified; keep the adaptation draft.
+
 ## Supported Models and Chips
 
 The tables below summarize the current support status of end-to-end verified models and chips.
