@@ -19,6 +19,7 @@ matrix and artifact format; they do not claim measured performance results.
 | `qwen3_6_27b_mtp_inference.py` | MTP generation and optional baseline comparison | TP=4 |
 | `qwen3_6_27b_multinode.py` | Two-node server plus text/vision validation | CLI-controlled |
 | `qwen3_6_35b_a3b_multinode.py` | Two-node server plus text/vision validation | CLI-controlled |
+| `minimax_m3_musa_multinode.sh` | MiniMax-M3 sparse attention and MoE on MUSA | TP=8, PP=2 |
 
 The Hygon MTP profile uses TP=2; see the Hygon section below.
 
@@ -33,6 +34,21 @@ All vision-capable examples require these non-empty files under
 - `cat.jpg`
 - `stop_sign.png`
 - `digit_seven.png`
+
+## MiniMax-M3 on two MUSA nodes
+
+Run the script on both eight-device Moore Threads S5000 nodes. Set
+`NODE_RANK=0` on the master and `NODE_RANK=1` on the worker, while keeping the
+model path, rank-0 address, FlagCX checkout, and evidence directory consistent:
+
+```bash
+MODEL_PATH=/data/models/MiniMax-M3 \
+MASTER_ADDR=192.0.2.10 \
+FLAGCX_PATH=/opt/FlagCX \
+EVIDENCE_DIR=/data/minimax-m3-evidence \
+NODE_RANK=0 \
+bash examples/minimax_m3_musa_multinode.sh
+```
 
 ## Full single-node acceptance
 
