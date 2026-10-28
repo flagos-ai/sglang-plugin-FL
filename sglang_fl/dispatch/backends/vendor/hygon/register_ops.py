@@ -109,4 +109,4 @@ def register_builtins(registry) -> None:
         ),
     ]
 
-    registry.register_many(impls)
+    # registry.register_many(impls)
