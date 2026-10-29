@@ -68,32 +68,5 @@ flagos_blacklist:
 #                  sgl_kernel.silu_and_mul directly (no c++20 JIT). Falls back
 #                  to flagos if the vendor impl is unavailable.
 op_backends:
-  silu_and_mul:
-    - vendor
-    - flagos
   topk:
-    - vendor
     - reference
-
-# OOT-dispatch blacklist (matched by sglang layer CLASS name). Blacklisted ops
-# skip the OOT bridge entirely and run sglang's own forward_cuda — which, for
-# these ops, ALREADY resolves to the klx sgl_kernel op on the cuda-compat device.
-# That is exactly the fast path a vendor impl would call, so no vendor code is
-# needed (and no fall-through to flagos):
-#   TopK          : TopK.forward_cuda -> select_experts -> sgl_kernel.topk_softmax
-#                   (also handles grouped-topk / correction-bias / renormalize).
-#   RMSNorm       : RMSNorm.forward_cuda -> sgl_kernel.rmsnorm / fused_add_rmsnorm.
-#   GemmaRMSNorm  : GemmaRMSNorm.forward_cuda -> sgl_kernel.gemma_rmsnorm /
-#                   gemma_fused_add_rmsnorm.
-#   RotaryEmbedding / MRotaryEmbedding : forward_cuda resolves to sgl_kernel's
-#                   apply_rope_pos_ids_cos_sin_cache on the cuda-compat device
-#                   (NOT the c++20 jit_kernel path), verified working on Kunlun.
-# NOTE: SiluAndMul is deliberately NOT blacklisted — its forward_cuda hits the
-# jit_kernel c++20 path on Kunlun, so it is routed through the OOT bridge to the
-# vendor sgl_kernel impl instead (see op_backends above).
-oot_blacklist:
-  - TopK
-  - RMSNorm
-  - GemmaRMSNorm
-  - RotaryEmbedding
-  - MRotaryEmbedding
