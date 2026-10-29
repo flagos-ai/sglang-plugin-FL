@@ -114,3 +114,12 @@ jobs:
     with:
       platform: hygon
     secrets: inherit
+
+  # Retained for the upcoming Kunlunxin P800 0.5.18 adaptation.
+  test-kunlunxin:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'kunlunxin')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: kunlunxin
+    secrets: inherit
