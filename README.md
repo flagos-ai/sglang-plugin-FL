@@ -68,10 +68,37 @@ The validated H100 environment removes the Triton package installed with
 PyTorch and uses FlagTree 0.6.2a1 as its Triton 3.6-compatible compiler. The
 verified FlagGems master snapshot handles `to_copy` on H100.
 
+## DeepSeek V4.1 FlagCX PD
+
+This model integration uses the generic FlagCX/Mooncake transport change and
+an SGLang runtime that already exposes the V4.1 model, candidate indexer and
+DSpark interfaces. It does not import or apply the v0.5.18 source backport.
+Install the separate model backport only when the framework lacks V4.1 support.
+
+The plugin installs the native protocol validation bridge, admits the tested
+TP8/EP8 P with equal-TP or attention TP2/DP4 D, and keeps C2 state stride
+validation. The actual transport remains FlagCX. Native cache, graph and
+speculative-decoding checks still run. Reviewed older model constructors have
+obsolete experiment operands resolved locally before construction, preserving
+closure cells and leaving process environment untouched.
+
+The existing prefill hooks retain compact candidate selection and release
+chunk score buffers promptly. Install before worker/model initialization and
+CUDA Graph capture. No experiment environment variables are required.
+
+For the H100 indexer operators, install the optional pinned dependency with
+`pip install '.[dsv41]'` and see the [two-node P/D example](examples/dsv41_h100_pd.sh).
+The example requires a DeepSeek V4.1 Flash checkpoint, the FlagCX runtime and
+compatible RDMA interfaces. SGLang v0.5.18 also needs the separate model/runtime
+and operator source backports. Indexer routing honors the existing fused-op
+backend preference and whitelist/blacklist. Unsupported long-context shapes
+use the standard indexer; an unavailable backend uses the native entry.
+
 ## Model Validation Status
 
 | Model | TP | Status |
 |-------|-----|--------|
+| DeepSeek V4.1 Flash | P TP8/EP8, D attention TP2 × DP4 / EP8 | Draft; current-head H100 validation pending ([example](examples/dsv41_h100_pd.sh)) |
 | Qwen3.6-27B (Hybrid Attention + FLA) | tp=2 | Verified on H100 with v0.5.18 |
 | Qwen3.6-35B-A3B (MoE, 256 experts) | tp=2 | Verified on H100 with v0.5.18 |
 | Qwen2.5-14B-Instruct | tp=8 | v0.5.18 rerun pending |

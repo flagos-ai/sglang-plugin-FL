@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import functools
 
-from sglang_fl.dispatch.types import OpImpl, BackendImplKind, BackendPriority
+from sglang_fl.dispatch.types import BackendImplKind, BackendPriority, OpImpl
 
 
 def _bind_is_available(fn, is_available_fn):
@@ -89,5 +89,20 @@ def register_builtins(registry) -> None:
             priority=BackendPriority.REFERENCE,
         ),
     ]
+
+    def native_indexer(original, *args, **kwargs):
+        return original(*args, **kwargs)
+
+    for name in ("dsv41_indexer_producer", "dsv41_indexer_compact"):
+        impls.append(
+            OpImpl(
+                op_name=name,
+                impl_id="reference.native",
+                kind=BackendImplKind.REFERENCE,
+                fn=native_indexer,
+                vendor=None,
+                priority=BackendPriority.REFERENCE,
+            )
+        )
 
     registry.register_many(impls)

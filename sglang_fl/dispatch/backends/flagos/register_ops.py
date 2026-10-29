@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import functools
 
-from sglang_fl.dispatch.types import OpImpl, BackendImplKind, BackendPriority
+from sglang_fl.dispatch.types import BackendImplKind, BackendPriority, OpImpl
 
 
 def _bind_is_available(fn, is_available_fn):
@@ -92,5 +92,22 @@ def register_builtins(registry) -> None:
             priority=BackendPriority.DEFAULT,
         ),
     ]
+
+    from .impl import dsv41_indexer
+
+    for name, fn in (
+        ("dsv41_indexer_producer", dsv41_indexer.producer),
+        ("dsv41_indexer_compact", dsv41_indexer.compact),
+    ):
+        impls.append(
+            OpImpl(
+                op_name=name,
+                impl_id="default.flagos",
+                kind=BackendImplKind.DEFAULT,
+                fn=_bind_is_available(fn, dsv41_indexer.available),
+                vendor=None,
+                priority=BackendPriority.DEFAULT,
+            )
+        )
 
     registry.register_many(impls)
