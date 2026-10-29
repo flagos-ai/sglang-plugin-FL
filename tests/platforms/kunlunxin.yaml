@@ -1,0 +1,49 @@
+platform: kunlunxin
+vendor: kunlunxin
+
+device_types:
+  p800:
+    memory_gb: 96
+    tags: [kunlunxin, xpu, bf16]
+
+engine_overrides:
+  qwen3_6:
+    27b_tp4_nograph:
+      disable_radix_cache: true
+      disable_overlap_schedule: true
+    35b_a3b_tp4_nograph:
+      disable_radix_cache: true
+      disable_overlap_schedule: true
+
+tolerance:
+  inference:
+    default: {exact: true}
+
+device_overrides: {}
+unsupported_features: []
+
+env_defaults:
+  USE_FLAGGEMS: "1"
+  USE_FLAGTUNE: "0"
+  SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK: "1"
+  FLAGCX_PATH: "/sgl-workspace/sglang-upgrade/FlagCX"
+
+p800:
+  name: "p800"
+  tests:
+    unit:
+      include: "*"
+      exclude: []
+    functional:
+      include: "*"
+      exclude: []
+    e2e:
+      inference:
+        qwen3_6: ["27b_tp4_nograph", "35b_a3b_tp4_nograph"]
+      serving:
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      concurrent:
+        qwen3_6: ["27b_tp4_nograph", "35b_a3b_tp4_nograph"]
+    benchmark:
+      enabled: true
+      smoke: ["throughput", "latency", "serve"]

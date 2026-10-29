@@ -71,6 +71,9 @@ op_backends:
   silu_and_mul:
     - vendor
     - flagos
+  topk:
+    - vendor
+    - reference
 
 # OOT-dispatch blacklist (matched by sglang layer CLASS name). Blacklisted ops
 # skip the OOT bridge entirely and run sglang's own forward_cuda — which, for

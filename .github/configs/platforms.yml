@@ -21,9 +21,7 @@
 # global prefix (it would over-trigger a full run).
 #
 # A changed file matching no rule at all falls back to a full run (safety
-# default). Known consequence: sglang_fl/dispatch/config/kunlunxin.yaml belongs
-# to a platform not enabled here — touching it over-triggers a full run;
-# acceptable in the safe direction.
+# default).
 #
 # Vendor file name → platform mapping (mirrors the FlagGems vendor ids):
 #   nvidia  <- sglang_fl/dispatch/config/nvidia.yaml, docker/cuda/
@@ -124,3 +122,19 @@ platforms:
       - .github/scripts/hygon/
       - .github/configs/hygon.yml
       - tests/platforms/hygon.yaml
+
+  kunlunxin:
+    # harbor CI image from docker/kunlunxin/ci-0.5.18.containerfile are ready.
+    # Local matrix: tests/platforms/kunlunxin.yaml.
+    enabled: true
+    trigger_paths:
+      - sglang_fl/dispatch/config/kunlunxin.yaml
+      - .github/scripts/kunlunxin/
+      - .github/configs/kunlunxin.yaml
+      - tests/platforms/kunlunxin.yaml
+      - docker/kunlunxin/
+    exempt_from_global:
+      - sglang_fl/dispatch/config/kunlunxin.yaml
+      - .github/scripts/kunlunxin/
+      - .github/configs/kunlunxin.yaml
+      - tests/platforms/kunlunxin.yaml

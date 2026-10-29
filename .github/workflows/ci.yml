@@ -219,6 +219,17 @@ jobs:
       run_benchmark: ${{ fromJson(needs.discover.outputs.run_benchmark) }}
     secrets: inherit
 
+  test-kunlunxin:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'kunlunxin')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: kunlunxin
+      ci_stage: pr
+      run_e2e: ${{ fromJson(needs.discover.outputs.run_e2e) }}
+      run_benchmark: ${{ fromJson(needs.discover.outputs.run_benchmark) }}
+    secrets: inherit
+
   # ============================================================
   # ci-gate — single aggregate status check (branch-protection
   # candidate; ported from vllm-plugin-FL #581).
@@ -243,6 +254,7 @@ jobs:
       - test-thead
       - test-iluvatar
       - test-hygon
+      - test-kunlunxin
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -259,6 +271,7 @@ jobs:
           THEAD_RESULT:     ${{ needs.test-thead.result }}
           ILUVATAR_RESULT:  ${{ needs.test-iluvatar.result }}
           HYGON_RESULT:     ${{ needs.test-hygon.result }}
+          KUNLUNXIN_RESULT: ${{ needs.test-kunlunxin.result }}
         run: |
           set -euo pipefail
 
@@ -294,6 +307,7 @@ jobs:
           check_optional "test-thead"   "$THEAD_RESULT"
           check_optional "test-iluvatar" "$ILUVATAR_RESULT"
           check_optional "test-hygon"   "$HYGON_RESULT"
+          check_optional "test-kunlunxin" "$KUNLUNXIN_RESULT"
 
           if [ $fail -ne 0 ]; then
             echo "ci-gate: FAILED"
