@@ -62,6 +62,7 @@ class FlagCXTransferEngine:
         # session performs the QP + descriptor-table handshake, so cache it.
         self.session_conns: dict = {}
         self.conn_lock = threading.Lock()
+        self._closed = False
 
         logger.debug(
             "FlagCX transfer engine initialized: session_id=%s gpu_id=%s ib_device=%s",
@@ -161,6 +162,12 @@ class FlagCXTransferEngine:
 
     def get_ib_device(self):
         return self.ib_device
+
+    def close(self):
+        """Release this engine's registrations once, after its users stop."""
+        if not self._closed:
+            self.flagcx.flagcxP2pEngineDestroy(self.engine)
+            self._closed = True
 
 
 def init_flagcx_transfer_engine(
