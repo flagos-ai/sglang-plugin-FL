@@ -13,7 +13,9 @@ ENV USE_FLAGGEMS=1 \
     SGLANG_PLUGINS=sglang_fl \
     SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1 \
     SGLANG_FL_DIST_BACKEND=flagcx \
-    FLAGCX_PATH=/sgl-workspace/sglang-upgrade/FlagCX
+    FLAGCX_PATH=/sgl-workspace/sglang-upgrade/FlagCX \
+    SGLANG_FL_CONFIG=/sgl-workspace/sglang-upgrade/sglang-plugin-FL/sglang_fl/dispatch/config/kunlunxin.yaml \
+    SGLANG_FL_PER_OP="silu_and_mul=flagos;mrotary_embedding=flagos;topk=reference;gemma_rms_norm=reference;fused_moe=vendor;chunk_gated_delta_rule=vendor;fused_recurrent_gated_delta_rule_packed_decode=vendor"
 
 # Optional trusted mirror/cache for sites with slow access to GitHub.
 ARG SGLANG_VERSION=0.5.18
