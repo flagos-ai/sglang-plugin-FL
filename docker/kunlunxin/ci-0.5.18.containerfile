@@ -2,12 +2,12 @@
 # First build docker/kunlunxin/empty-0.5.18.containerfile as sglang-fl:kunlunxin-0.5.18.
 #
 #   docker build -f docker/kunlunxin/ci-0.5.18.containerfile \
-#     -t harbor.baai.ac.cn/plugin/sglang-plugin-fl:0.5.18-kunlunxin-ci .
+#     -t harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-ci .
 ARG BASE_IMAGE=sglang-fl:kunlunxin-0.5.18
 FROM ${BASE_IMAGE}
 
-RUN python -m pip install --no-deps --no-build-isolation \
-        pytest pytest-timeout==2.4.0 pyyaml && \
+RUN python -m pip install --no-build-isolation \
+        pytest pytest-cov pytest-timeout pytest-json-report pytest-metadata numpy requests ruff pyyaml && \
     python -c "from importlib.metadata import version; \
         assert version('sglang').startswith('0.5.18'); \
         assert version('pytest-timeout') == '2.4.0'"
