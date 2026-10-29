@@ -3,10 +3,12 @@
 
 platform: thead
 
-# Docker image for this hardware: SGLang 0.5.18 empty mode, built from
-# docker/thead/empty-0.5.18.containerfile on the PPU empty base image.
-# TODO: build and push this tag, then pin it by digest (as hygon.yml does).
-ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-ci
+# Docker image for this hardware (tag: 0.5.18-thead-20261028)
+# SGLang 0.5.18 empty mode + sglang-plugin-FL on the PPU empty base image, built from
+# docker/thead/empty-0.5.18.containerfile and cleaned of 0.5.11 leftovers. The same
+# image is published for users, so the HF offline switches are off in the image and
+# enabled for CI via container_options below.
+ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:fbf1fb254dd0382ffc38229342987472a626a19a66f511e89dd341f051bd648b
 
 # Runner labels for this hardware
 runner_labels:
@@ -40,6 +42,8 @@ container_volumes:
 # accepts no globs). The declared device_type is zw810e @ 96GB (see tests/platforms/thead.yaml).
 container_options: >-
   --hostname sglang-plugin-fl
+  -e HF_HUB_OFFLINE=1
+  -e TRANSFORMERS_OFFLINE=1
   --shm-size=64g
   --ulimit memlock=-1
   --ulimit stack=67108864
