@@ -60,6 +60,9 @@ class KunlunxinBackend(AttentionBackend):
         self.kv_cache_dtype = model_runner.kv_cache_dtype
         self.page_size = model_runner.page_size
         self.forward_metadata: Optional[KunlunxinForwardMetadata] = None
+        # KunlunxinBackend 作为 hybrid GDN 的 full-attn 侧，缺了上游现在强制读取的属性
+        self.req_to_token_pool = model_runner.req_to_token_pool
+        self.token_to_kv_pool = model_runner.token_to_kv_pool
 
         # Cumulative LODs, filled per prefill/extend forward.
         self.cum_q_lod = None
@@ -142,8 +145,8 @@ class KunlunxinBackend(AttentionBackend):
 
         # KV shared layer: k/v are None -> read from paged KV cache.
         if k is None and v is None:
-            k_buf = forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id)
-            v_buf = forward_batch.token_to_kv_pool.get_value_buffer(layer.layer_id)
+            k_buf = self.token_to_kv_pool.get_key_buffer(layer.layer_id)
+            v_buf = self.token_to_kv_pool.get_value_buffer(layer.layer_id)
             page_ids = forward_batch.out_cache_loc // self.page_size
             offsets = forward_batch.out_cache_loc % self.page_size
             k = k_buf[page_ids, :, offsets, :]
@@ -155,7 +158,7 @@ class KunlunxinBackend(AttentionBackend):
             o = torch.empty_like(q)
 
         if save_kv_cache:
-            forward_batch.token_to_kv_pool.set_kv_buffer(
+            self.token_to_kv_pool.set_kv_buffer(
                 layer, forward_batch.out_cache_loc, k, v
             )
 
@@ -174,10 +177,10 @@ class KunlunxinBackend(AttentionBackend):
         )
 
         if use_kv_cache:
-            k_cache = forward_batch.token_to_kv_pool.get_key_buffer(
+            k_cache = self.token_to_kv_pool.get_key_buffer(
                 layer.layer_id
             ).contiguous()
-            v_cache = forward_batch.token_to_kv_pool.get_value_buffer(
+            v_cache = self.token_to_kv_pool.get_value_buffer(
                 layer.layer_id
             ).contiguous()
             k_cache_max, v_cache_max = None, None
@@ -237,8 +240,8 @@ class KunlunxinBackend(AttentionBackend):
             sinks = sinks.float().contiguous()
 
         if k is None and v is None:
-            k_buf = forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id)
-            v_buf = forward_batch.token_to_kv_pool.get_value_buffer(layer.layer_id)
+            k_buf = self.token_to_kv_pool.get_key_buffer(layer.layer_id)
+            v_buf = self.token_to_kv_pool.get_value_buffer(layer.layer_id)
             page_ids = forward_batch.out_cache_loc // self.page_size
             offsets = forward_batch.out_cache_loc % self.page_size
             k = k_buf[page_ids, :, offsets, :]
@@ -247,14 +250,14 @@ class KunlunxinBackend(AttentionBackend):
         assert self.forward_metadata is not None
 
         if save_kv_cache:
-            forward_batch.token_to_kv_pool.set_kv_buffer(
+            self.token_to_kv_pool.set_kv_buffer(
                 layer, forward_batch.out_cache_loc, k, v
             )
 
-        k_cache = forward_batch.token_to_kv_pool.get_key_buffer(
+        k_cache = self.token_to_kv_pool.get_key_buffer(
             layer.layer_id
         ).contiguous()
-        v_cache = forward_batch.token_to_kv_pool.get_value_buffer(
+        v_cache = self.token_to_kv_pool.get_value_buffer(
             layer.layer_id
         ).contiguous()
 
@@ -314,42 +317,48 @@ class KunlunxinBackend(AttentionBackend):
             max_bs, dtype=torch.int32, device=self.device
         )
 
-    def init_forward_metadata_capture_cuda_graph(
+    # SGLang 0.5.18 deprecated the split capture/replay cuda-graph hooks:
+    #   init_forward_metadata_capture_cuda_graph(bs, num_tokens, req_pool_indices, seq_lens, ...)
+    #   init_forward_metadata_replay_cuda_graph(bs, req_pool_indices, seq_lens, ..., seq_lens_cpu, ...)
+    # and replaced them with a single entry:
+    #   init_forward_metadata_out_graph(fb, in_capture=True)   # capture
+    #   init_forward_metadata_out_graph(fb, in_capture=False)  # replay
+    def init_forward_metadata_out_graph(
         self,
-        bs,
-        num_tokens,
-        req_pool_indices,
-        seq_lens,
-        encoder_lens,
-        forward_mode,
-        spec_info,
+        forward_batch: "ForwardBatch",
+        in_capture: bool = False,
     ):
-        max_seqlen_pad = self.cuda_graph_kv_indices.stride(0)
-        create_kv_indices_native(
-            self.req_to_token,
-            req_pool_indices,
-            self.cuda_graph_kv_indices[:bs, :max_seqlen_pad],
-            max_seqlen_pad,
-            self.page_size,
-        )
-        self.context_len_tensor_cuda_graph[:bs].copy_(seq_lens.int())
-        self.forward_metadata = KunlunxinForwardMetadata(
-            block_kv_indices=self.cuda_graph_kv_indices[:bs, :max_seqlen_pad],
-            context_len_tensor=self.context_len_tensor_cuda_graph[:bs],
-        )
+        """Decode cuda-graph metadata prep for SGLang 0.5.18+ out_graph API.
 
-    def init_forward_metadata_replay_cuda_graph(
-        self,
-        bs,
-        req_pool_indices,
-        seq_lens,
-        seq_lens_sum,
-        encoder_lens,
-        forward_mode,
-        spec_info,
-        seq_lens_cpu,
-        out_cache_loc=None,
-    ):
+        Replaces deprecated ``init_forward_metadata_capture_cuda_graph`` /
+        ``init_forward_metadata_replay_cuda_graph``. Capture binds metadata to
+        static cuda-graph buffer slices; replay refills those buffers in-place
+        for the current batch. Eager decode/extend still uses
+        ``init_forward_metadata()``.
+        """
+        bs = forward_batch.batch_size
+        req_pool_indices = forward_batch.req_pool_indices
+        seq_lens = forward_batch.seq_lens
+        seq_lens_cpu = forward_batch.seq_lens_cpu
+        # 可选：图路径只支持 decode（与 XPU backend 一致）
+        # assert forward_batch.forward_mode.is_decode_or_idle()
+        if in_capture:
+            # ---- 原 capture 体 ----
+            max_seqlen_pad = self.cuda_graph_kv_indices.stride(0)
+            create_kv_indices_native(
+                self.req_to_token,
+                req_pool_indices,
+                self.cuda_graph_kv_indices[:bs, :max_seqlen_pad],
+                max_seqlen_pad,
+                self.page_size,
+            )
+            self.context_len_tensor_cuda_graph[:bs].copy_(seq_lens.int())
+            self.forward_metadata = KunlunxinForwardMetadata(
+                block_kv_indices=self.cuda_graph_kv_indices[:bs, :max_seqlen_pad],
+                context_len_tensor=self.context_len_tensor_cuda_graph[:bs],
+            )
+            return
+        # ---- 原 replay 体 ----
         seq_lens = seq_lens[:bs]
         seq_lens_cpu = seq_lens_cpu[:bs]
         max_seqlen_pad = (
@@ -366,9 +375,7 @@ class KunlunxinBackend(AttentionBackend):
         self.forward_metadata.block_kv_indices = self.cuda_graph_kv_indices[
             :bs, :max_seqlen_pad
         ]
-        self.forward_metadata.context_len_tensor = self.context_len_tensor_cuda_graph[
-            :bs
-        ]
+        self.forward_metadata.context_len_tensor = self.context_len_tensor_cuda_graph[:bs]
 
     def get_cuda_graph_seq_len_fill_value(self):
         return 1

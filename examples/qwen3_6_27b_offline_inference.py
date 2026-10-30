@@ -27,6 +27,7 @@ _is_npu = hasattr(torch, "npu") and torch.npu.is_available()
 _is_txda = hasattr(torch, "txda") and torch.txda.is_available()
 _is_corex = hasattr(torch, "corex") and torch.cuda.is_available()
 _is_hcu = hasattr(torch, "__hcu_version__") and torch.cuda.is_available()
+_is_kunlunxin = hasattr(torch, "xpu") and torch.cuda.is_available()
 
 # Must be set before importing sglang.
 if _is_npu:
@@ -107,6 +108,13 @@ elif _is_hcu:
         "disable_radix_cache": True,
         "cuda_graph_backend_prefill": "disabled",
         "trust_remote_code": True,
+    }
+
+elif _is_kunlunxin:
+    _extra_engine_kwargs = {
+        "trust_remote_code": True,
+        "disable_radix_cache": True,
+        "disable_overlap_schedule": True
     }
 else:
     _extra_engine_kwargs = {"trust_remote_code": True}
@@ -209,7 +217,7 @@ def run_engine():
     engine = Engine(
         model_path=MODEL_PATH,
         tp_size=TP_SIZE,
-        mem_fraction_static=0.6 if _is_txda else 0.85,
+        mem_fraction_static=0.6 if _is_txda or _is_kunlunxin else 0.85,
         disable_cuda_graph=True,
         **_extra_engine_kwargs,
     )

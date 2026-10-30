@@ -23,3 +23,8 @@ platforms:
   hygon:
     # Validated SGLang 0.5.18 image is pinned in hygon.yml.
     enabled: true
+
+  kunlunxin:
+    # harbor CI image from docker/kunlunxin/ci-0.5.18.containerfile are ready.
+    # Local matrix: tests/platforms/kunlunxin.yaml.
+    enabled: true

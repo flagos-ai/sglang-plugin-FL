@@ -257,11 +257,13 @@ class WorkflowTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/_platform_test.yml").read_text(
             encoding="utf-8"
         )
-        self.assertIn(
-            "(inputs.platform == 'musa' || inputs.platform == 'ascend' "
-            "|| inputs.platform == 'hygon') && 1 || 256",
-            workflow,
+        line = next(
+            line
+            for line in workflow.splitlines()
+            if "max-parallel:" in line and "inputs.platform" in line
         )
+        self.assertIn("inputs.platform == 'hygon'", line)
+        self.assertIn("&& 1 || 256", line)
         self.assertIn(
             "test-hygon:",
             (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"),
