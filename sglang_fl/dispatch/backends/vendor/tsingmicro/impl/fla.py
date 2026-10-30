@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional, Tuple
 
 import torch
@@ -15,6 +16,18 @@ from sglang_fl.dispatch.backends.vendor.tsingmicro.flaggems_compat import (
 )
 
 logger = logging.getLogger(__name__)
+
+# GDN prefill: flag_gems' `_tsingmicro` chunk kernel is the default.  Set
+# SGLANG_FL_GDN_CHUNK_TXDA=0 to run SGLang's own Triton chunk kernel instead.
+_CHUNK_TXDA_KEY = "SGLANG_FL_GDN_CHUNK_TXDA"
+_TRUTHY = ("1", "true", "yes", "on")
+
+_fallback_logged = False
+
+
+def _chunk_uses_txda() -> bool:
+    """Whether GDN prefill runs on flag_gems' chunk kernel (default: yes)."""
+    return os.getenv(_CHUNK_TXDA_KEY, "1").strip().lower() in _TRUTHY
 
 
 def _original(fn_name: str):
@@ -33,6 +46,18 @@ def _sync_device(device: torch.device) -> None:
     mod = getattr(torch, device.type, None)
     if mod is not None and hasattr(mod, "synchronize"):
         mod.synchronize()
+
+
+def _float32(x: torch.Tensor) -> torch.Tensor:
+    """Return ``x`` unchanged when it is already fp32/fp64, else a fp32 copy.
+
+    The gate, beta and the recurrent state are fp32 accumulators on the SGLang
+    side.  Rounding them to bf16 (the matmul compute dtype) costs 8 mantissa
+    bits: ``g`` is a log-decay whose per-chunk cumsum reaches O(10..40), so a
+    bf16 step there is 3e-2..2.5e-1 -- percent-level errors inside every
+    ``exp(g_i - g_j)``, which then compounds across layers.
+    """
+    return x if x.dtype in (torch.float32, torch.float64) else x.float()
 
 
 def _check_cu_seqlens(values, total_tokens: Optional[int]) -> Optional[str]:
@@ -147,6 +172,28 @@ def _validated_cu_seqlens(
     return torch.tensor(values, dtype=torch.long, device=q.device)
 
 
+def _native_chunk_gated_delta_rule(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+    scale: float,
+    initial_state: Optional[torch.Tensor],
+    initial_state_indices: Optional[torch.Tensor],
+    cu_seqlens: Optional[torch.LongTensor],
+    head_first: bool,
+    use_qk_l2norm_in_kernel: bool,
+):
+    return _original("chunk_gated_delta_rule")(
+        q=q, k=k, v=v, g=g, beta=beta, scale=scale,
+        initial_state=initial_state,
+        initial_state_indices=initial_state_indices,
+        cu_seqlens=cu_seqlens, head_first=head_first,
+        use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
+    )
+
+
 def chunk_gated_delta_rule_txda(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -173,36 +220,48 @@ def chunk_gated_delta_rule_txda(
     So here we pre-index + transpose on the way in, transpose back on the way
     out, and write the final state back into the caller's ``initial_state``.
 
+    ``g``, ``beta`` and the state stay in float32: flaggems keeps them in fp32
+    registers and allocates its internal cumsum / final state in fp32, so
+    rounding them to the bf16 compute dtype only throws away precision.
+
     When the installed flag_gems predates this op, fall back to SGLang's own
     ``chunk_gated_delta_rule`` (which does the same adaptation itself).
+    ``SGLANG_FL_GDN_CHUNK_TXDA=0`` forces that fallback unconditionally.
     """
+    global _fallback_logged
+    if not _chunk_uses_txda():
+        if not _fallback_logged:
+            logger.info(
+                "[TXDA_FLA] %s=0 — GDN prefill uses SGLang's Triton chunk kernel",
+                _CHUNK_TXDA_KEY,
+            )
+            _fallback_logged = True
+        return _native_chunk_gated_delta_rule(
+            q, k, v, g, beta, scale,
+            initial_state, initial_state_indices, cu_seqlens,
+            head_first, use_qk_l2norm_in_kernel,
+        )
     txda_chunk_gated_delta_rule = load_txda_op("chunk_gated_delta_rule")
     if txda_chunk_gated_delta_rule is None:
-        return _original("chunk_gated_delta_rule")(
-            q=q, k=k, v=v, g=g, beta=beta, scale=scale,
-            initial_state=initial_state,
-            initial_state_indices=initial_state_indices,
-            cu_seqlens=cu_seqlens, head_first=head_first,
-            use_qk_l2norm_in_kernel=use_qk_l2norm_in_kernel,
+        return _native_chunk_gated_delta_rule(
+            q, k, v, g, beta, scale,
+            initial_state, initial_state_indices, cu_seqlens,
+            head_first, use_qk_l2norm_in_kernel,
         )
 
-    # flaggems requires g/beta/initial_state to share q's dtype, but SGLang's
-    # GDN gating (fused_gdn_gating) and the state pool may be a different dtype
-    # (e.g. fp32).  Align them to q's compute dtype before the call.
-    #
     # q/k/v are left NON-contiguous: SGLang produces them via torch.split +
     # view (strided), and a .contiguous() copy is very expensive on TXDA for
     # these large tensors.  The TXDA FLA kernels accept strided inputs (they
     # read the actual tensor strides), so no copy is needed.  g/beta/h0 are
     # small, so materializing them contiguous here is cheap.
-    g = g.to(q.dtype).contiguous()
-    beta = beta.to(q.dtype).contiguous()
+    g = _float32(g).contiguous()
+    beta = _float32(beta).contiguous()
 
     h0 = initial_state
     if initial_state is not None and initial_state_indices is not None:
         h0 = initial_state[initial_state_indices]  # [N, H, V, K]
     if h0 is not None:
-        h0 = h0.transpose(-1, -2).to(q.dtype).contiguous()  # [N, H, K, V]
+        h0 = _float32(h0.transpose(-1, -2)).contiguous()  # [N, H, K, V]
 
     # Validate the varlen metadata and hand the kernel a freshly built copy of
     # it (see _validated_cu_seqlens).  It is only n_seq + 1 entries, so this
