@@ -26,6 +26,7 @@ pytestmark = [pytest.mark.functional, pytest.mark.gpu]
 _RTOL = 1e-3
 _ATOL = 1e-3
 _HALF_TOL = 2e-2
+_COVERAGE_FALLBACK_KINDS = ("flagos", "vendor", "reference")
 
 
 def _allclose(actual: torch.Tensor, expected: torch.Tensor, *, dtype: torch.dtype) -> bool:
@@ -43,6 +44,17 @@ def _call_reference(op_name: str, *args, **kwargs):
     with policy_context(policy):
         return call_op(op_name, *args, **kwargs)
 
+def _per_op_order_with_coverage_fallback(per_op_order):
+    if not per_op_order:
+        return None
+    out = {}
+    for op_name, order in per_op_order.items():
+        filled = list(order)
+        for kind in _COVERAGE_FALLBACK_KINDS:
+            if kind not in filled:
+                filled.append(kind)
+        out[op_name] = filled
+    return out
 
 def _call_selected(op_name: str, *args, **kwargs):
     # Global policy is set once in functional conftest via production path
@@ -53,7 +65,9 @@ def _call_selected(op_name: str, *args, **kwargs):
     policy = SelectionPolicy.from_dict(
         prefer=global_policy.prefer,
         strict=False,
-        per_op_order=global_policy.per_op_order_dict or None
+        per_op_order=_per_op_order_with_coverage_fallback(
+            global_policy.per_op_order_dict or None
+        ),
     )
     with policy_context(policy):
         return call_op(op_name, *args, **kwargs)
