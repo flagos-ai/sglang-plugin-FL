@@ -24,6 +24,8 @@ Patches applied:
                     transformers 5.15+ built-in qwen3_asr registration
   decode_attention – Route triton_ops.decode_attention.decode_attention_fwd
                     through flag_gems (opt-in SGLANG_FL_DECODE_ATTN_FLAGOS=1)
+  gdn_norm        – Pin GatedDeltaNet's gated RMSNorm to
+                    fla.layernorm_gated.RMSNorm (SGLANG_FL_GDN_NORM, default 1)
 
 Usage (called automatically by load_plugin()):
 
@@ -63,6 +65,7 @@ def apply_all_txda_patches() -> None:
         decode_attention,
         dist_init,
         fused_moe,
+        gdn_norm,
         scheduler_pp_mixin,
     )
 
@@ -70,5 +73,6 @@ def apply_all_txda_patches() -> None:
     fused_moe.patch()  # includes former unquant patch
     scheduler_pp_mixin.patch()
     decode_attention.patch()  # opt-in route decode attention to flag_gems
+    gdn_norm.patch()  # pin GDN gated norm to fla.layernorm_gated.RMSNorm
 
     _log.applied("all txda monkey patches applied")

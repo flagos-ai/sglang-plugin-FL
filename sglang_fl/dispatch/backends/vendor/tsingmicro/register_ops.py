@@ -57,14 +57,6 @@ def register_builtins(registry) -> None:
             priority=BackendPriority.VENDOR,
         ),
         OpImpl(
-            op_name="gemma_rms_norm",
-            impl_id="vendor.tsingmicro",
-            kind=BackendImplKind.VENDOR,
-            fn=_bind_is_available(backend.gemma_rms_norm, is_avail),
-            vendor="tsingmicro",
-            priority=BackendPriority.VENDOR,
-        ),
-        OpImpl(
             op_name="mrotary_embedding",
             impl_id="vendor.tsingmicro",
             kind=BackendImplKind.VENDOR,
