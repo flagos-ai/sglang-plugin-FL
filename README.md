@@ -71,6 +71,7 @@ The tables below summarize the current support status of end-to-end verified mod
 | Iluvatar | Supported | - |
 | Kunlunxin | Supported | - |
 | Tsingmicro | Supported | - |
+| AMD (Radeon GPU) | Supported | [docker/amd](./docker/amd/README.md) |
 
 ## Quick Start
 
@@ -598,6 +599,7 @@ The plugin scans `dispatch/backends/vendor/*/register_ops.py` at startup. If `is
 |--------|-----------|-------------------|
 | NVIDIA CUDA | `vendor/cuda/` | `sgl_kernel` importable |
 | Huawei Ascend | `vendor/ascend/` | `torch_npu` importable |
+| AMD ROCm | `vendor/amd/` | ROCm torch and DeviceDetector vendor `amd` |
 | Template | `vendor/template/` | Always False (reference only) |
 
 ## Project Structure
