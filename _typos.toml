@@ -16,6 +16,8 @@
 # Ascend CANN is Huawei's official toolkit name
 CANN = "CANN"
 cann = "cann"
+# Ascend ND is the standard n-dimensional tensor storage format
+ND = "ND"
 # SGLang env var uses "INBALANCE" (upstream spelling)
 INBALANCE = "INBALANCE"
 lod = "lod"
