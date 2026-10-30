@@ -11,7 +11,7 @@ Torch-2.9.0、FlagTree-0.7.1a1+xpu3.6、FlagGems-0.0+g7fcdbed07 与 FlagCX-maste
 ```bash
 docker build --network=host \
   -f docker/kunlunxin/empty-0.5.18.containerfile \
-  -t sglang-fl:kunlunxin-0.5.18 .
+  -t sglang-fl:kunlunxin-0.5.18-202610301726 .
 ```
 
 镜像内路径约定：
@@ -86,10 +86,10 @@ python tests/run.py --platform kunlunxin --device p800
 昆仑芯共享unit/functional/benchmark/E2E 流程。CI 配置见 [kunlunxin.yml](../../.github/configs/kunlunxin.yml)；
 模型目录从宿主机 `/data/models` 映射到 `/data/models`。
 
-已发布的 CI tag 为`harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:b0faa6a570501d8445aeb6fd78c5bbe58499b2573d5316a3d2902ed994f6245a`。
+已发布的 CI tag 为`harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-ci-202610301736`。
 
 复现构建先按上文生成 `sglang-fl:kunlunxin-0.5.18`，再执行：
 
 ```bash
-docker build -f docker/kunlunxin/ci-0.5.18.containerfile -t harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-ci .
+docker build -f docker/kunlunxin/ci-0.5.18.containerfile -t harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-ci-202610301736 .
 ```

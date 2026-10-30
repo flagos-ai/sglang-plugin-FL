@@ -3,7 +3,7 @@
 #
 #   docker build -f docker/kunlunxin/ci-0.5.18.containerfile \
 #     -t harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-ci .
-ARG BASE_IMAGE=sglang-fl:kunlunxin-0.5.18
+ARG BASE_IMAGE=sglang-fl:kunlunxin-0.5.18-202610301726
 FROM ${BASE_IMAGE}
 
 RUN python -m pip install --no-build-isolation \
