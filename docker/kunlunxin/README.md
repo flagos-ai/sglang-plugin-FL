@@ -86,7 +86,7 @@ python tests/run.py --platform kunlunxin --device p800
 昆仑芯共享unit/functional/benchmark/E2E 流程。CI 配置见 [kunlunxin.yml](../../.github/configs/kunlunxin.yml)；
 模型目录从宿主机 `/data/models` 映射到 `/data/models`。
 
-已发布的 CI tag 为`harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:6bc013aeebb8b15d68ee365499d8bf6944dc5a3317eb49cdd383e00c2822aeec`。
+已发布的 CI tag 为`harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:b0faa6a570501d8445aeb6fd78c5bbe58499b2573d5316a3d2902ed994f6245a`。
 
 复现构建先按上文生成 `sglang-fl:kunlunxin-0.5.18`，再执行：
 

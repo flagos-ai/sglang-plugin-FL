@@ -43,4 +43,4 @@ RUN cd /sgl-workspace/sglang-upgrade/sglang-plugin-FL && \
     python -m pip install --index-url "$PIP_INDEX_URL" -e . && \
     python .github/scripts/kunlunxin/verify_environment.py --check-versions
 
-WORKDIR /tmp
+WORKDIR /sgl-workspace/sglang-upgrade/sglang-plugin-FL
