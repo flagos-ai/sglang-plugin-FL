@@ -54,6 +54,11 @@ def cuda_torch(monkeypatch):
     module = ModuleType("torch")
     module.cuda = SimpleNamespace(is_available=lambda: True)
     monkeypatch.setitem(sys.modules, "torch", module)
+    # CUDA-API platforms are split by FlagGems' DeviceDetector (thead vs nvidia);
+    # keep the real detector of the host out of these CPU regressions.
+    import sglang_fl.utils as fl_utils
+
+    monkeypatch.setattr(fl_utils, "get_device_info", lambda: None)
     return module
 
 

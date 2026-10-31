@@ -18,7 +18,7 @@ MODEL_PATH. Hardware acceptance still requires the speculative backend support.
 
 Environment variables:
   MODEL_PATH    Model path (default: /models/Qwen3.6-27B)
-  TP_SIZE       Tensor parallelism (default: 2 on Hygon, 4 on Ascend/TXDA, else 1)
+  TP_SIZE       Tensor parallelism (default: 2 on Hygon, 4 on Ascend/TXDA/T-Head PPU, else 1)
   MAX_TOKENS    Max generation tokens (default: 256)
 """
 
@@ -41,6 +41,10 @@ _is_npu = hasattr(torch, "npu") and torch.npu.is_available()
 _is_txda = hasattr(torch, "txda") and torch.txda.is_available()
 _is_corex = hasattr(torch, "corex") and torch.cuda.is_available()
 _is_hcu = hasattr(torch, "__hcu_version__") and torch.cuda.is_available()
+# T-Head PPU, detected like T-Head's sglang is_ppu (no CUDA context needed). bf16
+# target + draft weights leave no room for the mamba speculative state on one
+# 96 GB card, so MTP defaults to TP=4 there.
+_is_ppu = "PPU_SDK" in os.environ
 
 # These settings must be present before importing sglang.
 if _is_npu:
@@ -68,7 +72,9 @@ if _is_txda:
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-27B")
 TP_SIZE = int(
-    os.environ.get("TP_SIZE", "2" if _is_hcu else "4" if _is_npu or _is_txda else "1")
+    os.environ.get(
+        "TP_SIZE", "2" if _is_hcu else "4" if _is_npu or _is_txda or _is_ppu else "1"
+    )
 )
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "256"))
 
