@@ -7,14 +7,17 @@
 # installs SGLang 0.5.18 with the torch-free `srt_empty` extra, and installs the plugin.
 # No SGLang source patch is needed: all PPU adaptation lives in the plugin.
 #
-# Build from the repository root (BASE_IMAGE is required; use the PPU empty image the
-# 0.5.11 adaptation was validated on):
+# Build from the repository root:
 #   docker build -f docker/thead/empty-0.5.18.containerfile \
-#     --build-arg BASE_IMAGE=<ppu-empty-base-image> \
 #     -t sglang-plugin-fl:thead-empty-0.5.18 .
+# BASE_IMAGE defaults to the PPU empty image the 0.5.11 adaptation was validated on
+# (vendor stack above, SGLang 0.5.11 empty, Python 3.12.3); override it with
+# --build-arg BASE_IMAGE=<image> only to build on another PPU empty base.
+# If the default PIP_INDEX_URL (official PyPI) is slow from the build host, pass
+# --build-arg PIP_INDEX_URL=https://aiext-pypi.mirrors.aliyuncs.com/pg1-pip/ubuntu_cu130/simple/
 #
 # Run: PPU devices are passed with --device /dev/alixpu* (see .github/configs/thead.yml).
-ARG BASE_IMAGE
+ARG BASE_IMAGE=harbor.baai.ac.cn/flagos-inner-models-release/flagrelease-qwen3.6-zhenwu-empty-tree_0.7.0_ppu3.6-gems_5.5.0.dev0_g7536a18c0-sglang_0.5.11-sglang_plugin_0.1.0-cx_0.13.0-python_3.12.3-torch_2.10.0-pcp_hggc13.0-gpu_ppu-zw810e-arc_amd64-driver_1.3.2-d7f5a2:202610191938
 FROM ${BASE_IMAGE}
 
 ARG SGLANG_VERSION=0.5.18
