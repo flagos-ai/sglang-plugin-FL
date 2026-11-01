@@ -65,6 +65,8 @@ _ATTN_BACKEND_MAP = {
     "kunlunxin": "kunlunxin",
     "iluvatar": "triton",
     "hygon": "hcu",
+    # SGLang's own Triton backend: the "aiter" backend targets Instinct GPUs.
+    "amd": "triton",
 }
 
 

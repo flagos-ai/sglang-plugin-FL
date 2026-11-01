@@ -58,7 +58,6 @@ export FLAGCX_PATH=/path/to/FlagCX
 python -m sglang.launch_server \
     --model-path Qwen/Qwen3.5-9B \
     --tp 2 --port 30000 \
-    --attention-backend triton \
     --disable-piecewise-cuda-graph \
     --disable-custom-all-reduce
 ```
@@ -66,6 +65,35 @@ python -m sglang.launch_server \
 `--disable-custom-all-reduce` skips SGLang's default AMD custom all-reduce, which needs `aiter`.
 Without the flag, SGLang logs a warning and falls back on its own. Collectives go through FlagCX
 either way.
+
+The attention backend defaults to SGLang's built-in `triton` backend on AMD (Triton kernels
+compiled by FlagTree); pass `--attention-backend` to override it. SGLang's AMD-specific `aiter`
+attention backend targets Instinct GPUs and is not used.
+
+## Vendor-specific operator libraries
+
+None are required on Radeon GPUs. AMD's operator libraries, `aiter` and the ROCm build of
+`sgl_kernel`, are written for Instinct GPUs: `sgl_kernel`'s `setup_rocm.py` only supports gfx942
+(MI300/MI325) and gfx950 (MI350), and `aiter` refuses gfx1201 at import (on gfx1100 it imports, but
+its kernels are tuned for Instinct). On Radeon, the operators SGLang would take from them are
+served by FlagGems, by SGLang's own Triton kernels, or by this plugin's `vendor/amd` backend. The
+stubs described above only exist because SGLang imports these two packages unconditionally on
+ROCm.
+
+## Running the repository examples
+
+The Qwen3.6 examples run unchanged. Each one answers two text prompts and four image questions and
+validates the answers:
+
+```bash
+cd sglang-plugin-FL/examples
+TP_SIZE=4 python qwen3_6_27b_offline_inference.py
+TP_SIZE=4 python qwen3_6_35b_a3b_offline_inference.py
+```
+
+Verified on 4x R9700 with FlagCX v0.13.0: both scripts finish with `All validations passed.`, and
+SGLang's tensor-parallel collectives go through FlagCX. Qwen3.6-27B needs `TP_SIZE=4` here because
+its bf16 weights do not fit on one 32 GB card.
 
 ## What the `vendor/amd` backend provides
 
@@ -78,7 +106,7 @@ either way.
 
 ## Known limitations
 
-- **FP8 models need a FlagTree with flagos-ai/FlagTree#1456.** FlagTree 0.7.0's
+- **FP8 models need a FlagTree with flagos-ai/FlagTree#1456 (merged, not in a release yet).** FlagTree 0.7.0's
   `TritonAMDGPUCanonicalizePointers` pass asserts that both arms of a pointer `arith.select` carry
   the same attributes. SGLang's FP8 block GEMM (`_w8a8_block_fp8_matmul`) breaks that assumption
   at small batch sizes, and the compiler aborts during graph capture. Until the fix is released,
@@ -93,6 +121,7 @@ either way.
 - `gemma_rms_norm` runs on the PyTorch reference backend.
 - The FP8 block GEMM uses SGLang's default Triton config. No tuned config for this GPU exists yet,
   so performance is not optimized.
-- With FlagCX >= 0.14, the FlagCX communicator needs the wrapper-path fix from
-  flagos-ai/sglang-plugin-FL#156. Without it, collectives silently fall back to
-  `torch.distributed`.
+- FlagCX v0.13.0 works with the plugin as is. FlagCX >= 0.14 moved its Python wrapper to
+  `src/flagcx/api.py`; the plugin needs the wrapper-path fix from flagos-ai/sglang-plugin-FL#156 for
+  that, otherwise collectives silently fall back to `torch.distributed`. The wrapper has no bool or
+  FP8 dtype, which flagos-ai/sglang-plugin-FL#161 handles for the byte-moving collectives.
