@@ -130,3 +130,38 @@ def test_disabled_send_recv_broadcast_return_early() -> None:
     assert comm.broadcast(tensor, src=0) is None
     assert comm.send(tensor, dst=1) is None
     assert comm.recv(tensor, src=0) is None
+
+
+@pytest.mark.parametrize("dtype", [torch.bool, torch.float8_e4m3fn, torch.float8_e5m2])
+def test_reduce_dtype_rejects_byte_only_types(dtype) -> None:
+    comm = _disabled_comm()
+
+    with pytest.raises(ValueError, match="does not support"):
+        comm._reduce_dtype(dtype)
+
+
+def test_reduce_dtype_passes_through_float_types() -> None:
+    comm = _disabled_comm()
+    comm._dtype_enum = Mock()
+    comm._dtype_enum.from_torch.return_value = 9
+
+    assert comm._reduce_dtype(torch.bfloat16) == 9
+    comm._dtype_enum.from_torch.assert_called_once_with(torch.bfloat16)
+
+
+@pytest.mark.parametrize(
+    "dtype, sent_as",
+    [
+        (torch.bool, torch.uint8),
+        (torch.float8_e4m3fn, torch.uint8),
+        (torch.float8_e5m2, torch.uint8),
+        (torch.bfloat16, torch.bfloat16),
+    ],
+)
+def test_transfer_dtype_sends_byte_only_types_as_uint8(dtype, sent_as) -> None:
+    comm = _disabled_comm()
+    comm._dtype_enum = Mock()
+    comm._dtype_enum.from_torch.return_value = 1
+
+    assert comm._transfer_dtype(dtype) == 1
+    comm._dtype_enum.from_torch.assert_called_once_with(sent_as)
