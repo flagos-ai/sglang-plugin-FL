@@ -73,12 +73,29 @@ attention backend targets Instinct GPUs and is not used.
 ## Vendor-specific operator libraries
 
 None are required on Radeon GPUs. AMD's operator libraries, `aiter` and the ROCm build of
-`sgl_kernel`, are written for Instinct GPUs: `sgl_kernel`'s `setup_rocm.py` only supports gfx942
-(MI300/MI325) and gfx950 (MI350), and `aiter` refuses gfx1201 at import (on gfx1100 it imports, but
-its kernels are tuned for Instinct). On Radeon, the operators SGLang would take from them are
-served by FlagGems, by SGLang's own Triton kernels, or by this plugin's `vendor/amd` backend. The
-stubs described above only exist because SGLang imports these two packages unconditionally on
-ROCm.
+`sgl_kernel`, are written mainly for Instinct GPUs. `sgl_kernel`'s `setup_rocm.py` only supports
+gfx942 (MI300/MI325) and gfx950 (MI350). `aiter` is mixed: the PyPI release we tried (amd-aiter
+0.1.7) refuses gfx1201 at import, while newer commits import on both Radeon GPUs, and their Triton
+kernels back FlashAttention-2's Triton backend (see below). On Radeon, the operators SGLang would
+take from `aiter` and `sgl_kernel` are served by FlagGems, by SGLang's own Triton kernels, or by
+this plugin's `vendor/amd` backend. The stubs described above exist because SGLang imports both
+packages unconditionally on ROCm and neither is installed here.
+
+## Attention kernels and FlashAttention
+
+SGLang's `triton` attention backend runs FlashAttention-style tiled attention written in Triton:
+online softmax over KV blocks, and flash-decoding (split-KV) for decode. It is not the
+FlashAttention library. In Qwen3.6, one layer in four is full attention and uses this backend;
+the others are Gated DeltaNet layers, which use the separate Triton kernels from `vendor/amd`.
+
+FlashAttention-2 also has a Triton backend for AMD (CDNA and RDNA GPUs), built on aiter's Triton
+kernels (`FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE`, see the FlashAttention README). In a
+standalone test with FlagTree it ran correctly on both Radeon GPUs (bf16, head_dim 256, GQA;
+causal prefill, varlen and KV-cache decode). For single-sequence causal prefill with Qwen3.6
+shapes, it was about as fast as SGLang's Triton kernel on R9700 and 2x to 3.6x faster on W7900
+for 512 to 8192 tokens. SGLang has no FlashAttention-2 backend today (its `fa3` backend calls
+the FA3 kernels in `sgl_kernel`), so using it needs a new attention backend. That is not part of
+this PR.
 
 ## Running the repository examples
 
