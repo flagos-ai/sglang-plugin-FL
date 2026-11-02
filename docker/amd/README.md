@@ -10,6 +10,8 @@ inside the `rocm/pytorch:rocm7.2.4_ubuntu24.04_py3.12_pytorch_release_2.10.0` co
 | R9700 | Qwen3.6-27B | TP=2 (FlagCX) | `--mem-fraction-static 0.92` |
 | R9700 | Qwen3.6-35B-A3B-FP8 | TP=2 (FlagCX) | needs the FlagTree fix below |
 | R9700 | Qwen3.6-35B-A3B | TP=4 (FlagCX) | |
+| R9700 x2 nodes | Qwen3.6-35B-A3B | TP=2 x PP=2 (FlagCX) | 2 GPUs per node, see "Multi-node" |
+| R9700 x2 nodes | Qwen3.6-27B | TP=2 x PP=2 (FlagCX) | 2 GPUs per node, see "Multi-node" |
 | W7900 | Qwen3.5-9B | TP=1 | |
 | W7900 | Qwen3.6-35B-A3B-FP8 | TP=1 | `--mem-fraction-static 0.9`; ~3.5 h kernel compile on first start |
 
@@ -111,6 +113,32 @@ TP_SIZE=4 python qwen3_6_35b_a3b_offline_inference.py
 Verified on 4x R9700 with FlagCX v0.13.0: both scripts finish with `All validations passed.`, and
 SGLang's tensor-parallel collectives go through FlagCX. Qwen3.6-27B needs `TP_SIZE=4` here because
 its bf16 weights do not fit on one 32 GB card.
+
+## Multi-node (TP x PP)
+
+The multi-node examples run unchanged. Each node runs the same script with a different `--role`; start
+the master first. Verified with two R9700 machines (2 GPUs each, plain Ethernet, no InfiniBand), TP=2
+x PP=2, FlagCX v0.13.0:
+
+```bash
+# both nodes
+export SGLANG_FL_DIST_BACKEND=flagcx FLAGCX_PATH=/path/to/FlagCX
+export SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK=0
+export GLOO_SOCKET_IFNAME=<nic> NCCL_SOCKET_IFNAME=<nic>      # the NIC that carries the node IP
+export HIP_VISIBLE_DEVICES=<two free GPUs>
+
+# node 0
+python qwen3_6_35b_a3b_multinode.py --role master --master-addr <node0 ip> --tp 2 --pp 2
+# node 1
+python qwen3_6_35b_a3b_multinode.py --role worker --master-addr <node0 ip> --tp 2 --pp 2
+```
+
+`qwen3_6_27b_multinode.py` works the same way. Both scripts finish with `ALL TESTS PASSED` (text,
+longer generation, 4 and 32 concurrent text requests, image questions, 8 concurrent image requests).
+SGLang's TP all-reduce / all-gather and the PP send / recv go through FlagCX: the counts on the two
+nodes match (for 27B, 354 sends on one node against 354 receives on the other), and nothing falls back
+to `torch.distributed`. The network is plain Ethernet, so this run checks function, not throughput.
+TP=4 x PP=2 has not been verified.
 
 ## What the `vendor/amd` backend provides
 
