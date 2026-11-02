@@ -60,7 +60,8 @@ class KunlunxinBackend(AttentionBackend):
         self.kv_cache_dtype = model_runner.kv_cache_dtype
         self.page_size = model_runner.page_size
         self.forward_metadata: Optional[KunlunxinForwardMetadata] = None
-        # KunlunxinBackend 作为 hybrid GDN 的 full-attn 侧，缺了上游现在强制读取的属性
+        # As the full-attn side of hybrid GDN, KunlunxinBackend must expose
+        # attributes that upstream now reads unconditionally.
         self.req_to_token_pool = model_runner.req_to_token_pool
         self.token_to_kv_pool = model_runner.token_to_kv_pool
 
