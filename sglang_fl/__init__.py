@@ -54,6 +54,7 @@ Environment variables:
   SGLANG_FL_DIST_BACKEND=nccl|hccl|flagcx   Override distributed backend
   FLAGCX_PATH=<path>                         If set, default to flagcx backend
   SGLANG_FL_DISAGG_FLAGCX=1|0         Register FlagCX PD-disagg backend (default: 1)
+  SGLANG_FL_RS_NORM_AG=1|0            Pure TP prefill RS+norm+AG fused kernels (default: 0)
 """
 
 import logging
@@ -791,6 +792,12 @@ def load_plugin():
 
     # 4. Communicator hooks (CommunicatorFL with FlagCX/torch.distributed)
     _setup_communicator_hooks()
+
+    # 4b. Pure TP prefill: FlagGems ring RS + norm + AG around attention (opt-in)
+    from sglang_fl.distributed.rs_norm_ag import register_hooks as _register_rs_norm_ag
+
+    if _register_rs_norm_ag() and _is_rank0():
+        logger.info("FlagGems rs-norm-ag hooks registered (SGLANG_FL_RS_NORM_AG=1)")
 
     # 5. Vendor-specific patches — final overlay on top of all sglang_fl layers
     _apply_vendor_patches()
