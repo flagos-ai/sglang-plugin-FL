@@ -138,7 +138,6 @@ longer generation, 4 and 32 concurrent text requests, image questions, 8 concurr
 SGLang's TP all-reduce / all-gather and the PP send / recv go through FlagCX: the counts on the two
 nodes match (for 27B, 354 sends on one node against 354 receives on the other), and nothing falls back
 to `torch.distributed`. The network is plain Ethernet, so this run checks function, not throughput.
-TP=4 x PP=2 has not been verified.
 
 ## What the `vendor/amd` backend provides
 
