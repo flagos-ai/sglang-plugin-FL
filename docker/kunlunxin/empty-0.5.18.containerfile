@@ -22,7 +22,7 @@ ARG SGLANG_VERSION=0.5.18
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 COPY docker/kunlunxin/sglang-v0.5.18-kunlunxin.patch /opt/sglang-v0.5.18-kunlunxin.patch
 
-# Install SGLang v0.5.18 from source: download tag tarball, apply Kunlunxin patch,
+# Install SGLang v0.5.18 from source: clone tag → apply patch → cp pyproject_other → pip install,
 # then pip install .[srt_empty].    
 RUN rm -rf /sgl-workspace/sglang-upgrade/sglang && \
   git clone --branch "v${SGLANG_VERSION}" --single-branch \
@@ -34,6 +34,7 @@ RUN rm -rf /sgl-workspace/sglang-upgrade/sglang && \
   git apply /opt/sglang-v0.5.18-kunlunxin.patch && \
   (python -m pip uninstall -y sglang sglang_fl || true) && \
   cd python && \
+  cp pyproject_other.toml pyproject.toml && \
   python -m pip install \
     --index-url "$PIP_INDEX_URL" '.[srt_empty]'
 
