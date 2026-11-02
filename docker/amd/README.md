@@ -38,10 +38,9 @@ is reused and pinned rather than replaced. It then installs:
   dependency set would pull in the CUDA PyTorch stack. `apache-tvm-ffi` is required: SGLang
   JIT-compiles some HIP kernels through it, and these work on gfx1201 and gfx1100.
 - **Import-only stubs for `aiter` and `sgl_kernel`** ([fl_stub.py](./fl_stub.py)). SGLang imports
-  both at module level on ROCm, but neither supports these GPUs: `aiter` rejects gfx1201 on
-  import, and `sgl_kernel`'s ROCm build targets only gfx942/gfx950. Any call into a stub raises. The
-  kernels SGLang would otherwise take from them are served by FlagGems, by SGLang's own Triton
-  kernels, or by this plugin's `vendor/amd` backend.
+  both at module level on ROCm, but both mainly target AMD Instinct GPUs and neither is installed
+  here. Any call into a stub raises. The kernels SGLang would otherwise take from them are served
+  by FlagGems, by SGLang's own Triton kernels, or by this plugin's `vendor/amd` backend.
 - **FlagGems v5.3.0** with one fix (flagos-ai/FlagGems#7908, also part of #6530): its `_amd`
   backend needs `triton_extra_name="hip"`. Without it, libdevice math ops such as `pow`, `tanh`
   and `erf` resolve to CUDA libdevice, and the AMD backend rejects their `__nv_*` calls. SGLang
@@ -73,13 +72,14 @@ attention backend targets Instinct GPUs and is not used.
 ## Vendor-specific operator libraries
 
 None are required on Radeon GPUs. AMD's operator libraries, `aiter` and the ROCm build of
-`sgl_kernel`, are written mainly for Instinct GPUs. `sgl_kernel`'s `setup_rocm.py` only supports
-gfx942 (MI300/MI325) and gfx950 (MI350). `aiter` is mixed: the PyPI release we tried (amd-aiter
-0.1.7) refuses gfx1201 at import, while newer commits import on both Radeon GPUs, and their Triton
-kernels back FlashAttention-2's Triton backend (see below). On Radeon, the operators SGLang would
-take from `aiter` and `sgl_kernel` are served by FlagGems, by SGLang's own Triton kernels, or by
-this plugin's `vendor/amd` backend. The stubs described above exist because SGLang imports both
-packages unconditionally on ROCm and neither is installed here.
+`sgl_kernel`, mainly target AMD Instinct GPUs. `sgl_kernel`'s `setup_rocm.py` only supports gfx942
+(MI300/MI325) and gfx950 (MI350). Some `aiter` operators do run on Radeon GPUs, such as the Triton
+kernels behind FlashAttention-2's Triton backend (see below), but Instinct remains its primary
+platform: the PyPI release we tried (amd-aiter 0.1.7) refuses gfx1201 at import, while newer
+commits import on both Radeon GPUs. On Radeon, the operators SGLang would take from `aiter` and
+`sgl_kernel` are served by FlagGems, by SGLang's own Triton kernels, or by this plugin's
+`vendor/amd` backend. The stubs described above exist because SGLang imports both packages
+unconditionally on ROCm and neither is installed here.
 
 ## Attention kernels and FlashAttention
 

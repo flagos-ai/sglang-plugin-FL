@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Import-only stand-ins for vendor kernel packages that do not support this GPU.
+"""Import-only stand-ins for vendor kernel packages that are not installed.
 
-sglang imports aiter and sgl_kernel at module level on ROCm. On GPUs these
-packages do not support (e.g. gfx1201), every name resolves to a placeholder
-that raises on use, so an unexpected kernel call fails loudly instead of
-silently computing nothing.
+sglang imports aiter and sgl_kernel at module level on ROCm. Both mainly target
+AMD Instinct GPUs and are not installed on Radeon GPUs, so every name resolves
+to a placeholder that raises on use: an unexpected kernel call fails loudly
+instead of silently computing nothing.
 """
 
 import importlib.abc

@@ -72,8 +72,9 @@ pip install -q aiohttp anthropic "blobfile==3.0.0" compressed-tensors datasets d
   "transformers==5.6.0" "apache-tvm-ffi>=0.1.5,<0.2"
 pip install -q --no-deps "xgrammar==0.1.32"
 
-# 4. aiter and sgl_kernel have no build for this GPU but are imported at module
-#    level by SGLang on ROCm: install import-only stubs that raise on use.
+# 4. aiter and sgl_kernel mainly target AMD Instinct GPUs and are not installed
+#    here, but SGLang imports them at module level on ROCm: install import-only
+#    stubs that raise on use.
 mkdir -p "$W/stubs/aiter" "$W/stubs/sgl_kernel"
 cp "$PLUGIN_DIR/docker/amd/fl_stub.py" "$W/stubs/_fl_stub.py"
 for p in aiter sgl_kernel; do
