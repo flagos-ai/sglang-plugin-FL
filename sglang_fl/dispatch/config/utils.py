@@ -45,12 +45,28 @@ import yaml
 _CONFIG_DIR = Path(__file__).parent
 
 
+def _is_amd_rocm(torch) -> bool:
+    if getattr(torch.version, "hip", None) is None:
+        return False
+    try:
+        try:
+            # FlagGems<=5.0.2
+            from flag_gems.runtime.backend.device import DeviceDetector
+        except (ImportError, FileNotFoundError):
+            # FlagGems>5.0.2
+            from flag_gems.runtime.backend.device_finder import DeviceDetector
+
+        return DeviceDetector().vendor_name == "amd"
+    except Exception:
+        return False
+
+
 def get_platform_name() -> str:
     """
     Detect the current hardware platform.
 
     Returns:
-        Platform name string: 'ascend', 'musa', 'iluvatar', 'nvidia', or 'unknown'
+        Platform name string: 'ascend', 'musa', 'iluvatar', 'amd', 'nvidia', or 'unknown'
     """
     try:
         import torch
@@ -67,6 +83,10 @@ def get_platform_name() -> str:
         if "metax" in torch.__version__ and torch.cuda.is_available():
             return "metax"
         if torch.cuda.is_available():
+            # ROCm torch also reports a working torch.cuda; ask FlagGems which
+            # vendor it is so AMD gets its own config (Hygon DCU stays "nvidia").
+            if _is_amd_rocm(torch):
+                return "amd"
             return "nvidia"
     except ImportError:
         pass

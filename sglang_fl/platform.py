@@ -52,6 +52,7 @@ _DIST_BACKEND_MAP = {
     "enflame": "eccl",
     "tsingmicro": "tccl",
     "hygon": "nccl",
+    "amd": "nccl",  # RCCL on ROCm
 }
 
 # Attention backend mapping: vendor_name -> default backend
