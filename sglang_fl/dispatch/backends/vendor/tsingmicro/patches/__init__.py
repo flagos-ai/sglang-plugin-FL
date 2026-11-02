@@ -25,7 +25,7 @@ Patches applied:
   decode_attention – Route triton_ops.decode_attention.decode_attention_fwd
                     through flag_gems (opt-in SGLANG_FL_DECODE_ATTN_FLAGOS=1)
   gdn_norm        – Pin GatedDeltaNet's gated RMSNorm to
-                    fla.layernorm_gated.RMSNorm (SGLANG_FL_GDN_NORM, default 1)
+                    fla.layernorm_gated.RMSNorm (SGLANG_FL_GDN_NORM, default 0)
 
 Usage (called automatically by load_plugin()):
 

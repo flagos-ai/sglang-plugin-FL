@@ -16,8 +16,8 @@ name ``sglang.srt.models.qwen3_5.RMSNormGated``::
     core_attn_out = self.norm(core_attn_out, z)
 
 That class is a thin wrapper over ``layernorm_fn -> LayerNormFn.apply ->
-rms_norm_gated -> _layer_norm_fwd``, i.e. the native single-pass Triton
-kernel.  This patch keeps it the only implementation GDN can reach:
+rms_norm_gated -> _layer_norm_fwd``, i.e. the native single-pass Triton kernel.
+This patch keeps it the only implementation GDN can reach:
 
 1. rebinds ``qwen3_5.RMSNormGated`` so ``__init__`` constructs exactly
    ``layernorm_gated.RMSNorm`` (regardless of what another plugin or back end
@@ -26,14 +26,8 @@ kernel.  This patch keeps it the only implementation GDN can reach:
    through the upstream class -- one INFO line on the first call, one DEBUG
    line per call (for "is it really called per layer per step" checks).
 
-By default the wrapper only logs and then calls the original ``forward``
-(numerics untouched); disable the whole patch with ``SGLANG_FL_GDN_NORM=0``.
-
-``SGLANG_FL_GDN_NORM_REF=1`` additionally replaces the numerics with the
-module's own pure-PyTorch reference (``rms_norm_ref``).  The native Triton
-kernel is the documented source of the TP=8 ``'!'``/NaN output on TXDA
-(docs/sglang-plugin-fl-tp8-nan-fix.md), so this is the switch to use when
-hunting that failure.
+The wrapper only logs and then calls the original ``forward``; numerics are
+untouched.  Off by default: set ``SGLANG_FL_GDN_NORM=1`` to enable.
 """
 
 import os
@@ -42,32 +36,17 @@ from sglang_fl.dispatch.backends.vendor.tsingmicro.patches._logger import patch_
 
 _log = patch_logger("gdn_norm")
 
-_ENABLED_KEY = "SGLANG_FL_GDN_NORM"
-_REF_KEY = "SGLANG_FL_GDN_NORM_REF"
-_TRUTHY = ("1", "true", "yes", "on")
-
 _patched = False
+# Original ``RMSNorm.forward``; the wrapper calls through to it unchanged.
 _forward_orig = None
+# One-shot INFO on the first call, DEBUG afterwards (per layer, per step).
 _calls = 0
-_layernorm_gated = None
+
+_ENABLED_KEY = "SGLANG_FL_GDN_NORM"
 
 
 def _enabled() -> bool:
-    return os.getenv(_ENABLED_KEY, "0").lower() in _TRUTHY
-
-
-def _ref_enabled() -> bool:
-    return os.getenv(_REF_KEY, "0").strip().lower() in _TRUTHY
-
-
-def _ref_applicable(norm) -> bool:
-    """The reference covers exactly the config GatedDeltaNet constructs."""
-    return (
-        norm.group_size is None
-        and norm.norm_before_gate
-        and norm.activation == "swish"
-        and norm.bias is None
-    )
+    return os.getenv(_ENABLED_KEY, "0").lower() in ("1", "true", "yes", "on")
 
 
 def _forward(self, x, z=None):
@@ -76,12 +55,10 @@ def _forward(self, x, z=None):
     _calls += 1
     if _calls == 1:
         _log.info(
-            "GatedDeltaNet gated norm -> layernorm_gated.RMSNorm "
-            "(x=%s z=%s dtype=%s, ref=%s)",
+            "GatedDeltaNet gated norm -> layernorm_gated.RMSNorm (x=%s z=%s dtype=%s)",
             tuple(x.shape),
             None if z is None else tuple(z.shape),
             x.dtype,
-            _ref_enabled(),
         )
     else:
         _log.debug(
@@ -90,22 +67,12 @@ def _forward(self, x, z=None):
             tuple(x.shape),
             None if z is None else tuple(z.shape),
         )
-    if _ref_enabled() and _ref_applicable(self):
-        return _layernorm_gated.rms_norm_ref(
-            x,
-            self.weight,
-            self.bias,
-            z=z,
-            eps=self.eps,
-            group_size=self.group_size,
-            norm_before_gate=self.norm_before_gate,
-        )
     return _forward_orig(self, x, z)
 
 
 def patch() -> None:
-    """Pin GDN's gated norm to ``layernorm_gated.RMSNorm``.  Idempotent."""
-    global _patched, _forward_orig, _layernorm_gated
+    """Pin GDN's gated norm to ``layernorm_gated.RMSNorm``. Idempotent."""
+    global _patched, _forward_orig
     if _patched:
         return
     if not _enabled():
@@ -117,7 +84,6 @@ def patch() -> None:
     except Exception as exc:  # noqa: BLE001
         _log.failed("cannot import layernorm_gated: %s", exc)
         return
-    _layernorm_gated = lg
 
     cls = lg.RMSNorm
     _forward_orig = cls.forward
@@ -133,8 +99,4 @@ def patch() -> None:
         _log.warning("cannot rebind qwen3_5.RMSNormGated: %s", exc)
 
     _patched = True
-    _log.applied(
-        "GatedDeltaNet gated norm pinned to layernorm_gated.RMSNorm "
-        "(numerics=%s)",
-        "pure-PyTorch reference" if _ref_enabled() else "native Triton kernel",
-    )
+    _log.applied("GatedDeltaNet gated norm pinned to layernorm_gated.RMSNorm")
