@@ -20,8 +20,8 @@ git clone https://github.com/flagos-ai/sglang-plugin-FL
 bash sglang-plugin-FL/docker/amd/setup_env.sh /path/to/workdir
 . /path/to/workdir/venv/bin/activate
 
-# FlagCX for tensor-parallel communication
-git clone https://github.com/flagos-ai/FlagCX.git
+# FlagCX v0.13.0 for tensor-parallel communication (see "Known limitations" for other versions)
+git clone --branch v0.13.0 --depth 1 https://github.com/flagos-ai/FlagCX.git
 cd FlagCX && make USE_AMD=1 && export FLAGCX_PATH="$PWD"
 ```
 
@@ -138,7 +138,11 @@ its bf16 weights do not fit on one 32 GB card.
 - `gemma_rms_norm` runs on the PyTorch reference backend.
 - The FP8 block GEMM uses SGLang's default Triton config. No tuned config for this GPU exists yet,
   so performance is not optimized.
-- FlagCX v0.13.0 works with the plugin as is. FlagCX >= 0.14 moved its Python wrapper to
-  `src/flagcx/api.py`; the plugin needs the wrapper-path fix from flagos-ai/sglang-plugin-FL#156 for
-  that, otherwise collectives silently fall back to `torch.distributed`. The wrapper has no bool or
-  FP8 dtype, which flagos-ai/sglang-plugin-FL#161 handles for the byte-moving collectives.
+- **FlagCX version.** Use FlagCX v0.13.0, as in the setup above: the plugin finds its Python wrapper
+  at `plugin/interservice/flagcx_wrapper.py`, and TP collectives go through FlagCX. FlagCX >= 0.14
+  moved the wrapper to `src/flagcx/api.py`; with it, the plugin needs the wrapper-path fix from
+  flagos-ai/sglang-plugin-FL#156, otherwise it only logs a warning and silently falls back to
+  `torch.distributed`. The v0.13.0 wrapper has no bool or FP8 dtype, so bool/FP8 tensors in the
+  byte-moving collectives need flagos-ai/sglang-plugin-FL#161; plain TP does not send them. v0.13.0's
+  HIP adaptor also lacks `eventElapsedTime` (added in flagos-ai/FlagCX#679), so the FlagCX tuner
+  (`FLAGCX_USE_TUNER=1`) cannot time collectives on AMD with it.
