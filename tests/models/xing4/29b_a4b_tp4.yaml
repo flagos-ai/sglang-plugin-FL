@@ -1,0 +1,48 @@
+# Xing4.0-29B-A4B MThreads S5000 smoke configuration, TP=4.
+
+llm:
+  model: "/data/models/Xing4.0-29B-A4B"
+  tp_size: 4
+  pp_size: 1
+  context_length: 32768
+  mem_fraction_static: 0.80
+  trust_remote_code: true
+  disable_custom_all_reduce: true
+  max_running_requests: 64
+  reasoning_parser: "xingchen4"
+
+generate:
+  prompts:
+    - text: "What is 17 multiplied by 13? Answer with only the number."
+      expected: "221"
+    - text: "The capital of France is"
+      expected: "Paris"
+  sampling:
+    max_new_tokens: 64
+    temperature: 0.0
+
+serve:
+  served_model_name: "Xing4.0-29B-A4B"
+  startup_retries: 180
+  endpoints: ["chat"]
+  stream: false
+  max_tokens: 64
+  chat_messages:
+    - role: "user"
+      content: "What is 17 multiplied by 13? Answer with only the number."
+  sampling:
+    temperature: 0.0
+
+concurrent:
+  modes: ["text"]
+  concurrent_n: 8
+  text:
+    prompts:
+      - text: "What is 17 multiplied by 13? Answer with only the number."
+        expected: ["221"]
+      - text: "The capital of France is"
+        expected: ["paris"]
+  sampling:
+    text:
+      max_new_tokens: 64
+      temperature: 0.0

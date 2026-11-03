@@ -233,9 +233,19 @@ class PlatformFL(SRTPlatform):
             )
 
             return NPUGraphRunner
-        from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
+        try:
+            # SGLang 0.5.18 split the phase runners into model_executor.runner.
+            from sglang.srt.model_executor.runner.decode_cuda_graph_runner import (
+                DecodeCudaGraphRunner,
+            )
 
-        return CudaGraphRunner
+            return DecodeCudaGraphRunner
+        except ImportError:
+            # Compatibility with SGLang releases that still expose the
+            # monolithic graph runner module.
+            from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
+
+            return CudaGraphRunner
 
     def get_mha_kv_pool_cls(self) -> type:
         if self._device_type == "npu":
@@ -257,7 +267,9 @@ class PlatformFL(SRTPlatform):
             return NPUMLATokenToKVPool
         from sglang.srt.mem_cache.memory_pool import MLATokenToKVPool
 
-        return MLATokenToKVPool
+        from sglang_fl.platform_compat import make_mla_pool_cls
+
+        return make_mla_pool_cls(MLATokenToKVPool)
 
     def get_nsa_kv_pool_cls(self) -> type:
         if self._device_type == "npu":
@@ -300,7 +312,15 @@ class PlatformFL(SRTPlatform):
     def support_piecewise_cuda_graph(self) -> bool:
         return self._device_type == "cuda"
 
-    def is_pin_memory_available(self) -> bool:
+    def is_pin_memory_available(
+        self, device: Optional[torch.device] = None
+    ) -> bool:
+        """Return pin-memory support for old and new SGLang call sites.
+
+        SGLang 0.5.18 passes the target device while older releases call this
+        method without arguments.  Availability is a platform capability, so
+        the optional device does not change the result.
+        """
         return self._device_type in ("cuda", "npu", "xpu", "musa", "tsingmicro")
 
     def supports_fp8(self) -> bool:

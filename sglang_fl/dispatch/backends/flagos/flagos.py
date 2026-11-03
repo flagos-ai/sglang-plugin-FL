@@ -48,6 +48,41 @@ class FlagOSBackend(Backend):
 
         return rms_norm_flagos(obj, x, residual)
 
+    def mhc_pre(
+        self,
+        residual,
+        fn,
+        hc_scale,
+        hc_base,
+        rms_eps,
+        hc_pre_eps,
+        hc_sinkhorn_eps,
+        hc_post_mult_value,
+        sinkhorn_repeat,
+        n_splits=1,
+        n_splits_pre=None,
+    ):
+        from .impl.mhc import mhc_pre_flagos
+
+        return mhc_pre_flagos(
+            residual,
+            fn,
+            hc_scale,
+            hc_base,
+            rms_eps,
+            hc_pre_eps,
+            hc_sinkhorn_eps,
+            hc_post_mult_value,
+            sinkhorn_repeat,
+            n_splits,
+            n_splits_pre,
+        )
+
+    def mhc_post(self, x, residual, post_layer_mix, comb_res_mix):
+        from .impl.mhc import mhc_post_flagos
+
+        return mhc_post_flagos(x, residual, post_layer_mix, comb_res_mix)
+
     def rotary_embedding(
         self,
         obj,
