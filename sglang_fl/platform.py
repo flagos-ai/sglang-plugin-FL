@@ -300,7 +300,15 @@ class PlatformFL(SRTPlatform):
     def support_piecewise_cuda_graph(self) -> bool:
         return self._device_type == "cuda"
 
-    def is_pin_memory_available(self) -> bool:
+    def is_pin_memory_available(
+        self, device: Optional[torch.device] = None
+    ) -> bool:
+        """Return pin-memory support for old and new SGLang call sites.
+
+        SGLang 0.5.18 passes the target device while older releases call this
+        method without arguments.  Availability is a platform capability, so
+        the optional device does not change the result.
+        """
         return self._device_type in ("cuda", "npu", "xpu", "musa", "tsingmicro")
 
     def supports_fp8(self) -> bool:
