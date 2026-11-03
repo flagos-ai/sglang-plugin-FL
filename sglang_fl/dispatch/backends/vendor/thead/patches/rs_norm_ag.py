@@ -108,7 +108,10 @@ def _plain_rms_norm(norm) -> bool:
 
 def _static_ok(model) -> bool:
     """Server / model properties that do not change between forwards."""
-    from sglang.srt.distributed import get_pp_group, get_tensor_model_parallel_world_size
+    from sglang.srt.distributed import (
+        get_pp_group,
+        get_tensor_model_parallel_world_size,
+    )
     from sglang.srt.layers.communicator import (
         LayerCommunicator,
         enable_moe_dense_fully_dp,
@@ -185,15 +188,26 @@ def _init(model) -> None:
     comm = qkv = None
     try:
         comm = mod.fused_rs_add_rms_norm_ag(
-            cpu_group, group.device, max_tokens, H, torch.bfloat16,
-            cpu_group=cpu_group, rings=rings,
+            cpu_group,
+            group.device,
+            max_tokens,
+            H,
+            torch.bfloat16,
+            cpu_group=cpu_group,
+            rings=rings,
         )
         if q_dim is not None:
             kv_dim = attn.kv_lora_rank
             qkv = mod.fused_qkv_norm_ag(
-                cpu_group, group.device, max_tokens, q_dim, kv_dim,
-                q_dim + kv_dim + attn.qk_rope_head_dim, torch.bfloat16,
-                cpu_group=cpu_group, rings=rings,
+                cpu_group,
+                group.device,
+                max_tokens,
+                q_dim,
+                kv_dim,
+                q_dim + kv_dim + attn.qk_rope_head_dim,
+                torch.bfloat16,
+                cpu_group=cpu_group,
+                rings=rings,
             )
         ok = True
     except Exception as e:
@@ -285,7 +299,9 @@ def _layer_scattered(attn, qkv_latent_func, forward_batch) -> bool:
         return False
     if getattr(attn, "use_dsa", False) and not attn.skip_topk:
         return False
-    if not (_plain_rms_norm(attn.q_a_layernorm) and _plain_rms_norm(attn.kv_a_layernorm)):
+    if not (
+        _plain_rms_norm(attn.q_a_layernorm) and _plain_rms_norm(attn.kv_a_layernorm)
+    ):
         return False
     return attn.dispatch_attn_forward_method(forward_batch) == AttnForwardMethod.MLA
 
@@ -294,7 +310,9 @@ def _aligned(t: torch.Tensor) -> torch.Tensor:
     if t.is_contiguous() and (t.numel() == 0 or t.data_ptr() % _ALIGN == 0):
         return t
     out = torch.empty_like(t, memory_format=torch.contiguous_format)
-    assert out.numel() == 0 or out.data_ptr() % _ALIGN == 0, "allocator returned a misaligned block"
+    assert out.numel() == 0 or out.data_ptr() % _ALIGN == 0, (
+        "allocator returned a misaligned block"
+    )
     out.copy_(t)
     return out
 
@@ -302,7 +320,11 @@ def _aligned(t: torch.Tensor) -> torch.Tensor:
 def _fuse(x: torch.Tensor, residual: torch.Tensor, norm, gather: bool) -> torch.Tensor:
     """residual: this rank's rows, updated in place."""
     return _COMM(
-        _aligned(x), residual, _aligned(norm.weight.data), norm.variance_epsilon, gather=gather
+        _aligned(x),
+        residual,
+        _aligned(norm.weight.data),
+        norm.variance_epsilon,
+        gather=gather,
     )
 
 
@@ -319,11 +341,17 @@ class _FinalNorm(nn.Module):
 
     def forward(self, hidden_states, residual=None):
         if residual is None or not _ACTIVE:
-            return self.real(hidden_states, residual) if residual is not None else self.real(hidden_states)
+            return (
+                self.real(hidden_states, residual)
+                if residual is not None
+                else self.real(hidden_states)
+            )
         return _fuse(hidden_states, residual, self.real, gather=True), None
 
 
-def _model_forward_hook(original_fn, self, input_ids, positions, forward_batch, *args, **kwargs):
+def _model_forward_hook(
+    original_fn, self, input_ids, positions, forward_batch, *args, **kwargs
+):
     input_embeds = kwargs.get("input_embeds", args[0] if args else None)
     x = input_embeds if input_embeds is not None else input_ids
     if x is None or not _begin(self, x.shape[0], forward_batch):
@@ -337,7 +365,9 @@ def _model_forward_hook(original_fn, self, input_ids, positions, forward_batch, 
         _end()
 
 
-def _prepare_attn_hook(original_fn, self, hidden_states, residual, forward_batch, *args, **kwargs):
+def _prepare_attn_hook(
+    original_fn, self, hidden_states, residual, forward_batch, *args, **kwargs
+):
     from sglang.srt.layers.communicator import (
         AttentionInputs,
         LayerCommunicator,
@@ -345,9 +375,15 @@ def _prepare_attn_hook(original_fn, self, hidden_states, residual, forward_batch
     )
 
     if not _ACTIVE or type(self) is not LayerCommunicator:
-        return original_fn(self, hidden_states, residual, forward_batch, *args, **kwargs)
-    post_residual_addition = kwargs.get("post_residual_addition", args[1] if len(args) > 1 else None)
-    assert post_residual_addition is None, "rs-norm-ag: post_residual_addition unsupported"
+        return original_fn(
+            self, hidden_states, residual, forward_batch, *args, **kwargs
+        )
+    post_residual_addition = kwargs.get(
+        "post_residual_addition", args[1] if len(args) > 1 else None
+    )
+    assert post_residual_addition is None, (
+        "rs-norm-ag: post_residual_addition unsupported"
+    )
 
     func = self.qkv_latent_func
     attn = getattr(func, "__self__", None)
@@ -359,7 +395,9 @@ def _prepare_attn_hook(original_fn, self, hidden_states, residual, forward_batch
         if scattered:
             hidden_states = hidden_states[_B:_E]
     else:
-        hidden_states = _fuse(hidden_states, residual, self.input_layernorm, gather=not scattered)
+        hidden_states = _fuse(
+            hidden_states, residual, self.input_layernorm, gather=not scattered
+        )
 
     if func is not None:
         inputs = AttentionInputs(hidden_states, forward_batch, func)
@@ -367,8 +405,12 @@ def _prepare_attn_hook(original_fn, self, hidden_states, residual, forward_batch
             qn, kvn = attn.q_a_layernorm, attn.kv_a_layernorm
             # fuse3 now; fetch_qkv_latent returns the cached full latent
             inputs.qkv_latent_ = _QKV(
-                func(hidden_states, forward_batch).contiguous(), _T,
-                qn.weight.data, qn.variance_epsilon, kvn.weight.data, kvn.variance_epsilon,
+                func(hidden_states, forward_batch).contiguous(),
+                _T,
+                qn.weight.data,
+                qn.variance_epsilon,
+                kvn.weight.data,
+                kvn.variance_epsilon,
             )
             _skip_norm(qn)
             _skip_norm(kvn)
@@ -376,14 +418,20 @@ def _prepare_attn_hook(original_fn, self, hidden_states, residual, forward_batch
     return hidden_states, residual
 
 
-def _prepare_mlp_hook(original_fn, self, hidden_states, residual, forward_batch, *args, **kwargs):
+def _prepare_mlp_hook(
+    original_fn, self, hidden_states, residual, forward_batch, *args, **kwargs
+):
     from sglang.srt.layers.communicator import LayerCommunicator
 
     if not _ACTIVE or type(self) is not LayerCommunicator:
-        return original_fn(self, hidden_states, residual, forward_batch, *args, **kwargs)
+        return original_fn(
+            self, hidden_states, residual, forward_batch, *args, **kwargs
+        )
     _restore_norms()
     # o_proj partial sums -> full normed hidden
-    return _fuse(hidden_states, residual, self.post_attention_layernorm, gather=True), residual
+    return _fuse(
+        hidden_states, residual, self.post_attention_layernorm, gather=True
+    ), residual
 
 
 def _use_reduce_scatter_hook(original_fn, self, *args, **kwargs):
@@ -395,21 +443,28 @@ def _fuse_mlp_allreduce_hook(original_fn, self, *args, **kwargs):
     return False if _ACTIVE else original_fn(self, *args, **kwargs)
 
 
-def register_hooks() -> bool:
+def patch_rs_norm_ag() -> bool:
     """Register the hooks when SGLANG_FL_RS_NORM_AG=1. Returns whether it did."""
     if os.environ.get(ENV, "0").strip().lower() not in ("1", "true", "yes", "on"):
         return False
     from sglang.srt.plugins.hook_registry import HookRegistry, HookType
 
     HookRegistry.register(f"{_MODEL}.forward", _model_forward_hook, HookType.AROUND)
-    HookRegistry.register(f"{_COMMUNICATOR}.prepare_attn", _prepare_attn_hook, HookType.AROUND)
-    HookRegistry.register(f"{_COMMUNICATOR}.prepare_mlp", _prepare_mlp_hook, HookType.AROUND)
     HookRegistry.register(
-        f"{_COMMUNICATOR}.should_use_reduce_scatter", _use_reduce_scatter_hook, HookType.AROUND
+        f"{_COMMUNICATOR}.prepare_attn", _prepare_attn_hook, HookType.AROUND
+    )
+    HookRegistry.register(
+        f"{_COMMUNICATOR}.prepare_mlp", _prepare_mlp_hook, HookType.AROUND
+    )
+    HookRegistry.register(
+        f"{_COMMUNICATOR}.should_use_reduce_scatter",
+        _use_reduce_scatter_hook,
+        HookType.AROUND,
     )
     HookRegistry.register(
         f"{_COMMUNICATOR}.should_fuse_mlp_allreduce_with_next_layer",
         _fuse_mlp_allreduce_hook,
         HookType.AROUND,
     )
+    _log_rank0(f"FlagGems rs-norm-ag hooks registered ({ENV}=1)")
     return True

@@ -793,12 +793,6 @@ def load_plugin():
     # 4. Communicator hooks (CommunicatorFL with FlagCX/torch.distributed)
     _setup_communicator_hooks()
 
-    # 4b. Pure TP prefill: FlagGems ring RS + norm + AG around attention (opt-in)
-    from sglang_fl.distributed.rs_norm_ag import register_hooks as _register_rs_norm_ag
-
-    if _register_rs_norm_ag() and _is_rank0():
-        logger.info("FlagGems rs-norm-ag hooks registered (SGLANG_FL_RS_NORM_AG=1)")
-
     # 5. Vendor-specific patches — final overlay on top of all sglang_fl layers
     _apply_vendor_patches()
 
