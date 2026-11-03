@@ -1,5 +1,53 @@
 # Qwen3.6 examples and Ascend acceptance
 
+## MiniMax-M3.1-Flash W8A8 on MUSA
+
+[minimax_m31_musa_w8a8.sh](minimax_m31_musa_w8a8.sh) starts a single-node
+MTT S5000 TP8 service with `USE_FLAGGEMS=1`. It selects dynamic symmetric
+per-token INT8 activations and per-channel INT8 weights through the existing
+SGLang MoE runner and generic FlagGems scaled-GEMM API. It does not require
+private runtime files or model-specific `sitecustomize` hooks.
+
+The compatibility boundary is SGLang **v0.5.18**, commit
+[`71de97b`](https://github.com/sgl-project/sglang/commit/71de97b264b04dcd514cf904003028aefe9775c8),
+and FlagGems commit
+[`97dbf2f`](https://github.com/flagos-ai/FlagGems/commit/97dbf2fd19cb9d81d5115399f7e765be5f7a7ec6).
+Use vendor Torch-MUSA 2.9 / MUSA 4.3 and FlagTree 0.7.0 (Triton 3.6).
+The `musa-minimax` optional dependency group records these public source
+dependencies without changing other platforms' dependency selections.
+Preserve the vendor Torch/compiler installation; inspect a dependency dry-run
+before installation, then install the frozen packages without replacing it:
+
+```bash
+python3 -m pip install --no-deps --no-build-isolation \
+  'flag_gems @ git+https://github.com/flagos-ai/FlagGems.git@97dbf2fd19cb9d81d5115399f7e765be5f7a7ec6'
+python3 -m pip install --no-deps 'sglang==0.5.18'
+python3 -m pip wheel --no-deps --no-build-isolation . --wheel-dir dist
+python3 -m pip install --no-deps dist/sglang_fl-*.whl
+MODEL_PATH=/path/to/MiniMax-M3.1-Flash-W8A8 \
+  bash examples/minimax_m31_musa_w8a8.sh
+```
+
+The example deliberately uses eager execution. It configures a maximum of
+16 images per request; that admission limit is not an ERQA accuracy result.
+Full GPQA/ERQA, graph replay and optimized throughput are not currently
+claimed by this integration. Quantization configuration uses SGLang's public platform hook and a vendor-only
+subclass; the rounding selector and KV pool compatibility hooks use private
+APIs limited to the version above. Upgrading requires
+fresh patch-scope, numerical, startup, multimodal and concurrency validation;
+remove the workarounds when upstream exposes equivalent public hooks.
+
+Only **bias-free** dynamic INT8 linear layers are supported by this adapter.
+Biased INT8 calls are rejected before quantization or GEMM rather than silently
+changing the bias rounding order. Retain the checkpoint's exclusions for the
+BF16 vision tower, multimodal projector and LM head; do not broaden its INT8
+targets to those modules.
+
+Change `PORT`, `HOST`, `CONTEXT_LENGTH`, `MEM_FRACTION_STATIC` and
+`MAX_RUNNING_REQUESTS` for an isolated deployment. The last variable is the
+server admission limit, not a claim of verified concurrency. Operator and
+dispatch logs default to `/tmp`; preserve them before deleting a container.
+
 These examples exercise `sglang-plugin-FL` with Qwen3.6-27B and
 Qwen3.6-35B-A3B. They are executable correctness checks: a missing model,
 missing/empty test image, invalid response, or child-process failure returns a

@@ -144,6 +144,16 @@ class PlatformFL(SRTPlatform):
     def is_out_of_tree(self) -> bool:
         return True
 
+    def get_quantization_config(self, quantization: str):
+        """Use SGLang's public OOT hook without changing CUDA configurations."""
+        if self._vendor_name == "mthreads" and quantization == "compressed-tensors":
+            from sglang_fl.dispatch.backends.vendor.mthreads.quantization import (
+                get_musa_compressed_tensors_config,
+            )
+
+            return get_musa_compressed_tensors_config()
+        return None
+
     def get_compile_backend(self, mode: str | None = None):
         """Return the compilation backend for this platform.
 

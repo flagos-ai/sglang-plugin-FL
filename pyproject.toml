@@ -28,6 +28,10 @@ dependencies = [
 
 [project.optional-dependencies]
 cuda = ["sglang==0.5.18"]
+musa-minimax = [
+    "sglang==0.5.18",
+    "flag_gems @ git+https://github.com/flagos-ai/FlagGems.git@97dbf2fd19cb9d81d5115399f7e765be5f7a7ec6",
+]
 
 [project.entry-points."sglang.srt.platforms"]
 sglang_fl = "sglang_fl:activate_platform"
