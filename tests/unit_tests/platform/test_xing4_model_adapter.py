@@ -104,3 +104,47 @@ class Xing4ModelAdapterTests(TestCase):
         registry = ROOT / "sglang_fl/models/mthreads_registry"
         self.assertTrue((registry / "xingchen4.py").is_file())
         self.assertTrue((registry / "xing4_0.py").is_file())
+
+    def test_xing4_model_shapes_are_classified_as_mla(self):
+        adapter = _load_module(
+            "xing4_model_shapes", "sglang_fl/model_adapters/xingchen4.py"
+        )
+
+        class Config:
+            architectures = ["Xing4_0ForCausalLM"]
+            kv_lora_rank = 512
+            qk_nope_head_dim = 128
+            qk_rope_head_dim = 64
+            v_head_dim = 128
+            rope_scaling = {"rope_type": "deepseek_yarn"}
+
+        class ModelConfig:
+            hf_config = Config()
+            hf_text_config = hf_config
+
+            def _init_mla_scaling(self, rope_scaling):
+                self.mla_scaling = rope_scaling
+
+        fake_model_config = ModuleType("sglang.srt.configs.model_config")
+
+        class AttentionArch:
+            MLA = "mla"
+
+        fake_model_config.AttentionArch = AttentionArch
+        instance = ModelConfig()
+
+        with mock.patch.dict(
+            sys.modules,
+            {"sglang.srt.configs.model_config": fake_model_config},
+        ):
+            adapter._derive_model_shapes_hook(
+                lambda self: setattr(self, "attention_arch", "mha"), instance
+            )
+
+        self.assertEqual(instance.attention_arch, "mla")
+        self.assertEqual(instance.head_dim, 256)
+        self.assertEqual(instance.kv_lora_rank, 512)
+        self.assertEqual(instance.qk_nope_head_dim, 128)
+        self.assertEqual(instance.qk_rope_head_dim, 64)
+        self.assertEqual(instance.v_head_dim, 128)
+        self.assertEqual(instance.mla_scaling, Config.rope_scaling)
