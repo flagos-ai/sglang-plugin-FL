@@ -38,7 +38,7 @@ class TestFusedOpDispatchTargets(unittest.TestCase):
         self.assertEqual(
             targets,
             (
-                "sglang.srt.layers.utils.multi_platform.MultiPlatformOp._resolve_forward_method",
-                "sglang.srt.layers.utils.multi_platform.MultiPlatformOp.dispatch_forward",
+                "sglang.kernels.fused_op.BaseFusedOp._resolve_forward_method",
+                "sglang.kernels.fused_op.BaseFusedOp.dispatch_forward",
             ),
         )

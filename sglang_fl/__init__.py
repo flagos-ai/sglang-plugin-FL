@@ -731,13 +731,15 @@ _plugin_loaded = False
 _plugin_active = False
 
 
-# SGLang 0.5.18's BaseFusedOp.forward() resolves through
-# ``_resolve_forward_method`` directly. Older releases and a few layer
-# initializers still call ``dispatch_forward``. Keep both entry points hooked
-# so an OOT platform cannot silently fall through to ``forward_native``.
+# SGLang 0.5.18's fused-op classes inherit BaseFusedOp directly; MultiPlatformOp
+# is only a deprecated subclass shim. BaseFusedOp.forward() resolves through
+# ``_resolve_forward_method`` directly, while a few layer initializers still
+# call ``dispatch_forward``. Hook both BaseFusedOp entry points so direct
+# subclasses such as UnquantizedFusedMoEMethod cannot silently fall through to
+# ``forward_native`` on an OOT platform.
 _FUSED_OP_DISPATCH_TARGETS = (
-    "sglang.srt.layers.utils.multi_platform.MultiPlatformOp._resolve_forward_method",
-    "sglang.srt.layers.utils.multi_platform.MultiPlatformOp.dispatch_forward",
+    "sglang.kernels.fused_op.BaseFusedOp._resolve_forward_method",
+    "sglang.kernels.fused_op.BaseFusedOp.dispatch_forward",
 )
 
 
