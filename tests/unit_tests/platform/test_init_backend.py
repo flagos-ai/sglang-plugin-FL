@@ -41,6 +41,11 @@ class TestInitBackendVendorAutoImport:
         p = _make_platform_stub("mthreads", device_type="musa")
         assert p.is_pin_memory_available(device) is True
 
+    def test_graph_runner_uses_sglang_0518_decode_runner(self):
+        p = _make_platform_stub("mthreads", device_type="musa")
+        runner = p.get_graph_runner_cls()
+        assert runner.__name__ == "DecodeCudaGraphRunner"
+
     def test_loaded_when_register_platform_exists(
         self, caplog, inject_vendor_module
     ):

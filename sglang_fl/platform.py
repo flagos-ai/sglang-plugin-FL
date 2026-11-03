@@ -233,9 +233,19 @@ class PlatformFL(SRTPlatform):
             )
 
             return NPUGraphRunner
-        from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
+        try:
+            # SGLang 0.5.18 split the phase runners into model_executor.runner.
+            from sglang.srt.model_executor.runner.decode_cuda_graph_runner import (
+                DecodeCudaGraphRunner,
+            )
 
-        return CudaGraphRunner
+            return DecodeCudaGraphRunner
+        except ImportError:
+            # Compatibility with SGLang releases that still expose the
+            # monolithic graph runner module.
+            from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
+
+            return CudaGraphRunner
 
     def get_mha_kv_pool_cls(self) -> type:
         if self._device_type == "npu":
