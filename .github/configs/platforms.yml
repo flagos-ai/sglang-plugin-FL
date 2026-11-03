@@ -25,3 +25,9 @@ platforms:
   hygon:
     # Validated SGLang 0.5.18 image is pinned in hygon.yml.
     enabled: true
+
+  metax:
+    # Self-hosted runner label: ci-sglang-plugin-fl-metax (C550).
+    # Disabled until the SGLang 0.5.18 empty-mode CI image is published and
+    # pinned in metax.yml and the runner's model mount is confirmed.
+    enabled: false

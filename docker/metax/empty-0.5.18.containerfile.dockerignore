@@ -1,0 +1,24 @@
+# The MetaX build installs the plugin as an editable checkout and keeps the
+# examples/tests for reproduction. Exclude repository history, local models,
+# credentials, caches, and unrelated files.
+**
+!pyproject.toml
+!LICENSE
+!README.md
+!README_zh.md
+!sglang_fl/
+!sglang_fl/**
+!examples/
+!examples/**
+!tests/
+!tests/**
+!.github/
+!.github/scripts/
+!.github/scripts/metax/
+!.github/scripts/metax/**
+!docker/
+!docker/metax/
+!docker/metax/**
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/

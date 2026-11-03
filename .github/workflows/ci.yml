@@ -127,3 +127,13 @@ jobs:
     with:
       platform: iluvatar
     secrets: inherit
+
+  # MetaX C550 runs SGLang 0.5.18 empty mode; gated in platforms.yml until the
+  # CI image is published and pinned in metax.yml.
+  test-metax:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'metax')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: metax
+    secrets: inherit
