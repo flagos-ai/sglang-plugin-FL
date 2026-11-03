@@ -44,6 +44,45 @@ flagos_blacklist:
   - floor_divide
   - true_divide_
   - addmm
+  # GLM-5.2's DSA indexer projects FP32 activations with BF16 weights.
+  # FlagGems linear requires both tl.dot operands to have the same dtype and
+  # fails to compile this intentional mixed-dtype projection; torch_npu's
+  # native linear path supports the ModelSlim/DSA contract.
+  - linear
+  # FlagGems' generic broadcast mul materializes shape/stride metadata with a
+  # host-to-NPU copy at call time on Triton-Ascend 3.2.1.  NPUGraph forbids
+  # that synchronized copy while capturing Qwen3.6's causal-conv decode path,
+  # so keep aten.mul on torch_npu for graph-safe execution.
+  - mul
+  # FlagGems stack fails to compile on Triton-Ascend 3.2.1 when Qwen3.6
+  # combines tensors backed by different pointer sources during the server
+  # warmup request ("ptr type from different source not supported").
+  - stack
+  # Qwen3.6's multimodal embedding routine invokes masked_scatter_ with an
+  # empty/special-shape mask for text-only requests.  FlagGems' generic path
+  # either mis-broadcasts zero dimensions or launches a kernel that raises an
+  # Ascend vector-core error for an empty source; torch_npu handles both cases.
+  - masked_scatter_
+  # GLM-5.2's TP/EP input padding calls Tensor.new_zeros with a zero-length
+  # padding dimension when a rank is already aligned.  This decomposes through
+  # aten.zero_; FlagGems' generic zero_ launches zeros_kernel with grid size 0,
+  # which Triton-Ascend rejects as coreDim=0.  The native torch_npu zero_ is a
+  # no-op for empty tensors and remains graph-safe for non-empty tensors.
+  - zero_
+  # GLM-5 Next's native NPU KDA fallback applies exp2 to a non-contiguous
+  # [chunk, head, token, dim] view produced by reshape+transpose.  FlagGems
+  # v5.3.0 treats that input as dense and corrupts the recurrent ``w`` state
+  # (max abs error 0.172 on the reduced multi-sequence reproducer), which is
+  # amplified across KDA layers into invalid concurrent generations.  The
+  # torch_npu kernel preserves the view strides and model semantics.
+  - exp2
+  # The same KDA fallback solves FP32 [chunk, head, 64, 64] lower-triangular
+  # systems.  FlagGems v5.3.0 is unstable for this batched layout: the reduced
+  # multi-sequence reproducer reaches max abs error 0.14286858 in the inverse
+  # and 0.32421875 in the BF16 recurrent state.  With exp2 and this op routed
+  # to torch_npu, every KDA output matches
+  # the native path element-for-element in the multi-sequence reproducer.
+  - linalg_solve_triangular
 
 # OOT dispatch blacklist (sglang op CLASS names, not ATen op names): none needed.
 # MRotaryEmbedding was listed pre-verification but confirmed UNNECESSARY: with
@@ -52,3 +91,22 @@ flagos_blacklist:
 # "5254" was caused by the missing attention_backend, NOT by flagos mrotary.
 # Do NOT re-add MRotaryEmbedding here without first re-checking attention_backend.
 # (When this key is absent the plugin defaults to oot_blacklist = [].)
+
+op_backends:
+  # GLM-5.2 uses fused add+RMSNorm at hidden size 6144.  FlagGems' Ascend
+  # fused_add_rms_norm kernel exceeds the 910C unified-buffer budget for that
+  # shape during BiShengIR compilation.  Select the already-registered native
+  # torch_npu implementation for this SGLang fused op; other fused/ATen ops keep
+  # the global FlagOS preference.  This is also safe for Qwen-family RMSNorm.
+  rms_norm: [vendor, flagos, reference]
+
+# The fused mhc_sinkhorn operator (fused Sinkhorn normalization for the GLM
+# mhc combinator) is registered by all three backends but deliberately NOT
+# listed under op_backends, i.e. it is not routed by default.  Under full
+# decode CUDA-graph capture the eager op chain it replaces has no per-kernel
+# launch overhead, and on-device measurement showed the fused Triton kernel is
+# ~5% slower end-to-end (343.6 vs 361.6 tok/s at 4096/1024/64 on Ascend 910C).
+# Enable it per deployment by adding:
+#   mhc_sinkhorn: [vendor, flagos, reference]
+# after re-measuring on the target workload (eager prefill benefits; graph
+# decode does not).

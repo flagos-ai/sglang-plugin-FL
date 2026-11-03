@@ -263,6 +263,16 @@ def test_env_blacklist_overrides_yaml_flagos_blacklist(
     ]
 
 
+def test_ascend_blacklist_excludes_kda_incompatible_ops() -> None:
+    from sglang_fl.dispatch.config import load_platform_config
+
+    config = load_platform_config("ascend")
+
+    assert config is not None
+    assert "exp2" in config["flagos_blacklist"]
+    assert "linalg_solve_triangular" in config["flagos_blacklist"]
+
+
 def test_build_config_reads_flaggems_env(
     monkeypatch,
     sglang_fl_module,
