@@ -6,8 +6,7 @@ platform: metax
 # Docker image for this hardware.
 # SGLang 0.5.18 empty mode + sglang-plugin-FL on the MetaX empty base image, built
 # from docker/metax/empty-0.5.18.containerfile with --target ci.
-# TODO(metax): replace with the pushed CI image (pin by digest).
-ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl:TODO-metax-sglang0.5.18-ci
+ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:763db79f7702a9eca25e5f53b0d1b285a9e42a2a3209277b44e29e90016c346b
 
 # Runner labels for this hardware
 runner_labels:
