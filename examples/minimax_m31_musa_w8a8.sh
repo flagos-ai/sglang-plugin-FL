@@ -14,6 +14,8 @@ set -euo pipefail
 export USE_FLAGGEMS=1
 # FlagTree automatic tile shrinking violates sparse-topk static constraints.
 export FLAGTREE_AABS=0
+# Use the existing full-FP32 router; MUSA lacks aten::mm.dtype.
+export SGLANG_OPT_USE_BF16_ROUTER_GEMM=0
 export SGLANG_FL_DIST_BACKEND="${SGLANG_FL_DIST_BACKEND:-mccl}"
 export SGLANG_FLAGGEMS_RECORD=1
 export SGLANG_FLAGGEMS_LOG_PATH="${SGLANG_FLAGGEMS_LOG_PATH:-/tmp/minimax-m31-flaggems.log}"

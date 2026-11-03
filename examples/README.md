@@ -41,6 +41,9 @@ The example sets `FLAGTREE_AABS=0`: the pinned compiler's automatic tile
 shrinking can violate sparse top-k static constraints after autotune pruning.
 The compatibility adapter filters illegal candidate tiles before compilation;
 it does not replace sparse attention arithmetic.
+`SGLANG_OPT_USE_BF16_ROUTER_GEMM=0` selects the model's existing FP32
+router because this Torch-MUSA release does not implement `aten::mm.dtype`.
+This keeps the router output in FP32 instead of rounding it to BF16.
 
 Only **bias-free** dynamic INT8 linear layers are supported by this adapter.
 Biased INT8 calls are rejected before quantization or GEMM rather than silently
