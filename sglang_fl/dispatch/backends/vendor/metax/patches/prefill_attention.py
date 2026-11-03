@@ -209,10 +209,18 @@ def patch_prefill_attention() -> None:
     """Replace SGLang's prefill attention with the MetaX-compatible kernel."""
     import importlib
 
-    module_name = "sglang.srt.layers.attention.triton_ops.prefill_attention"
-    try:
-        module = importlib.import_module(module_name)
-    except Exception as error:
-        raise RuntimeError(f"failed to import {module_name}") from error
+    # SGLang >= 0.5.16 moved the triton attention ops to sglang.kernels.
+    module_names = (
+        "sglang.kernels.ops.attention.prefill_attention",
+        "sglang.srt.layers.attention.triton_ops.prefill_attention",
+    )
+    for module_name in module_names:
+        try:
+            module = importlib.import_module(module_name)
+            break
+        except ImportError:
+            continue
+    else:
+        raise RuntimeError(f"failed to import any of {module_names}")
 
     module.context_attention_fwd = context_attention_fwd
