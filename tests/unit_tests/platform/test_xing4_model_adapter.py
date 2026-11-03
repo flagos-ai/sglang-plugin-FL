@@ -174,3 +174,22 @@ class Xing4ModelAdapterTests(TestCase):
                 pass
 
         self.assertIs(compat.make_mla_pool_cls(NewPool), NewPool)
+
+    def test_mhc_tensor_cache_uses_identity_without_equality(self):
+        fake_torch = ModuleType("torch")
+        adapter_name = "xing4_mhc_identity_cache"
+        with mock.patch.dict(sys.modules, {"torch": fake_torch}):
+            adapter = _load_module(
+                adapter_name,
+                "sglang_fl/dispatch/backends/flagos/impl/mhc.py",
+            )
+
+        class TensorLike:
+            def __eq__(self, other):
+                raise AssertionError("tensor equality must not be evaluated")
+
+        key = TensorLike()
+        cache = adapter._TensorIdentityWeakCache()
+        cache[key] = "bf16-copy"
+        self.assertEqual(cache.get(key), "bf16-copy")
+        self.assertIsNone(cache.get(TensorLike()))
