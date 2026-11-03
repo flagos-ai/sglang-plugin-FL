@@ -267,7 +267,9 @@ class PlatformFL(SRTPlatform):
             return NPUMLATokenToKVPool
         from sglang.srt.mem_cache.memory_pool import MLATokenToKVPool
 
-        return MLATokenToKVPool
+        from sglang_fl.platform_compat import make_mla_pool_cls
+
+        return make_mla_pool_cls(MLATokenToKVPool)
 
     def get_nsa_kv_pool_cls(self) -> type:
         if self._device_type == "npu":

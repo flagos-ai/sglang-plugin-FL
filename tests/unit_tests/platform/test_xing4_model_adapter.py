@@ -148,3 +148,29 @@ class Xing4ModelAdapterTests(TestCase):
         self.assertEqual(instance.qk_rope_head_dim, 64)
         self.assertEqual(instance.v_head_dim, 128)
         self.assertEqual(instance.mla_scaling, Config.rope_scaling)
+
+    def test_legacy_mla_pool_ignores_only_empty_index_head_dim(self):
+        compat = _load_module(
+            "sglang_platform_compat", "sglang_fl/platform_compat.py"
+        )
+
+        class LegacyPool:
+            def __init__(self, size, *, dtype):
+                self.args = (size, dtype)
+
+        pool_cls = compat.make_mla_pool_cls(LegacyPool)
+        pool = pool_cls(1024, dtype="bf16", index_head_dim=None)
+        self.assertEqual(pool.args, (1024, "bf16"))
+        with self.assertRaises(NotImplementedError):
+            pool_cls(1024, dtype="bf16", index_head_dim=128)
+
+    def test_new_mla_pool_signature_is_not_wrapped(self):
+        compat = _load_module(
+            "sglang_platform_compat_new", "sglang_fl/platform_compat.py"
+        )
+
+        class NewPool:
+            def __init__(self, size, *, index_head_dim=None):
+                pass
+
+        self.assertIs(compat.make_mla_pool_cls(NewPool), NewPool)
