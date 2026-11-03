@@ -75,7 +75,7 @@ def test_vendor_config_validates_supported_scheme_before_loading():
     ]
     fused["packed_modules_mapping"] = {
         "qkv_proj": ["q_proj", "k_proj", "v_proj"],
-        "index_qkv_proj": ["index_q_proj", "index_k_proj", "index_v_proj"]
+        "index_qkv_proj": ["index_q_proj", "index_k_proj", "index_v_proj"],
     }
     instance = cls.from_config(fused)
     layer = torch.nn.Module()
@@ -154,3 +154,37 @@ def test_upstream_quantization_rounding_zero_and_sum(width):
     torch.testing.assert_close(quantized.cpu(), reference, rtol=0, atol=0)
     torch.testing.assert_close(scales.cpu(), maximum / 127, rtol=1e-6, atol=0)
     torch.testing.assert_close(sums.cpu(), f.sum(-1).bfloat16(), rtol=0, atol=0)
+
+
+def test_sparse_topk_pruning_matches_independent_block_ids(monkeypatch):
+    monkeypatch.setenv("FLAGTREE_AABS", "0")
+    from sglang.kernels.ops.attention.minimax_sparse.prefill import flash_with_topk_idx
+    from sglang_fl.dispatch.backends.vendor.mthreads.patches.sparse_topk import (
+        install_sparse_topk_patch,
+    )
+
+    install_sparse_topk_patch(flash_with_topk_idx)
+    score = torch.arange(81, dtype=torch.float32, device="musa").reshape(1, 1, 81)
+    output = torch.full((1, 1, 64), -1, dtype=torch.int32, device="musa")
+    cu = torch.tensor([0, 1], dtype=torch.int32, device="musa")
+    blocks = torch.tensor([0, 1], dtype=torch.int32, device="musa")
+    prefix = torch.tensor([80 * 128], dtype=torch.int32, device="musa")
+    flash_with_topk_idx._topk_index_kernel[(1, 1, 1)](
+        score,
+        output,
+        128,
+        128,
+        cu,
+        blocks,
+        prefix,
+        64,
+        0,
+        0,
+        *score.stride(),
+        *output.stride(),
+        MASK_INIT=False,
+        MASK_LOCAL=False,
+    )
+    torch.musa.synchronize()
+    reference = torch.arange(17, 81, dtype=torch.int32).reshape(1, 1, 64)
+    torch.testing.assert_close(output.cpu(), reference, atol=0, rtol=0)

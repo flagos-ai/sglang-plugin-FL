@@ -12,6 +12,9 @@
 set -euo pipefail
 : "${MODEL_PATH:?Set MODEL_PATH to the MiniMax-M3.1-Flash W8A8 checkpoint}"
 export USE_FLAGGEMS=1
+# FlagTree automatic tile shrinking violates sparse-topk static constraints.
+export FLAGTREE_AABS=0
+export SGLANG_FL_DIST_BACKEND="${SGLANG_FL_DIST_BACKEND:-mccl}"
 export SGLANG_FLAGGEMS_RECORD=1
 export SGLANG_FLAGGEMS_LOG_PATH="${SGLANG_FLAGGEMS_LOG_PATH:-/tmp/minimax-m31-flaggems.log}"
 export SGLANG_FL_DISPATCH_DEBUG=1

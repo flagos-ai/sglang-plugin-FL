@@ -37,6 +37,11 @@ APIs limited to the version above. Upgrading requires
 fresh patch-scope, numerical, startup, multimodal and concurrency validation;
 remove the workarounds when upstream exposes equivalent public hooks.
 
+The example sets `FLAGTREE_AABS=0`: the pinned compiler's automatic tile
+shrinking can violate sparse top-k static constraints after autotune pruning.
+The compatibility adapter filters illegal candidate tiles before compilation;
+it does not replace sparse attention arithmetic.
+
 Only **bias-free** dynamic INT8 linear layers are supported by this adapter.
 Biased INT8 calls are rejected before quantization or GEMM rather than silently
 changing the bias rounding order. Retain the checkpoint's exclusions for the
