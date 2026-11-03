@@ -85,12 +85,13 @@ def register_model_adapters() -> None:
     _register_transformers_configs(vendor)
     _register_sglang_models(vendor)
 
-    from .qwen4_exp import register_qwen4_exp_hooks
-    from .xingchen4 import register_xingchen4_hooks
-
     if vendor == "ascend":
+        from .qwen4_exp import register_qwen4_exp_hooks
+
         register_qwen4_exp_hooks()
     elif vendor == "mthreads":
+        from .xingchen4 import register_xingchen4_hooks
+
         register_xingchen4_hooks()
     _registered = True
     logger.info("Registered native model adapters for vendor=%s", vendor or "unknown")

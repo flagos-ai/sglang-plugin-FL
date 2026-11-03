@@ -65,6 +65,27 @@ class Xing4ModelAdapterTests(TestCase):
             ],
         )
 
+    def test_mthreads_registration_does_not_import_ascend_hooks(self):
+        registry = _load_module(
+            "sglang_fl.model_adapters.registry_runtime",
+            "sglang_fl/model_adapters/registry.py",
+        )
+        calls = []
+        xingchen4 = ModuleType("sglang_fl.model_adapters.xingchen4")
+        xingchen4.register_xingchen4_hooks = lambda: calls.append("xingchen4")
+
+        registry._registered = False
+        registry._detect_vendor = lambda: "mthreads"
+        registry._register_transformers_configs = lambda vendor: None
+        registry._register_sglang_models = lambda vendor: None
+        with mock.patch.dict(
+            sys.modules,
+            {"sglang_fl.model_adapters.xingchen4": xingchen4},
+        ):
+            registry.register_model_adapters()
+
+        self.assertEqual(calls, ["xingchen4"])
+
     def test_detokenizer_matching_does_not_affect_other_models(self):
         adapter = _load_module(
             "xing4_detokenizer", "sglang_fl/model_adapters/xingchen4_detokenizer.py"
