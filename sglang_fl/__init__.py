@@ -28,7 +28,7 @@ Loading:
 This plugin registers:
   Layer 1: FlagGems ATen operator replacement (flag_gems.enable)
   Layer 2: SGLang fused kernels via MultiPlatformOp.register_oot_forward +
-           HookRegistry AROUND hook on dispatch_forward
+           HookRegistry AROUND hooks on the fused-op resolver entry points
   Layer 3: FlagCX communicator (via Platform Plugin get_communicator_class)
   Layer 4: FlagCX PD-disaggregation KV transfer backend (opt-out via env)
 
@@ -253,11 +253,12 @@ def _init_dispatch(config: dict) -> None:
 
 
 def _make_dispatch_hook(config: dict = None):
-    """Build the AROUND hook for MultiPlatformOp.dispatch_forward.
+    """Build the AROUND hook for MultiPlatformOp's method resolver.
 
-    The hook intercepts dispatch_forward() for ops that have bridge-layer
-    implementations. For all other ops it falls through to
-    the original SGLang dispatch logic (CUDA/HIP/etc.).
+    The hook intercepts both the current ``_resolve_forward_method()`` entry
+    point and the legacy ``dispatch_forward()`` entry point for ops that have
+    bridge-layer implementations. For all other ops it falls through to the
+    original SGLang dispatch logic (CUDA/HIP/etc.).
 
     Respects config["oot_whitelist"] / config["oot_blacklist"]:
       - OOT_WHITELIST: only listed ops use OOT dispatch (comma-separated class names)
@@ -730,6 +731,16 @@ _plugin_loaded = False
 _plugin_active = False
 
 
+# SGLang 0.5.18's BaseFusedOp.forward() resolves through
+# ``_resolve_forward_method`` directly. Older releases and a few layer
+# initializers still call ``dispatch_forward``. Keep both entry points hooked
+# so an OOT platform cannot silently fall through to ``forward_native``.
+_FUSED_OP_DISPATCH_TARGETS = (
+    "sglang.srt.layers.utils.multi_platform.MultiPlatformOp._resolve_forward_method",
+    "sglang.srt.layers.utils.multi_platform.MultiPlatformOp.dispatch_forward",
+)
+
+
 def is_plugin_loaded() -> bool:
     """Return whether SGLang invoked the general plugin entry point."""
     return _plugin_loaded
@@ -771,23 +782,22 @@ def load_plugin():
     # 3. Initialize dispatch system (OpManager + backends + policy)
     _init_dispatch(config)
 
-    # 4. Install dispatch AROUND hook (bridge layer → dispatch.call_op)
+    # 4. Install dispatch AROUND hooks (bridge layer → dispatch.call_op).
+    # Current BaseFusedOp.forward() calls _resolve_forward_method() directly,
+    # while older releases and selected initializers call dispatch_forward().
     oot_enabled = _parse_bool(
         os.environ.get("SGLANG_FL_OOT_ENABLED", "1"), default=True
     )
     if oot_enabled:
-        HookRegistry.register(
-            "sglang.srt.layers.utils.multi_platform.MultiPlatformOp.dispatch_forward",
-            _make_dispatch_hook(config),
-            HookType.AROUND,
-        )
+        for target in _FUSED_OP_DISPATCH_TARGETS:
+            HookRegistry.register(target, _make_dispatch_hook(config), HookType.AROUND)
         # Patch FLA functions to use dispatch mechanism
         from sglang_fl.dispatch.fla_patch import patch_fla_functions
 
         patch_fla_functions()
 
         # Patch RotaryEmbedding.__init__ to restore bridge after MUSA _forward_method stomp
-        # Must be called after the AROUND hook on dispatch_forward is registered (above).
+        # Must be called after the resolver AROUND hooks are registered (above).
         from sglang_fl.dispatch.rotary_patch import patch_rotary_embedding_init
 
         patch_rotary_embedding_init()
