@@ -68,6 +68,53 @@ def moe_sum_reduce_triton_metax(
     return moe_sum_reduce_triton(input, output, routed_scaling_factor)
 
 
+def moe_align_block_size_flaggems(
+    topk_ids: torch.Tensor, block_size: int, num_experts: int
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """FlagGems replacement for sgl_kernel.moe_align_block_size (Empty mode).
+
+    Same outputs as SGLang's wrapper: sorted_ids padded with ``topk_ids.numel()``,
+    per-block expert ids and the padded token count. SGLang passes
+    ``num_experts + 1`` to sgl_kernel to cover EP-filtered ``-1`` expert ids;
+    FlagGems does not handle ``-1``, so this path is only valid without EP.
+    """
+    from flag_gems import moe_align_block_size
+
+    return moe_align_block_size(topk_ids, block_size, num_experts)
+
+
+def _patch_moe_align_block_size() -> bool:
+    """Use FlagGems moe_align_block_size when sgl_kernel is not installed.
+
+    SGLANG_FL_METAX_MOE_ALIGN=flaggems forces it even when sgl_kernel exists
+    (used to align NonEmpty with Empty in performance comparisons).
+    """
+    import importlib.util
+    import os
+
+    forced = (
+        os.environ.get("SGLANG_FL_METAX_MOE_ALIGN", "").strip().lower() == "flaggems"
+    )
+    if not forced:
+        try:
+            if importlib.util.find_spec("sgl_kernel") is not None:
+                return False
+        except (ImportError, ValueError):
+            pass
+
+    from sglang.srt.layers.moe.moe_runner.triton_utils import (
+        fused_moe as fused_moe_module,
+    )
+    from sglang.srt.layers.moe.moe_runner.triton_utils import (
+        moe_align_block_size as align_module,
+    )
+
+    align_module.moe_align_block_size = moe_align_block_size_flaggems
+    if hasattr(fused_moe_module, "moe_align_block_size"):
+        fused_moe_module.moe_align_block_size = moe_align_block_size_flaggems
+    return True
+
+
 def patch_fused_moe_functions() -> None:
     """Replace SGLang FusedMoE helpers with MetaX-compatible functions."""
     global _fused_moe_functions_patched
@@ -104,9 +151,12 @@ def patch_fused_moe_functions() -> None:
     fused_moe_module.gelu_and_mul = gelu_and_mul_python
     fused_moe_module.moe_sum_reduce = moe_sum_reduce_triton_metax
 
+    align_patched = _patch_moe_align_block_size()
+
     _fused_moe_functions_patched = True
     logger.info(
         "patched MetaX fused_moe helpers: inplace_fused_experts, "
         "outplace_fused_experts, fused_experts, silu_and_mul, gelu_and_mul, "
-        "moe_sum_reduce"
+        "moe_sum_reduce%s",
+        ", moe_align_block_size(flag_gems)" if align_patched else "",
     )
