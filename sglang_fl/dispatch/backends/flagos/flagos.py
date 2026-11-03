@@ -48,6 +48,11 @@ class FlagOSBackend(Backend):
 
         return rms_norm_flagos(obj, x, residual)
 
+    def gemma_rms_norm(self, obj, x, residual=None):
+        from .impl.normalization import gemma_rms_norm_flagos
+
+        return gemma_rms_norm_flagos(obj, x, residual)
+
     def rotary_embedding(
         self,
         obj,

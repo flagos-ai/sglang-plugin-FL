@@ -46,10 +46,34 @@ def topk_flagos(
     Returns:
         TopKOutput (StandardTopKOutput format)
     """
-    topk = obj.topk_config.topk
-    renormalize = obj.topk_config.renormalize
+    # Only the plain softmax top-k kernel is replaced; sglang's own pre/post
+    # processing (EPLB input transform, padding mask, recorder) is kept. Other
+    # routing modes raise so the dispatcher falls back to the next backend.
+    from sglang.srt.eplb import expert_location_dispatch
+    from sglang.srt.eplb.expert_distribution import (
+        get_global_expert_distribution_recorder,
+    )
+    from sglang.srt.layers.moe.topk import _post_process_topk_ids
+
+    cfg = obj.topk_config
+    if (
+        cfg.use_grouped_topk
+        or cfg.custom_routing_function is not None
+        or cfg.correction_bias is not None
+        or cfg.scoring_func != "softmax"
+        or cfg.num_fused_shared_experts
+        or cfg.apply_routed_scaling_factor_on_output
+    ):
+        raise NotImplementedError("flagos topk: only plain softmax top-k supported")
+
+    router_logits, _ = expert_location_dispatch.transform_select_experts_inputs(
+        router_logits=router_logits,
+        correction_bias=None,
+        info=expert_location_dispatch_info,
+    )
 
     M = hidden_states.shape[0]
+    topk = cfg.top_k
     topk_weights = torch.empty(
         M, topk, dtype=torch.float32, device=hidden_states.device
     )
@@ -59,11 +83,18 @@ def topk_flagos(
     )
 
     flag_gems.topk_softmax(
-        topk_weights, topk_ids, token_expert_indices, router_logits, renormalize
+        topk_weights, topk_ids, token_expert_indices, router_logits, cfg.renormalize
     )
 
-    return StandardTopKOutput(
-        topk_weights=topk_weights,
+    topk_ids, topk_weights = _post_process_topk_ids(
         topk_ids=topk_ids,
-        token_expert_indices=token_expert_indices,
+        topk_weights=topk_weights,
+        topk_config=cfg,
+        router_logits=router_logits,
+        num_token_non_padded=num_token_non_padded,
+        layer_id=obj.layer_id,
+        expert_location_dispatch_info=expert_location_dispatch_info,
     )
+    get_global_expert_distribution_recorder().on_select_experts(topk_ids=topk_ids)
+
+    return StandardTopKOutput(topk_weights, topk_ids, router_logits)
