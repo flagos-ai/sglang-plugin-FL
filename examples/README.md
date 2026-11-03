@@ -44,6 +44,8 @@ it does not replace sparse attention arithmetic.
 `SGLANG_OPT_USE_BF16_ROUTER_GEMM=0` selects the model's existing FP32
 router because this Torch-MUSA release does not implement `aten::mm.dtype`.
 This keeps the router output in FP32 instead of rounding it to BF16.
+`SGLANG_OPT_USE_MINIMAX_DECODE_TOPK_RADIX=0` selects the existing split-K
+Triton decode top-k rather than attempting a CUDA-only radix JIT build.
 
 Only **bias-free** dynamic INT8 linear layers are supported by this adapter.
 Biased INT8 calls are rejected before quantization or GEMM rather than silently
