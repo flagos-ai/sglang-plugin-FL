@@ -14,7 +14,6 @@
 
 """AMD ROCm platform detection, config file and distributed backend."""
 
-import sys
 import types
 
 import pytest
@@ -33,39 +32,29 @@ def rocm_cuda(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.10.0+rocm7.2")
 
 
-def _fake_detector(monkeypatch, vendor_name, module="device"):
-    """Fake FlagGems' DeviceDetector at runtime.backend.<module>."""
-    mod = types.ModuleType(f"flag_gems.runtime.backend.{module}")
-    mod.DeviceDetector = lambda: types.SimpleNamespace(vendor_name=vendor_name)
-    for name in ("flag_gems", "flag_gems.runtime", "flag_gems.runtime.backend"):
-        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
-    monkeypatch.setitem(sys.modules, f"flag_gems.runtime.backend.{module}", mod)
-    if module != "device":  # newer FlagGems has no runtime.backend.device
-        monkeypatch.setitem(sys.modules, "flag_gems.runtime.backend.device", None)
+def _fake_device_info(monkeypatch, vendor_name):
+    """Make sglang_fl.utils.get_device_info() report `vendor_name` (None = detector unavailable)."""
+    info = None if vendor_name is None else types.SimpleNamespace(vendor_name=vendor_name)
+    monkeypatch.setattr("sglang_fl.utils.get_device_info", lambda: info)
 
 
 def test_rocm_with_amd_vendor_is_amd(rocm_cuda, monkeypatch):
-    _fake_detector(monkeypatch, "amd")
-    assert utils.get_platform_name() == "amd"
-
-
-def test_newer_flaggems_module_path_is_amd(rocm_cuda, monkeypatch):
-    _fake_detector(monkeypatch, "amd", module="device_finder")
+    _fake_device_info(monkeypatch, "amd")
     assert utils.get_platform_name() == "amd"
 
 
 def test_rocm_with_hygon_vendor_stays_nvidia(rocm_cuda, monkeypatch):
-    _fake_detector(monkeypatch, "hygon")
+    _fake_device_info(monkeypatch, "hygon")
     assert utils.get_platform_name() == "nvidia"
 
 
-def test_cuda_torch_stays_nvidia(rocm_cuda, monkeypatch):
-    monkeypatch.setattr(torch.version, "hip", None, raising=False)
+def test_nvidia_vendor_stays_nvidia(rocm_cuda, monkeypatch):
+    _fake_device_info(monkeypatch, "nvidia")
     assert utils.get_platform_name() == "nvidia"
 
 
-def test_detector_failure_falls_back_to_nvidia(rocm_cuda, monkeypatch):
-    monkeypatch.setitem(sys.modules, "flag_gems", None)
+def test_detector_unavailable_falls_back_to_nvidia(rocm_cuda, monkeypatch):
+    _fake_device_info(monkeypatch, None)
     assert utils.get_platform_name() == "nvidia"
 
 
