@@ -87,7 +87,7 @@ def get_platform_name() -> str:
                 return "kunlunxin"
             except ImportError:
                 pass
-        if "metax" in torch.__version__ and torch.cuda.is_available():
+        if "metax" in getattr(torch, "__version__", "") and torch.cuda.is_available():
             return "metax"
         if torch.cuda.is_available():
             return _resolve_cuda_platform()

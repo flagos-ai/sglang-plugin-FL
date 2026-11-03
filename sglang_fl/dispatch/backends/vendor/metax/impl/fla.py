@@ -10,11 +10,30 @@ _chunk_gated_delta_rule_num_stages_patched = False
 
 
 def _patch_chunk_gated_delta_rule_num_stages() -> None:
-    """Force the chunk gated delta rule h kernel to launch with num_stages=1."""
+    """Force the chunk gated delta rule h kernel to launch with num_stages=1.
+
+    SGLang >= 0.5.16 (FLA under ``sglang.kernels``) launches the kernel through a
+    single-config ``triton.autotune``; set ``num_stages`` on that config. Older
+    SGLang launches it with fixed arguments, so replace the launcher instead.
+    """
     global _chunk_gated_delta_rule_num_stages_patched
     if _chunk_gated_delta_rule_num_stages_patched:
         return
 
+    try:
+        from sglang.kernels.ops.attention.fla import chunk_delta_h
+    except ImportError:
+        _patch_chunk_gated_delta_rule_num_stages_legacy()
+    else:
+        for (
+            config
+        ) in chunk_delta_h.chunk_gated_delta_rule_fwd_kernel_h_blockdim64.configs:
+            config.num_stages = 1
+    _chunk_gated_delta_rule_num_stages_patched = True
+
+
+def _patch_chunk_gated_delta_rule_num_stages_legacy() -> None:
+    """SGLang <= 0.5.15: replace ``chunk_gated_delta_rule_fwd_h``."""
     import triton
 
     from sglang.srt.layers.attention.fla import chunk as chunk_module
@@ -54,7 +73,9 @@ def _patch_chunk_gated_delta_rule_num_stages() -> None:
                 len(chunk_indices),
                 prepare_chunk_offsets(cu_seqlens, BT),
             )
-        assert K <= 256, "current kernel does not support head dimension larger than 256."
+        assert K <= 256, (
+            "current kernel does not support head dimension larger than 256."
+        )
 
         h = k.new_empty(B, NT, H, V, K)
         v_new = torch.empty_like(u) if save_new_value else None
@@ -94,7 +115,6 @@ def _patch_chunk_gated_delta_rule_num_stages() -> None:
 
     chunk_delta_h.chunk_gated_delta_rule_fwd_h = chunk_gated_delta_rule_fwd_h_metax
     chunk_module.chunk_gated_delta_rule_fwd_h = chunk_gated_delta_rule_fwd_h_metax
-    _chunk_gated_delta_rule_num_stages_patched = True
 
 
 def chunk_gated_delta_rule_metax(
