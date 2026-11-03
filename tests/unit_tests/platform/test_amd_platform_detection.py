@@ -68,3 +68,11 @@ def test_amd_is_in_the_dist_backend_map():
     from sglang_fl.platform import _DIST_BACKEND_MAP
 
     assert _DIST_BACKEND_MAP["amd"] == "nccl"
+
+
+def test_amd_is_a_supported_vendor():
+    from sglang_fl.utils import DeviceInfo
+
+    info = DeviceInfo.__new__(DeviceInfo)
+    info.device = types.SimpleNamespace(vendor_name="amd")
+    assert info.get_supported_device() is True
