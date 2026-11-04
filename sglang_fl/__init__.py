@@ -932,7 +932,14 @@ def _apply_vendor_early_patches(vendor_name: str) -> None:
     import importlib.util
 
     module = f"sglang_fl.dispatch.backends.vendor.{vendor_name}.early"
-    if importlib.util.find_spec(module) is None:
+    try:
+        has_early = importlib.util.find_spec(module) is not None
+    except ModuleNotFoundError:
+        # find_spec raises (not returns None) when the parent vendor package
+        # itself has no directory — e.g. "nvidia" resolves to vendor/cuda.
+        # Swallow it or activate_platform() aborts for the whole platform.
+        return
+    if not has_early:
         return
     importlib.import_module(module)
     logger.info("vendor early patch loaded: %s", module)

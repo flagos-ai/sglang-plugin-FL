@@ -11,7 +11,10 @@ from sglang_fl.dispatch.config import utils
 
 @pytest.fixture
 def cuda_like(monkeypatch):
-    for attr in ("txda", "npu", "musa", "gcu", "corex"):
+    # __hcu_version__ marks Hygon hosts; get_platform_name() checks it before
+    # the CUDA branch, so it must be stripped too or these tests can only pass
+    # on hosts whose torch lacks it (e.g. thead/nvidia but not hygon).
+    for attr in ("txda", "npu", "musa", "gcu", "corex", "__hcu_version__"):
         monkeypatch.delattr(torch, attr, raising=False)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
 

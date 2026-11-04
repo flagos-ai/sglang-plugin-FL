@@ -137,7 +137,9 @@ def test_vendor_without_early_module_is_skipped(monkeypatch):
     import sglang_fl
 
     called = []
-    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    # Real find_spec: "nvidia" has no vendor directory at all, so find_spec
+    # raises ModuleNotFoundError for the parent package instead of returning
+    # None. Regression guard: that raise used to abort activate_platform().
     monkeypatch.setattr(importlib, "import_module", lambda name: called.append(name))
     sglang_fl._apply_vendor_early_patches("nvidia")
     assert called == []
