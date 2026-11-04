@@ -15,7 +15,7 @@
 """FlagGems ring RS + norm + AG kernels on the pure TP prefill path of DeepseekV2Model.
 
 SGLANG_FL_RS_NORM_AG=1 turns it on (default off); needs a flag_gems with
-fused/rs_norm_ag.py. Everything is AROUND hooks, sglang itself is not modified.
+fused/fused_rs_norm_ag.py. Everything is AROUND hooks, sglang itself is not modified.
 
 While a forward is active, the residual stays as this rank's rows row_range(T, W, rank)
 between layers and the MLP / MoE output stays unreduced (use_reduce_scatter):
@@ -173,7 +173,7 @@ def _init(model) -> None:
     mod, ok = None, H % 256 == 0
     if ok:
         try:
-            from flag_gems.fused import rs_norm_ag as mod
+            from flag_gems.fused import fused_rs_norm_ag as mod
         except Exception as e:
             logger.warning(f"FlagGems rs-norm-ag import failed: {e}")
             ok = False
