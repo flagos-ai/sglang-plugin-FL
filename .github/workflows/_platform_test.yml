@@ -153,7 +153,7 @@ jobs:
 
   e2e:
     needs: [setup, functional]
-    if: inputs.run_e2e && needs.setup.outputs.e2e_matrix != '[]'
+    if: always() && inputs.run_e2e && needs.functional.result == 'success' && needs.setup.outputs.e2e_matrix != '[]'
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJson(needs.setup.outputs.config).e2e_max_parallel || ((inputs.platform == 'musa' || inputs.platform == 'ascend' || inputs.platform == 'hygon') && 1 || 256) }}
