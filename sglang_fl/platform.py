@@ -52,6 +52,7 @@ _DIST_BACKEND_MAP = {
     "enflame": "eccl",
     "tsingmicro": "tccl",
     "hygon": "nccl",
+    "amd": "nccl",  # RCCL on ROCm
 }
 
 # Attention backend mapping: vendor_name -> default backend
@@ -65,6 +66,8 @@ _ATTN_BACKEND_MAP = {
     "kunlunxin": "kunlunxin",
     "iluvatar": "triton",
     "hygon": "hcu",
+    # SGLang's own Triton backend: the "aiter" backend targets Instinct GPUs.
+    "amd": "triton",
 }
 
 

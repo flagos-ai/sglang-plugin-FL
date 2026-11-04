@@ -32,7 +32,7 @@ from typing import Optional
 _SUPPORTED_VENDORS: frozenset[str] = frozenset({
     "nvidia", "ascend", "metax", "mthreads",
     "thead", "gcu", "kunlunxin", "hygon",
-    "iluvatar", "tsingmicro",
+    "iluvatar", "tsingmicro", "amd",
 })
 
 

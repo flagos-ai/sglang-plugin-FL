@@ -50,7 +50,7 @@ def get_platform_name() -> str:
     Detect the current hardware platform.
 
     Returns:
-        Platform name string: 'ascend', 'musa', 'iluvatar', 'nvidia', or 'unknown'
+        Platform name string: 'ascend', 'musa', 'iluvatar', 'amd', 'nvidia', or 'unknown'
     """
     try:
         import torch
@@ -67,6 +67,13 @@ def get_platform_name() -> str:
         if "metax" in torch.__version__ and torch.cuda.is_available():
             return "metax"
         if torch.cuda.is_available():
+            # ROCm torch also reports a working torch.cuda; ask FlagGems which
+            # vendor it is so AMD gets its own config (Hygon DCU stays "nvidia").
+            from sglang_fl.utils import get_device_info
+
+            info = get_device_info()
+            if info is not None and info.vendor_name == "amd":
+                return "amd"
             return "nvidia"
     except ImportError:
         pass
