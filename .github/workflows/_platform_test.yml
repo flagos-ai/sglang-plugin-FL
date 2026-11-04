@@ -91,25 +91,26 @@ jobs:
   # subnetted") and blocks every subsequent container job on that host.
   # This job runs WITHOUT a container (no docker network allocation needed), so
   # it can start on an exhausted host, and removes only stale github_network_*
-  # entries; in-use networks fail the rm and are kept.
+  # entries; in-use networks fail the rm and are kept. It runs for every
+  # platform and must NOT be gated or skipped: unit depends on it, and a
+  # skipped dependency cascades skip through the whole chain.
   docker-cleanup:
     name: "Docker network cleanup"
     needs: [setup]
-    if: inputs.platform == 'hygon'
     runs-on: ${{ fromJson(needs.setup.outputs.config).runner_labels }}
     steps:
       - name: Remove leaked github_network_* networks
         run: |
+          # No-op on hosts without docker (cloud runners); harmless where it
+          # exists: only stale github_network_* entries are removed, in-use
+          # networks fail the rm and are kept.
+          command -v docker >/dev/null || exit 0
           docker network ls --format '{{.Name}}' \
             | grep '^github_network_' \
             | xargs -r -n1 docker network rm || true
 
   unit:
     needs: [setup, docker-cleanup]
-    if: >-
-      always() &&
-      needs.setup.result == 'success' &&
-      (needs.docker-cleanup.result == 'success' || needs.docker-cleanup.result == 'skipped')
     uses: ./.github/workflows/_unit_test.yml
     with:
       platform: ${{ inputs.platform }}
@@ -121,11 +122,6 @@ jobs:
       timeout: ${{ inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 90 || 30 }}
 
   functional:
-    # Explicit condition: unit's if uses always() (to run despite a skipped
-    # docker-cleanup), which taints the default needs-success evaluation of
-    # downstream jobs — without this, functional/e2e/benchmark cascade-skip on
-    # every platform whose docker-cleanup is skipped.
-    if: always() && needs.setup.result == 'success' && needs.unit.result == 'success'
     needs: [setup, unit]
     uses: ./.github/workflows/_functional_test.yml
     with:
@@ -137,8 +133,8 @@ jobs:
       timeout: ${{ inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 60 || 15 }}
 
   e2e:
-    if: always() && needs.functional.result == 'success' && needs.setup.outputs.e2e_matrix != '[]'
     needs: [setup, functional]
+    if: needs.setup.outputs.e2e_matrix != '[]'
     strategy:
       fail-fast: false
       # MUSA, Ascend and Hygon groups share fixed per-platform GPU allocations.
@@ -159,7 +155,6 @@ jobs:
       timeout: ${{ inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 120 || inputs.platform == 'hygon' && 120 || matrix.test.timeout || 60 }}
 
   benchmark:
-    if: always() && needs.e2e.result == 'success'
     needs: [setup, e2e]
     uses: ./.github/workflows/_benchmark_test.yml
     with:
