@@ -23,6 +23,7 @@ import pytest
 pytest.importorskip("sglang")
 
 from sglang_fl.platform import PlatformFL  # noqa: E402
+from tests.utils.metax_patch import load_metax_patch  # noqa: E402
 
 
 def _make_platform_stub(vendor_name, device_type="cuda"):
@@ -85,7 +86,7 @@ class TestMetaxRegisterOps:
 
 class TestMetaxPatchSkipping:
     def test_patches_requiring_missing_packages_are_skipped(self, caplog):
-        from sglang_fl.dispatch.backends.vendor.metax import patch as metax_patch
+        metax_patch = load_metax_patch()
 
         called = []
         fake = (
@@ -110,7 +111,7 @@ class TestMetaxPatchSkipping:
         assert "sampler(no flashinfer)" in caplog.text
 
     def test_broken_patch_raises_runtime_error(self):
-        from sglang_fl.dispatch.backends.vendor.metax import patch as metax_patch
+        metax_patch = load_metax_patch()
 
         def load(submodule, func):
             raise ImportError("symbol removed in this SGLang")
