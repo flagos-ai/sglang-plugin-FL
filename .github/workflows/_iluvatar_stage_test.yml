@@ -1,0 +1,100 @@
+# Iluvatar-only stage runner; shared backend templates remain unchanged.
+name: Iluvatar Test Stage
+
+on:
+  workflow_call:
+    inputs:
+      scope:
+        description: 'One of unit, functional, e2e or benchmark'
+        required: true
+        type: string
+      task:
+        description: 'E2E matrix task: inference, concurrent or serving'
+        required: false
+        type: string
+        default: ''
+      device:
+        required: false
+        type: string
+        default: bi_v150
+      cases:
+        description: 'Non-empty JSON model/case allow-list for an e2e group'
+        required: false
+        type: string
+        default: ''
+      ci_image:
+        description: 'Published CoreX image pinned by the Iluvatar CI configuration'
+        required: true
+        type: string
+      runner_labels:
+        description: 'JSON array of the configured CoreX runner pool labels'
+        required: true
+        type: string
+      container_options:
+        description: 'Validated CoreX/model mounts and runtime environment'
+        required: true
+        type: string
+      concurrency_group:
+        description: 'One pool lock shared by every Iluvatar stage'
+        required: true
+        type: string
+      timeout:
+        required: false
+        type: number
+        default: 180
+
+permissions:
+  contents: read
+
+jobs:
+  stage:
+    name: 'Iluvatar ${{ inputs.scope }} ${{ inputs.task }} (${{ inputs.device }})'
+    runs-on: ${{ fromJson(inputs.runner_labels) }}
+    timeout-minutes: ${{ inputs.timeout }}
+    concurrency:
+      group: ${{ inputs.concurrency_group }}
+      cancel-in-progress: false
+    container:
+      image: ${{ inputs.ci_image }}
+      options: ${{ inputs.container_options }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      ILUVATAR_SCOPE: ${{ inputs.scope }}
+      ILUVATAR_TASK: ${{ inputs.task }}
+      ILUVATAR_DEVICE: ${{ inputs.device }}
+      ILUVATAR_CASES: ${{ inputs.cases }}
+    steps:
+      - name: Checkout (attempt 1)
+        id: checkout1
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        continue-on-error: true
+      - name: Checkout (attempt 2)
+        id: checkout2
+        if: steps.checkout1.outcome == 'failure'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        continue-on-error: true
+      - name: Checkout (attempt 3)
+        if: steps.checkout2.outcome == 'failure'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Check the explicitly allocated CoreX devices
+        run: bash .github/scripts/iluvatar/check.sh
+      - name: Install the checked-out plugin and verify both profiles
+        run: bash .github/scripts/iluvatar/setup.sh
+      - name: Run the Iluvatar stage with strict independent evidence
+        run: |
+          set -euo pipefail
+          args=(--platform iluvatar --scope "$ILUVATAR_SCOPE" --device "$ILUVATAR_DEVICE")
+          if [[ "$ILUVATAR_SCOPE" == e2e ]]; then
+            args+=(--task "$ILUVATAR_TASK" --cases "$ILUVATAR_CASES")
+          fi
+          python .github/scripts/iluvatar/run_tests.py "${args[@]}"
+      - name: Upload this stage's CoreX evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: 'iluvatar-${{ inputs.scope }}-${{ inputs.device }}-${{ inputs.task || ''stage'' }}'
+          path: artifacts/iluvatar/
+          if-no-files-found: error
