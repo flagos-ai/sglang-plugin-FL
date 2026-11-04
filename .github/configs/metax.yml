@@ -1,0 +1,46 @@
+# MetaX C550 Hardware Configuration
+# This file defines CI/CD settings for MetaX C550 testing.
+
+platform: metax
+
+# Docker image for this hardware.
+# SGLang 0.5.18 empty mode + sglang-plugin-FL on the MetaX empty base image, built
+# from docker/metax/empty-0.5.18.containerfile with --target ci.
+ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:763db79f7702a9eca25e5f53b0d1b285a9e42a2a3209277b44e29e90016c346b
+
+# Runner labels for this hardware
+runner_labels:
+  - ci-sglang-plugin-fl-metax
+
+# Container volumes (hardware-specific paths)
+# Test model configs reference /data/models/Qwen/<model> in-container.
+# TODO(metax): the host side is a placeholder; set it to the runner's model store.
+container_volumes:
+  - /data/models/Qwen:/data/models/Qwen
+
+# Container options.
+# MetaX GPUs are exposed as /dev/dri + /dev/mxcd (no container runtime hook), so
+# they are passed with --device; the MACA userspace ships inside the image.
+# /dev/infiniband is needed by MCCL/FlagCX, /dev/mem by the MACA runtime.
+# --privileged is allowed on the MetaX runner and matches the validated launch.
+# --network=host is not set: Actions attaches job containers to its own network.
+# --init reaps orphaned SGLang TP workers on shutdown.
+# HF offline: models come from the mounted store only.
+container_options: >-
+  --hostname sglang-plugin-fl
+  --privileged
+  --ipc=host
+  --shm-size=64g
+  --ulimit memlock=-1
+  --ulimit stack=67108864
+  --user root
+  --init
+  --group-add video
+  --security-opt seccomp=unconfined
+  --security-opt apparmor=unconfined
+  --device /dev/dri
+  --device /dev/mxcd
+  --device /dev/infiniband
+  --device /dev/mem
+  -e HF_HUB_OFFLINE=1
+  -e TRANSFORMERS_OFFLINE=1

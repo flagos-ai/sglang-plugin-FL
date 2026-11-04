@@ -65,6 +65,7 @@ _ATTN_BACKEND_MAP = {
     "kunlunxin": "kunlunxin",
     "iluvatar": "triton",
     "hygon": "hcu",
+    "metax": "triton",
 }
 
 
@@ -128,6 +129,10 @@ class PlatformFL(SRTPlatform):
     # ------------------------------------------------------------------
 
     def is_cuda(self) -> bool:
+        """True only for devices that can run NVIDIA CUDA kernels (sgl_kernel, flashinfer)."""
+        # MetaX exposes torch.cuda but cannot run NVIDIA kernels; is_cuda_alike() stays True
+        if self._vendor_name == "metax":
+            return False
         return self._device_type == "cuda"
 
     def is_npu(self) -> bool:
@@ -452,6 +457,14 @@ class PlatformFL(SRTPlatform):
             server_args.disable_cuda_graph = False
         if self._vendor_name == "nvidia":
             return
+        if (
+            self._vendor_name == "metax"
+            and getattr(server_args, "mm_attention_backend", None) is None
+        ):
+            # Without flash_attn, vision SDPA falls back to the math path, which
+            # FlagGems turns into per-shape bmm autotuning. Use SGLang's triton
+            # vision attention (compiled by FlagTree) instead.
+            server_args.mm_attention_backend = "triton_attn"
         if self._device_type == "gcu":
             server_args.device = "gcu"
             server_args.attention_backend = "fa3"

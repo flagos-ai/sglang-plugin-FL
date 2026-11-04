@@ -1,0 +1,82 @@
+# MetaX MACA Platform Configuration
+# Test selection for MetaX C550 (64 GB) running SGLang 0.5.18 in empty mode
+# (pip install "sglang[srt_empty]") with the MetaX torch/FlagTree/FlagGems/FlagCX
+# stack. Keep this file UTF-8 encoded.
+#
+# Users can modify:
+# - e2e: Add/remove model cases in inference, serving and concurrent lists
+# - benchmark: Enable/disable throughput, latency, and serve smoke tests
+# - unit/functional: Add/remove paths in include and exclude lists
+# - tolerance: Adjust numerical comparison tolerance for result validation
+# - env_defaults: MACA/runtime defaults applied before tests start
+#
+# ---- Platform-level settings ------------------------------------------------
+platform: metax
+vendor: metax
+
+device_types:
+  c550:
+    memory_gb: 64
+    compute_capability: "8.0"
+    tags: [metax, maca, bf16, fp16]
+
+# MetaX defaults to the triton attention backend (sglang_fl/platform.py), so the
+# common model cases run unchanged.
+engine_overrides: {}
+
+# MetaX triton kernels use a different accumulation order than CUDA.
+tolerance:
+  inference:
+    default: {rtol: 1e-5, atol: 1e-8}
+    bfloat16: {rtol: 1e-3, atol: 1e-3}
+    float16: {rtol: 1e-3, atol: 1e-3}
+
+device_overrides: {}
+
+unsupported_features: []
+
+# Applied with os.environ.setdefault, so the image/runner environment wins.
+# Do not set SGLANG_FL_FLAGOS_BLACKLIST here: CI must exercise the same FlagGems
+# blacklist as users, and the authoritative list lives in
+# sglang_fl/dispatch/config/metax.yaml.
+env_defaults:
+  SGLANG_PLUGINS: sglang_fl
+  SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK: "true"
+  # Collectives go through FlagCX (validated path); the image ships it here.
+  FLAGCX_PATH: /sgl-workspace/FlagCX
+  SGLANG_FL_DIST_BACKEND: flagcx
+  # MACA runtime / triton tuning used by the validated MetaX empty-mode runs.
+  MACA_SMALL_PAGESIZE_ENABLE: "1"
+  MACA_QUEUE_SCHEDULE_POLICY: "1"
+  MCCL_GRAPH_MIXING_SUPPORT: "1"
+  PYTORCH_ENABLE_PG_HIGH_PRIORITY_STREAM: "1"
+  TRITON_ENABLE_MACA_OPT_MOVE_DOT_OPERANDS_OUT_LOOP: "1"
+  TRITON_ENABLE_MACA_CHAIN_DOT_OPT: "1"
+
+# ---- Device-specific test configurations ------------------------------------
+c550:
+  name: "c550"
+  tests:
+    e2e:
+      # Each case points to tests/models/<model>/<case>.yaml.
+      # MTP is not listed: tests/e2e_tests/mtp is the Hygon (HCU) acceptance suite.
+      concurrent:
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      inference:
+        qwen3: ["4b_tp2", "06b_tp1"]
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      serving:
+        qwen3: ["4b_tp2"]
+        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+
+    functional:
+      include: "*"
+      exclude: []
+
+    unit:
+      include: "*"
+      exclude: []
+
+    benchmark:
+      enabled: true
+      smoke: ["throughput", "latency", "serve"]
