@@ -115,7 +115,7 @@ jobs:
       fail-fast: false
       # MUSA, Ascend and Hygon groups share fixed per-platform GPU allocations.
       # Keep each platform's E2E groups serial.
-      max-parallel: ${{ (inputs.platform == 'musa' || inputs.platform == 'ascend' || inputs.platform == 'hygon') && 1 || 256 }}
+      max-parallel: ${{ (inputs.platform == 'musa' || inputs.platform == 'ascend' || inputs.platform == 'hygon' || inputs.platform == 'kunlunxin') && 1 || 256 }}
       matrix:
         test: ${{ fromJson(needs.setup.outputs.e2e_matrix) }}
     uses: ./.github/workflows/_e2e_test.yml
