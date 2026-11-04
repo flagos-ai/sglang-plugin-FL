@@ -18,6 +18,7 @@ from .patches.mem_cache.mtp_state import patch_mtp_state
 from .patches.speculative import patch_speculative
 from .patches.logprob import patch_logprob
 from .patches.mtp_graph import patch_mtp_graph
+from .patches.topk import patch_topk
 
 logger = logging.getLogger(__name__)
 _patches_applied = False
@@ -47,5 +48,6 @@ def apply_gcu_patches():
     patch_speculative()
     patch_logprob()
     patch_mtp_graph()
+    patch_topk()
 
 apply_gcu_patches()
