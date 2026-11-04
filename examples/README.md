@@ -55,8 +55,23 @@ targets to those modules.
 
 Change `PORT`, `HOST`, `CONTEXT_LENGTH`, `MEM_FRACTION_STATIC` and
 `MAX_RUNNING_REQUESTS` for an isolated deployment. The last variable is the
-server admission limit, not a claim of verified concurrency. Operator and
-dispatch logs default to `/tmp`; preserve them before deleting a container.
+server admission limit, not a claim of verified concurrency.
+
+Operator recording and dispatch diagnostics are disabled by default. Set
+`SGLANG_FLAGGEMS_RECORD=1` and/or `SGLANG_FL_DISPATCH_DEBUG=1` explicitly to
+enable them; `0` disables them. Log paths are used only when the corresponding
+switch is `1`; setting a path alone does not enable collection. For example:
+
+```bash
+SGLANG_FLAGGEMS_RECORD=1 SGLANG_FL_DISPATCH_DEBUG=1 \
+MODEL_PATH=/path/to/MiniMax-M3.1-Flash-W8A8 \
+  bash examples/minimax_m31_musa_w8a8.sh
+```
+
+When enabled, operator and dispatch logs default to
+`/tmp/minimax-m31-flaggems.log` and `/tmp/minimax-m31-dispatch.log`.
+Override `SGLANG_FLAGGEMS_LOG_PATH` and `SGLANG_FL_DISPATCH_LOG` to select
+other paths, and preserve the files before deleting a diagnostic container.
 
 These examples exercise `sglang-plugin-FL` with Qwen3.6-27B and
 Qwen3.6-35B-A3B. They are executable correctness checks: a missing model,

@@ -19,10 +19,19 @@ export SGLANG_OPT_USE_BF16_ROUTER_GEMM=0
 # Select upstream split-K Triton top-k instead of CUDA radix JIT.
 export SGLANG_OPT_USE_MINIMAX_DECODE_TOPK_RADIX=0
 export SGLANG_FL_DIST_BACKEND="${SGLANG_FL_DIST_BACKEND:-mccl}"
-export SGLANG_FLAGGEMS_RECORD=1
-export SGLANG_FLAGGEMS_LOG_PATH="${SGLANG_FLAGGEMS_LOG_PATH:-/tmp/minimax-m31-flaggems.log}"
-export SGLANG_FL_DISPATCH_DEBUG=1
-export SGLANG_FL_DISPATCH_LOG="${SGLANG_FL_DISPATCH_LOG:-/tmp/minimax-m31-dispatch.log}"
+# Diagnostics are opt-in. A log path alone must not enable collection.
+export SGLANG_FLAGGEMS_RECORD="${SGLANG_FLAGGEMS_RECORD:-0}"
+export SGLANG_FL_DISPATCH_DEBUG="${SGLANG_FL_DISPATCH_DEBUG:-0}"
+if [[ "$SGLANG_FLAGGEMS_RECORD" == "1" ]]; then
+    export SGLANG_FLAGGEMS_LOG_PATH="${SGLANG_FLAGGEMS_LOG_PATH:-/tmp/minimax-m31-flaggems.log}"
+else
+    unset SGLANG_FLAGGEMS_LOG_PATH
+fi
+if [[ "$SGLANG_FL_DISPATCH_DEBUG" == "1" ]]; then
+    export SGLANG_FL_DISPATCH_LOG="${SGLANG_FL_DISPATCH_LOG:-/tmp/minimax-m31-dispatch.log}"
+else
+    unset SGLANG_FL_DISPATCH_LOG
+fi
 
 exec "${PYTHON_BIN:-python3}" -m sglang.launch_server \
     --model-path "$MODEL_PATH" \

@@ -93,7 +93,7 @@ Qwen3.6-27B 与 Qwen3.6-35B-A3B 已在 BW1000 上通过 TP2 的 eager/graph
 | Qwen2.5-14B-Instruct | tp=8 | 等待 v0.5.18 复测 |
 | Qwen3.6-27B | tp=2 | 已在 H100 + v0.5.18 验证 |
 | Qwen3.6-35B-A3B | tp=2 | 已在 H100 + v0.5.18 验证 |
-| [MiniMax-M3.1-Flash W8A8](examples/minimax_m31_musa_w8a8.sh) | tp=8 | MTT S5000 接线完成，整模型验证中；[固定版本要求](examples/README.md#minimax-m31-flash-w8a8-on-musa) |
+| [MiniMax-M3.1-Flash W8A8](examples/minimax_m31_musa_w8a8.sh) | tp=8 | 代码已接入，硬件验证待完成：MTT S5000、SGLang v0.5.18、W8A8；[固定版本与升级要求](examples/README.md#minimax-m31-flash-w8a8-on-musa) |
 
 v0.5.18 H100 验证保持 FlagGems ATen 替换和融合算子 dispatch 同时开启。
 Qwen3.6-27B 已通过普通/流式对话、强制 128-token decode 和四并发请求；
