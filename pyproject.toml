@@ -39,6 +39,7 @@ sglang_fl = "sglang_fl:load_plugin"
 include = ["sglang_fl*"]
 
 [tool.setuptools.package-data]
+"sglang_fl.backports" = ["*.patch"]
 "sglang_fl.dispatch.config" = ["*.yaml"]
 
 [tool.ruff]

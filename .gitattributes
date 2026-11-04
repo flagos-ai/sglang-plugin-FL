@@ -2,3 +2,4 @@
 *.containerfile text eol=lf
 # HCU source patches are applied to Linux SGLang checkouts.
 /docker/hygon/*.patch text eol=lf whitespace=-blank-at-eol
+sglang_fl/backports/*.patch -text -whitespace
