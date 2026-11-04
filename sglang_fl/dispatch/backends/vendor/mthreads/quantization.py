@@ -128,34 +128,37 @@ def get_musa_compressed_tensors_config():
                         if k != "index_qkv_proj"
                     },
                 }
-                return super(MusaCompressedTensorsConfig, local).get_scheme_dict(
+                value = super(MusaCompressedTensorsConfig, local).get_scheme_dict(
                     layer, layer_name
                 )
-            return super().get_scheme_dict(layer, layer_name)
+            else:
+                value = super().get_scheme_dict(layer, layer_name)
+            self._validate_selected_scheme(value)
+            return value
 
-        @classmethod
-        def from_config(cls, config):
-            result = super().from_config(config)
-            if result.sparsity_scheme_map:
+        def _validate_selected_scheme(self, value):
+            # Resolve upstream ignore/regex/fused rules with the real layer
+            # first. Class-name targets and layer-name ignores are distinct.
+            # Selection happens before weight creation or numerical execution.
+            if value is None:
+                return
+            if self.sparsity_scheme_map:
                 raise NotImplementedError("MUSA INT8 does not support sparse weights")
-            for value in result.target_scheme_map.values():
-                weight = value.get("weights")
-                activation = value.get("input_activations")
-                if (
-                    weight is None
-                    or activation is None
-                    or not result._is_dynamic_token_w8a8(weight, activation)
-                ):
-                    raise NotImplementedError(
-                        "MUSA compressed-tensors requires dynamic token W8A8"
-                    )
-                if any(
-                    getattr(q.type, "value", q.type) != "int"
-                    for q in (weight, activation)
-                ):
-                    raise NotImplementedError("MUSA compressed-tensors requires INT8")
-                _validate_contract(value)
-            return result
+            weight = value.get("weights")
+            activation = value.get("input_activations")
+            if (
+                weight is None
+                or activation is None
+                or not self._is_dynamic_token_w8a8(weight, activation)
+            ):
+                raise NotImplementedError(
+                    "MUSA compressed-tensors requires dynamic token W8A8"
+                )
+            if any(
+                getattr(q.type, "value", q.type) != "int" for q in (weight, activation)
+            ):
+                raise NotImplementedError("MUSA compressed-tensors requires INT8")
+            _validate_contract(value)
 
     # Install selectors only on the new vendor class. The upstream class and
     # other vendors retain their original methods and capability requirements.

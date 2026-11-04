@@ -36,7 +36,7 @@ def test_quantization_config_uses_the_public_platform_hook():
     assert platform.get_quantization_config("compressed-tensors") is None
 
 
-def test_vendor_config_validates_supported_scheme_before_loading():
+def test_vendor_config_validates_selected_scheme_before_loading():
     from copy import deepcopy
     from sglang_fl.dispatch.backends.vendor.mthreads.quantization import (
         get_musa_compressed_tensors_config,
@@ -89,8 +89,34 @@ def test_vendor_config_validates_supported_scheme_before_loading():
     invalid["config_groups"]["w8a8"]["input_activations"].update(
         dynamic=False, strategy="tensor"
     )
+    instance = cls.from_config(invalid)
     with pytest.raises(NotImplementedError, match="dynamic token"):
-        cls.from_config(invalid)
+        instance.get_linear_scheme(torch.nn.Linear(8, 8), "model.q_proj")
+    invalid["ignore"] = ["Linear"]
+    instance = cls.from_config(invalid)
+    with pytest.raises(NotImplementedError, match="dynamic token"):
+        instance.get_linear_scheme(torch.nn.Linear(8, 8), "model.q_proj")
+
+    mixed = deepcopy(config)
+    mixed["format"] = "mixed-precision"
+    mixed["config_groups"]["w8a8"]["format"] = "int-quantized"
+    mixed["config_groups"]["unused"] = {
+        "targets": ["lm_head"],
+        "format": "pack-quantized",
+        "weights": {
+            "num_bits": 4,
+            "type": "int",
+            "strategy": "channel",
+            "symmetric": True,
+        },
+    }
+    instance = cls.from_config(mixed)
+    assert instance.get_scheme_dict(torch.nn.Module(), "lm_head") is None
+    assert instance.get_scheme_dict(torch.nn.Linear(8, 8), "model.q_proj") is not None
+    mixed["ignore"] = []
+    instance = cls.from_config(mixed)
+    with pytest.raises(NotImplementedError, match="dynamic token"):
+        instance.get_linear_scheme(torch.nn.Linear(8, 8), "lm_head")
 
 
 @pytest.mark.parametrize("m,n,k", [(1, 13, 31), (16, 768, 6144), (64, 6144, 384)])

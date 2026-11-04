@@ -94,3 +94,28 @@ def test_missing_native_pool_fails_only_for_target_model():
     obj.model_config.hf_config.sparse = True
     with pytest.raises(RuntimeError, match="native sparse KV pool"):
         obj._build_oot_mha_kv_pool(max_total_num_tokens=128)
+
+
+@pytest.mark.parametrize(
+    "target", ["_build_oot_mha_kv_pool", "_build_minimax_sparse_kv_pool"]
+)
+@pytest.mark.parametrize("change", ["extra_parameter", "positional_only"])
+def test_incompatible_pool_call_contract_is_rejected_before_install(target, change):
+    kv_module = _fake_module()
+    cls = kv_module.KVCacheConfigurator
+
+    if change == "extra_parameter":
+
+        def changed(self, *, max_total_num_tokens, required_workspace):
+            raise AssertionError("Incompatible pool builder must never execute")
+
+    else:
+
+        def changed(self, max_total_num_tokens, /):
+            raise AssertionError("Incompatible pool builder must never execute")
+
+    setattr(cls, target, changed)
+    before = cls._build_oot_mha_kv_pool
+    with pytest.raises(RuntimeError, match="unsupported signature"):
+        install_minimax_m3_patches(kv_module)
+    assert cls._build_oot_mha_kv_pool is before

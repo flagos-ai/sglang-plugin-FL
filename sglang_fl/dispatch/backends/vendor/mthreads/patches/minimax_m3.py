@@ -22,13 +22,24 @@ _PATCH_MARKER = "_sglang_fl_musa_minimax_m3"
 
 
 def _validate_signature(callable_obj, required_parameters: tuple[str, ...]) -> None:
-    parameters = inspect.signature(callable_obj).parameters
+    signature = inspect.signature(callable_obj)
+    parameters = signature.parameters
     missing = [name for name in required_parameters if name not in parameters]
     if missing:
         raise RuntimeError(
             f"MiniMax-M3 patch target {callable_obj!r} is missing parameters: "
             + ", ".join(missing)
         )
+    if tuple(parameters) != required_parameters:
+        raise RuntimeError(
+            f"MiniMax-M3 patch target {callable_obj!r} has an unsupported signature"
+        )
+    try:
+        signature.bind(object(), max_total_num_tokens=0)
+    except TypeError as exc:
+        raise RuntimeError(
+            f"MiniMax-M3 patch target {callable_obj!r} has an unsupported signature"
+        ) from exc
 
 
 def _build_kv_pool_wrapper(original, kv_module):
