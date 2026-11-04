@@ -62,6 +62,12 @@ import os
 
 import torch
 
+# A CoreX CUDA identity does not imply that NVIDIA FlashInfer is available.
+# Set this before SGLang imports cache its availability probe. Spawn workers
+# also need this in their environment (the Iluvatar container exports it).
+if hasattr(torch, "corex"):
+    os.environ.setdefault("SGLANG_IS_FLASHINFER_AVAILABLE", "0")
+
 logger = logging.getLogger(__name__)
 if not logger.handlers:
     _handler = logging.StreamHandler()
@@ -569,6 +575,10 @@ def _apply_vendor_patches() -> None:
         importlib.import_module(module)
         logger.info("vendor patch loaded: %s", module)
     except ImportError:
+        if info.vendor_name == "iluvatar":
+            # This overlay is required for CoreX CUDA-alias imports. A missing
+            # dependency inside it must not look like an optional absent patch.
+            raise
         logger.info("vendor patch absent: %s", module)
 
 
