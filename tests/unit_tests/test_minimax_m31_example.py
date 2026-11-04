@@ -24,12 +24,14 @@ DIAGNOSTICS = (
 
 @pytest.mark.parametrize("mode", [None, "0", "1"])
 @pytest.mark.parametrize("custom_paths", [False, True])
-def test_launch_diagnostics_require_explicit_opt_in(tmp_path, mode, custom_paths):
+def test_graph_launch_defaults_and_explicit_diagnostics(tmp_path, mode, custom_paths):
     interpreter = tmp_path / "record-interpreter"
     interpreter.write_text(
         f"#!{sys.executable}\n"
         "import json, os, sys\n"
-        "print(json.dumps({'env': dict(os.environ), 'args': sys.argv[1:]}))\n"
+        f"keys = {(*DIAGNOSTICS, 'USE_FLAGGEMS')!r}\n"
+        "print(json.dumps({'env': {k: os.environ[k] for k in keys "
+        "if k in os.environ}, 'args': sys.argv[1:]}))\n"
     )
     interpreter.chmod(0o755)
     env = {key: value for key, value in os.environ.items() if key not in DIAGNOSTICS}
@@ -64,6 +66,12 @@ def test_launch_diagnostics_require_explicit_opt_in(tmp_path, mode, custom_paths
         else:
             assert variable not in actual
     assert observed["args"][:2] == ["-m", "sglang.launch_server"]
+    args = observed["args"]
+    assert args[args.index("--cuda-graph-backend-decode") + 1] == "full"
+    assert args[args.index("--cuda-graph-backend-prefill") + 1] == "disabled"
+    start = args.index("--cuda-graph-bs-decode") + 1
+    assert args[start : start + 4] == ["1", "2", "4", "8"]
+    assert "--disable-cuda-graph" not in args
     assert observed["args"][-2:] == ["--random-seed", "42"]
     assert not (tmp_path / "gems.log").exists()
     assert not (tmp_path / "dispatch.log").exists()

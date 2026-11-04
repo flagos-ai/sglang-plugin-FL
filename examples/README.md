@@ -28,14 +28,25 @@ MODEL_PATH=/path/to/MiniMax-M3.1-Flash-W8A8 \
   bash examples/minimax_m31_musa_w8a8.sh
 ```
 
-The example deliberately uses eager execution. It configures a maximum of
-16 images per request; that admission limit is not an ERQA accuracy result.
-Full GPQA/ERQA, graph replay and optimized throughput are not currently
-claimed by this integration. Quantization configuration uses SGLang's public platform hook and a vendor-only
+The example uses FULL graph for decode batches 1, 2, 4 and 8; prefill remains
+eager. Basic text generation and decode replay have been checked on the fixed
+TP8 stack above, including changed prompts, multi-step output and a longer
+context. These checks do not establish full accuracy, sustained concurrency,
+maximum-context stability or throughput. It configures a maximum of 16 images
+per request; that admission limit is not an ERQA accuracy result. Full
+GPQA/ERQA and multimodal accuracy remain unvalidated.
+Quantization configuration uses SGLang's public platform hook and a vendor-only
 subclass; the rounding selector and KV pool compatibility hooks use private
 APIs limited to the version above. Upgrading requires
 fresh patch-scope, numerical, startup, multimodal and concurrency validation;
 remove the workarounds when upstream exposes equivalent public hooks.
+
+When NCCL is unavailable on MUSA, the plugin removes the unavailable PyNccl
+object during communicator initialization so graph setup cannot re-enable it;
+collectives keep using the existing native MCCL process group. This does not
+change other platforms or replace an available communicator. For eager-only
+diagnosis, append `--cuda-graph-backend-decode disabled`; eager results do not
+validate graph replay.
 
 The example sets `FLAGTREE_AABS=0`: the pinned compiler's automatic tile
 shrinking can violate sparse top-k static constraints after autotune pruning.

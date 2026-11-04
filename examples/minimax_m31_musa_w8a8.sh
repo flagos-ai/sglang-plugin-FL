@@ -52,7 +52,9 @@ exec "${PYTHON_BIN:-python3}" -m sglang.launch_server \
     --moe-runner-backend triton \
     --reasoning-parser minimax-m3 \
     --limit-mm-data-per-request '{"image":16}' \
-    --disable-cuda-graph \
+    --cuda-graph-backend-decode full \
+    --cuda-graph-backend-prefill disabled \
+    --cuda-graph-bs-decode 1 2 4 8 \
     --disable-overlap-schedule \
     --disable-radix-cache \
     --enable-metrics \

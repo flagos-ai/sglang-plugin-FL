@@ -75,7 +75,7 @@ verified FlagGems master snapshot handles `to_copy` on H100.
 | Qwen3.6-27B (Hybrid Attention + FLA) | tp=2 | Verified on H100 with v0.5.18 |
 | Qwen3.6-35B-A3B (MoE, 256 experts) | tp=2 | Verified on H100 with v0.5.18 |
 | Qwen2.5-14B-Instruct | tp=8 | v0.5.18 rerun pending |
-| [MiniMax-M3.1-Flash W8A8](examples/minimax_m31_musa_w8a8.sh) | tp=8 | Code integrated; target-hardware validation pending: MTT S5000, SGLang v0.5.18, W8A8; [fixed-version and upgrade requirements](examples/README.md#minimax-m31-flash-w8a8-on-musa) |
+| [MiniMax-M3.1-Flash W8A8](examples/minimax_m31_musa_w8a8.sh) | tp=8 | MTT S5000, SGLang v0.5.18, W8A8: basic text and decode FULL graph checked; full accuracy, stability and performance acceptance pending; [scope and upgrade requirements](examples/README.md#minimax-m31-flash-w8a8-on-musa) |
 
 The v0.5.18 H100 validation kept both FlagGems ATen replacement and fused-op
 dispatch enabled. Qwen3.6-27B passed normal and streaming chat, forced 128-token
