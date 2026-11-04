@@ -14,3 +14,8 @@ pip install --no-deps --no-build-isolation -e .
 pip install pytest pytest-timeout pyyaml
 echo "=== Installation complete ==="
 python -c "import importlib.metadata as m, sglang_fl; print('sglang', m.version('sglang'), '| sglang_fl loaded from', sglang_fl.__file__)"
+# Model store inventory: e2e cases resolve /data/models/Qwen/<model> from the
+# host store bind-mounted here; log what is actually visible so a "Model not
+# found" collection failure can be told apart from a wrong mount level.
+echo "=== Model store inventory (/data/models/Qwen) ==="
+ls -la /data/models/Qwen/ 2>&1 || true
