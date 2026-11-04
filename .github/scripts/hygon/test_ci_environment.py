@@ -254,13 +254,14 @@ class WorkflowTests(unittest.TestCase):
             )
 
     def test_hygon_groups_are_serial_and_registered(self):
-        workflow = (ROOT / ".github/workflows/_platform_test.yml").read_text(
-            encoding="utf-8"
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/_platform_test.yml").read_text(encoding="utf-8")
         )
-        self.assertIn(
-            "(inputs.platform == 'musa' || inputs.platform == 'ascend' "
-            "|| inputs.platform == 'hygon') && 1 || 256",
-            workflow,
+        max_parallel = workflow["jobs"]["e2e"]["strategy"]["max-parallel"]
+        self.assertIn("inputs.platform == 'hygon'", max_parallel)
+        self.assertRegex(
+            max_parallel,
+            r"\)\s*&&\s*1\s*\|\|\s*256\s*\}\}$",
         )
         self.assertIn(
             "test-hygon:",

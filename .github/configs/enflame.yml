@@ -1,0 +1,23 @@
+platform: enflame
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:b6cc02d01b6d8dce1325f39c008ffbf5b377243a5c11fc179dd8f7dcfa708614
+runner_labels:
+  - ci-sglang-plugin-fl-enflame
+container_volumes:
+  - /data:/data
+container_options: >-
+  --hostname sglang-plugin-fl
+  --ipc=host
+  --ulimit memlock=-1
+  --ulimit stack=67108864
+  --user root
+  --init
+  --privileged
+  --device /dev/gcuctl
+  --device /dev/gcu7vid0
+  --device /dev/gcu7vid1
+  --device /dev/gcu7vid2
+  --device /dev/gcu7vid3
+  --device /dev/gcu7vid4
+  --device /dev/gcu7vid5
+  --device /dev/gcu7vid6
+  --device /dev/gcu7vid7
