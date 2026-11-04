@@ -46,8 +46,14 @@ def test_guards_both_packages_and_forces_availability_off(clean):
     assert os.environ["SGLANG_ENABLE_JIT_DEEPGEMM"] == "false"
 
 
-def test_module_level_import_patterns(clean):
+def test_module_level_import_patterns(clean, monkeypatch):
     guard.install_import_guards()
+    # The guard appends its finders so an installed package always wins. CI hosts
+    # (CUDA/Hygon/MUSA images) do ship flashinfer / deep_gemm, so put the
+    # placeholders first to exercise them as on a PPU host where both are absent.
+    placeholders = [f for f in sys.meta_path if isinstance(f, guard._PlaceholderFinder)]
+    others = [f for f in sys.meta_path if not isinstance(f, guard._PlaceholderFinder)]
+    monkeypatch.setattr(sys, "meta_path", placeholders + others)
 
     from flashinfer import bmm_fp8  # noqa: F401  (fp8_utils.py pattern)
     import deep_gemm  # noqa: F401  (dsa_backend.py pattern)
