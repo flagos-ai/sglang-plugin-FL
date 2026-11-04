@@ -642,6 +642,21 @@ def _setup_communicator_hooks():
     def _init_hook(original_fn, self, *args, **kwargs):
         # Run original __init__ first
         original_fn(self, *args, **kwargs)
+        # SGLang 0.5.18 (71de97b264b04dcd514cf904003028aefe9775c8)
+        # graph_capture enables PyNccl even when NCCLLibrary initialization
+        # returned available=False before assigning its device. On MUSA, retain
+        # the existing native process group and remove only that unavailable
+        # communicator before any collective. The public constructor hook is
+        # used because there is no platform hook for this capability decision.
+        # Remove when upstream graph_capture checks PyNccl.available itself.
+        pynccl = getattr(self, "pynccl_comm", None)
+        if (
+            getattr(getattr(self, "device", None), "type", None) == "musa"
+            and pynccl is not None
+            and getattr(pynccl, "available", None) is False
+        ):
+            self.pynccl_comm = None
+            self.use_pynccl = False
         # Attach CommunicatorFL if world_size > 1
         if getattr(self, "world_size", 1) > 1:
             try:
