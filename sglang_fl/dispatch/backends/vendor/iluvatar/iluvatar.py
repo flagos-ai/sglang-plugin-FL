@@ -162,7 +162,7 @@ class IluvatarBackend(Backend):
         beta,
         scale,
         initial_state=None,
-        output_final_state=True,
+        output_final_state=False,
         cu_seqlens=None,
         ssm_state_indices=None,
         num_accepted_tokens=None,

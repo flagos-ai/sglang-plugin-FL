@@ -14,6 +14,8 @@ platforms:
     enabled: true
   musa:
     enabled: true
+  iluvatar:
+    enabled: true
   thead:
     # Self-hosted runner pool: label flagcicd-810e (4 runners, online).
     # SGLang 0.5.18 empty-mode CI image is set in thead.yml; it must be built from
