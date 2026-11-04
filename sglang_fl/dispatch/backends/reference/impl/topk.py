@@ -47,7 +47,7 @@ def topk_torch(
     from sglang.srt.layers.moe.topk import select_experts
 
     obj.topk_config.torch_native = True
-    return select_experts(
+    topk_output = select_experts(
         hidden_states=hidden_states,
         layer_id=obj.layer_id,
         router_logits=router_logits,
@@ -55,3 +55,4 @@ def topk_torch(
         num_token_non_padded=num_token_non_padded,
         expert_location_dispatch_info=expert_location_dispatch_info,
     )
+    return topk_output._replace(topk_ids=topk_output.topk_ids.to(torch.int32))

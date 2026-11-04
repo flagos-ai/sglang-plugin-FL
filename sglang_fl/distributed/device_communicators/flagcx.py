@@ -23,7 +23,7 @@ Adapted from vllm-plugin-FL's PyFlagcxCommunicator pattern:
 Requirements:
   - FLAGCX_PATH env var pointing to FlagCX installation
   - libflagcx.so built at $FLAGCX_PATH/build/lib/
-  - FlagCX Python wrapper at $FLAGCX_PATH/plugin/interservice/flagcx_wrapper.py
+  - FlagCX Python API installed as flagcx.api
 
 Usage:
   SGLANG_FL_DIST_BACKEND=flagcx FLAGCX_PATH=/path/to/FlagCX \
@@ -56,7 +56,7 @@ def _import_flagcx_wrapper():
     if flagcx_path not in sys.path:
         sys.path.append(flagcx_path)
 
-    from plugin.interservice.flagcx_wrapper import (
+    from flagcx.api import (
         FLAGCXLibrary,
         buffer_type,
         flagcxComm_t,
@@ -220,7 +220,7 @@ class FlagCXCommunicator:
         cached = self._stream_cache.get(handle)
         if cached is not None:
             return cached
-        from plugin.interservice.flagcx_wrapper import flagcxStream_t
+        from flagcx.api import flagcxStream_t
         new_stream = flagcxStream_t()
         self.flagcx.FLAGCX_CHECK(
             self.flagcx.devHandle.contents.streamCopy(

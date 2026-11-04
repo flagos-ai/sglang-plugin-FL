@@ -29,128 +29,17 @@ from flash_attn.vllm_flash_attn import (
         flash_attn_with_kvcache
     )
 
-def __init__(
-    self,
-    model_runner: ModelRunner,
-    skip_prefill: bool = False,
-    speculative_step_id=0,
-    topk=0,
-    speculative_num_steps=0,
-    fa_impl_ver=3,
-):
-    # super().__init__()
+def __init__(original_init, self, model_runner, *args, **kwargs):
+    import sgl_kernel.flash_attn as flash_attn_module
+    from flash_attn.vllm_flash_attn import get_scheduler_metadata
 
-    assert not (
-        model_runner.sliding_window_size is not None
-        and model_runner.model_config.is_encoder_decoder
-    ), "Sliding window and cross attention are not supported together"
-
-    self.is_encoder_decoder = model_runner.model_config.is_encoder_decoder
-    self.forward_metadata: FlashAttentionMetadata = None
-    # extra metadata for handling speculative decoding topk > 1, extended draft decode and verify
-    self.forward_metadata_spec_decode_expand: FlashAttentionMetadata = None
-    self.max_context_len = model_runner.model_config.context_len
-    self.device = model_runner.device
-    self.decode_cuda_graph_metadata = {}
-    self.target_verify_metadata = {}
-    self.req_to_token = model_runner.req_to_token_pool.req_to_token
-    self.kv_cache_dtype = model_runner.kv_cache_dtype
-    self.kv_cache_dtype_str = model_runner.server_args.kv_cache_dtype
-    self.page_size = model_runner.page_size
-    self.use_mla = model_runner.model_config.attention_arch == AttentionArch.MLA
-    self.skip_prefill = skip_prefill
-    self.attn_cp_size = model_runner.attn_cp_size
-
-    self.use_sliding_window_kv_pool = (
-        isinstance(model_runner.token_to_kv_pool, SWAKVPool)
-        and model_runner.token_to_kv_pool.swa_layer_nums > 0
-    )
-    if self.use_sliding_window_kv_pool:
-        self.token_to_kv_pool = model_runner.token_to_kv_pool
-
-    self.topk = model_runner.server_args.speculative_eagle_topk or 0
-    self.speculative_num_steps = speculative_num_steps
-    self.speculative_num_draft_tokens = (
-        model_runner.server_args.speculative_num_draft_tokens
-    )
-    self.speculative_step_id = speculative_step_id
-
-    # Local attention settings
-    self.has_local_attention = model_runner.model_config.is_local_attention_model
-    if self.has_local_attention:
-        assert (
-            model_runner.attention_chunk_size is not None
-        ), "Attention chunk size is required for local attention"
-        self.attention_chunk_size = model_runner.attention_chunk_size
-
-    # For each layer, the sliding_window_size can be different. This is only used for preparing SWA metadata.
-    # We use `layer.sliding_window_size` to decide whether to use SWA for each layer.
-    self.sliding_window_size = model_runner.sliding_window_size
-    self.has_swa = (
-        self.sliding_window_size is not None and self.sliding_window_size > -1
-    )
-
-    # Select version
-    self.fa_impl_ver = fa_impl_ver
+    flash_attn_module.get_scheduler_metadata = get_scheduler_metadata
+    original_init(self, model_runner, *args, **kwargs)
     if self.fa_impl_ver == 3:
-        # gcu replace
-        from flash_attn.vllm_flash_attn import (
-            flash_attn_varlen_func,
-            flash_attn_with_kvcache,
-            get_scheduler_metadata,
-        )
-
+        self.flash_attn_varlen_func = flash_attn_varlen_func
+        self.flash_attn_with_kvcache = flash_attn_with_kvcache
         self._get_scheduler_metadata = get_scheduler_metadata
-    elif self.fa_impl_ver == 4:
-        from sglang.jit_kernel.flash_attention_v4 import (
-            flash_attn_varlen_func,
-            flash_attn_with_kvcache,
-        )
 
-        self._get_scheduler_metadata = None
-    else:
-        raise ValueError(f"Invalid version: {self.fa_impl_ver=}")
-
-    self.flash_attn_varlen_func = flash_attn_varlen_func
-    self.flash_attn_with_kvcache = flash_attn_with_kvcache
-
-    # Store head info for precomputing FA3 scheduler metadata
-    self.head_dim = model_runner.model_config.head_dim
-    self.num_attention_heads = (
-        model_runner.model_config.hf_text_config.num_attention_heads
-        // model_runner.tp_size
-    )
-    self.num_kv_heads = model_runner.model_config.get_num_kv_heads(
-        model_runner.tp_size
-    )
-    _softcapping = getattr(
-        model_runner.model_config.hf_text_config, "attn_logit_softcapping", None
-    )
-    self.has_softcap = _softcapping is not None and _softcapping > 0.0
-
-    # If num_splits == 0, we use a heuristic to automatically determine the number of splits.
-    # We set nums splits to 1 if deterministic inference is enabled.
-    # See https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/ for more details.
-    # Furthermore, FA4 does not support num_splits=0 with CUDA Graph, so we set num_splits to 1 if CUDA Graph is enabled.
-    self.num_splits = (
-        1
-        if model_runner.server_args.enable_deterministic_inference
-        or (
-            self.fa_impl_ver == 4
-            and not model_runner.server_args.disable_cuda_graph
-        )
-        else 0
-    )
-
-    # In embedding mode with no chunked prefill and radix cache disabled,
-    # skip KV cache write and use flash_attn_varlen_func with raw K/V
-    # instead of flash_attn_with_kvcache, bypassing paged KV cache entirely.
-    server_args = model_runner.server_args
-    self.fa_skip_kv_cache = (
-        server_args.is_embedding
-        and server_args.chunked_prefill_size == -1
-        and server_args.disable_radix_cache
-    )
 
 def _compute_scheduler_metadata(
     self, batch_size, max_seq_len_k, cache_seqlens, cu_seqlens_q
@@ -208,11 +97,11 @@ def forward_extend(
                 else forward_batch.encoder_out_cache_loc
             )
             if not self.use_mla:
-                forward_batch.token_to_kv_pool.set_kv_buffer(
+                self.token_to_kv_pool.set_kv_buffer(
                     layer, cache_loc, k, v, layer.k_scale, layer.v_scale
                 )
             else:
-                forward_batch.token_to_kv_pool.set_mla_kv_buffer(
+                self.token_to_kv_pool.set_mla_kv_buffer(
                     layer,
                     cache_loc,
                     k,
@@ -313,7 +202,7 @@ def forward_extend(
     # Use Flash Attention for prefill
     if not self.use_mla:
         # Do multi-head attention
-        key_cache, value_cache = forward_batch.token_to_kv_pool.get_kv_buffer(
+        key_cache, value_cache = self.token_to_kv_pool.get_kv_buffer(
             layer.layer_id
         )
 
@@ -551,7 +440,7 @@ def forward_extend(
         else:
             assert self.fa_impl_ver == 3, "Only FA3 support here"
             # Do absorbed multi-latent attention
-            kv_cache = forward_batch.token_to_kv_pool.get_key_buffer(
+            kv_cache = self.token_to_kv_pool.get_key_buffer(
                 layer.layer_id
             ).to(q.dtype)
             k_rope = kv_cache[:, :, layer.v_head_dim :]
@@ -651,11 +540,11 @@ def forward_decode(
                 else forward_batch.encoder_out_cache_loc
             )
             if not self.use_mla:
-                forward_batch.token_to_kv_pool.set_kv_buffer(
+                self.token_to_kv_pool.set_kv_buffer(
                     layer, cache_loc, k, v, layer.k_scale, layer.v_scale
                 )
             else:
-                forward_batch.token_to_kv_pool.set_mla_kv_buffer(
+                self.token_to_kv_pool.set_mla_kv_buffer(
                     layer,
                     cache_loc,
                     k,
@@ -714,7 +603,7 @@ def forward_decode(
     if not self.use_mla:
         # Do multi-head attention
 
-        key_cache, value_cache = forward_batch.token_to_kv_pool.get_kv_buffer(
+        key_cache, value_cache = self.token_to_kv_pool.get_kv_buffer(
             layer.layer_id
         )
         key_cache = key_cache.view(
@@ -875,7 +764,7 @@ def forward_decode(
                 o = result
     else:
         # Do absorbed multi-latent attention
-        kv_cache = forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id).to(
+        kv_cache = self.token_to_kv_pool.get_key_buffer(layer.layer_id).to(
             q.dtype
         )
         k_rope = kv_cache[:, :, layer.v_head_dim :]
@@ -973,6 +862,8 @@ def normal_decode_set_metadata(
     page_size: int,
     swa_page_table: Optional[torch.Tensor] = None,
     token_to_kv_pool: Optional[SWAKVPool] = None,
+    v2p_page_table: Optional[torch.Tensor] = None,
+    kernel_page_multiplier: int = 1,
 ):
     cache_seqlens_int32.copy_(seq_lens + seq_len_delta)
     cu_seqlens_k[1:].copy_(torch.cumsum(cache_seqlens_int32, dim=0, dtype=torch.int32))
@@ -980,7 +871,10 @@ def normal_decode_set_metadata(
         req_pool_indices[:, None],
         strided_indices[:max_seq_pages][None, :],
     ]
-    page_table[:, :max_seq_pages].copy_(page_indices // page_size)
+    dense_pages = page_indices // page_size
+    if v2p_page_table is not None:
+        dense_pages = v2p_page_table[dense_pages]
+    page_table[:, :max_seq_pages].copy_(dense_pages * kernel_page_multiplier)
 
     if swa_page_table is not None and token_to_kv_pool is not None:
         assert isinstance(token_to_kv_pool, SWAKVPool)
@@ -990,7 +884,7 @@ def normal_decode_set_metadata(
 def patch_flashattention_backend():
     from sglang.srt.plugins.hook_registry import HookRegistry, HookType
     FLASH_ATTN_BACKEND = "sglang.srt.layers.attention.flashattention_backend.FlashAttentionBackend"
-    HookRegistry.register(f"{FLASH_ATTN_BACKEND}.__init__", __init__, HookType.REPLACE)
+    HookRegistry.register(f"{FLASH_ATTN_BACKEND}.__init__", __init__, HookType.AROUND)
     HookRegistry.register(f"{FLASH_ATTN_BACKEND}.forward_extend", forward_extend, HookType.REPLACE)
     HookRegistry.register(f"{FLASH_ATTN_BACKEND}.forward_decode", forward_decode, HookType.REPLACE)
     HookRegistry.register(f"{FLASH_ATTN_BACKEND}._compute_scheduler_metadata", _compute_scheduler_metadata, HookType.REPLACE)
