@@ -53,7 +53,6 @@ is reused and pinned rather than replaced. It then installs:
 
 ```bash
 export SGLANG_PLUGINS=sglang_fl
-export SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero
 export FLAGCX_PATH=/path/to/FlagCX
 
 python -m sglang.launch_server \
@@ -62,6 +61,13 @@ python -m sglang.launch_server \
     --disable-piecewise-cuda-graph \
     --disable-custom-all-reduce
 ```
+
+The AMD dispatch config (`sglang_fl/dispatch/config/amd.yaml`, loaded automatically) keeps three FlagGems
+ops off: `count_nonzero` (fails on the 3-D expert-location tensor SGLang builds for an MoE model, so
+Qwen3.6-35B-A3B does not start) and `mm` / `addmm` (FlagGems' Triton `mm` can pick a tile that needs
+more shared memory than a Radeon GPU has, 64 KB on gfx1201, and crash the server, and it is much slower
+than hipBLASLt at the small batch sizes of decode). These ops run on torch / hipBLASLt instead. Setting
+`SGLANG_FL_FLAGOS_BLACKLIST` replaces that list, so include all three if you set it.
 
 `--disable-custom-all-reduce` skips SGLang's default AMD custom all-reduce, which needs `aiter`.
 Without the flag, SGLang logs a warning and falls back on its own. Collectives go through FlagCX
@@ -123,7 +129,7 @@ x PP=2, FlagCX v0.13.0:
 ```bash
 # both nodes
 export SGLANG_FL_DIST_BACKEND=flagcx FLAGCX_PATH=/path/to/FlagCX
-export SGLANG_FL_FLAGOS_BLACKLIST=count_nonzero SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK=0
+export SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK=0
 export GLOO_SOCKET_IFNAME=<nic> NCCL_SOCKET_IFNAME=<nic>      # the NIC that carries the node IP
 export HIP_VISIBLE_DEVICES=<two free GPUs>
 

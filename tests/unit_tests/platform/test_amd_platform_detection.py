@@ -76,3 +76,11 @@ def test_amd_is_a_supported_vendor():
     info = DeviceInfo.__new__(DeviceInfo)
     info.device = types.SimpleNamespace(vendor_name="amd")
     assert info.get_supported_device() is True
+
+
+def test_amd_yaml_blacklists_broken_flaggems_ops():
+    import yaml
+
+    cfg = yaml.safe_load(utils.get_config_path("amd").read_text())
+    assert cfg["prefer"] == "flagos"
+    assert {"count_nonzero", "mm", "addmm"} <= set(cfg["flagos_blacklist"])

@@ -14,3 +14,20 @@
 # SGLang-FL Dispatch Configuration for AMD Radeon GPU (ROCm).
 # Auto-loaded when FlagGems reports vendor "amd" (see get_platform_name()).
 prefer: flagos
+
+# FlagGems ops that do not work on Radeon GPUs as they stand; they fall back to
+# torch (hipBLASLt for the GEMMs):
+# - count_nonzero: fails on the 3-D expert-location tensor SGLang builds when it
+#   loads an MoE model (permute: input.dim() = 3 vs len(dims) = 4), so Qwen3.6-35B-A3B
+#   does not start.
+# - mm, addmm: FlagGems' Triton mm autotuner can pick a tile that needs 128 KB of
+#   shared memory, but an R9700 (gfx1201) has 64 KB, so the first mm after a decode
+#   step crashes the server with OutOfResources (seen on Qwen3.6-35B-A3B with 4K
+#   prompts). At the small M of decode steps (1 to 8 tokens) it is also much slower
+#   than hipBLASLt: Qwen3.6-27B TP4 decodes 26.6 tok/s with torch mm against 17.8
+#   with FlagGems mm at concurrency 1, and 156 against 73 at concurrency 8.
+# Setting the env SGLANG_FL_FLAGOS_BLACKLIST replaces this list, so include all three there.
+flagos_blacklist:
+  - count_nonzero
+  - mm
+  - addmm
