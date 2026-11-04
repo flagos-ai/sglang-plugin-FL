@@ -110,6 +110,7 @@ env_defaults:
         - platform/test_musa_gated_layernorm.py
         - platform/test_musa_gdn_precision.py
         - platform/test_musa_lifecycle.py
+        - platform/test_musa_minimax_m3.py
         - platform/test_musa_multimodal_mask.py
         - platform/test_musa_patch_loading.py
         - platform/test_musa_pp_compat.py
