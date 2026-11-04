@@ -23,6 +23,13 @@ def clean(monkeypatch):
         "meta_path",
         [f for f in sys.meta_path if not isinstance(f, guard._PlaceholderFinder)],
     )
+    # Simulate package absence for real: without this, a host that ships
+    # deep_gemm/flashinfer (cuda, musa, hygon CI images) would have its real
+    # package imported by PathFinder even though _installed is stubbed below —
+    # the real __init__ then resolves a submodule through the placeholder and
+    # blows up outside the pytest.raises block. Hosts without the packages
+    # (PPU) already behave this way.
+    monkeypatch.setattr(sys, "path", [""])
     for root in ROOTS:
         for name in [m for m in sys.modules if m == root or m.startswith(root + ".")]:
             monkeypatch.delitem(sys.modules, name)

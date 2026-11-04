@@ -190,6 +190,10 @@ def _install_current_server_args_engine(monkeypatch):
 
 def _load_mtp_example(monkeypatch, vendor="iluvatar"):
     monkeypatch.delenv("SGLANG_SIMULATE_ACC_LEN", raising=False)
+    # The example detects T-Head PPU via PPU_SDK in the environment, not via a
+    # torch attribute, so the fake torch below cannot neutralize it — clear it
+    # explicitly or every simulated vendor resolves TP_SIZE=4 on PPU hosts.
+    monkeypatch.delenv("PPU_SDK", raising=False)
     # Execute the real script with an explicit device identity. This creates no
     # accelerator context and does not depend on the machine running pytest.
     probed_torch = ModuleType("torch")
