@@ -1,12 +1,16 @@
-# 昆仑芯 P800：SGLang 0.5.18 empty / CI 环境说明
+# Kunlunxin P800: SGLang 0.5.18 empty / CI environment
 
-[empty-0.5.18.containerfile](empty-0.5.18.containerfile)基于 FlagOS 昆仑芯 empty 镜像，保留基底上的
-Torch-2.9.0、FlagTree-0.7.1a1+xpu3.6、FlagGems-0.0+g7fcdbed07 与 FlagCX-master。运行前需要设置以下环境变量；
-在宿主机直跑和进入容器后执行 Python 时都应检查这些设置。
+[empty-0.5.18.containerfile](empty-0.5.18.containerfile) rebuilds on the FlagOS
+Kunlunxin empty image while keeping the base Torch-2.9.0, FlagTree-0.7.1a1+xpu3.6,
+FlagGems-0.0+g7fcdbed07, and FlagCX-master stack. Set the environment variables
+below before running; check them both on the host and inside the container when
+executing Python.
 
-## 构建
+## Build
 
-在昆仑芯宿主机的仓库根目录构建。进入到sglang-plugin-fl项目目录，可通过 `BASE_IMAGE` / `PIP_INDEX_URL` 覆盖默认基底与 pip 源。
+Build from the repository root on a Kunlunxin host (enter the sglang-plugin-FL
+project directory). Override the base image or pip index with `BASE_IMAGE` /
+`PIP_INDEX_URL` if needed.
 
 ```bash
 docker build --network=host \
@@ -14,15 +18,16 @@ docker build --network=host \
   -t sglang-fl:kunlunxin-0.5.18-202611021836 .
 ```
 
-镜像内路径约定：
+In-image layout:
 
 ```text
-/sgl-workspace/sglang-upgrade/sglang              # 补丁后的 SGLang 0.5.18 源码
-/sgl-workspace/sglang-upgrade/sglang-plugin-FL    # 适配后的 sglang-plugin-FL 源码
+/sgl-workspace/sglang-upgrade/sglang              # patched SGLang 0.5.18 sources
+/sgl-workspace/sglang-upgrade/sglang-plugin-FL    # adapted sglang-plugin-FL sources
 /sgl-workspace/sglang-upgrade/FlagCX              # FLAGCX_PATH
 ```
 
-## 启动
+## Run
+
 ```bash
 docker run -itd --name kunlunxin-sglang-ci-verify \
   --network=host --ipc=host --privileged --shm-size=512g \
@@ -37,59 +42,66 @@ docker run -itd --name kunlunxin-sglang-ci-verify \
 docker exec -it kunlunxin-sglang-ci-verify bash
 ```
 
-每次 `docker exec` 执行Python时也应检查环境：进入到sglang-plugin-fl项目目录
+After each `docker exec`, verify the environment from the sglang-plugin-FL
+project directory:
 
 ```bash
 python3 .github/scripts/kunlunxin/verify_environment.py \
     --check-versions \
     --require-gpu --min-gpus 4
 ```
-`--require-gpu` 确定加速卡满足要求。
 
-已在原始 empty 基底上保留并验证的版本：
+`--require-gpu` checks that enough accelerators are visible.
 
-| 组件 | 海光版本 |
+Versions retained and validated on the empty base:
+
+| Component | Version |
 |---|---|
 | Python | 3.10.12 |
-| SGLang | 0.5.18（应用本目录 kunlunxin 源码补丁） |
+| SGLang | 0.5.18 (with the kunlunxin source patch in this directory) |
 | Torch | 2.9.0 |
 | FlagTree | 0.7.1a1+xpu3.6 |
-| FlagGems | master(commit 7fcdbed) |
-| FlagCX | main(commit 7812d2e9) |
+| FlagGems | master (commit 7fcdbed) |
+| FlagCX | main (commit 7812d2e9) |
 | sglang-kernel | 0.4.2.post2+d4466f4499 |
 
-## 安装前应用 SGLang 源码补丁
+## Apply the SGLang source patch before install
 
-必须对 **SGLang v0.5.18 源码**应用
-[`sglang-v0.5.18-kunlunxin.patch`](sglang-v0.5.18-kunlunxin.patch)，然后再安装 SGLang。
-仅安装或更新插件无法修复上游导入问题。
+Apply [`sglang-v0.5.18-kunlunxin.patch`](sglang-v0.5.18-kunlunxin.patch) to
+**SGLang v0.5.18 sources** before installing SGLang. Installing or updating the
+plugin alone does not fix the upstream hard imports.
 
-容器构建负责安装顺序。手动从源码部署时，在安装 SGLang 前执行：进入sglang项目目录
+The container build owns this install order. For a manual from-source deploy,
+run the following from the SGLang tree before installing SGLang:
 
 ```bash
 git apply --check "docker/kunlunxin/sglang-v0.5.18-kunlunxin.patch"
 git apply "docker/kunlunxin/sglang-v0.5.18-kunlunxin.patch"
 ```
 
-之后按容器构建安装该 SGLang 源码与插件。补丁仅让昆仑芯跳过三个硬导入。
+Then install that SGLang tree and the plugin as in the container build. The
+patch only makes three hard imports optional on Kunlunxin.
 
-## 模型验收
+## Model acceptance
 
 ```bash
 pip install pytest pyyaml requests openai
-# 依次运行 unit \ function \ benchmark \ e2e。
+# Runs unit, functional, benchmark, and e2e in order.
 python tests/run.py --platform kunlunxin --device p800
 ```
 
 ## GitHub CI
 
-昆仑芯共享unit/functional/benchmark/E2E 流程。CI 配置见 [kunlunxin.yml](../../.github/configs/kunlunxin.yml)；
-模型目录从宿主机 `/data/models` 映射到 `/data/models`。
+Kunlunxin shares the unit / functional / benchmark / e2e workflows. See
+[kunlunxin.yml](../../.github/configs/kunlunxin.yml). Model trees are mounted
+from the host `/data/models` to `/data/models`.
 
-已发布的 CI tag 为`harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-ci-202611021838`。
+Published CI tag:
+`harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-ci-202611021838`.
 
-复现构建先按上文生成 `sglang-fl:kunlunxin-0.5.18`，再执行：
+To reproduce, build `sglang-fl:kunlunxin-0.5.18` as above, then:
 
 ```bash
-docker build -f docker/kunlunxin/ci-0.5.18.containerfile -t harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-ci-202611021838 .
+docker build -f docker/kunlunxin/ci-0.5.18.containerfile \
+  -t harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-ci-202611021838 .
 ```
