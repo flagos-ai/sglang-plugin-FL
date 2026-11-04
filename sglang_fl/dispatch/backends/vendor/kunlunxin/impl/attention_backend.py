@@ -341,10 +341,10 @@ class KunlunxinBackend(AttentionBackend):
         req_pool_indices = forward_batch.req_pool_indices
         seq_lens = forward_batch.seq_lens
         seq_lens_cpu = forward_batch.seq_lens_cpu
-        # 可选：图路径只支持 decode（与 XPU backend 一致）
+        # Optional: graph path is decode-only (same as the XPU backend).
         # assert forward_batch.forward_mode.is_decode_or_idle()
         if in_capture:
-            # ---- 原 capture 体 ----
+            # ---- former capture body ----
             max_seqlen_pad = self.cuda_graph_kv_indices.stride(0)
             create_kv_indices_native(
                 self.req_to_token,
@@ -359,7 +359,7 @@ class KunlunxinBackend(AttentionBackend):
                 context_len_tensor=self.context_len_tensor_cuda_graph[:bs],
             )
             return
-        # ---- 原 replay 体 ----
+        # ---- former replay body ----
         seq_lens = seq_lens[:bs]
         seq_lens_cpu = seq_lens_cpu[:bs]
         max_seqlen_pad = (
