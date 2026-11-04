@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sglang-iluvatar-compat"
+version = "0.5.18.0"
+description = "Explicit, fail-fast import compatibility for Iluvatar SGLang 0.5.18 empty deployments"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+readme = "README.md"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["_iluvatar_empty_compat*", "sgl_kernel*", "flashinfer*"]
+
+[tool.setuptools.package-data]
+_iluvatar_empty_compat = ["native/*.c"]

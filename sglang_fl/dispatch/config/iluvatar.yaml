@@ -1,5 +1,25 @@
 # SGLang-FL Dispatch Configuration for Iluvatar platform
 prefer: flagos
+deny_vendors: [cuda]
 
 flagos_blacklist:
+  - max
   - masked_scatter_
+  # Cold FlagGems autotuning mutates aliased inputs repeatedly on CoreX.
+  # Keep out-of-place mul on FlagGems; use native Torch for in-place mul.
+  - mul_
+  # Native CoreX dense GEMM path: exclude decomposed calls as well as linear.
+  # FlagGems matches implementation function names, including *_out.
+  - linear
+  - mm
+  - mm_out
+  - addmm
+  - addmm_out
+
+# Preserve the native paths introduced by PR #132; FlagGems remains selectable.
+op_backends:
+  gemma_rms_norm: [reference]
+  fused_moe: [vendor:iluvatar, flagos]
+  chunk_gated_delta_rule: [vendor:iluvatar, flagos]
+  fused_recurrent_gated_delta_rule: [vendor:iluvatar, flagos]
+  fused_recurrent_gated_delta_rule_packed_decode: [vendor:iluvatar, flagos]

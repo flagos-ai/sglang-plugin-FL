@@ -1,0 +1,128 @@
+# Manual full/operator acceptance using the same platform hooks as automatic CI.
+# Automatic PR checks enter through the dedicated _iluvatar_test workflow.
+name: Iluvatar GPU acceptance
+
+on:
+  workflow_call:
+    inputs:
+      scope:
+        description: 'full runs both models; operators runs only numerical and graph contracts'
+        required: false
+        type: string
+        default: full
+  workflow_dispatch:
+    inputs:
+      runner_labels:
+        description: 'Optional JSON override of configured runner pool labels'
+        required: false
+        type: string
+      ci_image:
+        description: 'Optional override of the configured published CoreX test image'
+        required: false
+        type: string
+      cuda_visible_devices:
+        description: 'Optional explicit override of configured GPU indices'
+        required: false
+        type: string
+      scope:
+        description: 'Full models plus operators, or operators only (no model acceptance)'
+        required: true
+        type: choice
+        options: [full, operators]
+        default: full
+      models_path:
+        description: 'Optional override of the configured absolute host model directory'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Load and validate configured CoreX resources
+    runs-on: ubuntu-latest
+    outputs:
+      runner_labels: ${{ steps.resources.outputs.runner_labels }}
+      ci_image: ${{ steps.resources.outputs.ci_image }}
+      cuda_visible_devices: ${{ steps.resources.outputs.cuda_visible_devices }}
+      container_options: ${{ steps.resources.outputs.container_options }}
+    steps:
+      - name: Checkout platform configuration
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install config loader dependency
+        run: python3 -m pip install pyyaml
+      - name: Load platform CI configuration
+        id: config
+        run: python3 .github/scripts/load_config.py --platform iluvatar
+      - name: Validate resources before scheduling
+        id: resources
+        env:
+          PLATFORM_CONFIG: ${{ steps.config.outputs.config }}
+          RUNNER_LABELS: ${{ inputs.runner_labels }}
+          CI_IMAGE: ${{ inputs.ci_image }}
+          CUDA_VISIBLE_DEVICES: ${{ inputs.cuda_visible_devices }}
+          ACCEPTANCE_SCOPE: ${{ inputs.scope }}
+          MODELS_PATH: ${{ inputs.models_path }}
+        run: python3 scripts/iluvatar/resolve_ci_resources.py
+
+  gpu-contracts:
+    name: Iluvatar ${{ inputs.scope }} acceptance (GPU)
+    needs: validate
+    runs-on: ${{ fromJson(needs.validate.outputs.runner_labels) }}
+    timeout-minutes: ${{ inputs.scope == 'full' && 360 || 180 }}
+    concurrency:
+      # Serialize the same runner-label pool; GPU allocation must still be reserved.
+      group: iluvatar-gpu-${{ join(fromJson(needs.validate.outputs.runner_labels), ',') }}
+      cancel-in-progress: false
+    container:
+      image: ${{ needs.validate.outputs.ci_image }}
+      options: ${{ needs.validate.outputs.container_options }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      CUDA_VISIBLE_DEVICES: ${{ needs.validate.outputs.cuda_visible_devices }}
+      SGLANG_PLATFORM: sglang_fl
+      SGLANG_PLUGINS: sglang_fl
+      SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK: '1'
+      SGLANG_IS_FLASHINFER_AVAILABLE: '0'
+      SGLANG_FL_DIST_BACKEND: flagcx
+      FLAGCX_PATH: /sgl-workspace/FlagCX
+      USE_FLAGGEMS: '1'
+      TORCH_COMPILE_DISABLE: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+      CONCURRENT_N: '16'
+      MAX_TOKENS: '256'
+      SGLANG_ILUVATAR_MIN_DEVICES: ${{ inputs.scope == 'full' && '4' || '1' }}
+    steps:
+      - name: Checkout tested revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Check allocated CoreX devices
+        run: bash .github/scripts/iluvatar/check.sh
+      - name: Install this checkout and verify both backend profiles
+        run: bash .github/scripts/iluvatar/setup.sh
+      - name: Unit contracts
+        if: inputs.scope == 'full'
+        run: python .github/scripts/iluvatar/run_tests.py --platform iluvatar --scope unit
+      - name: All 31 GPU operator and PDL contracts
+        run: python .github/scripts/iluvatar/run_tests.py --platform iluvatar --scope functional
+      - name: Both profiles and graph modes plus shared inference cases
+        if: inputs.scope == 'full'
+        run: python .github/scripts/iluvatar/run_tests.py --platform iluvatar --scope e2e --task inference --device bi_v150
+      - name: Original HTTP serving cases
+        if: inputs.scope == 'full'
+        run: python .github/scripts/iluvatar/run_tests.py --platform iluvatar --scope e2e --task serving --device bi_v150
+      - name: Original concurrent cases
+        if: inputs.scope == 'full'
+        run: python .github/scripts/iluvatar/run_tests.py --platform iluvatar --scope e2e --task concurrent --device bi_v150
+      - name: All three original benchmark smoke cases
+        if: inputs.scope == 'full'
+        run: python .github/scripts/iluvatar/run_tests.py --platform iluvatar --scope benchmark --device bi_v150
+      - name: Upload real CoreX test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: iluvatar-gpu-contracts
+          path: artifacts/iluvatar/
+          if-no-files-found: error
