@@ -121,6 +121,11 @@ jobs:
       timeout: ${{ inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 90 || 30 }}
 
   functional:
+    # Explicit condition: unit's if uses always() (to run despite a skipped
+    # docker-cleanup), which taints the default needs-success evaluation of
+    # downstream jobs — without this, functional/e2e/benchmark cascade-skip on
+    # every platform whose docker-cleanup is skipped.
+    if: always() && needs.setup.result == 'success' && needs.unit.result == 'success'
     needs: [setup, unit]
     uses: ./.github/workflows/_functional_test.yml
     with:
@@ -132,8 +137,8 @@ jobs:
       timeout: ${{ inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 60 || 15 }}
 
   e2e:
+    if: always() && needs.functional.result == 'success' && needs.setup.outputs.e2e_matrix != '[]'
     needs: [setup, functional]
-    if: needs.setup.outputs.e2e_matrix != '[]'
     strategy:
       fail-fast: false
       # MUSA, Ascend and Hygon groups share fixed per-platform GPU allocations.
@@ -154,6 +159,7 @@ jobs:
       timeout: ${{ inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 120 || inputs.platform == 'hygon' && 120 || matrix.test.timeout || 60 }}
 
   benchmark:
+    if: always() && needs.e2e.result == 'success'
     needs: [setup, e2e]
     uses: ./.github/workflows/_benchmark_test.yml
     with:
