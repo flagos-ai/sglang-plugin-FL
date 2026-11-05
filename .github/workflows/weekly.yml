@@ -1,0 +1,182 @@
+# Weekly CI — extended regression across all enabled platforms.
+#
+# Ported from vllm-plugin-FL #581. Runs every Monday at 02:00 Beijing time
+# (Sunday UTC 18:00). Also triggered manually via workflow_dispatch
+# or the /weekly slash command.
+#
+# Test scope (ci_stage=weekly):
+#   functional  — unit + functional tests (GPU)
+#   e2e         — full model test cases (falls back to the nightly sets for now)
+#   benchmark   — throughput / latency / serve entrypoints
+#
+# To run for a single platform: pass platforms="enflame" in workflow_dispatch.
+# The /weekly command passes platform and branch as inputs automatically.
+name: Weekly
+
+on:
+  schedule:
+        # Staggered four hours after nightly (Beijing 06:00): firing both at
+    # Beijing 02:00 would launch two full device-queue sweeps in parallel
+    # and, until weekly-specific case keys exist, run the same
+    # (nightly-fallback) cases twice back to back on the same pools.
+    - cron: '0 22 * * 0'    # Sunday UTC 22:00 = Monday Beijing 06:00
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: "Comma-separated platform names to test (empty = all enabled)"
+        required: false
+        default: ""
+      branch:
+        description: "Branch to test"
+        required: false
+        default: "main"
+
+concurrency:
+  group: weekly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ============================================================
+  # Discover: detect all enabled platforms (no diff filtering)
+  # ============================================================
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      platforms: ${{ steps.detect.outputs.platforms }}
+    steps:
+      - name: Checkout (attempt 1)
+        id: checkout1
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.branch || github.ref }}
+          sparse-checkout: |
+            .github/configs
+            .github/scripts
+        continue-on-error: true
+      - name: Checkout (attempt 2)
+        id: checkout2
+        if: steps.checkout1.outcome == 'failure'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.branch || github.ref }}
+          sparse-checkout: |
+            .github/configs
+            .github/scripts
+        continue-on-error: true
+      - name: Checkout (attempt 3)
+        if: steps.checkout2.outcome == 'failure'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.branch || github.ref }}
+          sparse-checkout: |
+            .github/configs
+            .github/scripts
+      - name: Install PyYAML
+        run: pip install pyyaml
+      - id: detect
+        env:
+          INPUT_PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          if [ -n "$INPUT_PLATFORMS" ]; then
+            python3 - <<'PYEOF'
+          import json, os, subprocess, sys
+
+          requested = [p.strip() for p in os.environ["INPUT_PLATFORMS"].split(",") if p.strip()]
+          # The child must not inherit GITHUB_OUTPUT: with it set,
+          # detect_platforms.py writes the platforms output to that file
+          # instead of stdout, this parser then sees nothing, and the
+          # filtered list collapses to [].
+          child_env = {k: v for k, v in os.environ.items() if k != "GITHUB_OUTPUT"}
+          result = subprocess.run(
+              [sys.executable, ".github/scripts/detect_platforms.py"],
+              capture_output=True, text=True, env=child_env,
+          )
+          if result.returncode != 0:
+              # Surface config validation errors instead of silently
+              # producing platforms=[] and skipping every platform job.
+              sys.stderr.write(result.stderr)
+              sys.exit(result.returncode)
+          all_platforms = []
+          for line in result.stdout.splitlines():
+              if line.startswith("platforms="):
+                  all_platforms = json.loads(line[len("platforms="):])
+                  break
+          unknown = [p for p in requested if p not in all_platforms]
+          if unknown or not requested:
+              sys.exit(f"unknown or empty platform filter: {requested} (enabled: {all_platforms})")
+          filtered = [p for p in requested if p in all_platforms]
+          github_output = os.environ.get("GITHUB_OUTPUT")
+          value = json.dumps(filtered)
+          if github_output:
+              with open(github_output, "a") as f:
+                  f.write(f"platforms<<EOF\n{value}\nEOF\n")
+          else:
+              print(f"platforms={value}")
+          PYEOF
+          else
+            python3 .github/scripts/detect_platforms.py
+          fi
+
+  # ============================================================
+  # Platform tests — one job per enabled platform
+  # ============================================================
+  test-nvidia:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'nvidia')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: nvidia
+      ci_stage: weekly
+      branch: ${{ inputs.branch }}
+    secrets: inherit
+
+  test-ascend:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'ascend')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: ascend
+      ci_stage: weekly
+      branch: ${{ inputs.branch }}
+    secrets: inherit
+
+  test-musa:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'musa')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: musa
+      ci_stage: weekly
+      branch: ${{ inputs.branch }}
+    secrets: inherit
+
+  test-thead:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'thead')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: thead
+      ci_stage: weekly
+      branch: ${{ inputs.branch }}
+    secrets: inherit
+
+  test-enflame:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'enflame')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: enflame
+      ci_stage: weekly
+      branch: ${{ inputs.branch }}
+    secrets: inherit
+
+  test-hygon:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'hygon')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: hygon
+      ci_stage: weekly
+      branch: ${{ inputs.branch }}
+    secrets: inherit

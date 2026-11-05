@@ -118,6 +118,80 @@ def test_ct_aliases_copy_without_mutating_target():
     assert original.target_scheme_map["model.mtp_layers.0.eh_proj"]["weight"] == "int8"
 
 
+def test_ct_aliases_preserve_unquantized_checkpoint_projection():
+    mod = load("nextn_utils")
+    original = QuantConfig()
+    original.target_scheme_map = {"unrelated": {"weight": "int8"}}
+    original.ignore = ["model.mtp_layers.0.eh_proj"]
+    draft = mod.remap_hy4_mtp_quant_config(original)
+    assert "model.eh_proj" in draft.ignore
+    assert "model.eh_proj" not in draft.target_scheme_map
+    assert original.ignore == ["model.mtp_layers.0.eh_proj"]
+
+
+def test_failed_hy4_registration_does_not_cache_plugin_load(monkeypatch):
+    import sglang_fl
+    from sglang_fl.models.hy_v4 import register
+
+    calls = []
+
+    def fail():
+        calls.append("register")
+        raise RuntimeError("registration failed")
+
+    monkeypatch.setenv("SGLANG_HY4_ENABLE", "1")
+    monkeypatch.setattr(sglang_fl, "_plugin_loaded", False)
+    monkeypatch.setattr(register, "register_hy_v4", fail)
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="registration failed"):
+            sglang_fl.load_plugin()
+        assert not sglang_fl.is_plugin_loaded()
+    assert calls == ["register", "register"]
+
+
+@pytest.mark.parametrize("setting", [None, "0"])
+def test_hy4_registration_remains_opt_in(monkeypatch, setting):
+    import sglang_fl
+    from sglang_fl.models.hy_v4 import register
+
+    if setting is None:
+        monkeypatch.delenv("SGLANG_HY4_ENABLE", raising=False)
+    else:
+        monkeypatch.setenv("SGLANG_HY4_ENABLE", setting)
+    monkeypatch.setattr(sglang_fl, "_plugin_loaded", False)
+    calls = []
+    monkeypatch.setattr(register, "register_hy_v4", lambda: calls.append("register"))
+
+    def before_runtime_setup():
+        raise RuntimeError("reached ordinary plugin setup")
+
+    monkeypatch.setattr(sglang_fl, "_is_rank0", before_runtime_setup)
+    with pytest.raises(RuntimeError, match="reached ordinary plugin setup"):
+        sglang_fl.load_plugin()
+    assert calls == []
+
+
+def test_hy4_example_forwards_native_server_settings():
+    example_path = MODEL.parents[2] / "examples/hy4_preview_serve.py"
+    spec = importlib.util.spec_from_file_location("hy4_serve_example", example_path)
+    example = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(example)
+    args = SimpleNamespace(model_path="/models/Hy4-preview", tp_size=16)
+    extra = ["--nnodes", "2", "--node-rank", "1"]
+    command = example.build_launch_command(args, extra)
+    assert command[1:3] == ["-m", "sglang.launch_server"]
+    assert command[3:7] == ["--model-path", args.model_path, "--tp-size", "16"]
+    assert command[7:13] == [
+        "--attention-backend",
+        "dsa",
+        "--dsa-prefill-backend",
+        "flashmla_sparse",
+        "--dsa-decode-backend",
+        "flashmla_sparse",
+    ]
+    assert command[-len(extra) :] == extra
+
+
 def test_only_bundled_mtp_weights_are_forwarded():
     mod = load("nextn_utils")
     a, b, unrelated = object(), object(), object()

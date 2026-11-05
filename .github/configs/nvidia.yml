@@ -1,7 +1,7 @@
-# CUDA Hardware Configuration
+# NVIDIA Hardware Configuration
 # This file defines CI/CD settings for NVIDIA GPU testing.
 
-platform: cuda
+platform: nvidia
 
 # Docker image for this hardware
 ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-cuda-ci

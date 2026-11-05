@@ -71,6 +71,7 @@ SGLang 的推理引擎依赖 NVIDIA 专有组件：flashinfer 用于 attention�
 
 | 模型 | 状态 | 模型权重 | 参考 |
 |------|------|----------|------|
+| Hy4-preview | 草稿：文本及单个 NextN，暂不支持媒体输入 | 用户提供的检查点 | [示例](./examples/hy4_preview_serve.py) |
 | Qwen3.6-27B | 已支持 | [Qwen/Qwen3.6-27B](https://huggingface.co/Qwen/Qwen3.6-27B) | [示例](./examples/qwen3_6_27b_offline_inference.py) |
 | Qwen3.6-35B-A3B | 已支持 | [Qwen/Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [示例](./examples/qwen3_6_35b_a3b_offline_inference.py) |
 

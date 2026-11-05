@@ -1,10 +1,27 @@
-# CI Workflow for SGLang Plugin FL
-# Orchestrates lint, build, and per-platform testing.
+# PR CI Workflow
+#
+# Scheduled full regressions live in nightly.yml / weekly.yml (ci_stage=
+# nightly / weekly); this workflow only runs the pr-stage case sets.
+#
+# Platform routing: diff-based — only platforms whose trigger_paths match the
+# PR diff are tested. Changes to shared code (see global_trigger_paths in
+# .github/configs/platforms.yml — sglang_fl/ python, tests/, benchmarks/,
+# .github/scripts, etc.) trigger all enabled platforms.
+#
+# PR test tiers via labels (default full, stage=pr case sets):
+#   (no label)  — full pr stage: unit + functional + e2e(pr) + benchmark(pr)
+#   ci-full     — full (explicit form of the default)
+#   ci-e2e      — unit + functional + e2e (no benchmark)
+#   ci-functional — unit + functional only
+#
+# ci-gate is the aggregate Required Status Check candidate. It aggregates
+# lint, build, discover, and all platform test results; a discovery failure
+# fails the gate even though the platform jobs it would have spawned show as
+# skipped. Skipped platform tests (no matching runner, no label) count as
+# passing.
 name: CI
 
 on:
-  schedule:
-    - cron: '0 18 * * *'  # daily at 2:00 AM CST (UTC+8)
   pull_request:
     branches: [main]
     paths-ignore:
@@ -39,7 +56,7 @@ jobs:
     uses: ./.github/workflows/_build_wheel.yml
 
   # ============================================================
-  # Job 4: Discover which platforms to test
+  # Job 4: Discover which platforms to test (diff-based routing)
   # ============================================================
   discover:
     needs: build
@@ -47,11 +64,15 @@ jobs:
     timeout-minutes: 5
     outputs:
       platforms: ${{ steps.detect.outputs.platforms }}
+      # PR test tier from labels (see header); workflow_dispatch = full.
+      run_e2e: ${{ steps.tier.outputs.run_e2e }}
+      run_benchmark: ${{ steps.tier.outputs.run_benchmark }}
     steps:
       - name: Checkout (attempt 1)
         id: checkout1
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          fetch-depth: 0
           sparse-checkout: |
             .github/configs
             .github/scripts
@@ -61,6 +82,7 @@ jobs:
         if: steps.checkout1.outcome == 'failure'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          fetch-depth: 0
           sparse-checkout: |
             .github/configs
             .github/scripts
@@ -69,77 +91,204 @@ jobs:
         if: steps.checkout2.outcome == 'failure'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          fetch-depth: 0
           sparse-checkout: |
             .github/configs
             .github/scripts
       - name: Install CI script dependencies
         run: pip install pyyaml
+      - name: Select PR test tier from labels
+        id: tier
+        run: |
+          python3 - <<'EOF'
+          import json, os
+
+          with open(os.environ["GITHUB_EVENT_PATH"]) as f:
+              event = json.load(f)
+          labels = [
+              l.get("name", "")
+              for l in event.get("pull_request", {}).get("labels", []) or []
+          ]
+          # Precedence when several tier labels are set: ci-full > ci-e2e > ci-functional.
+          tier = next(
+              (t for t in ("ci-full", "ci-e2e", "ci-functional") if t in labels),
+              "full",
+          )
+          run_e2e = tier in ("full", "ci-full", "ci-e2e")
+          run_benchmark = tier in ("full", "ci-full")
+          print(f"Labels: {labels} -> tier {tier} "
+                f"(e2e={run_e2e}, benchmark={run_benchmark})")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"run_e2e={str(run_e2e).lower()}\n")
+              out.write(f"run_benchmark={str(run_benchmark).lower()}\n")
+          EOF
+      - name: Get changed files
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git diff --name-only \
+              ${{ github.event.pull_request.base.sha }}...${{ github.sha }} \
+              > /tmp/changed_files.txt
+            echo "file=/tmp/changed_files.txt" >> "$GITHUB_OUTPUT"
+            echo "Changed files:"
+            cat /tmp/changed_files.txt
+          else
+            echo "file=" >> "$GITHUB_OUTPUT"
+            echo "${{ github.event_name }} — no diff filtering"
+          fi
       - name: Detect available platforms
         id: detect
-        run: python3 .github/scripts/detect_platforms.py
+        run: |
+          CHANGED_ARG=""
+          if [ -n "${{ steps.changed.outputs.file }}" ]; then
+            CHANGED_ARG="--changed-files ${{ steps.changed.outputs.file }}"
+          fi
+          python3 .github/scripts/detect_platforms.py $CHANGED_ARG
 
   # ============================================================
-  # Job 6a: CUDA platform testing
+  # Jobs 6a-6f: per-platform testing (routed by discover)
   # ============================================================
-  test-cuda:
+  test-nvidia:
     needs: discover
-    if: contains(fromJson(needs.discover.outputs.platforms), 'cuda')
+    if: contains(fromJson(needs.discover.outputs.platforms), 'nvidia')
     uses: ./.github/workflows/_platform_test.yml
     with:
-      platform: cuda
+      platform: nvidia
+      ci_stage: pr
+      run_e2e: ${{ fromJson(needs.discover.outputs.run_e2e) }}
+      run_benchmark: ${{ fromJson(needs.discover.outputs.run_benchmark) }}
     secrets: inherit
 
-  # ============================================================
-  # Job 6b: Ascend platform testing
-  # ============================================================
   test-ascend:
     needs: discover
     if: contains(fromJson(needs.discover.outputs.platforms), 'ascend')
     uses: ./.github/workflows/_platform_test.yml
     with:
       platform: ascend
+      ci_stage: pr
+      run_e2e: ${{ fromJson(needs.discover.outputs.run_e2e) }}
+      run_benchmark: ${{ fromJson(needs.discover.outputs.run_benchmark) }}
     secrets: inherit
-      
-  # ============================================================
-  # Job 6c: Moore Threads MUSA platform testing
-  # ============================================================
+
   test-musa:
     needs: discover
     if: contains(fromJson(needs.discover.outputs.platforms), 'musa')
     uses: ./.github/workflows/_platform_test.yml
     with:
       platform: musa
+      ci_stage: pr
+      run_e2e: ${{ fromJson(needs.discover.outputs.run_e2e) }}
+      run_benchmark: ${{ fromJson(needs.discover.outputs.run_benchmark) }}
     secrets: inherit
 
-  # ============================================================
-  # Job 6c: T-Head PPU platform testing
-  # ============================================================
   test-thead:
     needs: discover
     if: contains(fromJson(needs.discover.outputs.platforms), 'thead')
     uses: ./.github/workflows/_platform_test.yml
     with:
       platform: thead
+      ci_stage: pr
+      run_e2e: ${{ fromJson(needs.discover.outputs.run_e2e) }}
+      run_benchmark: ${{ fromJson(needs.discover.outputs.run_benchmark) }}
     secrets: inherit
 
-  # ============================================================
-  # Job 6d: Enflame GCU platform testing
-  # ============================================================
   test-enflame:
     needs: discover
     if: contains(fromJson(needs.discover.outputs.platforms), 'enflame')
     uses: ./.github/workflows/_platform_test.yml
     with:
       platform: enflame
+      ci_stage: pr
+      run_e2e: ${{ fromJson(needs.discover.outputs.run_e2e) }}
+      run_benchmark: ${{ fromJson(needs.discover.outputs.run_benchmark) }}
     secrets: inherit
 
-  # ============================================================
-  # Job 6e: Hygon DCU platform testing
-  # ============================================================
   test-hygon:
     needs: discover
     if: contains(fromJson(needs.discover.outputs.platforms), 'hygon')
     uses: ./.github/workflows/_platform_test.yml
     with:
       platform: hygon
+      ci_stage: pr
+      run_e2e: ${{ fromJson(needs.discover.outputs.run_e2e) }}
+      run_benchmark: ${{ fromJson(needs.discover.outputs.run_benchmark) }}
     secrets: inherit
+
+  # ============================================================
+  # ci-gate — single aggregate status check (branch-protection
+  # candidate; ported from vllm-plugin-FL #581).
+  #
+  # Rules:
+  #   lint, build, discover : must be 'success'
+  #   platform test jobs    : 'success' or 'skipped' → pass
+  #                           'failure' or 'cancelled' → fail
+  # Discover must succeed: its failure skips every platform job, and
+  # skipped platform jobs must not paper over a dead router.
+  # ============================================================
+  ci-gate:
+    name: ci-gate
+    needs:
+      - lint
+      - build
+      - discover
+      - test-nvidia
+      - test-ascend
+      - test-musa
+      - test-thead
+      - test-enflame
+      - test-hygon
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check gate
+        env:
+          LINT_RESULT:      ${{ needs.lint.result }}
+          BUILD_RESULT:     ${{ needs.build.result }}
+          DISCOVER_RESULT:  ${{ needs.discover.result }}
+          NVIDIA_RESULT:    ${{ needs.test-nvidia.result }}
+          ASCEND_RESULT:    ${{ needs.test-ascend.result }}
+          MUSA_RESULT:      ${{ needs.test-musa.result }}
+          THEAD_RESULT:     ${{ needs.test-thead.result }}
+          ENFLAME_RESULT:   ${{ needs.test-enflame.result }}
+          HYGON_RESULT:     ${{ needs.test-hygon.result }}
+        run: |
+          set -euo pipefail
+
+          fail=0
+
+          check_required() {
+            local name="$1" result="$2"
+            if [ "$result" != "success" ]; then
+              echo "::error::$name must succeed but got: $result"
+              fail=1
+            fi
+          }
+
+          check_optional() {
+            local name="$1" result="$2"
+            case "$result" in
+              success|skipped) ;;
+              *)
+                echo "::error::$name failed with: $result"
+                fail=1
+                ;;
+            esac
+          }
+
+          check_required "lint"     "$LINT_RESULT"
+          check_required "build"    "$BUILD_RESULT"
+          check_required "discover" "$DISCOVER_RESULT"
+
+          check_optional "test-nvidia"   "$NVIDIA_RESULT"
+          check_optional "test-ascend"  "$ASCEND_RESULT"
+          check_optional "test-musa"    "$MUSA_RESULT"
+          check_optional "test-thead"   "$THEAD_RESULT"
+          check_optional "test-enflame" "$ENFLAME_RESULT"
+          check_optional "test-hygon"   "$HYGON_RESULT"
+
+          if [ $fail -ne 0 ]; then
+            echo "ci-gate: FAILED"
+            exit 1
+          fi
+          echo "ci-gate: PASSED"

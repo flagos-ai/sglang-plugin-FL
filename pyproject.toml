@@ -26,6 +26,15 @@ dependencies = [
     "pyyaml",
 ]
 
+[project.optional-dependencies]
+hy4 = [
+    "sglang[all]==0.5.18",
+    "flag_gems @ git+https://github.com/CherryLemon/FlagGems.git@18ba1ff2d49fb9e1aed8ebb471ac7eb65559fe91",
+]
+hy4-active-head = [
+    "flaggems_sglang @ git+https://github.com/CherryLemon/FlagGems-sglang.git@12853e4294dd014ed9d8eca17fb2888be5eacdf2",
+]
+
 [project.entry-points."sglang.srt.platforms"]
 sglang_fl = "sglang_fl:activate_platform"
 
