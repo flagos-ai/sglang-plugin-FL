@@ -54,6 +54,7 @@ Environment variables:
   SGLANG_FL_DIST_BACKEND=nccl|hccl|flagcx   Override distributed backend
   FLAGCX_PATH=<path>                         If set, default to flagcx backend
   SGLANG_FL_DISAGG_FLAGCX=1|0         Register FlagCX PD-disagg backend (default: 1)
+  SGLANG_HY4_ENABLE=1|0              Register draft Hy4 text/NextN models (default: 0)
 """
 
 import logging
@@ -714,7 +715,9 @@ def activate_platform() -> str | None:
 
     info = get_device_info()
     if info is None:
-        logger.warning("sglang_fl platform activation failed: DeviceDetector unavailable")
+        logger.warning(
+            "sglang_fl platform activation failed: DeviceDetector unavailable"
+        )
         return None
     logger.info(
         "sglang_fl platform activating: vendor=%s, device=%s",
@@ -734,6 +737,7 @@ def is_plugin_loaded() -> bool:
     """Return whether SGLang invoked the general plugin entry point."""
     return _plugin_loaded
 
+
 def is_plugin_active() -> bool:
     """Return whether the general plugin completed its initialization."""
     return _plugin_active
@@ -747,6 +751,12 @@ def load_plugin():
     global _plugin_active, _plugin_loaded
     if _plugin_loaded:
         return
+    if os.environ.get("SGLANG_HY4_ENABLE", "0") == "1":
+        from sglang_fl.models.hy_v4.register import register_hy_v4
+
+        register_hy_v4()
+    # Registration publishes related wrappers atomically. A failed attempt
+    # must remain retryable instead of caching an incomplete plugin load.
     _plugin_loaded = True
     if _is_rank0():
         logger.info("sglang_fl plugin loading")
