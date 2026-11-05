@@ -54,6 +54,7 @@ Environment variables:
   SGLANG_FL_DIST_BACKEND=nccl|hccl|flagcx   Override distributed backend
   FLAGCX_PATH=<path>                         If set, default to flagcx backend
   SGLANG_FL_DISAGG_FLAGCX=1|0         Register FlagCX PD-disagg backend (default: 1)
+  SGLANG_FL_RS_NORM_AG=1|0            Pure TP prefill RS+norm+AG fused kernels (default: 0)
 """
 
 import logging

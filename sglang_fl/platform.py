@@ -259,16 +259,23 @@ class PlatformFL(SRTPlatform):
 
         return MLATokenToKVPool
 
-    def get_nsa_kv_pool_cls(self) -> type:
+    def get_dsa_kv_pool_cls(self) -> type:
         if self._device_type == "npu":
             from sglang.srt.hardware_backend.npu.memory_pool_npu import (
                 NPUMLATokenToKVPool,
             )
 
             return NPUMLATokenToKVPool
-        from sglang.srt.mem_cache.memory_pool import NSATokenToKVPool
+        try:
+            from sglang.srt.mem_cache.memory_pool import DSATokenToKVPool
+        except ImportError:
+            from sglang.srt.mem_cache.memory_pool import (
+                NSATokenToKVPool as DSATokenToKVPool,
+            )
 
-        return NSATokenToKVPool
+        return DSATokenToKVPool
+
+    get_nsa_kv_pool_cls = get_dsa_kv_pool_cls
 
     def get_paged_allocator_cls(self) -> type:
         if self._device_type == "npu":
