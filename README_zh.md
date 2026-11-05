@@ -73,7 +73,7 @@ SGLang 的推理引擎依赖 NVIDIA 专有组件：flashinfer 用于 attention�
 |------|------|----------|------|
 | Qwen3.6-27B | 已支持 | [Qwen/Qwen3.6-27B](https://huggingface.co/Qwen/Qwen3.6-27B) | [示例](./examples/qwen3_6_27b_offline_inference.py) |
 | Qwen3.6-35B-A3B | 已支持 | [Qwen/Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [示例](./examples/qwen3_6_35b_a3b_offline_inference.py) |
-| MiniCPM-V-4.7-35B-A3B | 已在昇腾 910C、SGLang 0.5.11、BF16、TP2 验证文本与图像推理 | [FlagOS 模型卡](https://www.modelscope.cn/models/FlagRelease/MiniCPM-V-4.7-35B-A3B-BF16-ascend-FlagOS) | [示例](./examples/minicpmv47_35b_ascend/verify.py) |
+| MiniCPM-V-4.7-35B-A3B | 已支持 | [FlagOS 模型卡](https://www.modelscope.cn/models/FlagRelease/MiniCPM-V-4.7-35B-A3B-BF16-ascend-FlagOS) | [示例](./examples/minicpmv47_35b_ascend/verify.py) |
 
 ### 支持的芯片
 
