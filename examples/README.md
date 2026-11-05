@@ -1,5 +1,89 @@
 # Qwen3.6 examples and Ascend acceptance
 
+## MiniMax-M3.1-Flash W8A8 on MUSA
+
+[minimax_m31_musa_w8a8.sh](minimax_m31_musa_w8a8.sh) starts a single-node
+MTT S5000 TP8 service with `USE_FLAGGEMS=1`. It selects dynamic symmetric
+per-token INT8 activations and per-channel INT8 weights through the existing
+SGLang MoE runner and generic FlagGems scaled-GEMM API. It does not require
+private runtime files or model-specific `sitecustomize` hooks.
+
+The compatibility boundary is SGLang **v0.5.18**, commit
+[`71de97b`](https://github.com/sgl-project/sglang/commit/71de97b264b04dcd514cf904003028aefe9775c8),
+and FlagGems commit
+[`97dbf2f`](https://github.com/flagos-ai/FlagGems/commit/97dbf2fd19cb9d81d5115399f7e765be5f7a7ec6).
+Use vendor Torch-MUSA 2.9 / MUSA 4.3 and FlagTree 0.7.0 (Triton 3.6).
+The `musa-minimax` optional dependency group records these public source
+dependencies without changing other platforms' dependency selections.
+Preserve the vendor Torch/compiler installation; inspect a dependency dry-run
+before installation, then install the frozen packages without replacing it:
+
+```bash
+python3 -m pip install --no-deps --no-build-isolation \
+  'flag_gems @ git+https://github.com/flagos-ai/FlagGems.git@97dbf2fd19cb9d81d5115399f7e765be5f7a7ec6'
+python3 -m pip install --no-deps 'sglang==0.5.18'
+python3 -m pip wheel --no-deps --no-build-isolation . --wheel-dir dist
+python3 -m pip install --no-deps dist/sglang_fl-*.whl
+MODEL_PATH=/path/to/MiniMax-M3.1-Flash-W8A8 \
+  bash examples/minimax_m31_musa_w8a8.sh
+```
+
+The example uses FULL graph for decode batches 1, 2, 4 and 8; prefill remains
+eager. Basic text generation and decode replay have been checked on the fixed
+TP8 stack above, including changed prompts, multi-step output and a longer
+context. These checks do not establish full accuracy, sustained concurrency,
+maximum-context stability or throughput. It configures a maximum of 16 images
+per request; that admission limit is not an ERQA accuracy result. Full
+GPQA/ERQA and multimodal accuracy remain unvalidated.
+Quantization configuration uses SGLang's public platform hook and a vendor-only
+subclass; the rounding selector and KV pool compatibility hooks use private
+APIs limited to the version above. Upgrading requires
+fresh patch-scope, numerical, startup, multimodal and concurrency validation;
+remove the workarounds when upstream exposes equivalent public hooks.
+
+When NCCL is unavailable on MUSA, the plugin removes the unavailable PyNccl
+object during communicator initialization so graph setup cannot re-enable it;
+collectives keep using the existing native MCCL process group. This does not
+change other platforms or replace an available communicator. For eager-only
+diagnosis, append `--cuda-graph-backend-decode disabled`; eager results do not
+validate graph replay.
+
+The example sets `FLAGTREE_AABS=0`: the pinned compiler's automatic tile
+shrinking can violate sparse top-k static constraints after autotune pruning.
+The compatibility adapter filters illegal candidate tiles before compilation;
+it does not replace sparse attention arithmetic.
+`SGLANG_OPT_USE_BF16_ROUTER_GEMM=0` selects the model's existing FP32
+router because this Torch-MUSA release does not implement `aten::mm.dtype`.
+This keeps the router output in FP32 instead of rounding it to BF16.
+`SGLANG_OPT_USE_MINIMAX_DECODE_TOPK_RADIX=0` selects the existing split-K
+Triton decode top-k rather than attempting a CUDA-only radix JIT build.
+
+Only **bias-free** dynamic INT8 linear layers are supported by this adapter.
+Biased INT8 calls are rejected before quantization or GEMM rather than silently
+changing the bias rounding order. Retain the checkpoint's exclusions for the
+BF16 vision tower, multimodal projector and LM head; do not broaden its INT8
+targets to those modules.
+
+Change `PORT`, `HOST`, `CONTEXT_LENGTH`, `MEM_FRACTION_STATIC` and
+`MAX_RUNNING_REQUESTS` for an isolated deployment. The last variable is the
+server admission limit, not a claim of verified concurrency.
+
+Operator recording and dispatch diagnostics are disabled by default. Set
+`SGLANG_FLAGGEMS_RECORD=1` and/or `SGLANG_FL_DISPATCH_DEBUG=1` explicitly to
+enable them; `0` disables them. Log paths are used only when the corresponding
+switch is `1`; setting a path alone does not enable collection. For example:
+
+```bash
+SGLANG_FLAGGEMS_RECORD=1 SGLANG_FL_DISPATCH_DEBUG=1 \
+MODEL_PATH=/path/to/MiniMax-M3.1-Flash-W8A8 \
+  bash examples/minimax_m31_musa_w8a8.sh
+```
+
+When enabled, operator and dispatch logs default to
+`/tmp/minimax-m31-flaggems.log` and `/tmp/minimax-m31-dispatch.log`.
+Override `SGLANG_FLAGGEMS_LOG_PATH` and `SGLANG_FL_DISPATCH_LOG` to select
+other paths, and preserve the files before deleting a diagnostic container.
+
 These examples exercise `sglang-plugin-FL` with Qwen3.6-27B and
 Qwen3.6-35B-A3B. They are executable correctness checks: a missing model,
 missing/empty test image, invalid response, or child-process failure returns a
