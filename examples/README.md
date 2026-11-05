@@ -13,15 +13,6 @@ usable in CI pipelines.
 | `qwen3_6_35b_a3b_offline_inference.py` | Qwen3.6-35B-A3B | MoE (256 experts) | 1 |
 | `qwen3_6_27b_offline_inference.py` | Qwen3.6-27B | Dense (hybrid attention) | 1 |
 
-## Serving Regression Examples
-
-| Example | Model | Hardware | Topology |
-|---------|-------|----------|----------|
-| [MiniCPM-V 4.7 35B-A3B](minicpmv47_35b_ascend/README.md) | MiniCPM-V 4.7 35B-A3B | Ascend 910C | TP2, BF16 |
-
-The MiniCPM-V example includes the SGLang launch command and a runnable API
-check for text, one/two/16 images, and four concurrent image requests.
-
 ## Usage
 
 ```bash
