@@ -16,9 +16,10 @@ runner_labels:
 cuda_visible_devices: '0,1,2,3'
 models_path: /mnt/share/user_homes/models
 
-# Iluvatar-only workflow settings; reserve one TP4 allocation across its stages.
+# Iluvatar-only workflow settings. The runner pool queues TP4 allocations; do
+# not add a shared GitHub concurrency group here because Actions retains only
+# one pending job per group and cancels older PRs when another request arrives.
 test_timeout: 180
-concurrency_group: iluvatar-gpu-iluvatar-cicd-vllm-plugin
 container_volumes:
   - /dev:/dev
   - /lib/modules:/lib/modules

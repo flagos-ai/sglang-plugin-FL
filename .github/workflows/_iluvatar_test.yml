@@ -101,7 +101,6 @@ jobs:
       ci_image: ${{ needs.setup.outputs.ci_image }}
       runner_labels: ${{ needs.setup.outputs.runner_labels }}
       container_options: ${{ needs.setup.outputs.container_options }}
-      concurrency_group: ${{ fromJson(needs.setup.outputs.config).concurrency_group || 'iluvatar-gpu-iluvatar-cicd-vllm-plugin' }}
       timeout: ${{ fromJson(needs.setup.outputs.config).test_timeout || 180 }}
 
   functional:
@@ -112,7 +111,6 @@ jobs:
       ci_image: ${{ needs.setup.outputs.ci_image }}
       runner_labels: ${{ needs.setup.outputs.runner_labels }}
       container_options: ${{ needs.setup.outputs.container_options }}
-      concurrency_group: ${{ fromJson(needs.setup.outputs.config).concurrency_group || 'iluvatar-gpu-iluvatar-cicd-vllm-plugin' }}
       timeout: ${{ fromJson(needs.setup.outputs.config).test_timeout || 180 }}
 
   e2e:
@@ -131,7 +129,6 @@ jobs:
       ci_image: ${{ needs.setup.outputs.ci_image }}
       runner_labels: ${{ needs.setup.outputs.runner_labels }}
       container_options: ${{ needs.setup.outputs.container_options }}
-      concurrency_group: ${{ fromJson(needs.setup.outputs.config).concurrency_group || 'iluvatar-gpu-iluvatar-cicd-vllm-plugin' }}
       timeout: ${{ fromJson(needs.setup.outputs.config).test_timeout || 180 }}
 
   benchmark:
@@ -142,7 +139,6 @@ jobs:
       ci_image: ${{ needs.setup.outputs.ci_image }}
       runner_labels: ${{ needs.setup.outputs.runner_labels }}
       container_options: ${{ needs.setup.outputs.container_options }}
-      concurrency_group: ${{ fromJson(needs.setup.outputs.config).concurrency_group || 'iluvatar-gpu-iluvatar-cicd-vllm-plugin' }}
       timeout: ${{ fromJson(needs.setup.outputs.config).test_timeout || 180 }}
 
   notify:

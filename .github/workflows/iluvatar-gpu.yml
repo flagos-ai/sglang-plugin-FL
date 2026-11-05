@@ -71,10 +71,6 @@ jobs:
     needs: validate
     runs-on: ${{ fromJson(needs.validate.outputs.runner_labels) }}
     timeout-minutes: ${{ inputs.scope == 'full' && 360 || 180 }}
-    concurrency:
-      # Serialize the same runner-label pool; GPU allocation must still be reserved.
-      group: iluvatar-gpu-${{ join(fromJson(needs.validate.outputs.runner_labels), ',') }}
-      cancel-in-progress: false
     container:
       image: ${{ needs.validate.outputs.ci_image }}
       options: ${{ needs.validate.outputs.container_options }}

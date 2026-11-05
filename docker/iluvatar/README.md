@@ -207,7 +207,9 @@ runner 上构建导入兼容包并执行 CPU 合约和 CI 守卫测试。该作�
 `container_options` 直接携带模型只读挂载、CoreX 驱动库、GPU 0–3 及运行环境。
 资源参考现有 vLLM main 天数配置；runner 标签只使用
 `iluvatar-cicd-vllm-plugin`。天数 E2E 矩阵固定串行；配置中的 `test_timeout` 和
-`concurrency_group` 控制冷启动超时及同一 runner 池的阶段互斥。
+workflow 的 `needs` 控制冷启动超时及阶段顺序。硬件请求直接交给 runner 池排队；
+不要为该池添加跨 PR 共用的 GitHub concurrency group，因为 GitHub 每组只保留
+一个 pending job，新请求会取消较早的 pending 请求。
 
 天数专属 `_iluvatar_stage_test.yml` 调用 `.github/scripts/iluvatar/check.sh` 和 `setup.sh`，严格检查
 显式分配的真实 CoreX 设备，仅安装当前 checkout 和显式导入兼容包，并保留

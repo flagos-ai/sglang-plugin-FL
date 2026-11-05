@@ -119,6 +119,7 @@ class TestConfiguredResources(unittest.TestCase):
 
     def test_automatic_full_resources_match_the_configured_pool(self):
         resolved = resources.resolve_resources(self.config)
+        self.assertNotIn("concurrency_group", self.config)
         self.assertEqual(
             json.loads(resolved["runner_labels"]),
             ["iluvatar-cicd-vllm-plugin"],
@@ -238,9 +239,6 @@ class TestConfiguredResources(unittest.TestCase):
             if job.get("uses") == "./.github/workflows/_iluvatar_stage_test.yml"
         }
         self.assertEqual(set(stages), {"unit", "functional", "e2e", "benchmark"})
-        self.assertEqual(
-            len({job["with"]["concurrency_group"] for job in stages.values()}), 1
-        )
         for scope, predecessor in (
             ("unit", "setup"),
             ("functional", "unit"),
@@ -249,6 +247,7 @@ class TestConfiguredResources(unittest.TestCase):
         ):
             with self.subTest(scope=scope):
                 self.assertEqual(stages[scope]["with"]["scope"], scope)
+                self.assertNotIn("concurrency_group", stages[scope]["with"])
                 needs = stages[scope]["needs"]
                 self.assertIn(predecessor, [needs] if isinstance(needs, str) else needs)
         self.assertEqual(stages["e2e"]["strategy"]["max-parallel"], 1)
@@ -305,10 +304,9 @@ class TestConfiguredResources(unittest.TestCase):
             self.assertIn(f'"$ILUVATAR_{name.upper()}"', commands[driver])
         self.assertNotIn("${{", commands[driver])
         self.assertIn('"${args[@]}"', commands[driver])
-        self.assertIs(stage["concurrency"]["cancel-in-progress"], False)
-        self.assertEqual(
-            stage["concurrency"]["group"], "${{ inputs.concurrency_group }}"
-        )
+        self.assertNotIn("concurrency", stage)
+        manual = self.workflow("iluvatar-gpu.yml")["jobs"]["gpu-contracts"]
+        self.assertNotIn("concurrency", manual)
         uploads = [
             step
             for step in steps

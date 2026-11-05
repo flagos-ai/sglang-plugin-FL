@@ -34,10 +34,6 @@ on:
         description: 'Validated CoreX/model mounts and runtime environment'
         required: true
         type: string
-      concurrency_group:
-        description: 'One pool lock shared by every Iluvatar stage'
-        required: true
-        type: string
       timeout:
         required: false
         type: number
@@ -51,9 +47,6 @@ jobs:
     name: 'Iluvatar ${{ inputs.scope }} ${{ inputs.task }} (${{ inputs.device }})'
     runs-on: ${{ fromJson(inputs.runner_labels) }}
     timeout-minutes: ${{ inputs.timeout }}
-    concurrency:
-      group: ${{ inputs.concurrency_group }}
-      cancel-in-progress: false
     container:
       image: ${{ inputs.ci_image }}
       options: ${{ inputs.container_options }}
