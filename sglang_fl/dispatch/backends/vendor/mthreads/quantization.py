@@ -89,6 +89,32 @@ def build_w8a8_schemes():
     return SimpleNamespace(linear=MusaLinear, moe=MusaMoE)
 
 
+def _is_dynamic_int8(config, value):
+    if value is None:
+        return False
+    weight, activation = value.get("weights"), value.get("input_activations")
+    if weight is None or activation is None:
+        return False
+    if any(getattr(q.type, "value", q.type) != "int" for q in (weight, activation)):
+        return False
+    return config._is_dynamic_token_w8a8(weight, activation)
+
+
+def _validate_contract(config, value):
+    if config.sparsity_scheme_map:
+        raise NotImplementedError("MUSA INT8 does not support sparse weights")
+    weight = value["weights"]
+    activation = value["input_activations"]
+    strategy = getattr(weight.strategy, "value", weight.strategy)
+    if strategy != "channel" or not weight.symmetric or not activation.symmetric:
+        raise NotImplementedError(
+            "MUSA dynamic INT8 requires symmetric token activations and channel weights"
+        )
+    if value.get("format") not in (None, "int-quantized"):
+        raise NotImplementedError("MUSA dynamic INT8 requires int-quantized storage")
+    return weight, activation
+
+
 @lru_cache(maxsize=1)
 def get_musa_compressed_tensors_config():
     """Return a vendor configuration through the public platform hook."""
@@ -97,7 +123,6 @@ def get_musa_compressed_tensors_config():
     )
 
     from .patches import require_supported_sglang
-    from .patches.w8a8 import _validate_contract, install_w8a8_patches
 
     require_supported_sglang()
 
@@ -128,42 +153,32 @@ def get_musa_compressed_tensors_config():
                         if k != "index_qkv_proj"
                     },
                 }
-                value = super(MusaCompressedTensorsConfig, local).get_scheme_dict(
+                return super(MusaCompressedTensorsConfig, local).get_scheme_dict(
                     layer, layer_name
                 )
-            else:
-                value = super().get_scheme_dict(layer, layer_name)
-            self._validate_selected_scheme(value)
-            return value
+            return super().get_scheme_dict(layer, layer_name)
 
-        def _validate_selected_scheme(self, value):
-            # Resolve upstream ignore/regex/fused rules with the real layer
-            # first. Class-name targets and layer-name ignores are distinct.
-            # Selection happens before weight creation or numerical execution.
-            if value is None:
-                return
-            if self.sparsity_scheme_map:
-                raise NotImplementedError("MUSA INT8 does not support sparse weights")
-            weight = value.get("weights")
-            activation = value.get("input_activations")
-            if (
-                weight is None
-                or activation is None
-                or not self._is_dynamic_token_w8a8(weight, activation)
-            ):
-                raise NotImplementedError(
-                    "MUSA compressed-tensors requires dynamic token W8A8"
-                )
-            if any(
-                getattr(q.type, "value", q.type) != "int" for q in (weight, activation)
-            ):
-                raise NotImplementedError("MUSA compressed-tensors requires INT8")
-            _validate_contract(value)
+        def get_linear_scheme(self, layer, layer_name=None):
+            value = self.get_scheme_dict(layer, layer_name)
+            if _is_dynamic_int8(self, value):
+                weight, activation = _validate_contract(self, value)
+                return build_w8a8_schemes().linear(weight, activation)
+            return super().get_linear_scheme(layer, layer_name)
 
-    # Install selectors only on the new vendor class. The upstream class and
-    # other vendors retain their original methods and capability requirements.
-    install_w8a8_patches(
-        SimpleNamespace(CompressedTensorsConfig=MusaCompressedTensorsConfig),
-        is_musa=lambda: True,
-    )
+        def get_moe_scheme(self, layer, layer_name=None):
+            if layer_name is not None:
+                self._add_fused_moe_to_target_scheme_map()
+                values = [
+                    self.get_scheme_dict(layer, f"{layer_name}.0.{projection}")
+                    for projection in ("gate_proj", "up_proj", "down_proj")
+                ]
+                if any(_is_dynamic_int8(self, value) for value in values):
+                    if not all(value == values[0] for value in values):
+                        raise ValueError(
+                            "All MoE projections need the same quantization scheme"
+                        )
+                    weight, activation = _validate_contract(self, values[0])
+                    return build_w8a8_schemes().moe(weight, activation)
+            return super().get_moe_scheme(layer, layer_name)
+
     return MusaCompressedTensorsConfig

@@ -4,6 +4,7 @@
 """CPU wiring tests; these do not establish MUSA numerical correctness."""
 
 import importlib.util
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,14 +13,15 @@ import pytest
 PATH = (
     Path(__file__).resolve().parents[3]
     / "sglang_fl/dispatch/backends/vendor"
-    / "mthreads/patches/w8a8.py"
+    / "mthreads/quantization.py"
 )
-spec = importlib.util.spec_from_file_location("musa_w8a8_patch_test", PATH)
+spec = importlib.util.spec_from_file_location("musa_w8a8_test.quantization", PATH)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
-def fixture():
+@pytest.fixture
+def config(monkeypatch):
     class Config:
         sparsity_scheme_map = {}
 
@@ -38,129 +40,86 @@ def fixture():
         def _add_fused_moe_to_target_scheme_map(self):
             pass
 
-    return SimpleNamespace(CompressedTensorsConfig=Config)
+    upstream = "sglang.srt.layers.quantization.compressed_tensors.compressed_tensors"
+    monkeypatch.setitem(
+        sys.modules, upstream, SimpleNamespace(CompressedTensorsConfig=Config)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "musa_w8a8_test.patches",
+        SimpleNamespace(require_supported_sglang=lambda: None),
+    )
+    monkeypatch.setattr(
+        module,
+        "build_w8a8_schemes",
+        lambda: SimpleNamespace(
+            linear=lambda *args: ("linear", args), moe=lambda *args: ("moe", args)
+        ),
+    )
+    module.get_musa_compressed_tensors_config.cache_clear()
+    cls = module.get_musa_compressed_tensors_config()
+    assert module.get_musa_compressed_tensors_config() is cls
+    assert Config().get_linear_scheme({}, "a") == ("original-linear", {}, "a")
+    yield cls()
+    module.get_musa_compressed_tensors_config.cache_clear()
 
 
-def scheme(dynamic=True, strategy="channel", symmetric=True):
+def scheme(dynamic=True, strategy="channel", symmetric=True, quant_type="int"):
     return {
-        "weights": SimpleNamespace(strategy=strategy, symmetric=symmetric, type="int"),
+        "weights": SimpleNamespace(strategy=strategy, symmetric=True, type=quant_type),
         "input_activations": SimpleNamespace(
-            strategy="token", dynamic=dynamic, symmetric=symmetric, type="int"
+            strategy="token", dynamic=dynamic, symmetric=symmetric, type=quant_type
         ),
     }
 
 
-def test_fp8_and_weight_only_schemes_do_not_enter_int8_factory():
-    upstream = fixture()
-    module.install_w8a8_patches(upstream, lambda: True, lambda: None)
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        scheme(dynamic=False),
+        scheme(quant_type="float"),
+        {**scheme(), "input_activations": None},
+    ],
+)
+def test_non_dynamic_int8_delegates_to_upstream(config, value):
+    linear = {"a": value}
+    moe = {f"experts.0.{proj}": value for proj in ("gate_proj", "up_proj", "down_proj")}
+    assert config.get_linear_scheme(linear, "a") == ("original-linear", linear, "a")
+    assert config.get_moe_scheme(moe, "experts") == ("original-moe", moe, "experts")
+
+
+def test_dynamic_int8_routes_to_vendor(config):
     value = scheme()
-    value["weights"].type = "float"
-    value["input_activations"].type = "float"
-    layer = {"a": value}
-    assert (
-        upstream.CompressedTensorsConfig().get_linear_scheme(layer, "a")[0]
-        == "original-linear"
-    )
-    value["input_activations"] = None
-    assert (
-        upstream.CompressedTensorsConfig().get_linear_scheme(layer, "a")[0]
-        == "original-linear"
-    )
-
-
-def test_platform_scope_and_idempotence():
-    upstream = fixture()
-    musa = [True]
-    factories = SimpleNamespace(
-        linear=lambda *args: ("linear", args), moe=lambda *args: ("moe", args)
-    )
-    assert module.install_w8a8_patches(upstream, lambda: musa[0], lambda: factories)
-    method = upstream.CompressedTensorsConfig.get_linear_scheme
-    assert not module.install_w8a8_patches(upstream, lambda: True, lambda: factories)
-    assert method is upstream.CompressedTensorsConfig.get_linear_scheme
-    cfg = upstream.CompressedTensorsConfig()
-    layer = {"a": scheme()}
-    assert cfg.get_linear_scheme(layer, "a")[0] == "linear"
-    musa[0] = False
-    assert cfg.get_linear_scheme(layer, "a") == ("original-linear", layer, "a")
-
-
-def test_moe_requires_consistent_projections_and_preserves_ignored_layers():
-    upstream = fixture()
-    factories = SimpleNamespace(linear=lambda *args: "linear", moe=lambda *args: "moe")
-    module.install_w8a8_patches(upstream, lambda: True, lambda: factories)
-    cfg = upstream.CompressedTensorsConfig()
-    value = scheme()
-    layer = {
-        f"experts.0.{proj}": value for proj in ("gate_proj", "up_proj", "down_proj")
-    }
-    assert cfg.get_moe_scheme(layer, "experts") == "moe"
-    layer["experts.0.down_proj"] = scheme(symmetric=False)
+    args = (value["weights"], value["input_activations"])
+    assert config.get_linear_scheme({"a": value}, "a") == ("linear", args)
+    moe = {f"experts.0.{proj}": value for proj in ("gate_proj", "up_proj", "down_proj")}
+    assert config.get_moe_scheme(moe, "experts") == ("moe", args)
+    moe["experts.0.down_proj"] = scheme(quant_type="float")
     with pytest.raises(ValueError, match="same quantization"):
-        cfg.get_moe_scheme(layer, "experts")
-    assert cfg.get_moe_scheme({}, "experts") == ("original-moe", {}, "experts")
+        config.get_moe_scheme(moe, "experts")
 
 
-@pytest.mark.parametrize("value", [scheme(strategy="tensor"), scheme(symmetric=False)])
-def test_unsupported_contract_rejected_before_factory(value):
-    upstream = fixture()
-
-    def forbidden():
-        raise AssertionError("Factory must not execute for an unsupported contract")
-
-    module.install_w8a8_patches(upstream, lambda: True, forbidden)
-    with pytest.raises(NotImplementedError, match="symmetric.*channel"):
-        upstream.CompressedTensorsConfig().get_linear_scheme({"a": value}, "a")
-
-
-def test_missing_capability_and_signature_drift_do_not_modify_methods():
-    upstream = fixture()
-    cls = upstream.CompressedTensorsConfig
-    original = cls.get_linear_scheme
-    del cls.get_scheme_dict
-    with pytest.raises(RuntimeError, match="get_scheme_dict"):
-        module.install_w8a8_patches(upstream, lambda: True, lambda: None)
-    assert cls.get_linear_scheme is original
-    upstream = fixture()
-    original = upstream.CompressedTensorsConfig.get_linear_scheme
-    upstream.CompressedTensorsConfig.get_moe_scheme = lambda self, layer, renamed: None
-    with pytest.raises(RuntimeError, match="layer_name"):
-        module.install_w8a8_patches(upstream, lambda: True, lambda: None)
-    assert upstream.CompressedTensorsConfig.get_linear_scheme is original
+@pytest.mark.parametrize(
+    "value",
+    [
+        scheme(strategy="tensor"),
+        scheme(symmetric=False),
+        {**scheme(), "format": "pack-quantized"},
+    ],
+)
+def test_invalid_dynamic_int8_contract_rejected(config, value):
+    moe = {f"experts.0.{proj}": value for proj in ("gate_proj", "up_proj", "down_proj")}
+    with pytest.raises(NotImplementedError):
+        config.get_linear_scheme({"a": value}, "a")
+    with pytest.raises(NotImplementedError):
+        config.get_moe_scheme(moe, "experts")
 
 
-def test_factory_failure_does_not_fall_back_or_poison_future_calls():
-    upstream = fixture()
-    calls = []
-
-    def failing():
-        calls.append(True)
+def test_factory_failure_propagates(config, monkeypatch):
+    def fail():
         raise RuntimeError("required public API is unavailable")
 
-    module.install_w8a8_patches(upstream, lambda: True, failing)
-    cfg = upstream.CompressedTensorsConfig()
-    for _ in range(2):
-        with pytest.raises(RuntimeError, match="public API"):
-            cfg.get_linear_scheme({"a": scheme()}, "a")
-    assert len(calls) == 2
-
-
-def test_non_dynamic_scheme_retains_original_path():
-    upstream = fixture()
-    module.install_w8a8_patches(upstream, lambda: True, lambda: None)
-    layer = {"a": scheme(dynamic=False)}
-    assert upstream.CompressedTensorsConfig().get_linear_scheme(layer, "a") == (
-        "original-linear",
-        layer,
-        "a",
-    )
-
-
-def test_upgrade_with_new_parameters_is_not_silently_accepted():
-    upstream = fixture()
-    cls = upstream.CompressedTensorsConfig
-    original = cls.get_linear_scheme
-    cls.get_moe_scheme = lambda self, layer, layer_name=None, extra=False: None
-    with pytest.raises(RuntimeError, match="unsupported signature"):
-        module.install_w8a8_patches(upstream, lambda: True, lambda: None)
-    assert cls.get_linear_scheme is original
+    monkeypatch.setattr(module, "build_w8a8_schemes", fail)
+    with pytest.raises(RuntimeError, match="public API"):
+        config.get_linear_scheme({"a": scheme()}, "a")

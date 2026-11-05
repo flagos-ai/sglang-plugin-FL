@@ -36,7 +36,7 @@ def test_quantization_config_uses_the_public_platform_hook():
     assert platform.get_quantization_config("compressed-tensors") is None
 
 
-def test_vendor_config_validates_selected_scheme_before_loading():
+def test_vendor_config_validates_selected_scheme_before_loading(monkeypatch):
     from copy import deepcopy
     from sglang_fl.dispatch.backends.vendor.mthreads.quantization import (
         get_musa_compressed_tensors_config,
@@ -86,15 +86,9 @@ def test_vendor_config_validates_selected_scheme_before_loading():
     with pytest.raises(ValueError, match="matching target"):
         instance.get_scheme_dict(layer, "model.self_attn.index_qkv_proj")
     invalid = deepcopy(config)
-    invalid["config_groups"]["w8a8"]["input_activations"].update(
-        dynamic=False, strategy="tensor"
-    )
+    invalid["config_groups"]["w8a8"]["input_activations"]["symmetric"] = False
     instance = cls.from_config(invalid)
-    with pytest.raises(NotImplementedError, match="dynamic token"):
-        instance.get_linear_scheme(torch.nn.Linear(8, 8), "model.q_proj")
-    invalid["ignore"] = ["Linear"]
-    instance = cls.from_config(invalid)
-    with pytest.raises(NotImplementedError, match="dynamic token"):
+    with pytest.raises(NotImplementedError, match="symmetric"):
         instance.get_linear_scheme(torch.nn.Linear(8, 8), "model.q_proj")
 
     mixed = deepcopy(config)
@@ -115,8 +109,17 @@ def test_vendor_config_validates_selected_scheme_before_loading():
     assert instance.get_scheme_dict(torch.nn.Linear(8, 8), "model.q_proj") is not None
     mixed["ignore"] = []
     instance = cls.from_config(mixed)
-    with pytest.raises(NotImplementedError, match="dynamic token"):
-        instance.get_linear_scheme(torch.nn.Linear(8, 8), "lm_head")
+    layer = torch.nn.Linear(8, 8)
+    upstream_result = object()
+
+    def upstream_linear(self, actual_layer, layer_name):
+        assert actual_layer is layer
+        assert layer_name == "lm_head"
+        assert self.get_scheme_dict(actual_layer, layer_name)["weights"].num_bits == 4
+        return upstream_result
+
+    monkeypatch.setattr(cls.__base__, "get_linear_scheme", upstream_linear)
+    assert instance.get_linear_scheme(layer, "lm_head") is upstream_result
 
 
 @pytest.mark.parametrize("m,n,k", [(1, 13, 31), (16, 768, 6144), (64, 6144, 384)])
