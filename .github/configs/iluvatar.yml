@@ -16,10 +16,17 @@ runner_labels:
 cuda_visible_devices: '0,1,2,3'
 models_path: /mnt/share/user_homes/models
 
-# Iluvatar-only workflow settings. The runner pool queues TP4 allocations; do
-# not add a shared GitHub concurrency group here because Actions retains only
-# one pending job per group and cancels older PRs when another request arrives.
+# Shared platform-workflow settings. Keep the strict Iluvatar driver while the
+# common workflow owns orchestration, timeouts, artifacts, and matrix routing.
+test_driver: .github/scripts/iluvatar/run_tests.py
 test_timeout: 180
+test_artifact_path: artifacts/iluvatar/
+test_artifact_required: true
+e2e_max_parallel: 1
+
+# The runner pool queues TP4 allocations. Do not add a shared GitHub
+# concurrency group here: Actions retains only one pending job per group and
+# cancels older PRs when another request arrives.
 container_volumes:
   - /dev:/dev
   - /lib/modules:/lib/modules

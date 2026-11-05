@@ -37,6 +37,21 @@ on:
         required: false
         type: string
         default: ""
+      test_driver:
+        description: "Platform test driver compatible with tests/run.py"
+        required: false
+        type: string
+        default: "tests/run.py"
+      test_artifact_path:
+        description: "Additional platform-specific artifact path"
+        required: false
+        type: string
+        default: ""
+      test_artifact_required:
+        description: "Fail when the platform-specific artifact path is empty"
+        required: false
+        type: boolean
+        default: false
       timeout:
         description: "Timeout for the job in minutes"
         required: false
@@ -84,14 +99,28 @@ jobs:
         run: python3 examples/ascend_compat_probe.py
 
       - name: Run unit tests
+        env:
+          TEST_DRIVER: ${{ inputs.test_driver }}
         run: |
-          python tests/run.py \
+          if [ "${{ inputs.platform }}" = "hygon" ]; then
+            unset CUDA_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES
+          fi
+          python "$TEST_DRIVER" \
             --platform ${{ inputs.platform }} \
             --scope unit
 
+      - name: Run Hygon vendor-stack verifier regressions
+        if: inputs.platform == 'hygon'
+        run: python .github/scripts/hygon/ci_environment.py -- python -m pytest .github/scripts/hygon/test_verify_environment.py -q --junitxml=test-results-hygon-environment.xml
+
       - name: Run functional tests
+        env:
+          TEST_DRIVER: ${{ inputs.test_driver }}
         run: |
-          python tests/run.py \
+          if [ "${{ inputs.platform }}" = "hygon" ]; then
+            unset CUDA_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES
+          fi
+          python "$TEST_DRIVER" \
             --platform ${{ inputs.platform }} \
             --scope functional
 
@@ -103,3 +132,6 @@ jobs:
           path: |
             test-results-${{ inputs.platform }}.xml
             test-results-${{ inputs.platform }}.json
+            test-results-hygon-environment.xml
+            ${{ inputs.test_artifact_path }}
+          if-no-files-found: ${{ inputs.test_artifact_required && 'error' || 'warn' }}

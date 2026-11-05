@@ -19,6 +19,10 @@
 # 4. benchmark:  Run benchmark smoke tests (throughput, latency, serve entrypoints)
 # 5. notify:     Send Feishu notification with overall platform status
 #
+# Platforms use tests/run.py by default. A platform can select a stricter
+# compatible driver, stage timeout, artifact path, or matrix parallelism in
+# .github/configs/<platform>.yml without forking this orchestration workflow.
+#
 # Users can modify test settings in tests/platforms/*.yaml:
 # - e2e: Add/remove model test cases in the stage-keyed support lists
 # - functional: Adjust include/exclude patterns for component tests
@@ -119,7 +123,10 @@ jobs:
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
-      timeout: ${{ inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 60 || 45 }}
+      test_driver: ${{ fromJson(needs.setup.outputs.config).test_driver || 'tests/run.py' }}
+      test_artifact_path: ${{ fromJson(needs.setup.outputs.config).test_artifact_path || '' }}
+      test_artifact_required: ${{ fromJson(needs.setup.outputs.config).test_artifact_required || false }}
+      timeout: ${{ fromJson(needs.setup.outputs.config).test_timeout || (inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 60 || 45) }}
 
   e2e:
     needs: [setup, functional]
@@ -140,7 +147,10 @@ jobs:
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
-      timeout: ${{ inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 120 || inputs.platform == 'hygon' && 120 || matrix.test.timeout || 60 }}
+      test_driver: ${{ fromJson(needs.setup.outputs.config).test_driver || 'tests/run.py' }}
+      test_artifact_path: ${{ fromJson(needs.setup.outputs.config).test_artifact_path || '' }}
+      test_artifact_required: ${{ fromJson(needs.setup.outputs.config).test_artifact_required || false }}
+      timeout: ${{ fromJson(needs.setup.outputs.config).test_timeout || (inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 120 || inputs.platform == 'hygon' && 120 || matrix.test.timeout || 60) }}
       ci_stage: ${{ inputs.ci_stage }}
 
   benchmark:
@@ -154,7 +164,10 @@ jobs:
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
-      timeout: 30
+      test_driver: ${{ fromJson(needs.setup.outputs.config).test_driver || 'tests/run.py' }}
+      test_artifact_path: ${{ fromJson(needs.setup.outputs.config).test_artifact_path || '' }}
+      test_artifact_required: ${{ fromJson(needs.setup.outputs.config).test_artifact_required || false }}
+      timeout: ${{ fromJson(needs.setup.outputs.config).test_timeout || 30 }}
       ci_stage: ${{ inputs.ci_stage }}
 
   notify:

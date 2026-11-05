@@ -48,6 +48,10 @@ jobs:
   lint:
     uses: ./.github/workflows/_lint.yml
 
+  # Hosted compatibility contracts remain independent of GPU availability.
+  iluvatar-cpu-contracts:
+    uses: ./.github/workflows/_iluvatar_compat_test.yml
+
   # ============================================================
   # Job 3: Build & install check
   # ============================================================
@@ -196,9 +200,12 @@ jobs:
   test-iluvatar:
     needs: discover
     if: contains(fromJson(needs.discover.outputs.platforms), 'iluvatar')
-    uses: ./.github/workflows/_iluvatar_test.yml
+    uses: ./.github/workflows/_platform_test.yml
     with:
       platform: iluvatar
+      ci_stage: pr
+      run_e2e: ${{ fromJson(needs.discover.outputs.run_e2e) }}
+      run_benchmark: ${{ fromJson(needs.discover.outputs.run_benchmark) }}
     secrets: inherit
 
   test-hygon:
@@ -227,6 +234,7 @@ jobs:
     name: ci-gate
     needs:
       - lint
+      - iluvatar-cpu-contracts
       - build
       - discover
       - test-nvidia
@@ -242,6 +250,7 @@ jobs:
       - name: Check gate
         env:
           LINT_RESULT:      ${{ needs.lint.result }}
+          ILUVATAR_CPU_RESULT: ${{ needs.iluvatar-cpu-contracts.result }}
           BUILD_RESULT:     ${{ needs.build.result }}
           DISCOVER_RESULT:  ${{ needs.discover.result }}
           NVIDIA_RESULT:    ${{ needs.test-nvidia.result }}
@@ -275,6 +284,7 @@ jobs:
           }
 
           check_required "lint"     "$LINT_RESULT"
+          check_required "iluvatar-cpu-contracts" "$ILUVATAR_CPU_RESULT"
           check_required "build"    "$BUILD_RESULT"
           check_required "discover" "$DISCOVER_RESULT"
 

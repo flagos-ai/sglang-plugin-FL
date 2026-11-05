@@ -103,6 +103,11 @@ class TestRunner:
         cases = self.discover_tests()
         if not cases:
             print("[run] No test cases selected.")
+            if self.scope == "benchmark" and self.config.get_benchmark_tests(
+                self.stage
+            ).get("require_cases", False):
+                print("[run] This platform requires a non-empty benchmark selection.")
+                return 1
             return 0
 
         print(f"[run] Platform: {self.config.platform}")
@@ -285,8 +290,14 @@ class TestRunner:
 
             for raw_case in case_list:
                 runtime_case = dict(raw_case)
-                model_name = runtime_case.pop("model", self.model)
-                case_name = runtime_case.pop("case", self.case)
+                # A platform can bind the shared smoke workload to an existing
+                # model fixture without changing the benchmark entrypoints.
+                model_name = benchmark_cfg.get(
+                    "model", runtime_case.pop("model", self.model)
+                )
+                case_name = benchmark_cfg.get(
+                    "case", runtime_case.pop("case", self.case)
+                )
                 if not model_name or not case_name:
                     print(
                         f"[run] Skipping benchmark/{bench_type}: "
@@ -313,6 +324,12 @@ class TestRunner:
                 model_cfg.apply_engine_overrides(engine_overrides)
 
                 self._inject_model_config(runtime_case, model_cfg)
+                if "tp_size" in benchmark_cfg:
+                    for section in ("parameters", "server_parameters"):
+                        if section in runtime_case:
+                            runtime_case[section]["tp_size"] = int(
+                                benchmark_cfg["tp_size"]
+                            )
                 name = str(runtime_case.get("name", f"{bench_type}_smoke"))
                 cases.append(
                     TestCase(
@@ -529,13 +546,10 @@ class TestRunner:
         if extra_env_override:
             env.update(extra_env_override)
 
-        result = subprocess.run(
-            cmd,
-            cwd=str(_REPO_ROOT),
-            env=env,
-            capture_output=quiet,
-            text=quiet,
-        )
+        kwargs: dict[str, Any] = {"cwd": str(_REPO_ROOT), "env": env}
+        if quiet:
+            kwargs.update(capture_output=True, text=True)
+        result = subprocess.run(cmd, **kwargs)
         if quiet and result.stdout:
             for line in result.stdout.splitlines():
                 print(f"[{case.name}] {line}")

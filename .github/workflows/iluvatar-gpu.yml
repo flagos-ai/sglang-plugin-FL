@@ -1,5 +1,5 @@
 # Manual full/operator acceptance using the same platform hooks as automatic CI.
-# Automatic PR checks enter through the dedicated _iluvatar_test workflow.
+# Automatic PR checks enter through the shared _platform_test workflow.
 name: Iluvatar GPU acceptance
 
 on:

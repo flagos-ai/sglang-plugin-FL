@@ -44,6 +44,21 @@ on:
         required: false
         type: string
         default: ""
+      test_driver:
+        description: "Platform test driver compatible with tests/run.py"
+        required: false
+        type: string
+        default: "tests/run.py"
+      test_artifact_path:
+        description: "Additional platform-specific artifact path"
+        required: false
+        type: string
+        default: ""
+      test_artifact_required:
+        description: "Fail when the platform-specific artifact path is empty"
+        required: false
+        type: boolean
+        default: false
       timeout:
         description: "Timeout for the job in minutes"
         required: false
@@ -100,11 +115,13 @@ jobs:
         # The per-arch op blacklist reaches e2e/benchmark either via env_defaults
         # in tests/platforms/<platform>.yaml (nvidia/thead/musa) or via the plugin's
         # dispatch config flagos_blacklist (for example, ascend.yaml).
+        env:
+          TEST_DRIVER: ${{ inputs.test_driver }}
         run: |
           if [ "${{ inputs.platform }}" = "hygon" ]; then
             unset CUDA_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES
           fi
-          python tests/run.py \
+          python "$TEST_DRIVER" \
             --platform ${{ inputs.platform }} \
             --device "${{ inputs.device }}" \
             --scope e2e \
@@ -120,3 +137,5 @@ jobs:
           path: |
             test-results-${{ inputs.platform }}.xml
             test-results-${{ inputs.platform }}.json
+            ${{ inputs.test_artifact_path }}
+          if-no-files-found: ${{ inputs.test_artifact_required && 'error' || 'warn' }}

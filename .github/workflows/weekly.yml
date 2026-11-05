@@ -164,9 +164,11 @@ jobs:
   test-iluvatar:
     needs: discover
     if: contains(fromJson(needs.discover.outputs.platforms), 'iluvatar')
-    uses: ./.github/workflows/_iluvatar_test.yml
+    uses: ./.github/workflows/_platform_test.yml
     with:
       platform: iluvatar
+      ci_stage: weekly
+      branch: ${{ inputs.branch }}
     secrets: inherit
 
   test-hygon:
