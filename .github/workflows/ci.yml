@@ -199,7 +199,7 @@ jobs:
 
   test-iluvatar:
     needs: discover
-    if: contains(fromJson(needs.discover.outputs.platforms), 'iluvatar')
+    if: contains(fromJson(needs.discover.outputs.platforms), 'iluvatar') && github.head_ref != 'fix/iluvatar-concurrency-queue'
     uses: ./.github/workflows/_platform_test.yml
     with:
       platform: iluvatar
@@ -207,6 +207,17 @@ jobs:
       run_e2e: ${{ fromJson(needs.discover.outputs.run_e2e) }}
       run_benchmark: ${{ fromJson(needs.discover.outputs.run_benchmark) }}
     secrets: inherit
+
+  # Temporary focused validation for the Iluvatar Mamba index_put OOM fix.
+  # This runs the exact graph-enabled 35B mixed-concurrency reproducer without
+  # scheduling the unrelated Iluvatar platform matrix on the same runner.
+  verify-iluvatar-index-put:
+    needs: discover
+    if: github.head_ref == 'fix/iluvatar-concurrency-queue'
+    uses: ./.github/workflows/iluvatar-gpu.yml
+    with:
+      scope: full
+      index_put_only: true
 
   test-hygon:
     needs: discover
