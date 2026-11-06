@@ -10,6 +10,11 @@ on:
         required: false
         type: string
         default: full
+      index_put_only:
+        description: 'Run only the graph-enabled 35B mixed-concurrency index_put OOM reproducer'
+        required: false
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       runner_labels:
@@ -30,6 +35,11 @@ on:
         type: choice
         options: [full, operators]
         default: full
+      index_put_only:
+        description: 'Run only the graph-enabled 35B mixed-concurrency index_put OOM reproducer'
+        required: false
+        type: boolean
+        default: false
       models_path:
         description: 'Optional override of the configured absolute host model directory'
         required: false
@@ -99,21 +109,36 @@ jobs:
       - name: Install this checkout and verify both backend profiles
         run: bash .github/scripts/iluvatar/setup.sh
       - name: Unit contracts
-        if: inputs.scope == 'full'
+        if: inputs.scope == 'full' && inputs.index_put_only != true
         run: python .github/scripts/iluvatar/run_tests.py --platform iluvatar --scope unit
       - name: All 31 GPU operator and PDL contracts
+        if: inputs.index_put_only != true
         run: python .github/scripts/iluvatar/run_tests.py --platform iluvatar --scope functional
+      - name: Reproduce graph-enabled 35B mixed-concurrency index_put OOM
+        if: inputs.index_put_only
+        env:
+          MODEL_PATH: /models/Qwen3.6-35B-A3B
+          TP_SIZE: '4'
+          CONCURRENT_N: '16'
+          MAX_TOKENS: '256'
+          MEM_FRACTION_STATIC: '0.70'
+          DISABLE_CUDA_GRAPH: '0'
+        run: |
+          unset SGLANG_FL_PER_OP
+          mkdir -p artifacts/iluvatar
+          python examples/qwen3_6_35b_a3b_concurrent.py --mode all \
+            2>&1 | tee artifacts/iluvatar/index-put-oom-reproducer.log
       - name: Both profiles and graph modes plus shared inference cases
-        if: inputs.scope == 'full'
+        if: inputs.scope == 'full' && inputs.index_put_only != true
         run: python .github/scripts/iluvatar/run_tests.py --platform iluvatar --scope e2e --task inference --device bi_v150
       - name: Original HTTP serving cases
-        if: inputs.scope == 'full'
+        if: inputs.scope == 'full' && inputs.index_put_only != true
         run: python .github/scripts/iluvatar/run_tests.py --platform iluvatar --scope e2e --task serving --device bi_v150
       - name: Original concurrent cases
-        if: inputs.scope == 'full'
+        if: inputs.scope == 'full' && inputs.index_put_only != true
         run: python .github/scripts/iluvatar/run_tests.py --platform iluvatar --scope e2e --task concurrent --device bi_v150
       - name: All three original benchmark smoke cases
-        if: inputs.scope == 'full'
+        if: inputs.scope == 'full' && inputs.index_put_only != true
         run: python .github/scripts/iluvatar/run_tests.py --platform iluvatar --scope benchmark --device bi_v150
       - name: Upload real CoreX test evidence
         if: always()
