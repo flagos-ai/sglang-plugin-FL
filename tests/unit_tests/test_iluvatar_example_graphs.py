@@ -90,6 +90,17 @@ def test_corex_default_tp_and_explicit_override(monkeypatch, tp, name, factory):
     assert captured["tp_size"] == (4 if tp is None else 2)
 
 
+@pytest.mark.parametrize("name", _OFFLINE)
+def test_offline_static_memory_fraction_override_reaches_engine(monkeypatch, name):
+    _cuda_platform(monkeypatch, corex=True)
+    monkeypatch.setenv("MEM_FRACTION_STATIC", "0.70")
+    captured = _capture_engine(monkeypatch)
+    namespace = _load_example(monkeypatch, name)
+    with pytest.raises(CapturedEngine):
+        namespace["run_engine"]()
+    assert captured["mem_fraction_static"] == 0.70
+
+
 @pytest.mark.parametrize("name,factory", _SINGLE_CASES)
 def test_other_cuda_default_tp_stays_one(monkeypatch, name, factory):
     _cuda_platform(monkeypatch, corex=False)
