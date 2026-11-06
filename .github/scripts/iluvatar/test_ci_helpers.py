@@ -62,7 +62,7 @@ class TestCiEvidence(unittest.TestCase):
 
 
 class TestIdleAllocation(unittest.TestCase):
-    inventory = "index, memory.used [MiB], memory.total [MiB]\n0, 24170 MiB, 32768 MiB\n3, 0 MiB, 32768 MiB\n7, 32 MiB, 32768 MiB\n"
+    inventory = "index, memory.used [MiB], memory.total [MiB]\n0, 24170 MiB, 32768 MiB\n3, 0 MiB, 32768 MiB\n7, 1024 MiB, 32768 MiB\n"
 
     def test_only_explicit_idle_devices_are_accepted(self):
         checked = idle.check_inventory(self.inventory, "3,7")
