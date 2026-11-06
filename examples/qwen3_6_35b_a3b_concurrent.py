@@ -88,7 +88,7 @@ elif _is_txda:
         "mm_attention_backend": "triton_attn",
         "disable_fast_image_processor": True,
         "context_length": 8192,
-        "chunked_prefill_size":256
+        "chunked_prefill_size": 512,
     }
 elif _is_corex:
     _extra_engine_kwargs = {

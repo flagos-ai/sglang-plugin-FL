@@ -20,6 +20,14 @@ Patches applied:
   platform_stubs  – Inject stub modules for CUDA-only deps on non-CUDA platforms
   model_runner    – Per-iteration forward() timing (SGLANG_FL_TIMER_ENABLE)
   scheduler_pp_mixin –  PP send/recv even/odd ordering for txda (same as XPU)
+  qwen3_asr_config – Default AutoConfig.register exist_ok=True to tolerate
+                    transformers 5.15+ built-in qwen3_asr registration
+  gdn_norm        – Pin GatedDeltaNet's gated RMSNorm to
+                    fla.layernorm_gated.RMSNorm (SGLANG_FL_GDN_NORM, default 0)
+
+Note: attention kernel routing (extend and decode to the flag_gems
+``_tsingmicro`` kernels) lives in ``impl/attention_backend.py``, not here --
+it is a backend concern, bound per instance in ``TxdaAttnBackend.__init__``.
 
 Usage (called automatically by load_plugin()):
 
@@ -42,21 +50,29 @@ def apply_all_txda_patches() -> None:
     for per-patch submodules; per_rank_log and device_support are applied
     unconditionally.
     """
-    from sglang_fl.dispatch.backends.vendor.tsingmicro.patches import per_rank_log, device_support, platform_stubs, model_runner
+    from sglang_fl.dispatch.backends.vendor.tsingmicro.patches import per_rank_log, device_support, platform_stubs, model_runner, qwen3_asr_config, kv_leak_fix
 
     per_rank_log.patch()
+    qwen3_asr_config.patch()  # tolerate transformers 5.15+ built-in qwen3_asr (must run before device_support)
     device_support.patch()   # universal + txda-gated internally
     platform_stubs.patch()   # dummy-module injection for non-CUDA platforms
     model_runner.patch()     # gated by SGLANG_FL_TIMER_ENABLE internally
+    kv_leak_fix.patch()     # hardened release; enable with SGLANG_KVLEAK_FIX=1
 
     if not is_txda_available():
         _log.skipped("txda not available — txda-specific patches skipped")
         return
 
-    from sglang_fl.dispatch.backends.vendor.tsingmicro.patches import dist_init, fused_moe, scheduler_pp_mixin
+    from sglang_fl.dispatch.backends.vendor.tsingmicro.patches import (
+        dist_init,
+        fused_moe,
+        gdn_norm,
+        scheduler_pp_mixin,
+    )
 
     dist_init.patch()
     fused_moe.patch()  # includes former unquant patch
     scheduler_pp_mixin.patch()
+    gdn_norm.patch()  # pin GDN gated norm to fla.layernorm_gated.RMSNorm
 
     _log.applied("all txda monkey patches applied")
