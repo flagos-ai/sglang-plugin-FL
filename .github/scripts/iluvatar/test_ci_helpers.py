@@ -128,7 +128,7 @@ class TestConfiguredResources(unittest.TestCase):
         self.assertNotIn("concurrency_group", self.config)
         self.assertEqual(
             json.loads(resolved["runner_labels"]),
-            ["iluvatar-cicd-vllm-plugin"],
+            ["flagcicd-iluvatar-dood-sglang518"],
         )
         self.assertEqual(resolved["cuda_visible_devices"], "0,1,2,3")
         self.assertTrue(
