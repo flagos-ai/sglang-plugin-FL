@@ -510,6 +510,16 @@ def _setup_communicator_hooks():
             except Exception as e:
                 logger.warning(f"CommunicatorFL creation failed: {e}")
                 self.fl_communicator = None
+            # The PP group is created after the TP groups, so the attention-TP
+            # group's PP-receive communicator can be created here on every rank.
+            if (
+                self.fl_communicator is not None
+                and self.fl_communicator._flagcx_comm
+                and getattr(self, "unique_name", "").startswith("pp:")
+            ):
+                from sglang_fl.distributed.communicator import create_pp_aux_comm
+
+                create_pp_aux_comm()
         else:
             self.fl_communicator = None
 

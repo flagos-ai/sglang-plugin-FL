@@ -77,6 +77,7 @@ class CommunicatorFL:
 
         # Initialize FlagCX communicator if backend is flagcx
         self._flagcx_comm = None
+        self._pp_aux_comm = None
         if self._dist_backend == "flagcx" and world_size > 1:
             try:
                 from sglang_fl.distributed.device_communicators.flagcx import (
@@ -103,6 +104,59 @@ class CommunicatorFL:
             f"CommunicatorFL created: world_size={world_size}, "
             f"rank={rank_in_group}, backend={backend_name}"
         )
+
+    # ─── auxiliary communicator for the PP receive path ──────────────────────
+
+    def init_pp_aux_comm(self) -> None:
+        """Create the communicator returned by ``pp_aux_comm``.
+
+        Creation is collective: every rank of the group must call this at the
+        same point.
+        """
+        if self._pp_aux_comm is not None:
+            return
+        if not self._flagcx_comm or self._flagcx_comm.disabled:
+            return
+        from sglang_fl.distributed.device_communicators.flagcx import (
+            FlagCXCommunicator,
+        )
+
+        comm = FlagCXCommunicator(group=self.cpu_group, device=self.device)
+        if not comm.available:
+            raise RuntimeError(
+                "FlagCX communicator for the PP receive path failed to "
+                f"initialize (world_size={self.world_size})"
+            )
+        self._pp_aux_comm = comm
+        logger.info(
+            f"FlagCX PP-receive communicator created: "
+            f"world_size={self.world_size}, rank={self.rank_in_group}"
+        )
+
+    def pp_aux_comm(self):
+        """FlagCX communicator for the all_gather in ``recv_tensor_dict``.
+
+        The main communicator is captured in CUDA graphs on the forward stream,
+        while ``recv_tensor_dict`` runs on the scheduling stream and can issue
+        its all_gather while the other micro-batch's graph is still in flight.
+        The PP receive path therefore uses a communicator of its own, so a graph
+        and this all_gather never share a communicator.
+        """
+        if not self._flagcx_comm or self._flagcx_comm.disabled:
+            return None
+        if self._pp_aux_comm is None:
+            if torch.cuda.is_available() and torch.cuda.is_current_stream_capturing():
+                raise RuntimeError(
+                    "FlagCX PP-receive communicator must be created before "
+                    "CUDA graph capture"
+                )
+            logger.warning(
+                "FlagCX PP-receive communicator was not created at startup; "
+                "creating it on the first PP receive. Creation is collective "
+                f"over the attention-TP group (world_size={self.world_size})."
+            )
+            self.init_pp_aux_comm()
+        return self._pp_aux_comm
 
     # ─── all_reduce ──────────────────────────────────────────────────────────
 
@@ -480,15 +534,41 @@ class CommunicatorFL:
                     work = dist.irecv(tensor, self.ranks[src], self.cpu_group)
                     work.wait()
 
+        tp_comm = getattr(all_gather_group, "fl_communicator", None)
+        aux_comm = tp_comm.pp_aux_comm() if tp_comm is not None else None
         for key, tensor, is_gpu, use_all_gather, orig_shape in recv_ops:
             if use_all_gather:
-                # all_gather on the TP group (not PP group) — use the hooked
-                # GroupCoordinator._all_gather_into_tensor via all_gather_group
+                # all_gather on the TP group (not PP group)
                 full_tensor = torch.empty(
                     orig_shape, dtype=tensor.dtype, device=tensor.device
                 )
-                all_gather_group._all_gather_into_tensor(full_tensor, tensor)
+                if aux_comm is not None:
+                    aux_comm.all_gather(full_tensor, tensor)
+                else:
+                    all_gather_group._all_gather_into_tensor(full_tensor, tensor)
                 tensor = full_tensor
             tensor_dict[key] = tensor
 
         return tensor_dict
+
+
+def create_pp_aux_comm() -> None:
+    """Create the attention-TP group's PP-receive communicator.
+
+    Called once the PP group exists, while every rank is still building its
+    groups and before the KV cache is sized. If the attention-TP group cannot be
+    looked up here, ``recv_tensor_dict`` creates the communicator on first use.
+    """
+    try:
+        from sglang.srt.distributed.parallel_state import get_attn_tp_group
+
+        attn_tp_group = get_attn_tp_group()
+    except (ImportError, AssertionError) as e:
+        logger.warning(
+            "Attention-TP group not found when the PP group was created; the "
+            f"FlagCX PP-receive communicator will be created on first use: {e}"
+        )
+        return
+    comm = getattr(attn_tp_group, "fl_communicator", None)
+    if comm is not None:
+        comm.init_pp_aux_comm()
