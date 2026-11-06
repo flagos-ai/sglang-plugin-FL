@@ -99,6 +99,8 @@ def test_offline_static_memory_fraction_override_reaches_engine(monkeypatch, nam
     with pytest.raises(CapturedEngine):
         namespace["run_engine"]()
     assert captured["mem_fraction_static"] == 0.70
+    assert captured["cuda_graph_max_bs_decode"] == 16
+    assert captured["cuda_graph_max_bs_prefill"] == 256
 
 
 @pytest.mark.parametrize("name,factory", _SINGLE_CASES)
@@ -150,6 +152,7 @@ class _ServerArgs0518:
     attention_backend: str | None = None
     watchdog_timeout: float = 300
     cuda_graph_max_bs_decode: int | None = None
+    cuda_graph_max_bs_prefill: int | None = None
     max_running_requests: int | None = None
     disable_prefill_cuda_graph: bool = False
     speculative_algorithm: str | None = None
