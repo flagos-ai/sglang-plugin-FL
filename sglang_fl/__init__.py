@@ -252,7 +252,7 @@ def _init_dispatch(config: dict) -> None:
 # ─── Dispatch AROUND hook ────────────────────────────────────────────────────
 
 
-def _make_dispatch_hook(config: dict = None):
+def _make_dispatch_hook(config: dict = None, *, fallback_to_cuda: bool = True):
     """Build the AROUND hook for MultiPlatformOp.dispatch_forward.
 
     The hook intercepts dispatch_forward() for ops that have bridge-layer
@@ -337,6 +337,8 @@ def _make_dispatch_hook(config: dict = None):
         # Find bridge function for this op (supports subclasses via MRO)
         bridge_fn = _find_bridge(op_cls)
         if bridge_fn is None:
+            if not fallback_to_cuda:
+                return original_fn(self)
             # No bridge registered: return forward_cuda directly to bypass dispatch_forward.
             # This allows unregistered OOT ops (e.g., MoE before bridge is added) to use
             # their native CUDA implementation instead of falling into forward_native.
@@ -714,7 +716,9 @@ def activate_platform() -> str | None:
 
     info = get_device_info()
     if info is None:
-        logger.warning("sglang_fl platform activation failed: DeviceDetector unavailable")
+        logger.warning(
+            "sglang_fl platform activation failed: DeviceDetector unavailable"
+        )
         return None
     logger.info(
         "sglang_fl platform activating: vendor=%s, device=%s",
@@ -733,6 +737,7 @@ _plugin_active = False
 def is_plugin_loaded() -> bool:
     """Return whether SGLang invoked the general plugin entry point."""
     return _plugin_loaded
+
 
 def is_plugin_active() -> bool:
     """Return whether the general plugin completed its initialization."""
@@ -771,11 +776,23 @@ def load_plugin():
         os.environ.get("SGLANG_FL_OOT_ENABLED", "1"), default=True
     )
     if oot_enabled:
+        dispatch_hook = _make_dispatch_hook(config)
         HookRegistry.register(
             "sglang.srt.layers.utils.multi_platform.MultiPlatformOp.dispatch_forward",
-            _make_dispatch_hook(config),
+            dispatch_hook,
             HookType.AROUND,
         )
+        try:
+            from sglang.kernels.fused_op import BaseFusedOp
+        except (ImportError, AttributeError):
+            logger.info("BaseFusedOp resolver API absent; using legacy dispatch hook")
+        else:
+            if hasattr(BaseFusedOp, "_resolve_forward_method"):
+                HookRegistry.register(
+                    "sglang.kernels.fused_op.BaseFusedOp._resolve_forward_method",
+                    _make_dispatch_hook(config, fallback_to_cuda=False),
+                    HookType.AROUND,
+                )
         # Patch FLA functions to use dispatch mechanism
         from sglang_fl.dispatch.fla_patch import patch_fla_functions
 

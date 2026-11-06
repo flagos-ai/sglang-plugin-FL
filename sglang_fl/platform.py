@@ -87,8 +87,8 @@ class PlatformFL(SRTPlatform):
                 "(flag_gems missing or hardware unrecognised)"
             )
         self._info = info
-        self._vendor_name: str = info.vendor_name    # "nvidia", "ascend", ...
-        self._device_type: str = info.device_type    # "cuda", "npu", ...
+        self._vendor_name: str = info.vendor_name  # "nvidia", "ascend", ...
+        self._device_type: str = info.device_type  # "cuda", "npu", ...
         self._dispatch_key: str = info.dispatch_key  # "CUDA", "NPU", ...
         self._device_count: int = info.device_count
 
@@ -233,9 +233,20 @@ class PlatformFL(SRTPlatform):
             )
 
             return NPUGraphRunner
-        from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
+        try:
+            from sglang.srt.model_executor.runner.decode_cuda_graph_runner import (
+                DecodeCudaGraphRunner,
+            )
+        except ModuleNotFoundError as exc:
+            if exc.name not in {
+                "sglang.srt.model_executor.runner",
+                "sglang.srt.model_executor.runner.decode_cuda_graph_runner",
+            }:
+                raise
+            from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
 
-        return CudaGraphRunner
+            return CudaGraphRunner
+        return DecodeCudaGraphRunner
 
     def get_mha_kv_pool_cls(self) -> type:
         if self._device_type == "npu":
@@ -300,7 +311,7 @@ class PlatformFL(SRTPlatform):
     def support_piecewise_cuda_graph(self) -> bool:
         return self._device_type == "cuda"
 
-    def is_pin_memory_available(self) -> bool:
+    def is_pin_memory_available(self, device=None) -> bool:
         return self._device_type in ("cuda", "npu", "xpu", "musa", "tsingmicro")
 
     def supports_fp8(self) -> bool:

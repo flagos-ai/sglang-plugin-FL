@@ -27,6 +27,39 @@ _MUSA_FP32_TP_ALLREDUCE = os.environ.get(
 ).lower() in ("1", "true")
 
 
+def _prepare_musa_fla_triton() -> None:
+    """Resolve CUDA GDC names during parsing, but reject their use on MUSA."""
+    import triton
+    import triton.language as tl
+
+    cuda_extra = tl.extra.cuda
+    additions = {}
+    if not hasattr(cuda_extra, "gdc_wait"):
+
+        @triton.jit
+        def _gdc_wait_unavailable():
+            tl.static_assert(False, "CUDA GDC wait is unavailable on MUSA")
+
+        additions["gdc_wait"] = _gdc_wait_unavailable
+    if not hasattr(cuda_extra, "gdc_launch_dependents"):
+
+        @triton.jit
+        def _gdc_launch_dependents_unavailable():
+            tl.static_assert(False, "CUDA GDC launch is unavailable on MUSA")
+
+        additions["gdc_launch_dependents"] = _gdc_launch_dependents_unavailable
+
+    installed = []
+    try:
+        for name, fn in additions.items():
+            setattr(cuda_extra, name, fn)
+            installed.append(name)
+    except Exception:
+        for name in installed:
+            delattr(cuda_extra, name)
+        raise
+
+
 def _patch_pp_send_recv_order() -> None:
     try:
         from sglang.srt.managers.scheduler_pp_mixin import SchedulerPPMixin
@@ -248,6 +281,7 @@ def apply_musa_patches() -> None:
     if _patches_applied:
         return
 
+    _prepare_musa_fla_triton()
     _patch_pp_send_recv_order()
     _patch_pp_launch_batch_add_sync()
     _patch_multimodal_mask()

@@ -154,6 +154,7 @@ class MusaBackend(Backend):
         cu_seqlens=None,
         head_first=False,
         use_qk_l2norm_in_kernel=False,
+        inplace_update=True,
     ):
         from .impl.fla import chunk_gated_delta_rule_musa
 
@@ -169,6 +170,7 @@ class MusaBackend(Backend):
             cu_seqlens,
             head_first,
             use_qk_l2norm_in_kernel,
+            inplace_update,
         )
 
     def fused_recurrent_gated_delta_rule(
