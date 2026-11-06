@@ -23,7 +23,7 @@ Adapted from vllm-plugin-FL's PyFlagcxCommunicator pattern:
 Requirements:
   - FLAGCX_PATH env var pointing to FlagCX installation
   - libflagcx.so built at $FLAGCX_PATH/build/lib/
-  - FlagCX Python wrapper at $FLAGCX_PATH/plugin/interservice/flagcx_wrapper.py
+  - FlagCX Python API (flagcx.api), or legacy plugin.interservice.flagcx_wrapper
 
 Usage:
   SGLANG_FL_DIST_BACKEND=flagcx FLAGCX_PATH=/path/to/FlagCX \
@@ -35,11 +35,29 @@ import ctypes
 import logging
 import os
 import sys
+from functools import lru_cache
+from importlib import import_module
+from importlib.machinery import PathFinder
+from importlib.util import find_spec
 
 import torch
 import torch.distributed as dist
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=1)
+def _import_flagcx_api():
+    """Resolve the FlagCX API once without initializing the legacy package."""
+    package_spec = find_spec("flagcx")
+    if package_spec is not None:
+        package_paths = package_spec.submodule_search_locations
+        if package_paths is not None:
+            api_spec = PathFinder.find_spec("flagcx.api", package_paths)
+            if api_spec is not None:
+                return import_module("flagcx.api")
+
+    return import_module("plugin.interservice.flagcx_wrapper")
 
 
 def _import_flagcx_wrapper():
@@ -56,22 +74,14 @@ def _import_flagcx_wrapper():
     if flagcx_path not in sys.path:
         sys.path.append(flagcx_path)
 
-    from plugin.interservice.flagcx_wrapper import (
-        FLAGCXLibrary,
-        buffer_type,
-        flagcxComm_t,
-        flagcxDataTypeEnum,
-        flagcxRedOpTypeEnum,
-        flagcxUniqueId,
-    )
-
+    api = _import_flagcx_api()
     return (
-        FLAGCXLibrary,
-        buffer_type,
-        flagcxComm_t,
-        flagcxDataTypeEnum,
-        flagcxRedOpTypeEnum,
-        flagcxUniqueId,
+        api.FLAGCXLibrary,
+        api.buffer_type,
+        api.flagcxComm_t,
+        api.flagcxDataTypeEnum,
+        api.flagcxRedOpTypeEnum,
+        api.flagcxUniqueId,
     )
 
 
@@ -189,8 +199,7 @@ class FlagCXCommunicator:
         return torch.cuda.current_stream().cuda_stream
 
     def _sync_current_stream(self):
-        """Synchronize the vendor-specific current stream for this device.
-        """
+        """Synchronize the vendor-specific current stream for this device."""
         device_str = str(self.device)
         if "npu" in device_str:
             stream = torch.npu.current_stream()
@@ -201,17 +210,13 @@ class FlagCXCommunicator:
         try:
             stream.synchronize()
         except RuntimeError as e:
-            logger.error(
-                "stream.synchronize() failed on %s: %s", device_str, e
-            )
+            logger.error("stream.synchronize() failed on %s: %s", device_str, e)
             raise
 
     def _is_current_stream_capturing(self) -> bool:
         """Return whether the communicator's device is capturing a graph."""
         device_module = getattr(torch, self.device.type, None)
-        is_capturing = getattr(
-            device_module, "is_current_stream_capturing", None
-        )
+        is_capturing = getattr(device_module, "is_current_stream_capturing", None)
         return bool(is_capturing()) if callable(is_capturing) else False
 
     def _get_stream(self):
@@ -220,8 +225,7 @@ class FlagCXCommunicator:
         cached = self._stream_cache.get(handle)
         if cached is not None:
             return cached
-        from plugin.interservice.flagcx_wrapper import flagcxStream_t
-        new_stream = flagcxStream_t()
+        new_stream = _import_flagcx_api().flagcxStream_t()
         self.flagcx.FLAGCX_CHECK(
             self.flagcx.devHandle.contents.streamCopy(
                 ctypes.byref(new_stream),
