@@ -22,10 +22,12 @@ Patches applied:
   scheduler_pp_mixin –  PP send/recv even/odd ordering for txda (same as XPU)
   qwen3_asr_config – Default AutoConfig.register exist_ok=True to tolerate
                     transformers 5.15+ built-in qwen3_asr registration
-  decode_attention – Route triton_ops.decode_attention.decode_attention_fwd
-                    through flag_gems (opt-in SGLANG_FL_DECODE_ATTN_FLAGOS=1)
   gdn_norm        – Pin GatedDeltaNet's gated RMSNorm to
                     fla.layernorm_gated.RMSNorm (SGLANG_FL_GDN_NORM, default 0)
+
+Note: attention kernel routing (extend and decode to the flag_gems
+``_tsingmicro`` kernels) lives in ``impl/attention_backend.py``, not here --
+it is a backend concern, bound per instance in ``TxdaAttnBackend.__init__``.
 
 Usage (called automatically by load_plugin()):
 
@@ -62,7 +64,6 @@ def apply_all_txda_patches() -> None:
         return
 
     from sglang_fl.dispatch.backends.vendor.tsingmicro.patches import (
-        decode_attention,
         dist_init,
         fused_moe,
         gdn_norm,
@@ -72,7 +73,6 @@ def apply_all_txda_patches() -> None:
     dist_init.patch()
     fused_moe.patch()  # includes former unquant patch
     scheduler_pp_mixin.patch()
-    decode_attention.patch()  # opt-in route decode attention to flag_gems
     gdn_norm.patch()  # pin GDN gated norm to fla.layernorm_gated.RMSNorm
 
     _log.applied("all txda monkey patches applied")
