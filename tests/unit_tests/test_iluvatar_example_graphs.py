@@ -128,6 +128,7 @@ def test_corex_graph_limit_covers_concurrent_requests(monkeypatch, concurrency, 
     namespace = _load_example(monkeypatch, name)
     engine = namespace["_make_engine"]()
     assert engine.server_args.cuda_graph_max_bs_decode == concurrency
+    assert engine.server_args.cuda_graph_max_bs_prefill == 256
     assert engine.server_args.disable_fast_image_processor is True
 
 

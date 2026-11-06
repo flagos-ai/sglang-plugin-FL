@@ -118,6 +118,7 @@ elif _is_corex:
         "watchdog_timeout": 3600,
         "attention_backend": "triton",
         "cuda_graph_max_bs_decode": max(1, CONCURRENT_N),
+        "cuda_graph_max_bs_prefill": 256,
     }
 elif _is_hcu:
     _extra_engine_kwargs = {
