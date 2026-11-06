@@ -5,18 +5,19 @@ performance timing.
 
 Equivalent to VLLM's ``VLLM_FL_TIMER`` feature in ``WorkerFL.execute_model()``:
 records wall‑clock time (including device synchronize) around the full
-``forward()`` call and prints a one‑line summary on rank 0.
+``forward()`` call and logs a one‑line summary on rank 0.
 
 Controlled by ``SGLANG_FL_TIMER_ENABLE`` environment variable (or the legacy
 ``VLLM_FL_TIMER_ENABLE`` for backward compatibility).  Set to ``1`` to activate.
 
 Output format (one line per forward pass on rank 0)::
 
-    [INFO][SGLANG_FL_TIMER] iter=12 tp_rank=0 seq_len=8192 time=45.6789ms
+    [TXDA_PATCH|model_runner] action=info [SGLANG_FL_TIMER] iter=12 tp_rank=0
+    mode=prefill seq_len=8192 time=45.6789ms
 
 Patches applied:
   1. ``ModelRunner.__init__`` — inject ``_fl_timer_enabled`` flag (post‑init hook).
-  2. ``ModelRunner.forward`` — wrap with sync → timer → sync → print.
+  2. ``ModelRunner.forward`` — wrap with sync → timer → sync → log.
 """
 
 import functools
@@ -121,13 +122,13 @@ def patch() -> None:
         num_tokens = _extract_num_tokens(forward_batch)
         mode = _extract_forward_mode(forward_batch)
 
-        print(
-            f"[INFO][SGLANG_FL_TIMER] iter={iter_num} "
-            f"tp_rank={self.tp_rank} "
-            f"mode={mode} "
-            f"seq_len={num_tokens} "
-            f"time={elapsed_ms:.4f}ms",
-            flush=True,
+        _log.info(
+            "[SGLANG_FL_TIMER] iter=%s tp_rank=%s mode=%s seq_len=%s time=%.4fms",
+            iter_num,
+            self.tp_rank,
+            mode,
+            num_tokens,
+            elapsed_ms,
         )
 
         return result
