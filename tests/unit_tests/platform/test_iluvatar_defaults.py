@@ -62,6 +62,8 @@ def test_empty_policy_resolves_without_vendor_kernels(monkeypatch):
     assert config["flagos_blacklist"] == [
         "max",
         "masked_scatter_",
+        "index_put_",
+        "_index_put_impl_",
         "mul_",
         "linear",
         "mm",
