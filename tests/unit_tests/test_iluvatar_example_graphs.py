@@ -23,6 +23,7 @@ _SINGLE_CASES = [
     ("qwen3_6_35b_a3b_concurrent.py", "_make_engine"),
 ]
 _OFFLINE = [name for name, factory in _SINGLE_CASES if factory == "run_engine"]
+_CONCURRENT = [name for name, factory in _SINGLE_CASES if factory == "_make_engine"]
 _MULTINODE = ["qwen3_6_27b_multinode.py", "qwen3_6_35b_a3b_multinode.py"]
 
 
@@ -101,6 +102,17 @@ def test_offline_static_memory_fraction_override_reaches_engine(monkeypatch, nam
     assert captured["mem_fraction_static"] == 0.70
     assert captured["cuda_graph_max_bs_decode"] == 16
     assert captured["cuda_graph_max_bs_prefill"] == 256
+
+
+@pytest.mark.parametrize("name", _CONCURRENT)
+def test_concurrent_static_memory_fraction_override_reaches_engine(monkeypatch, name):
+    _cuda_platform(monkeypatch, corex=True)
+    monkeypatch.setenv("MEM_FRACTION_STATIC", "0.70")
+    captured = _capture_engine(monkeypatch)
+    namespace = _load_example(monkeypatch, name)
+    with pytest.raises(CapturedEngine):
+        namespace["_make_engine"]()
+    assert captured["mem_fraction_static"] == 0.70
 
 
 @pytest.mark.parametrize("name,factory", _SINGLE_CASES)
