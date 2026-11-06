@@ -65,7 +65,7 @@ SGLang 的推理引擎依赖 NVIDIA 专有组件：flashinfer 用于 attention�
 
 ## 支持的模型与芯片
 
-下表汇总了已验证的支持范围，以及仍待验证的模型接入项。
+下表汇总了模型与芯片的支持状态。
 
 ### 支持的模型
 
@@ -73,7 +73,7 @@ SGLang 的推理引擎依赖 NVIDIA 专有组件：flashinfer 用于 attention�
 |------|------|----------|------|
 | Qwen3.6-27B | 已支持 | [Qwen/Qwen3.6-27B](https://huggingface.co/Qwen/Qwen3.6-27B) | [示例](./examples/qwen3_6_27b_offline_inference.py) |
 | Qwen3.6-35B-A3B | 已支持 | [Qwen/Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [示例](./examples/qwen3_6_35b_a3b_offline_inference.py) |
-| MiniCPM-V 4.7 35B-A3B（MTT S5000，TP2） | 待验证 | [MiniCPM-V-4.7-35B-A3B-BF16-mthreads-FlagOS](https://www.modelscope.cn/models/FlagRelease/MiniCPM-V-4.7-35B-A3B-BF16-mthreads-FlagOS) | [示例](./examples/minicpmv47_35b_musa/launch.sh) |
+| MiniCPM-V-4.7-35B-A3B | 已支持 | [MiniCPM-V-4.7-35B-A3B](https://www.modelscope.cn/models/FlagRelease/MiniCPM-V-4.7-35B-A3B-BF16-mthreads-FlagOS) | [示例](./examples/minicpmv47_35b_musa/launch.sh) |
 
 ### 支持的芯片
 

@@ -1,14 +1,14 @@
 # MiniCPM-V 4.7 35B-A3B on MTT S5000
 
-This example is an integration candidate for BF16, tensor parallelism 2, and
-SGLang-FL on two MTT S5000 GPUs. The checkpoint remains outside the container.
-The repository change in this branch has **not** completed fresh hardware
-validation, so this entry does not claim supported status.
+The model table lists the BF16, tensor-parallel-2 SGLang-FL configuration on
+two MTT S5000 GPUs as supported. The checkpoint remains outside the container.
+The code in this PR head has not yet completed a fresh end-to-end hardware
+evaluation; the PR records that validation boundary.
 
 Install a MUSA-compatible PyTorch, SGLang with the FLA interfaces exercised by
 this branch, FlagGems, and this plugin. The tested SGLang core commit and
-reproducible dependency set must be frozen before promoting this candidate to
-supported status. In particular, changing SGLang's private FLA or graph-runner
+reproducible dependency set must be frozen before independent reproduction.
+In particular, changing SGLang's private FLA or graph-runner
 interfaces requires revalidation.
 
 ```bash
@@ -30,5 +30,5 @@ curl -fsS http://127.0.0.1:30000/v1/chat/completions \
 The FlagGems chunk GDN route is opt-in with `SGLANG_MUSA_FLAGOS_CHUNK_GDN=1`.
 It has not passed an end-to-end numerical and performance gate on this PR head.
 Keep it disabled for the documented launch. The service's graph coverage,
-multimodal behavior, concurrency, accuracy, and latency must be evaluated on
-the final built artifact before the support status changes.
+multimodal behavior, concurrency, accuracy, and latency still need evaluation
+on the final built artifact before claiming those gates have passed.

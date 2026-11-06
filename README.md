@@ -49,7 +49,7 @@ Chip vendors only need to implement a backend class + `register_ops.py`. The dis
 
 ## Supported Models and Chips
 
-The tables below show verified support and model integrations awaiting validation.
+The tables below summarize model and chip support status.
 
 ### Supported Models
 
@@ -57,7 +57,7 @@ The tables below show verified support and model integrations awaiting validatio
 |-------|--------|---------|-----------|
 | Qwen3.6-27B | Supported | [Qwen/Qwen3.6-27B](https://huggingface.co/Qwen/Qwen3.6-27B) | [example](./examples/qwen3_6_27b_offline_inference.py) |
 | Qwen3.6-35B-A3B | Supported | [Qwen/Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [example](./examples/qwen3_6_35b_a3b_offline_inference.py) |
-| MiniCPM-V 4.7 35B-A3B (MTT S5000, TP2) | Pending validation | [MiniCPM-V-4.7-35B-A3B-BF16-mthreads-FlagOS](https://www.modelscope.cn/models/FlagRelease/MiniCPM-V-4.7-35B-A3B-BF16-mthreads-FlagOS) | [example](./examples/minicpmv47_35b_musa/launch.sh) |
+| MiniCPM-V-4.7-35B-A3B | Supported | [MiniCPM-V-4.7-35B-A3B](https://www.modelscope.cn/models/FlagRelease/MiniCPM-V-4.7-35B-A3B-BF16-mthreads-FlagOS) | [example](./examples/minicpmv47_35b_musa/launch.sh) |
 
 ### Supported Chips
 
