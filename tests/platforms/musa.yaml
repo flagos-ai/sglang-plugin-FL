@@ -68,16 +68,19 @@ s5000:
   name: "s5000"
   tests:
     e2e:
-      # Add or remove test cases per model.
-      # Each case points to tests/models/<model>/<case>.yaml.
-      concurrent:
-        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
-      inference:
-        qwen3: ["4b_tp2", "06b_tp1"]
-        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
-      serving:
-        qwen3: ["4b_tp2"]
-        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      # E2E cases grouped by CI stage. Weekly falls back to nightly.
+      pr:
+        inference: &musa_inference
+          qwen3: ["4b_tp2", "06b_tp1"]
+          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+        serving: &musa_serving
+          qwen3: ["4b_tp2"]
+          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      nightly:
+        concurrent:
+          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+        inference: *musa_inference
+        serving: *musa_serving
 
     functional:
       # Reserved for future tests/functional_tests support.
@@ -92,5 +95,9 @@ s5000:
       exclude: []
 
     benchmark:
-      enabled: true
-      smoke: ["throughput", "latency", "serve"]
+      pr:
+        enabled: true
+        types: [serve]
+      nightly:
+        enabled: true
+        types: [throughput, latency, serve]
