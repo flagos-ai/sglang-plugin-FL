@@ -103,7 +103,7 @@ def gdn_verify_gcu(original, *args, **kwargs):
     q = kwargs.get("q") if "q" in kwargs else args[5]
     if q.device.type != "gcu":
         return original(*args, **kwargs)
-    from ..impl.gdn_verify import fused_sigmoid_gating_delta_rule_update_gcu
+    from ..impl.gdn_mtp_verify import fused_sigmoid_gating_delta_rule_update_gcu
 
     return fused_sigmoid_gating_delta_rule_update_gcu(*args, **kwargs)
 

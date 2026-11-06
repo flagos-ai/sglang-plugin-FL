@@ -4,6 +4,8 @@ runner_labels:
   - ci-sglang-plugin-fl-enflame
 container_volumes:
   - /data:/data
+# TODO: Device nodes below match the current Enflame runner.
+# Verify /dev/gcuctl and /dev/gcu7vid0-7 when adding or replacing a runner.
 container_options: >-
   --hostname sglang-plugin-fl
   --ipc=host

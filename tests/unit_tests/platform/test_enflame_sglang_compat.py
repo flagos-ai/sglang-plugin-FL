@@ -119,3 +119,31 @@ def test_fla_chunk_new_entry_point_and_return_contract(monkeypatch):
                                   use_qk_l2norm_in_kernel=True)
     assert actual[0] is output and actual[1] is None and actual[2] is final_state
     assert len(calls) == 1
+
+
+def test_gdn_mtp_verify_matches_upstream_signature():
+    # Compare source signatures without importing Triton or initializing devices.
+    import sglang
+
+    relative = "kernels/ops/attention/fla/fused_sigmoid_gating_recurrent.py"
+    upstream = Path(sglang.__file__).resolve().parent / relative
+    replacement = ROOT / (
+        "sglang_fl/dispatch/backends/vendor/enflame/impl/gdn_mtp_verify.py"
+    )
+
+    def signature(path, name):
+        tree = ast.parse(path.read_text())
+        function = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == name
+        )
+        for arg in (
+            function.args.posonlyargs + function.args.args
+            + function.args.kwonlyargs
+        ):
+            arg.annotation = None
+        return ast.dump(function.args, include_attributes=False)
+
+    assert signature(
+        replacement, "fused_sigmoid_gating_delta_rule_update_gcu"
+    ) == signature(upstream, "fused_sigmoid_gating_delta_rule_update")
