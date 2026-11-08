@@ -38,12 +38,22 @@ p800:
       include: "*"
       exclude: []
     e2e:
-      inference:
-        qwen3_6: ["27b_tp4_nograph", "35b_a3b_tp4_nograph"]
-      serving:
-        qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
-      concurrent:
-        qwen3_6: ["27b_tp4_nograph", "35b_a3b_tp4_nograph"]
+      pr:
+        inference:
+          qwen3_6: ["27b_tp4_nograph", "35b_a3b_tp4_nograph"]
+        serving:
+          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+      nightly:
+        inference:
+          qwen3_6: ["27b_tp4_nograph", "35b_a3b_tp4_nograph"]
+        serving:
+          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+        concurrent:
+          qwen3_6: ["27b_tp4_nograph", "35b_a3b_tp4_nograph"]
     benchmark:
-      enabled: true
-      smoke: ["throughput", "latency", "serve"]
+      pr:
+        enabled: true
+        types: ["serve"]
+      nightly:
+        enabled: true
+        types: ["throughput", "latency", "serve"]

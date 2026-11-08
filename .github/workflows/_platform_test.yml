@@ -117,7 +117,7 @@ jobs:
   # This job runs WITHOUT a container (no docker network allocation needed), so
   # it can start on an exhausted host, and removes only stale github_network_*
   # entries; in-use networks fail the rm and are kept. It runs for every
-  # platform and must NOT be gated or skipped: unit depends on it, and a
+  # platform and must NOT be gated or skipped: functional depends on it, and a
   # skipped dependency cascades skip through the whole chain.
   docker-cleanup:
     name: "Docker network cleanup"

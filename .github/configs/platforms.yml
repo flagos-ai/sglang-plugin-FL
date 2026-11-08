@@ -130,11 +130,11 @@ platforms:
     trigger_paths:
       - sglang_fl/dispatch/config/kunlunxin.yaml
       - .github/scripts/kunlunxin/
-      - .github/configs/kunlunxin.yaml
+      - .github/configs/kunlunxin.yml
       - tests/platforms/kunlunxin.yaml
       - docker/kunlunxin/
     exempt_from_global:
       - sglang_fl/dispatch/config/kunlunxin.yaml
       - .github/scripts/kunlunxin/
-      - .github/configs/kunlunxin.yaml
+      - .github/configs/kunlunxin.yml
       - tests/platforms/kunlunxin.yaml
