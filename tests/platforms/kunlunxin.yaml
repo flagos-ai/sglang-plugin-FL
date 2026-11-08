@@ -1,6 +1,12 @@
 platform: kunlunxin
 vendor: kunlunxin
 
+# The P800/FlagCX runtime cannot reliably host two independent TP process
+# groups at once.  In particular, co-scheduled TP4 serving cases leave rank 0
+# stuck in model loading while the other ranks finish, so run E2E cases
+# serially even when the runner exposes eight devices.
+e2e_serial: true
+
 device_types:
   p800:
     memory_gb: 96
