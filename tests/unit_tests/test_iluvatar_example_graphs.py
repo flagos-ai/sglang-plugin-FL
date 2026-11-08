@@ -404,7 +404,10 @@ def _acceptance_harness(tmp_path, profile="vendor"):
     binaries.mkdir()
     python = binaries / "python"
     python.write_text(
-        '#!/bin/bash\nprintf \'%s\\t%s\\n\' "${DISABLE_CUDA_GRAPH:-unset}" "$*" >> "$CALL_LOG"\n',
+        "#!/bin/bash\n"
+        "printf '%s\\t%s\\t%s\\n' \\\n"
+        '  "${DISABLE_CUDA_GRAPH:-unset}" "${MEM_FRACTION_STATIC:-unset}" "$*" \\\n'
+        '  >> "$CALL_LOG"\n',
         encoding="utf-8",
     )
     python.chmod(0o755)
@@ -422,6 +425,7 @@ def _acceptance_harness(tmp_path, profile="vendor"):
         SGLANG_FL_DIST_BACKEND="nccl",
     )
     env.pop("DISABLE_CUDA_GRAPH", None)
+    env.pop("MEM_FRACTION_STATIC", None)
     return script, calls, logs, env
 
 
@@ -443,15 +447,24 @@ def test_acceptance_runs_both_models_and_concurrency_with_each_graph_mode(
 ):
     script, calls, logs, env = _acceptance_harness(tmp_path, profile)
     _run_acceptance(script, tmp_path, env, check=True)
-    invocations = [line.split("\t", 1) for line in calls.read_text().splitlines()]
-    assert f"--fused-profile {profile}" in invocations[0][1]
+    invocations = [line.split("\t", 2) for line in calls.read_text().splitlines()]
+    assert f"--fused-profile {profile}" in invocations[0][2]
+    assert {invocation[1] for invocation in invocations} == {"0.69"}
     expected = []
     for model in ("27b", "35b_a3b"):
         for disabled in ("1", "0"):
             expected.extend(
                 [
-                    [disabled, f"examples/qwen3_6_{model}_offline_inference.py"],
-                    [disabled, f"examples/qwen3_6_{model}_concurrent.py --mode all"],
+                    [
+                        disabled,
+                        "0.69",
+                        f"examples/qwen3_6_{model}_offline_inference.py",
+                    ],
+                    [
+                        disabled,
+                        "0.69",
+                        f"examples/qwen3_6_{model}_concurrent.py --mode all",
+                    ],
                 ]
             )
             assert (logs / f"{model}_offline_graph_disabled_{disabled}.log").is_file()
