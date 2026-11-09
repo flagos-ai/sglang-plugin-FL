@@ -8,17 +8,10 @@ permissions:
   contents: read
 
 jobs:
-  build-thead:
+  mirror-runtime-bases:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 30
     steps:
-      - name: Check out T-Head image source
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-        with:
-          repository: lentil1016/sglang-plugin-FL
-          ref: 241d8a6d5be6a0bfc6fe6dc3736aaff9b5d3b574
-          fetch-depth: 1
-
       - name: Log in to Harbor
         env:
           HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
@@ -31,32 +24,19 @@ jobs:
           printf '%s' "$HARBOR_PASSWORD" | docker login harbor.baai.ac.cn \
             --username "$HARBOR_USERNAME" --password-stdin
 
-      - name: Build and push layered T-Head CI image
-        env:
-          IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-runtime-ci-20261109
+      - name: Mirror runtime manifests into the CI repository
         shell: bash
         run: |
           set -euo pipefail
-          df -h .
-          docker buildx use default
-          docker buildx inspect default --bootstrap
-          docker buildx build \
-            --builder default \
-            --file docker/thead/ci-runtime-0.5.18.containerfile \
-            --target ci \
-            --tag "$IMAGE" \
-            --cache-from "type=registry,ref=$IMAGE" \
-            --cache-to type=inline \
-            --push \
-            --provenance=false \
-            --metadata-file build-metadata.json \
-            .
-          python3 - <<'PY'
-          import json
-          metadata = json.load(open('build-metadata.json'))
-          print('image digest:', metadata.get('containerimage.digest'))
-          PY
-          docker buildx imagetools inspect "$IMAGE"
+          repo=harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl
+          docker buildx imagetools create \
+            --tag "$repo:runtime-thead-ppu2.1.0" \
+            harbor.baai.ac.cn/flagos-runtime/flagos-runtime-thead-ppu2.1.0@sha256:ee5b2b9420dedc8eb6ad6658397e9d9602533f1c6e74a53b924ff976a113d4ab
+          docker buildx imagetools create \
+            --tag "$repo:runtime-kunlunxin-xre5.37.1" \
+            harbor.baai.ac.cn/flagos-runtime/flagos-runtime-kunlunxin-xre5.37.1@sha256:679182a04d187562a3e23bacb9d0eb876dabf09ac0c0a875c2b4a141b64cac69
+          docker buildx imagetools inspect "$repo:runtime-thead-ppu2.1.0"
+          docker buildx imagetools inspect "$repo:runtime-kunlunxin-xre5.37.1"
 
       - name: Log out of Harbor
         if: always()
