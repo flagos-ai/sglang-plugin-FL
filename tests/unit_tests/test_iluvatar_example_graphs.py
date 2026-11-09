@@ -430,6 +430,12 @@ def _acceptance_harness(tmp_path, profile="vendor"):
     )
     env.pop("DISABLE_CUDA_GRAPH", None)
     env.pop("MEM_FRACTION_STATIC", None)
+    # Non-interactive Bash still sources BASH_ENV even with --noprofile and
+    # --norc. Vendor images use it to prepend their Python environment, which
+    # would bypass the fake interpreter above and make this shell-only test
+    # depend on the host image. ENV has the equivalent role for other shells.
+    env.pop("BASH_ENV", None)
+    env.pop("ENV", None)
     return script, calls, logs, env
 
 
