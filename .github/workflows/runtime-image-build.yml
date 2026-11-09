@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           repository: lentil1016/sglang-plugin-FL
-          ref: 11d96b912b70301328ca528d1f9b2f4d748b4e5d
+          ref: a01b732595365303a5245a2e952115229094126c
           fetch-depth: 1
 
       - name: Log in to Harbor
@@ -33,7 +33,8 @@ jobs:
 
       - name: Build and push layered T-Head CI image
         env:
-          IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-runtime-ci-20261109-v2
+          IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-runtime-ci-20261109-v3
+          CACHE_IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-runtime-ci-20261109
         shell: bash
         run: |
           set -euo pipefail
@@ -45,7 +46,7 @@ jobs:
             --file docker/thead/ci-runtime-0.5.18.containerfile \
             --target ci \
             --tag "$IMAGE" \
-            --cache-from "type=registry,ref=$IMAGE" \
+            --cache-from "type=registry,ref=$CACHE_IMAGE" \
             --cache-to type=inline \
             --push \
             --provenance=false \
