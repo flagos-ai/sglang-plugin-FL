@@ -7,6 +7,7 @@ ARG PIP_INDEX_URL=https://pypi.org/simple
 ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
     PIP_DEFAULT_TIMEOUT=300 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONPATH=/opt/flagtree \
     LD_LIBRARY_PATH=/opt/accl-p:${LD_LIBRARY_PATH}
 
 # FlagCX can be built without a device. Keep its source tree for the interservice
