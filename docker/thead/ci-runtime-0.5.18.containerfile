@@ -109,7 +109,8 @@ RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
     python -m pip install --no-build-isolation -c /opt/vendor-constraints.txt \
         -e '/opt/sglang/python[srt_empty]' && \
     PIP_INDEX_URL="${CI_PIP_INDEX_URL}" \
-        python -m pip install --no-deps xgrammar==0.2.1
+        python -m pip install --no-deps \
+        xgrammar==0.2.1 compressed-tensors==0.15.0
 
 FROM sglang AS dependencies
 RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
