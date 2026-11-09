@@ -7,7 +7,6 @@ ARG PIP_INDEX_URL=https://pypi.org/simple
 ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
     PIP_DEFAULT_TIMEOUT=300 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONPATH=/opt/flagtree \
     LD_LIBRARY_PATH=/opt/accl-p:${LD_LIBRARY_PATH}
 
 # FlagCX can be built without a device. Keep its source tree for the interservice
@@ -90,7 +89,8 @@ RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
 # Frequently changed plugin code and CI defaults are deliberately last. Tests,
 # docs, local reports, Git metadata, and unrelated platforms are not build inputs.
 FROM dependencies AS ci
-ENV SGLANG_PLUGINS=sglang_fl \
+ENV PYTHONPATH=/opt/flagtree \
+    SGLANG_PLUGINS=sglang_fl \
     SGLANG_PLATFORM=sglang_fl \
     USE_FLAGGEMS=1 \
     SGLANG_FL_OOT_ENABLED=1 \
