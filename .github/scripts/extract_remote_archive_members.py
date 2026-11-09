@@ -28,10 +28,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--member",
         action="append",
-        required=True,
         help="Archive member and output filename as MEMBER=OUTPUT",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--archive-output",
+        help="Keep the verified archive at this path instead of extracting members",
+    )
+    args = parser.parse_args()
+    if not args.member and not args.archive_output:
+        parser.error("one of --member or --archive-output is required")
+    return args
 
 
 def registry_url_and_headers(args: argparse.Namespace) -> tuple[str, dict[str, str]]:
@@ -115,6 +121,19 @@ def main() -> None:
         if args.registry_repository
         else (args.url, {})
     )
+    if args.archive_output:
+        archive = Path(args.archive_output)
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        download(
+            url,
+            headers,
+            args.size,
+            args.sha256,
+            args.workers,
+            archive,
+        )
+        return
+
     members = dict(item.split("=", 1) for item in args.member)
     with tempfile.TemporaryDirectory(prefix="vendor-archive-") as directory:
         archive = Path(directory) / "archive.tar.gz"
