@@ -102,6 +102,8 @@ RUN git init /opt/sglang && \
     git -C /opt/sglang fetch --depth 1 origin "${SGLANG_COMMIT}" && \
     git -C /opt/sglang checkout --detach FETCH_HEAD && \
     cp /opt/sglang/python/pyproject_other.toml /opt/sglang/python/pyproject.toml
+# compressed-tensors is installed without dependency resolution to preserve
+# vendor Torch. Its only srt_empty-missing runtime dependency is loguru.
 RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
     PIP_INDEX_URL="${CI_PIP_INDEX_URL}" SGLANG_BUILD_RUST_EXTS=none \
     SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SGLANG=${SGLANG_VERSION} \
@@ -109,7 +111,8 @@ RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
         -e '/opt/sglang/python[srt_empty]' && \
     PIP_INDEX_URL="${CI_PIP_INDEX_URL}" \
         python -m pip install --no-deps \
-        xgrammar==0.2.1 compressed-tensors==0.15.0 && \
+        xgrammar==0.2.1 compressed-tensors==0.15.0 loguru==0.7.3 && \
+    python -c "import compressed_tensors, loguru" && \
     python -c "import torchvision; from torchvision.io import decode_jpeg; assert torchvision.__version__.split('+')[0] == '0.25.0'"
 
 FROM sglang AS dependencies
