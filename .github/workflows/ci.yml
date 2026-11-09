@@ -47,7 +47,7 @@ jobs:
     runs-on: [flagcicd-810e]
     timeout-minutes: 30
     container:
-      image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:1b0fb64bcf0042fcc69067f2c25b7bc571f88ef39abdbd6bcf2a357ec1aea13d
+      image: harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:fbf1fb254dd0382ffc38229342987472a626a19a66f511e89dd341f051bd648b
       volumes:
         - /mnt/airs-business/cicd/models:/data/models/Qwen
       options: >-
@@ -85,7 +85,7 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          from importlib.metadata import PackageNotFoundError, distribution, version
+          from importlib.metadata import PackageNotFoundError, distributions, distribution, version
           from pathlib import Path
           import subprocess
 
@@ -100,6 +100,15 @@ jobs:
               if path.suffix == ".so":
                   print(f"native={path}")
                   subprocess.run(["ldd", str(path)], check=False)
+          needles = ("torch", "ppu", "flag", "sglang", "triton", "flash")
+          for candidate in sorted(distributions(), key=lambda d: d.metadata["Name"].lower()):
+              name = candidate.metadata["Name"]
+              if any(needle in name.lower() for needle in needles):
+                  print(f"dist={name}=={candidate.version} location={candidate.locate_file('')}")
+                  for item in candidate.files or ():
+                      if str(item).endswith(".dist-info/direct_url.json"):
+                          direct_url = Path(candidate.locate_file(item))
+                          print(f"direct-url[{name}]={direct_url.read_text()}")
           PY
 
   # ============================================================
