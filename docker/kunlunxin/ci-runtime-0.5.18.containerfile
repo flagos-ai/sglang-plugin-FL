@@ -7,9 +7,28 @@ ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
     PIP_RETRIES=10 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# This is the native Kunlunxin kernel from the validated development stack.
-# The sgl-kernel-shim package cannot implement its torch.ops.sgl_kernel ops.
-FROM runtime AS vendor-kernel
+FROM harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:976baf17a1366d7c032fbfed668436fe0ee92f5f1be6b272b229c7ffb1d273d8 AS vendor-wheels
+
+# The native kernel was linked against xtorch_ops 0.2.3092, while the operations
+# runtime contains 0.1.2935. Install the matched xtorch_ops and xflashinfer_ops
+# wheels extracted from the digest-pinned validated development image; the final
+# rootfs still starts from the operations runtime.
+FROM runtime AS vendor-runtime
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libgoogle-glog0v5 libibverbs1 && \
+    rm -rf /var/lib/apt/lists/* \
+        /flagos/lib/python3.10/site-packages/xtorch_ops \
+        /flagos/lib/python3.10/site-packages/xtorch_ops-*.dist-info \
+        /flagos/lib/python3.10/site-packages/xflashinfer_ops \
+        /flagos/lib/python3.10/site-packages/xflashinfer_ops-*.dist-info
+COPY --from=vendor-wheels /vendor/*.whl /tmp/vendor-wheels/
+RUN python -m pip install --no-deps /tmp/vendor-wheels/*.whl && \
+    rm -rf /tmp/vendor-wheels && \
+    python -c "from importlib.metadata import version; assert version('xtorch_ops') == '0.2.3092+4adc64ed'; assert version('xflashinfer_ops') == '0.2.3092+4adc64ed'"
+
+# This is the native Kunlunxin kernel from the same validated stack. The
+# sgl-kernel-shim package cannot implement its torch.ops.sgl_kernel ops.
+FROM vendor-runtime AS vendor-kernel
 ARG SGL_KERNEL_URL=https://klx-public.bj.bcebos.com/v1/liquanfeng01/fl/deps/20260709/sglang_kernel-0.4.2.post2%2Bd4466f4499-cp39-abi3-linux_x86_64.whl
 RUN --mount=type=cache,id=kunlunxin-pip,target=/root/.cache/pip \
     python -m pip install --no-deps "${SGL_KERNEL_URL}#sha256=146d4b7a318ca7104e4152df94c3f56941006675717480f52ba3077ee5ed8315"
