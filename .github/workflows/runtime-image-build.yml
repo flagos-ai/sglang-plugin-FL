@@ -1,4 +1,4 @@
-# Temporary vendor artifact build workflow; this branch is not intended to merge.
+# Temporary runtime image build workflow; this branch is not intended to merge.
 name: Runtime CI image build
 on:
   push:
@@ -8,60 +8,51 @@ permissions:
   contents: read
 
 jobs:
-  build-kunlunxin-xpytorch-vendor:
+  build-kunlunxin:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 240
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-
-      - name: Extract digest-pinned XPytorch runtime packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 .github/scripts/extract_remote_archive_members.py \
-            --registry-repository flagos-dev/sglang-plugin-fl \
-            --blob-digest sha256:18b8fd1fc7f72a6af9af7b5f9a9823421cc2b2eac24edd1de090e5ada07146d0 \
-            --size 974260068 \
-            --sha256 18b8fd1fc7f72a6af9af7b5f9a9823421cc2b2eac24edd1de090e5ada07146d0 \
-            --workers 10 \
-            --archive-output /tmp/kunlunxin-xpytorch-layer.tar.gz
-          mkdir -p /tmp/kunlunxin-xpytorch
-          tar -xzf /tmp/kunlunxin-xpytorch-layer.tar.gz \
-            --strip-components=6 \
-            -C /tmp/kunlunxin-xpytorch \
-            opt/kunlun/venv/lib/python3.10/site-packages/torch_xmlir \
-            opt/kunlun/venv/lib/python3.10/site-packages/torch_xmlir.pth \
-            opt/kunlun/venv/lib/python3.10/site-packages/xmlir-1.0.0.1.dist-info \
-            opt/kunlun/venv/lib/python3.10/site-packages/hydrax \
-            opt/kunlun/venv/lib/python3.10/site-packages/hydrax-0.1.0.dist-info \
-            opt/kunlun/venv/lib/python3.10/site-packages/hydrax.cpython-310-x86_64-linux-gnu.so \
-            opt/kunlun/venv/lib/python3.10/site-packages/proteus \
-            opt/kunlun/venv/lib/python3.10/site-packages/proteus-0.1.0.dist-info \
-            opt/kunlun/venv/lib/python3.10/site-packages/proteus.cpython-310-x86_64-linux-gnu.so
-          grep -Fx 'XRE: 5.35.0.0' /tmp/kunlunxin-xpytorch/torch_xmlir/_versions.txt
-          nm -D --defined-only /tmp/kunlunxin-xpytorch/torch_xmlir/libxpu_dnn.so \
-            | c++filt \
-            | grep -F 'causal_conv1d_update<bfloat16, bfloat16, bfloat16, tfloat32>' \
-            | grep -F 'bool)'
+      - name: Check out Kunlunxin image source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          repository: lentil1016/sglang-plugin-FL
+          ref: ba40bdc43570082fe5883969bc987dc25146ec5e
+          fetch-depth: 1
 
       - name: Log in to Harbor
         env:
           HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
           HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+        shell: bash
         run: |
           set -euo pipefail
           printf '%s' "$HARBOR_PASSWORD" | docker login harbor.baai.ac.cn \
             --username "$HARBOR_USERNAME" --password-stdin
 
-      - name: Push Kunlunxin XPytorch artifact
+      - name: Build and push layered Kunlunxin CI image
+        env:
+          IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-runtime-ci-20261109-v6
+          CACHE_IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-runtime-ci-20261109-v5
         shell: bash
         run: |
           set -euo pipefail
+          df -h .
+          docker buildx use default
+          docker buildx inspect default --bootstrap
           docker buildx build \
-            --platform linux/amd64 \
-            --file docker/kunlunxin/xpytorch-artifact.containerfile \
-            --tag harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:vendor-kunlunxin-xpytorch-20260715 \
-            --push --provenance=false \
-            --metadata-file /tmp/kunlunxin-xpytorch-metadata.json \
-            /tmp/kunlunxin-xpytorch
-          python3 -c "import json; print(json.load(open('/tmp/kunlunxin-xpytorch-metadata.json'))['containerimage.digest'])"
+            --builder default \
+            --file docker/kunlunxin/ci-runtime-0.5.18.containerfile \
+            --target ci \
+            --tag "$IMAGE" \
+            --cache-from "type=registry,ref=$CACHE_IMAGE" \
+            --cache-to type=inline \
+            --push \
+            --provenance=false \
+            --metadata-file build-metadata.json \
+            .
+          python3 -c "import json; print(json.load(open('build-metadata.json'))['containerimage.digest'])"
+          docker buildx imagetools inspect "$IMAGE"
+
+      - name: Log out of Harbor
+        if: always()
+        run: docker logout harbor.baai.ac.cn || true
