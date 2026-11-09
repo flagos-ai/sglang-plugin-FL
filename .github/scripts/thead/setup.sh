@@ -10,6 +10,6 @@ git config --global --add safe.directory "$(pwd)"
 echo "=== Installing sglang-plugin-FL (T-Head PPU) ==="
 pip install --upgrade pip "setuptools>=68,<82" wheel
 pip install -e ".[dev]" --no-build-isolation || pip install -e . --no-build-isolation
-pip install pytest pytest-timeout pyyaml
+pip install pytest pytest-cov pytest-timeout pyyaml
 echo "=== Installation complete ==="
 python -c "import sglang_fl; print(f'sglang_fl {sglang_fl.__name__} loaded')"

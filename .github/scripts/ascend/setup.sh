@@ -8,7 +8,7 @@ git config --global --add safe.directory "$(pwd)"
 echo "=== Installing sglang-plugin-FL (Ascend) ==="
 pip install --upgrade pip "setuptools>=68,<82" wheel
 pip install -e ".[dev]" --no-build-isolation || pip install -e . --no-build-isolation
-pip install pytest pytest-timeout pyyaml
+pip install pytest pytest-cov pytest-timeout pyyaml
 echo "=== Installation complete ==="
 python -c "import torch_npu; print(f'torch_npu {torch_npu.__version__} loaded')"
 python -c "import sglang_fl; print('sglang_fl plugin loaded')"

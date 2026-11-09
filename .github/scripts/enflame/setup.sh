@@ -8,7 +8,7 @@ git config --global --add safe.directory "$(pwd)"
 echo "=== Installing sglang-plugin-FL (Enflame GCU) ==="
 pip install "setuptools>=68,<82" wheel
 pip install -e ".[dev]" --no-build-isolation || pip install -e . --no-build-isolation
-pip install pytest pytest-timeout pyyaml
+pip install pytest pytest-cov pytest-timeout pyyaml
 
 # The runner injects Enflame's internal package index, which currently does
 # not mirror soundfile. New images already contain the SGLang-pinned version;

@@ -13,7 +13,7 @@ echo "=== Installing sglang-plugin-FL (MUSA) ==="
 # still upgraded below when the installed version does not satisfy the spec.
 pip install "setuptools>=68,<82" wheel
 pip install -e ".[dev]" --no-build-isolation || pip install -e . --no-build-isolation
-pip install pytest pytest-timeout pyyaml
+pip install pytest pytest-cov pytest-timeout pyyaml
 echo "=== Installation complete ==="
 python -c "import torch_musa; print(f'torch_musa {torch_musa.__version__} loaded')"
 python -c "import sglang_fl; print(f'sglang_fl {sglang_fl.__name__} loaded')"

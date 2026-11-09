@@ -54,6 +54,8 @@ on:
         type: boolean
         default: true
     secrets:
+      FLAGCICD_API_TOKEN:
+        required: false
       FEISHU_APP_ID:
         required: false
       FEISHU_APP_SECRET:
@@ -106,6 +108,7 @@ jobs:
   functional:
     needs: [setup]
     uses: ./.github/workflows/_functional_test.yml
+    secrets: inherit
     with:
       platform: ${{ inputs.platform }}
       branch: ${{ inputs.branch }}
