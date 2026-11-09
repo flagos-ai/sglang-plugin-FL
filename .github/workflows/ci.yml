@@ -48,7 +48,7 @@ jobs:
     runs-on: [ci-sglang-plugin-fl-kunlunxin]
     timeout-minutes: 30
     container:
-      image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:3e8cb8636ba470e857d9a73e23a1622485f25162e7e337907fe42955116d50e7
+      image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:ddd1d1b341ae259b5215549e5ebbeb772e461365736b71a76546669396789807
       volumes:
         - /data/models:/data/models
         - /data/models/Qwen:/models
