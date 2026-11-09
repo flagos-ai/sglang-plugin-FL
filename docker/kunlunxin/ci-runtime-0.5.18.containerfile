@@ -5,8 +5,7 @@ ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
     PIP_DEFAULT_TIMEOUT=300 \
     PIP_RETRIES=10 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONPATH=/opt/flagtree
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # This is the native Kunlunxin kernel from the validated development stack.
 # The sgl-kernel-shim package cannot implement its torch.ops.sgl_kernel ops.
@@ -81,7 +80,8 @@ RUN --mount=type=cache,id=kunlunxin-pip,target=/root/.cache/pip \
     python -m pip freeze > /opt/ci-requirements.freeze.txt
 
 FROM dependencies AS ci
-ENV USE_FLAGGEMS=1 \
+ENV PYTHONPATH=/opt/flagtree \
+    USE_FLAGGEMS=1 \
     SGLANG_PLUGINS=sglang_fl \
     SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1 \
     SGLANG_FL_DIST_BACKEND=flagcx \
