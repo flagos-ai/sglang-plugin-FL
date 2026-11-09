@@ -1,0 +1,66 @@
+# Temporary image build workflow; this PR is not intended for merge.
+name: Runtime CI image build
+on:
+  pull_request:
+    paths: [.github/workflows/runtime-image-build.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - platform: thead
+            ref: ci/runtime-thead-0.5.18
+            dockerfile: docker/thead/ci-runtime-0.5.18.containerfile
+            image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-runtime-ci-20261109
+            cache: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:buildcache-0.5.18-thead-runtime-ci
+          - platform: kunlunxin
+            ref: ci/runtime-kunlunxin-0.5.18
+            dockerfile: docker/kunlunxin/ci-runtime-0.5.18.containerfile
+            image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-runtime-ci-20261109
+            cache: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:buildcache-0.5.18-kunlunxin-runtime-ci
+    runs-on: flagcicd-810e
+    timeout-minutes: 240
+    steps:
+      - name: Check out image source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          repository: lentil1016/sglang-plugin-FL
+          ref: ${{ matrix.ref }}
+          fetch-depth: 1
+
+      - name: Build and push layered CI image
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
+          IMAGE: ${{ matrix.image }}
+          CACHE_IMAGE: ${{ matrix.cache }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx version
+          builder="runtime-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${PLATFORM}"
+          docker buildx create --name "$builder" --driver docker-container --use
+          trap 'docker buildx rm --force "$builder" >/dev/null 2>&1 || true' EXIT
+          docker buildx inspect --bootstrap
+          docker buildx build \
+            --file "$DOCKERFILE" \
+            --target ci \
+            --tag "$IMAGE" \
+            --cache-from "type=registry,ref=$CACHE_IMAGE" \
+            --cache-to "type=registry,ref=$CACHE_IMAGE,mode=max,image-manifest=true,oci-mediatypes=true" \
+            --push \
+            --provenance=false \
+            --metadata-file build-metadata.json \
+            .
+          python3 - <<'PY'
+          import json
+          metadata = json.load(open('build-metadata.json'))
+          print('image digest:', metadata.get('containerimage.digest'))
+          PY
+          docker buildx imagetools inspect "$IMAGE"
