@@ -12,15 +12,15 @@ jobs:
     runs-on: flagcicd-810e
     timeout-minutes: 10
     steps:
-      - name: Pull, tag, and push a minimal image
+      - name: Create and push a minimal image
         env:
-          SOURCE_IMAGE: ubuntu:24.04
           TARGET_IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:push-probe-${{ github.run_id }}
         shell: bash
         run: |
           set -euo pipefail
-          trap 'docker image rm -f "$TARGET_IMAGE" "$SOURCE_IMAGE" >/dev/null 2>&1 || true' EXIT
-          docker pull "$SOURCE_IMAGE"
-          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          probe_dir=$(mktemp -d)
+          trap 'rm -rf "$probe_dir"; docker image rm -f "$TARGET_IMAGE" >/dev/null 2>&1 || true' EXIT
+          printf 'Harbor push probe for run %s\n' "$GITHUB_RUN_ID" > "$probe_dir/PROBE"
+          tar -C "$probe_dir" -cf - PROBE | docker import - "$TARGET_IMAGE"
           docker push "$TARGET_IMAGE"
           docker buildx imagetools inspect "$TARGET_IMAGE"
