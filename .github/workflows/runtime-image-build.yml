@@ -1,4 +1,4 @@
-# Temporary runtime image build workflow; this PR is not intended for merge.
+# Temporary vendor artifact build workflow; this branch is not intended to merge.
 name: Runtime CI image build
 on:
   push:
@@ -8,112 +8,87 @@ permissions:
   contents: read
 
 jobs:
-  build-thead:
+  build-thead-vendor:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 60
     steps:
-      - name: Check out T-Head image source
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-        with:
-          repository: lentil1016/sglang-plugin-FL
-          ref: f17a0dafbc603186ae2b1f5ef508357eeb6d5984
-          fetch-depth: 1
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Extract digest-pinned PPU kernel wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/thead-vendor
+          python3 .github/scripts/extract_remote_archive_members.py \
+            --registry-repository plugin/sglang-plugin-fl \
+            --blob-digest sha256:5dc779b592ccd0f019fea6a72fe376c847bc15afc1241143d8f1fe49af470619 \
+            --size 1792794582 \
+            --sha256 5dc779b592ccd0f019fea6a72fe376c847bc15afc1241143d8f1fe49af470619 \
+            --workers 10 \
+            --member root/.cache/pip/wheels/a5/d4/6f/1381c7b37c0a53aa908bb6004df0f9754cf816e5af824237fd/sglang_kernel-0.4.2.post2+v0.1.0.ppu2.1.0-py3-none-any.whl=/tmp/thead-vendor/sglang_kernel-0.4.2.post2+v0.1.0.ppu2.1.0-py3-none-any.whl
+          echo 'd918dd235867b181cfed90908a26d9072dacb2d88255933d40dc6b35b87076fe  /tmp/thead-vendor/sglang_kernel-0.4.2.post2+v0.1.0.ppu2.1.0-py3-none-any.whl' | sha256sum --check
 
       - name: Log in to Harbor
         env:
           HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
           HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
-        shell: bash
         run: |
           set -euo pipefail
-          test -n "$HARBOR_USERNAME"
-          test -n "$HARBOR_PASSWORD"
           printf '%s' "$HARBOR_PASSWORD" | docker login harbor.baai.ac.cn \
             --username "$HARBOR_USERNAME" --password-stdin
 
-      - name: Build and push layered T-Head CI image
-        env:
-          IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-runtime-ci-20261109-v6
-          CACHE_IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-runtime-ci-20261109-v5
+      - name: Push T-Head vendor artifact
         shell: bash
         run: |
           set -euo pipefail
-          df -h .
-          docker buildx use default
-          docker buildx inspect default --bootstrap
           docker buildx build \
-            --builder default \
-            --file docker/thead/ci-runtime-0.5.18.containerfile \
-            --target ci \
-            --tag "$IMAGE" \
-            --cache-from "type=registry,ref=$CACHE_IMAGE" \
-            --cache-to type=inline \
-            --push \
-            --provenance=false \
-            --metadata-file build-metadata.json \
-            .
-          python3 - <<'PY'
-          import json
-          metadata = json.load(open('build-metadata.json'))
-          print('image digest:', metadata.get('containerimage.digest'))
-          PY
-          docker buildx imagetools inspect "$IMAGE"
+            --platform linux/amd64 \
+            --file docker/vendor-artifact.containerfile \
+            --tag harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:vendor-thead-ppu2.1.0-20260531 \
+            --push --provenance=false \
+            --metadata-file /tmp/thead-vendor-metadata.json \
+            /tmp/thead-vendor
+          python3 -c "import json; print(json.load(open('/tmp/thead-vendor-metadata.json'))['containerimage.digest'])"
 
-      - name: Log out of Harbor
-        if: always()
-        run: docker logout harbor.baai.ac.cn || true
-
-  build-kunlunxin:
+  build-kunlunxin-vendor:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 30
     steps:
-      - name: Check out Kunlunxin image source
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-        with:
-          repository: lentil1016/sglang-plugin-FL
-          ref: 169e0a524309ab9bebb1cf71155d770650c03a87
-          fetch-depth: 1
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Extract digest-pinned XPU operator wheels
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/kunlunxin-vendor
+          python3 .github/scripts/extract_remote_archive_members.py \
+            --url https://su.bcebos.com/v1/klx-sdk-release-public/DS_PD/open_xflashinfer/D20260709_189/output.tar.gz \
+            --size 316204923 \
+            --sha256 2ce0b5822eb896abf2befaf98b60e7211e02f0a2d3012264131f6cc5338db79f \
+            --workers 6 \
+            --member ./output/output_xtorch_ops/xtorch_ops/xtorch_ops-0.2.3092+4adc64ed-cp310-cp310-linux_x86_64.whl=/tmp/kunlunxin-vendor/xtorch_ops-0.2.3092+4adc64ed-cp310-cp310-linux_x86_64.whl \
+            --member ./output/output_open_xflashinfer_ops/xflashinfer/xflashinfer_ops-0.2.3092+4adc64ed-cp310-cp310-linux_x86_64.whl=/tmp/kunlunxin-vendor/xflashinfer_ops-0.2.3092+4adc64ed-cp310-cp310-linux_x86_64.whl
+          echo 'ef2b9543f2c048ea210863e16f9d62a73982f4054d15f4e611bfbd3fc403d3a1  /tmp/kunlunxin-vendor/xtorch_ops-0.2.3092+4adc64ed-cp310-cp310-linux_x86_64.whl' | sha256sum --check
+          echo 'c63f5788639a14186b88152a37bf7f0be90e1da75c06132532d029a69f1000fb  /tmp/kunlunxin-vendor/xflashinfer_ops-0.2.3092+4adc64ed-cp310-cp310-linux_x86_64.whl' | sha256sum --check
 
       - name: Log in to Harbor
         env:
           HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
           HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
-        shell: bash
         run: |
           set -euo pipefail
-          test -n "$HARBOR_USERNAME"
-          test -n "$HARBOR_PASSWORD"
           printf '%s' "$HARBOR_PASSWORD" | docker login harbor.baai.ac.cn \
             --username "$HARBOR_USERNAME" --password-stdin
 
-      - name: Build and push layered Kunlunxin CI image
-        env:
-          IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-runtime-ci-20261109-v4
-          CACHE_IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-runtime-ci-20261109-v3
+      - name: Push Kunlunxin vendor artifact
         shell: bash
         run: |
           set -euo pipefail
-          df -h .
-          docker buildx use default
-          docker buildx inspect default --bootstrap
           docker buildx build \
-            --builder default \
-            --file docker/kunlunxin/ci-runtime-0.5.18.containerfile \
-            --target ci \
-            --tag "$IMAGE" \
-            --cache-from "type=registry,ref=$CACHE_IMAGE" \
-            --cache-to type=inline \
-            --push \
-            --provenance=false \
-            --metadata-file build-metadata.json \
-            .
-          python3 - <<'PY'
-          import json
-          metadata = json.load(open('build-metadata.json'))
-          print('image digest:', metadata.get('containerimage.digest'))
-          PY
-          docker buildx imagetools inspect "$IMAGE"
-
-      - name: Log out of Harbor
-        if: always()
-        run: docker logout harbor.baai.ac.cn || true
+            --platform linux/amd64 \
+            --file docker/vendor-artifact.containerfile \
+            --tag harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:vendor-kunlunxin-0.2.3092-20260709 \
+            --push --provenance=false \
+            --metadata-file /tmp/kunlunxin-vendor-metadata.json \
+            /tmp/kunlunxin-vendor
+          python3 -c "import json; print(json.load(open('/tmp/kunlunxin-vendor-metadata.json'))['containerimage.digest'])"
