@@ -18,10 +18,6 @@ jobs:
             ref: ci/runtime-thead-0.5.18
             dockerfile: docker/thead/ci-runtime-0.5.18.containerfile
             image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-runtime-ci-20261109
-          - platform: kunlunxin
-            ref: ci/runtime-kunlunxin-0.5.18
-            dockerfile: docker/kunlunxin/ci-runtime-0.5.18.containerfile
-            image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-runtime-ci-20261109
     runs-on: flagcicd-810e
     timeout-minutes: 240
     steps:
