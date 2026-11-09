@@ -45,13 +45,54 @@ jobs:
   # Temporary direct path for validating the runtime-derived T-Head image while
   # GitHub intermittently abandons the discover job before it is instantiated.
   validate-thead-runtime:
-    uses: ./.github/workflows/_platform_test.yml
-    with:
-      platform: thead
-      ci_stage: pr
-      run_e2e: false
-      run_benchmark: false
-    secrets: inherit
+    runs-on: [flagcicd-810e]
+    timeout-minutes: 30
+    container:
+      image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:1b0fb64bcf0042fcc69067f2c25b7bc571f88ef39abdbd6bcf2a357ec1aea13d
+      volumes:
+        - /mnt/airs-business/cicd/models:/data/models/Qwen
+      options: >-
+        --hostname sglang-plugin-fl
+        -e PYTHONPATH=/opt/sglang/python:/opt/flagtree
+        -e HF_HUB_OFFLINE=1
+        -e TRANSFORMERS_OFFLINE=1
+        --shm-size=64g
+        --ulimit memlock=-1
+        --ulimit stack=67108864
+        --user root
+        --init
+        --device /dev/alixpu
+        --device /dev/alixpu_ctl
+        --device /dev/alixpu_ppu0
+        --device /dev/alixpu_ppu1
+        --device /dev/alixpu_ppu2
+        --device /dev/alixpu_ppu3
+        --device /dev/alixpu_ppu4
+        --device /dev/alixpu_ppu5
+        --device /dev/alixpu_ppu6
+        --device /dev/alixpu_ppu7
+        --device /dev/alixpu_ppu8
+        --device /dev/alixpu_ppu9
+        --device /dev/alixpu_ppu10
+        --device /dev/alixpu_ppu11
+        --device /dev/alixpu_ppu12
+        --device /dev/alixpu_ppu13
+        --device /dev/alixpu_ppu14
+        --device /dev/alixpu_ppu15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - run: bash .github/scripts/thead/check.sh
+      - run: bash .github/scripts/thead/setup.sh
+      - name: Verify concrete SGLang package wins over the FlagTree overlay
+        run: |
+          python - <<'PY'
+          import sglang
+          print("sglang file:", sglang.__file__)
+          print("sglang loader:", sglang.__spec__.loader)
+          assert sglang.__file__.startswith("/opt/sglang/python/sglang/")
+          PY
+      - name: Run unit tests
+        run: python tests/run.py --platform thead --scope unit
 
   # ============================================================
   # Job 1: Lint (ruff check, ruff format, typos)
