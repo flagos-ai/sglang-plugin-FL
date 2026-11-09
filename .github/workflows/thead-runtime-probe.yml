@@ -1,0 +1,63 @@
+# Temporary validation workflow. Remove after the runtime-based image passes.
+name: T-Head runtime probe
+
+on:
+  pull_request:
+    branches: ["dev/0.5.18"]
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: [flagcicd-810e]
+    timeout-minutes: 30
+    container:
+      image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:7c01c89cbcf82f91dfde13a27deb0f7e0c5485d92ade17ca23e0096cfb7da7ca
+      options: >-
+        --hostname sglang-plugin-fl
+        -e PYTHONPATH=/opt/sglang/python:/opt/flagtree
+        -e HF_HUB_OFFLINE=1
+        -e TRANSFORMERS_OFFLINE=1
+        --shm-size=64g
+        --ulimit memlock=-1
+        --ulimit stack=67108864
+        --user root
+        --init
+        --device /dev/alixpu
+        --device /dev/alixpu_ctl
+        --device /dev/alixpu_ppu0
+        --device /dev/alixpu_ppu1
+        --device /dev/alixpu_ppu2
+        --device /dev/alixpu_ppu3
+        --device /dev/alixpu_ppu4
+        --device /dev/alixpu_ppu5
+        --device /dev/alixpu_ppu6
+        --device /dev/alixpu_ppu7
+        --device /dev/alixpu_ppu8
+        --device /dev/alixpu_ppu9
+        --device /dev/alixpu_ppu10
+        --device /dev/alixpu_ppu11
+        --device /dev/alixpu_ppu12
+        --device /dev/alixpu_ppu13
+        --device /dev/alixpu_ppu14
+        --device /dev/alixpu_ppu15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Check device availability
+        run: bash .github/scripts/thead/check.sh
+      - name: Install project
+        run: bash .github/scripts/thead/setup.sh
+      - name: Verify runtime ABI and unit suite
+        run: |
+          python - <<'PY'
+          from importlib.metadata import version
+          import sgl_kernel
+          import torchvision
+
+          assert version("sglang-kernel") == "0.4.2.post2+v0.1.0.ppu2.1.0"
+          assert version("torchvision").split("+")[0] == "0.25.0"
+          print("sglang-kernel", version("sglang-kernel"), sgl_kernel.__file__)
+          print("torchvision", version("torchvision"), torchvision.__file__)
+          PY
+          python tests/run.py --platform thead --scope unit
