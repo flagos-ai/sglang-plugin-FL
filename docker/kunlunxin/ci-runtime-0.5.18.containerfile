@@ -70,7 +70,9 @@ RUN git -C /opt/sglang apply --check /opt/sglang-v0.5.18-kunlunxin.patch && \
 RUN --mount=type=cache,id=kunlunxin-pip,target=/root/.cache/pip \
     SGLANG_BUILD_RUST_EXTS=none SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SGLANG=0.5.18 \
     python -m pip install --no-build-isolation -c /opt/vendor-constraints.txt \
-        -e '/opt/sglang/python[srt_empty]'
+        -e '/opt/sglang/python[srt_empty]' && \
+    python -m pip install --no-deps \
+        xgrammar==0.2.1 compressed-tensors==0.15.0
 
 FROM sglang AS dependencies
 RUN --mount=type=cache,id=kunlunxin-pip,target=/root/.cache/pip \
