@@ -66,7 +66,8 @@ RUN git init /opt/vision && \
     git -C /opt/vision fetch --depth 1 origin "${TORCHVISION_COMMIT}" && \
     git -C /opt/vision checkout --detach FETCH_HEAD
 RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
-    PIP_INDEX_URL="${CI_PIP_INDEX_URL}" python -m pip install wheel && \
+    PIP_INDEX_URL="${CI_PIP_INDEX_URL}" \
+        python -m pip install setuptools==69.5.1 wheel && \
     BUILD_VERSION="${TORCHVISION_VERSION}" MAX_JOBS="${BUILD_JOBS}" \
     TORCHVISION_USE_NVJPEG=0 TORCHVISION_USE_WEBP=0 \
         python -m pip wheel --no-build-isolation --no-deps \
