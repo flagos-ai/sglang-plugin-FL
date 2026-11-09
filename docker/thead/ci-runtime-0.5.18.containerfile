@@ -46,6 +46,38 @@ RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
     python -m pip install --no-deps \
         "${PPU_SGL_KERNEL_URL}#sha256=f275ce01010933c4ea655e832a05442b766ab8f23dcfd6ff678b15e295d42203"
 
+# The operations runtime intentionally omits torchvision, while SGLang imports
+# torchvision.io.decode_jpeg at module load time.  The public 0.25.0 wheel is
+# not ABI-compatible with the vendor PPU Torch (its C++ operators do not load),
+# so build the exact version used by the development image against runtime
+# Torch.  Keep compilers and headers in a throw-away stage; only the wheel is
+# copied into the final image.  CUDA image operators are not needed by SGLang's
+# text CI and cannot be compiled on a device-less GitHub builder.
+FROM vendor-kernel AS torchvision-builder
+ARG CI_PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
+ARG TORCHVISION_VERSION=0.25.0
+ARG TORCHVISION_COMMIT=8ac84ee75afb1c327902156b5336f56ad63b7e2f
+ARG BUILD_JOBS=4
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libjpeg-dev && \
+    rm -rf /var/lib/apt/lists/*
+RUN git init /opt/vision && \
+    git -C /opt/vision remote add origin https://github.com/pytorch/vision.git && \
+    git -C /opt/vision fetch --depth 1 origin "${TORCHVISION_COMMIT}" && \
+    git -C /opt/vision checkout --detach FETCH_HEAD
+RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
+    PIP_INDEX_URL="${CI_PIP_INDEX_URL}" python -m pip install wheel && \
+    BUILD_VERSION="${TORCHVISION_VERSION}" MAX_JOBS="${BUILD_JOBS}" \
+    TORCHVISION_USE_NVJPEG=0 TORCHVISION_USE_WEBP=0 \
+        python -m pip wheel --no-build-isolation --no-deps \
+        --wheel-dir /opt/vision-wheels /opt/vision
+
+FROM vendor-kernel AS vision
+COPY --from=torchvision-builder /opt/vision-wheels/torchvision-*.whl /tmp/
+RUN python -m pip install --no-deps /tmp/torchvision-*.whl && \
+    rm -f /tmp/torchvision-*.whl && \
+    python -c "import torchvision; from torchvision.io import decode_jpeg; assert torchvision.__version__.split('+')[0] == '0.25.0'"
+
 # Snapshot the vendor constraints once, before adding generic Python packages.
 RUN python - <<'PY'
 from importlib.metadata import PackageNotFoundError, version
@@ -62,7 +94,7 @@ for name in packages:
 Path('/opt/vendor-constraints.txt').write_text('\n'.join(lines) + '\n')
 PY
 
-FROM vendor-kernel AS sglang
+FROM vision AS sglang
 ARG SGLANG_VERSION=0.5.18
 ARG SGLANG_COMMIT=71de97b264b04dcd514cf904003028aefe9775c8
 RUN git init /opt/sglang && \
@@ -89,7 +121,7 @@ RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
 # Frequently changed plugin code and CI defaults are deliberately last. Tests,
 # docs, local reports, Git metadata, and unrelated platforms are not build inputs.
 FROM dependencies AS ci
-ENV PYTHONPATH=/opt/flagtree \
+ENV PYTHONPATH=/opt/sglang/python:/opt/flagtree \
     SGLANG_PLUGINS=sglang_fl \
     SGLANG_PLATFORM=sglang_fl \
     USE_FLAGGEMS=1 \
