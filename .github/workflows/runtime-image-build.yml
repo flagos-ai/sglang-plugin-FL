@@ -1,4 +1,4 @@
-# Temporary Harbor push probe; this PR is not intended for merge.
+# Temporary runtime image build workflow; this PR is not intended for merge.
 name: Runtime CI image build
 on:
   push:
@@ -8,25 +8,56 @@ permissions:
   contents: read
 
 jobs:
-  harbor-push-probe:
+  build-thead:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 240
     steps:
-      - name: Create and push a minimal image
+      - name: Check out T-Head image source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          repository: lentil1016/sglang-plugin-FL
+          ref: ci/runtime-thead-0.5.18
+          fetch-depth: 1
+
+      - name: Log in to Harbor
         env:
           HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
           HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
-          TARGET_IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:push-probe-${{ github.run_id }}
         shell: bash
         run: |
           set -euo pipefail
-          probe_dir=$(mktemp -d)
-          trap 'rm -rf "$probe_dir"; docker image rm -f "$TARGET_IMAGE" >/dev/null 2>&1 || true; docker logout harbor.baai.ac.cn >/dev/null 2>&1 || true' EXIT
           test -n "$HARBOR_USERNAME"
           test -n "$HARBOR_PASSWORD"
           printf '%s' "$HARBOR_PASSWORD" | docker login harbor.baai.ac.cn \
             --username "$HARBOR_USERNAME" --password-stdin
-          printf 'Harbor push probe for run %s\n' "$GITHUB_RUN_ID" > "$probe_dir/PROBE"
-          tar -C "$probe_dir" -cf - PROBE | docker import - "$TARGET_IMAGE"
-          docker push "$TARGET_IMAGE"
-          docker buildx imagetools inspect "$TARGET_IMAGE"
+
+      - name: Build and push layered T-Head CI image
+        env:
+          IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-runtime-ci-20261109
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h .
+          docker buildx use default
+          docker buildx inspect default --bootstrap
+          docker buildx build \
+            --builder default \
+            --file docker/thead/ci-runtime-0.5.18.containerfile \
+            --target ci \
+            --tag "$IMAGE" \
+            --cache-from "type=registry,ref=$IMAGE" \
+            --cache-to type=inline \
+            --push \
+            --provenance=false \
+            --metadata-file build-metadata.json \
+            .
+          python3 - <<'PY'
+          import json
+          metadata = json.load(open('build-metadata.json'))
+          print('image digest:', metadata.get('containerimage.digest'))
+          PY
+          docker buildx imagetools inspect "$IMAGE"
+
+      - name: Log out of Harbor
+        if: always()
+        run: docker logout harbor.baai.ac.cn || true
