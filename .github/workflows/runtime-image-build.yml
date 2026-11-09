@@ -1,4 +1,4 @@
-# Temporary image build workflow; this PR is not intended for merge.
+# Temporary Harbor push probe; this PR is not intended for merge.
 name: Runtime CI image build
 on:
   pull_request:
@@ -8,76 +8,19 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        include:
-          - platform: thead
-            ref: ci/runtime-thead-0.5.18
-            dockerfile: docker/thead/ci-runtime-0.5.18.containerfile
-            image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-runtime-ci-20261109
+  harbor-push-probe:
     runs-on: flagcicd-810e
-    timeout-minutes: 240
+    timeout-minutes: 10
     steps:
-      - name: Check out image source
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-        with:
-          repository: lentil1016/sglang-plugin-FL
-          ref: ${{ matrix.ref }}
-          fetch-depth: 1
-
-      - name: Build and push layered CI image
+      - name: Pull, tag, and push a minimal image
         env:
-          PLATFORM: ${{ matrix.platform }}
-          DOCKERFILE: ${{ matrix.dockerfile }}
-          IMAGE: ${{ matrix.image }}
+          SOURCE_IMAGE: ubuntu:24.04
+          TARGET_IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:push-probe-${{ github.run_id }}
         shell: bash
         run: |
           set -euo pipefail
-          docker_cli=(docker)
-          if sudo -H python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          config = Path('/root/.docker/config.json')
-          if not config.is_file():
-              raise SystemExit(1)
-          data = json.loads(config.read_text())
-          hosts = set(data.get('auths', {})) | set(data.get('credHelpers', {}))
-          configured = any('harbor.baai.ac.cn' in host for host in hosts)
-          configured = configured or bool(data.get('credsStore'))
-          raise SystemExit(0 if configured else 1)
-          PY
-          then
-            echo 'Using the runner root Docker credential context for Harbor push.'
-            docker_cli=(sudo -H docker)
-          else
-            echo 'Runner root has no Docker credential context; using the Actions user context.'
-          fi
-
-          "${docker_cli[@]}" buildx version
-          # Use the engine-backed builder. The docker-container driver pulls its
-          # BuildKit image from Docker Hub, which is not reachable on this runner.
-          # Inline cache travels with the CI image and local failed-build layers
-          # remain available in the persistent daemon between attempts.
-          "${docker_cli[@]}" buildx use default
-          "${docker_cli[@]}" buildx inspect default --bootstrap
-          "${docker_cli[@]}" buildx build \
-            --builder default \
-            --file "$DOCKERFILE" \
-            --target ci \
-            --tag "$IMAGE" \
-            --cache-from "type=registry,ref=$IMAGE" \
-            --cache-to type=inline \
-            --push \
-            --provenance=false \
-            --metadata-file build-metadata.json \
-            .
-          python3 - <<'PY'
-          import json
-          metadata = json.load(open('build-metadata.json'))
-          print('image digest:', metadata.get('containerimage.digest'))
-          PY
-          "${docker_cli[@]}" buildx imagetools inspect "$IMAGE"
+          trap 'docker image rm -f "$TARGET_IMAGE" "$SOURCE_IMAGE" >/dev/null 2>&1 || true' EXIT
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          docker buildx imagetools inspect "$TARGET_IMAGE"
