@@ -24,17 +24,54 @@ jobs:
           printf '%s' "$HARBOR_PASSWORD" | docker login harbor.baai.ac.cn \
             --username "$HARBOR_USERNAME" --password-stdin
 
-      - name: Mirror runtime manifests into the CI repository
+      - name: Copy runtime artifacts inside Harbor
+        env:
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
         shell: bash
         run: |
           set -euo pipefail
+          api=https://harbor.baai.ac.cn/api/v2.0
+          project=flagos-dev
+          repository=sglang-plugin-fl
+
+          copy_and_tag() {
+            local source=$1 digest=$2 tag=$3 status
+            status=$(curl --silent --show-error \
+              --user "$HARBOR_USERNAME:$HARBOR_PASSWORD" \
+              --request POST --get \
+              --data-urlencode "from=$source@$digest" \
+              --output response.json --write-out '%{http_code}' \
+              "$api/projects/$project/repositories/$repository/artifacts")
+            if [[ "$status" != 201 && "$status" != 409 ]]; then
+              cat response.json
+              echo "Harbor artifact copy failed with HTTP $status" >&2
+              return 1
+            fi
+
+            status=$(curl --silent --show-error \
+              --user "$HARBOR_USERNAME:$HARBOR_PASSWORD" \
+              --request POST --header 'Content-Type: application/json' \
+              --data "{\"name\":\"$tag\"}" \
+              --output response.json --write-out '%{http_code}' \
+              "$api/projects/$project/repositories/$repository/artifacts/$digest/tags")
+            if [[ "$status" != 201 && "$status" != 409 ]]; then
+              cat response.json
+              echo "Harbor tag creation failed with HTTP $status" >&2
+              return 1
+            fi
+          }
+
+          copy_and_tag \
+            flagos-runtime/flagos-runtime-thead-ppu2.1.0 \
+            sha256:ee5b2b9420dedc8eb6ad6658397e9d9602533f1c6e74a53b924ff976a113d4ab \
+            runtime-thead-ppu2.1.0
+          copy_and_tag \
+            flagos-runtime/flagos-runtime-kunlunxin-xre5.37.1 \
+            sha256:679182a04d187562a3e23bacb9d0eb876dabf09ac0c0a875c2b4a141b64cac69 \
+            runtime-kunlunxin-xre5.37.1
+
           repo=harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl
-          docker buildx imagetools create \
-            --tag "$repo:runtime-thead-ppu2.1.0" \
-            harbor.baai.ac.cn/flagos-runtime/flagos-runtime-thead-ppu2.1.0@sha256:ee5b2b9420dedc8eb6ad6658397e9d9602533f1c6e74a53b924ff976a113d4ab
-          docker buildx imagetools create \
-            --tag "$repo:runtime-kunlunxin-xre5.37.1" \
-            harbor.baai.ac.cn/flagos-runtime/flagos-runtime-kunlunxin-xre5.37.1@sha256:679182a04d187562a3e23bacb9d0eb876dabf09ac0c0a875c2b4a141b64cac69
           docker buildx imagetools inspect "$repo:runtime-thead-ppu2.1.0"
           docker buildx imagetools inspect "$repo:runtime-kunlunxin-xre5.37.1"
 
