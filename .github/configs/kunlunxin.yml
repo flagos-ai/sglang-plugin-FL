@@ -7,7 +7,7 @@ platform: kunlunxin
 
 # CI-only image built from the operations runtime base. Pin the validated
 # artifact so a mutable tag cannot change the environment underneath CI.
-ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:5db6501093ccfc4e31343e8a4abcced98c045c2c4f5f9f5b50d8c47b8c28b00d
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:02505faafabffe7f438b9ad09139156cefbeb6fac4b851a69f096aca5a209ff5
 
 # Placeholder runner label — replace with the real self-hosted pool label.
 runner_labels:
