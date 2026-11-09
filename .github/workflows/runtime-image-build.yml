@@ -1,25 +1,31 @@
 # Temporary Harbor push probe; this PR is not intended for merge.
 name: Runtime CI image build
 on:
-  pull_request:
-    paths: [.github/workflows/runtime-image-build.yml]
+  push:
+    branches: [ci/runtime-build-probe]
 
 permissions:
   contents: read
 
 jobs:
   harbor-push-probe:
-    runs-on: flagcicd-810e
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Create and push a minimal image
         env:
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
           TARGET_IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:push-probe-${{ github.run_id }}
         shell: bash
         run: |
           set -euo pipefail
           probe_dir=$(mktemp -d)
-          trap 'rm -rf "$probe_dir"; docker image rm -f "$TARGET_IMAGE" >/dev/null 2>&1 || true' EXIT
+          trap 'rm -rf "$probe_dir"; docker image rm -f "$TARGET_IMAGE" >/dev/null 2>&1 || true; docker logout harbor.baai.ac.cn >/dev/null 2>&1 || true' EXIT
+          test -n "$HARBOR_USERNAME"
+          test -n "$HARBOR_PASSWORD"
+          printf '%s' "$HARBOR_PASSWORD" | docker login harbor.baai.ac.cn \
+            --username "$HARBOR_USERNAME" --password-stdin
           printf 'Harbor push probe for run %s\n' "$GITHUB_RUN_ID" > "$probe_dir/PROBE"
           tar -C "$probe_dir" -cf - PROBE | docker import - "$TARGET_IMAGE"
           docker push "$TARGET_IMAGE"
