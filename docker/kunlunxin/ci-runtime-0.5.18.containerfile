@@ -67,12 +67,16 @@ COPY docker/kunlunxin/sglang-v0.5.18-kunlunxin.patch /opt/sglang-v0.5.18-kunlunx
 RUN git -C /opt/sglang apply --check /opt/sglang-v0.5.18-kunlunxin.patch && \
     git -C /opt/sglang apply /opt/sglang-v0.5.18-kunlunxin.patch && \
     cp /opt/sglang/python/pyproject_other.toml /opt/sglang/python/pyproject.toml
+# compressed-tensors metadata requires torch, transformers, pydantic, and
+# loguru. The first three are resolved by srt_empty; install the missing
+# pure-Python dependency explicitly while preserving vendor Torch.
 RUN --mount=type=cache,id=kunlunxin-pip,target=/root/.cache/pip \
     SGLANG_BUILD_RUST_EXTS=none SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SGLANG=0.5.18 \
     python -m pip install --no-build-isolation -c /opt/vendor-constraints.txt \
         -e '/opt/sglang/python[srt_empty]' && \
     python -m pip install --no-deps \
-        xgrammar==0.2.1 compressed-tensors==0.15.0
+        xgrammar==0.2.1 compressed-tensors==0.15.0 loguru==0.7.3 && \
+    python -c "import compressed_tensors, loguru"
 
 FROM sglang AS dependencies
 RUN --mount=type=cache,id=kunlunxin-pip,target=/root/.cache/pip \
