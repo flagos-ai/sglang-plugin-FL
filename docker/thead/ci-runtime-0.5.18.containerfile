@@ -28,7 +28,7 @@ RUN make -C /opt/FlagCX -j"${BUILD_JOBS}" USE_DU=1 \
 FROM flagcx AS gems
 # Match the development image's FlagGems source, while preserving runtime Torch
 # and FlagTree. --no-deps prevents a public CUDA/Triton wheel replacing them.
-ARG CI_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG CI_PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 ARG FLAGGEMS_COMMIT=7536a18c00adbc29689a5657f2f5866fd637b23a
 RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
     git init /opt/FlagGems && \
