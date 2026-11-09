@@ -128,9 +128,9 @@ RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
 FROM sglang AS dependencies
 RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
     PIP_INDEX_URL="${CI_PIP_INDEX_URL}" \
-        python -m pip install -c /opt/vendor-constraints.txt \
+    python -m pip install -c /opt/vendor-constraints.txt \
         pytest pytest-cov pytest-timeout==2.4.0 pytest-json-report \
-        pytest-metadata requests ruff pyyaml && \
+        pytest-metadata requests ruff pyyaml pyarrow==22.0.0 && \
     python -m pip freeze > /opt/ci-requirements.freeze.txt
 
 # Frequently changed plugin code and CI defaults are deliberately last. Tests,
