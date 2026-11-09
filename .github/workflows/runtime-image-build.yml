@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           repository: lentil1016/sglang-plugin-FL
-          ref: 63349ad94df430105a74a377fbdd039e0947a978
+          ref: 11d96b912b70301328ca528d1f9b2f4d748b4e5d
           fetch-depth: 1
 
       - name: Log in to Harbor
@@ -33,7 +33,7 @@ jobs:
 
       - name: Build and push layered T-Head CI image
         env:
-          IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-runtime-ci-20261109
+          IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-runtime-ci-20261109-v2
         shell: bash
         run: |
           set -euo pipefail
