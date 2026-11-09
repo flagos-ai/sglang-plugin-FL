@@ -11,6 +11,7 @@ engine_overrides: {}
 device_overrides: {}
 unsupported_features: []
 env_defaults:
+  SGLANG_WARMUP_TIMEOUT: "1200"
   SGLANG_PLATFORM: sglang_fl
   SGLANG_PLUGINS: sglang_fl
   ATTENTION_BACKEND: fa3
