@@ -1,7 +1,7 @@
 # Build from the repository root. Plugin changes invalidate only the final layer.
 # --target dependencies retains the stable stack while iterating on the plugin.
 FROM harbor.baai.ac.cn/flagos-runtime/flagos-runtime-kunlunxin-xre5.37.1@sha256:679182a04d187562a3e23bacb9d0eb876dabf09ac0c0a875c2b4a141b64cac69 AS runtime
-ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
     PIP_DEFAULT_TIMEOUT=300 \
     PIP_RETRIES=10 \
