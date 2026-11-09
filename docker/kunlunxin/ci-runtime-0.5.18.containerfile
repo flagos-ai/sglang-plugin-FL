@@ -5,7 +5,8 @@ ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
     PIP_DEFAULT_TIMEOUT=300 \
     PIP_RETRIES=10 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONPATH=/opt/flagtree
 
 # This is the native Kunlunxin kernel from the validated development stack.
 # The sgl-kernel-shim package cannot implement its torch.ops.sgl_kernel ops.
