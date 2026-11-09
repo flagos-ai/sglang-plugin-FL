@@ -36,14 +36,35 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker buildx version
+          docker_cli=(docker)
+          if sudo -H python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          config = Path('/root/.docker/config.json')
+          if not config.is_file():
+              raise SystemExit(1)
+          data = json.loads(config.read_text())
+          hosts = set(data.get('auths', {})) | set(data.get('credHelpers', {}))
+          configured = any('harbor.baai.ac.cn' in host for host in hosts)
+          configured = configured or bool(data.get('credsStore'))
+          raise SystemExit(0 if configured else 1)
+          PY
+          then
+            echo 'Using the runner root Docker credential context for Harbor push.'
+            docker_cli=(sudo -H docker)
+          else
+            echo 'Runner root has no Docker credential context; using the Actions user context.'
+          fi
+
+          "${docker_cli[@]}" buildx version
           # Use the engine-backed builder. The docker-container driver pulls its
           # BuildKit image from Docker Hub, which is not reachable on this runner.
           # Inline cache travels with the CI image and local failed-build layers
           # remain available in the persistent daemon between attempts.
-          docker buildx use default
-          docker buildx inspect default --bootstrap
-          docker buildx build \
+          "${docker_cli[@]}" buildx use default
+          "${docker_cli[@]}" buildx inspect default --bootstrap
+          "${docker_cli[@]}" buildx build \
             --builder default \
             --file "$DOCKERFILE" \
             --target ci \
@@ -59,4 +80,4 @@ jobs:
           metadata = json.load(open('build-metadata.json'))
           print('image digest:', metadata.get('containerimage.digest'))
           PY
-          docker buildx imagetools inspect "$IMAGE"
+          "${docker_cli[@]}" buildx imagetools inspect "$IMAGE"
