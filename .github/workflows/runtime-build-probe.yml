@@ -66,6 +66,18 @@ jobs:
           docker cp runtime-kernel-${GITHUB_RUN_ID}:/tmp/vendor-wheels ./vendor-wheels
           docker rm runtime-kernel-${GITHUB_RUN_ID}
           ls -lh vendor-wheels
+          sha256sum vendor-wheels/*.whl
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+          wheel = next(Path('vendor-wheels').glob('*.whl'))
+          with ZipFile(wheel) as archive:
+              metadata = next(name for name in archive.namelist()
+                              if name.endswith('.dist-info/METADATA'))
+              for line in archive.read(metadata).decode().splitlines():
+                  if line.startswith(('Name:', 'Version:')):
+                      print(line)
+          PY
       - name: Upload vendor package for build inspection
         if: matrix.platform == 'thead'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
