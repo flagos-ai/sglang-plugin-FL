@@ -144,7 +144,7 @@ def test_empty_iluvatar_benchmark_selection_fails_before_subprocess(monkeypatch)
 
 
 def test_other_platform_shared_model_binding_is_unchanged():
-    runner = runner_module.TestRunner("cuda", None, "benchmark")
+    runner = runner_module.TestRunner("nvidia", None, "benchmark")
     cases = _runtime_cases(runner)
     assert set(cases) == set(_TYPES)
     for case, _ in cases.values():
@@ -154,7 +154,7 @@ def test_other_platform_shared_model_binding_is_unchanged():
 
 
 def test_optional_empty_selection_policy_leaves_other_platforms_unchanged(monkeypatch):
-    runner = runner_module.TestRunner("cuda", None, "benchmark")
+    runner = runner_module.TestRunner("nvidia", None, "benchmark")
     _track_environment(monkeypatch, runner.config)
     runner.config.device_tests[runner.config.device]["tests"]["benchmark"] = {
         "enabled": False

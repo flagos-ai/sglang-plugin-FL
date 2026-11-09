@@ -5,6 +5,12 @@ deny_vendors: [cuda]
 flagos_blacklist:
   - max
   - masked_scatter_
+  # Qwen3.6 clears indexed Mamba state-pool slots with scalar assignment.
+  # FlagGems materializes the scalar as a full broadcast tensor (540 MiB for
+  # the 16-request mixed CoreX case), which can OOM after CUDA graph capture.
+  # Keep indexed in-place writes on the native CoreX PyTorch implementation.
+  - index_put_
+  - _index_put_impl_
   # Cold FlagGems autotuning mutates aliased inputs repeatedly on CoreX.
   # Keep out-of-place mul on FlagGems; use native Torch for in-place mul.
   - mul_

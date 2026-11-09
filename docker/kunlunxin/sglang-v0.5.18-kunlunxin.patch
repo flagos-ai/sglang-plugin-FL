@@ -1,0 +1,65 @@
+diff --git a/python/sglang/srt/layers/attention/vision.py b/python/sglang/srt/layers/attention/vision.py
+index 11a90a93e4..48143398d3 100644
+--- a/python/sglang/srt/layers/attention/vision.py
++++ b/python/sglang/srt/layers/attention/vision.py
+@@ -46,7 +46,10 @@ _is_cpu_amx_available = cpu_has_amx_support()
+ _is_xpu = is_xpu()
+ 
+ if _is_cuda:
+-    from flashinfer.prefill import cudnn_batch_prefill_with_kv_cache
++    try:
++        from flashinfer.prefill import cudnn_batch_prefill_with_kv_cache
++    except ImportError:
++        pass
+ 
+     from sglang.kernels.ops.attention.flash_attention import flash_attn_varlen_func
+ 
+diff --git a/python/sglang/srt/layers/quantization/fp8_utils.py b/python/sglang/srt/layers/quantization/fp8_utils.py
+index 4e1060fd95..f0a6d85e5a 100755
+--- a/python/sglang/srt/layers/quantization/fp8_utils.py
++++ b/python/sglang/srt/layers/quantization/fp8_utils.py
+@@ -185,7 +185,10 @@ if _is_cuda:
+         N = mat_b.shape[-1]
+         return mat_a.new_empty((M, N), dtype=out_dtype)
+ 
+-    from flashinfer import bmm_fp8 as _raw_bmm_fp8_batched
++    try:
++        from flashinfer import bmm_fp8 as _raw_bmm_fp8_batched
++    except ImportError:
++        _raw_bmm_fp8_batched = None
+ 
+     @register_custom_op(op_name="flashinfer_bmm_fp8_batched", mutates_args=["out"])
+     def _bmm_fp8_batched_op(
+diff --git a/python/sglang/srt/layers/sampler.py b/python/sglang/srt/layers/sampler.py
+index b491ed0bb9..b8c3945fdf 100644
+--- a/python/sglang/srt/layers/sampler.py
++++ b/python/sglang/srt/layers/sampler.py
+@@ -28,14 +28,20 @@ from sglang.srt.utils.common import (
+ )
+ 
+ if is_cuda():
+-    from flashinfer.sampling import (
+-        min_p_sampling_from_probs,
+-        top_k_top_p_sampling_from_probs,
+-    )
+-    from sgl_kernel import (
+-        top_k_renorm_prob,
+-        top_p_renorm_prob,
+-    )
++    try:
++        from flashinfer.sampling import (
++            min_p_sampling_from_probs,
++            top_k_top_p_sampling_from_probs,
++        )
++    except ImportError:
++        pass
++    try:
++        from sgl_kernel import (
++            top_k_renorm_prob,
++            top_p_renorm_prob,
++        )
++    except ImportError:
++        pass
+ 
+ if is_musa():
+     from sgl_kernel import (

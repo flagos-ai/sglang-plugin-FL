@@ -39,6 +39,7 @@ _is_npu = hasattr(torch, "npu") and torch.npu.is_available()
 _is_txda = hasattr(torch, "txda") and torch.txda.is_available()
 _is_corex = hasattr(torch, "corex") and torch.cuda.is_available()
 _is_hcu = hasattr(torch, "__hcu_version__") and torch.cuda.is_available()
+_is_kunlunxin = hasattr(torch, "xpu") and torch.cuda.is_available()
 
 # Must be set before importing sglang.
 if _is_npu:
@@ -67,6 +68,9 @@ if _is_txda:
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-35B-A3B")
 TP_SIZE = int(os.environ.get("TP_SIZE", "4" if _is_npu or _is_txda or _is_corex else "1"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "256"))
+MEM_FRACTION_STATIC = float(
+    os.environ.get("MEM_FRACTION_STATIC", "0.6" if _is_txda else "0.85")
+)
 VL_MAX_TOKENS = 64
 if _is_corex:
     VL_MAX_TOKENS = int(os.environ.get("FL_CONCURRENT_VL_MAX_TOKENS", "256"))
@@ -118,6 +122,7 @@ elif _is_corex:
         "watchdog_timeout": 3600,
         "attention_backend": "triton",
         "cuda_graph_max_bs_decode": max(1, CONCURRENT_N),
+        "cuda_graph_max_bs_prefill": 256,
     }
 elif _is_hcu:
     _extra_engine_kwargs = {
@@ -127,6 +132,12 @@ elif _is_hcu:
         "disable_radix_cache": True,
         "cuda_graph_backend_prefill": "disabled",
         "trust_remote_code": True,
+    }
+elif _is_kunlunxin:
+    _extra_engine_kwargs = {
+        "trust_remote_code": True,
+        "disable_radix_cache": True,
+        "disable_overlap_schedule": True
     }
 else:
     _extra_engine_kwargs = {"trust_remote_code": True}
@@ -244,7 +255,7 @@ def _make_engine():
     return Engine(
         model_path=MODEL_PATH,
         tp_size=TP_SIZE,
-        mem_fraction_static=0.6 if _is_txda else 0.85,
+        mem_fraction_static=MEM_FRACTION_STATIC,
         disable_cuda_graph=os.environ.get("DISABLE_CUDA_GRAPH", "1") != "0",
         **_extra_engine_kwargs,
     )

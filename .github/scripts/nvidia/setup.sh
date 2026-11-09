@@ -9,7 +9,7 @@ echo "=== Installing sglang-plugin-FL (CUDA) ==="
 # only the editable plugin and explicitly preserve every pinned dependency.
 python3 -m pip install \
     --break-system-packages --no-deps --no-build-isolation -e .
-python3 .github/scripts/cuda/verify_environment.py \
+python3 .github/scripts/nvidia/verify_environment.py \
     --require-gpu --require-ci --min-gpus 4
 echo "=== Installation complete ==="
 python3 -c "import sglang_fl; print(f'sglang_fl {sglang_fl.__name__} loaded')"
