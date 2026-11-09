@@ -28,6 +28,7 @@ RUN make -C /opt/FlagCX -j"${BUILD_JOBS}" USE_DU=1 \
 FROM flagcx AS gems
 # Match the development image's FlagGems source, while preserving runtime Torch
 # and FlagTree. --no-deps prevents a public CUDA/Triton wheel replacing them.
+ARG CI_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ARG FLAGGEMS_COMMIT=7536a18c00adbc29689a5657f2f5866fd637b23a
 RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
     git init /opt/FlagGems && \
@@ -35,7 +36,8 @@ RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
     git -C /opt/FlagGems fetch --depth 1 origin "${FLAGGEMS_COMMIT}" && \
     git -C /opt/FlagGems checkout --detach FETCH_HEAD
 RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
-    SETUPTOOLS_SCM_PRETEND_VERSION=5.5.0.dev0+g7536a18c0 \
+    PIP_INDEX_URL="${CI_PIP_INDEX_URL}" \
+        SETUPTOOLS_SCM_PRETEND_VERSION=5.5.0.dev0+g7536a18c0 \
         python -m pip install --no-deps /opt/FlagGems
 
 FROM gems AS vendor-kernel
@@ -69,14 +71,17 @@ RUN git init /opt/sglang && \
     git -C /opt/sglang checkout --detach FETCH_HEAD && \
     cp /opt/sglang/python/pyproject_other.toml /opt/sglang/python/pyproject.toml
 RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
-    SGLANG_BUILD_RUST_EXTS=none SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SGLANG=${SGLANG_VERSION} \
+    PIP_INDEX_URL="${CI_PIP_INDEX_URL}" SGLANG_BUILD_RUST_EXTS=none \
+    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SGLANG=${SGLANG_VERSION} \
     python -m pip install --no-build-isolation -c /opt/vendor-constraints.txt \
         -e '/opt/sglang/python[srt_empty]' && \
-    python -m pip install --no-deps xgrammar==0.2.1
+    PIP_INDEX_URL="${CI_PIP_INDEX_URL}" \
+        python -m pip install --no-deps xgrammar==0.2.1
 
 FROM sglang AS dependencies
 RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
-    python -m pip install -c /opt/vendor-constraints.txt \
+    PIP_INDEX_URL="${CI_PIP_INDEX_URL}" \
+        python -m pip install -c /opt/vendor-constraints.txt \
         pytest pytest-cov pytest-timeout==2.4.0 pytest-json-report \
         pytest-metadata requests ruff pyyaml && \
     python -m pip freeze > /opt/ci-requirements.freeze.txt
