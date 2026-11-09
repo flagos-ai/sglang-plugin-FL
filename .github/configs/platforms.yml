@@ -25,3 +25,6 @@ platforms:
   hygon:
     # Validated SGLang 0.5.18 image is pinned in hygon.yml.
     enabled: true
+
+  enflame:
+    enabled: true

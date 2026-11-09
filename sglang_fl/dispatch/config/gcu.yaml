@@ -1,2 +1,12 @@
 # SGLang-FL Dispatch Configuration for GCU platform
 prefer: vendor
+
+# Union of the 12 launch-script blacklists; history: claude/blacklist_yaml_20261103/
+flagos_blacklist:
+  - isin
+  - clone
+  - masked_scatter_
+  - index_put_
+  - _index_put_impl_
+  - repeat_interleave_self_int
+  - _unique2

@@ -308,8 +308,19 @@ def _make_fla_inputs(device, dtype: torch.dtype = torch.float16):
 
 
 def test_fla_chunk_gated_delta_rule_contract(device) -> None:
-    """Check FLA chunk_gated_delta_rule returns valid output tensors."""
+    """Check chunk GDN with an explicit state pool and slot indices."""
     q, k, v, g, beta, scale = _make_fla_inputs(device)
+    initial_state = torch.zeros(
+        q.shape[0],
+        v.shape[2],
+        v.shape[-1],
+        k.shape[-1],
+        device=device,
+        dtype=torch.float32,
+    )
+    initial_state_indices = torch.arange(
+        q.shape[0], device=device, dtype=torch.int32
+    )
 
     try:
         output, _, final_state = _call_selected(
@@ -320,6 +331,8 @@ def test_fla_chunk_gated_delta_rule_contract(device) -> None:
             g,
             beta,
             scale,
+            initial_state=initial_state,
+            initial_state_indices=initial_state_indices,
             head_first=False,
         )
     except RuntimeError as exc:
@@ -365,18 +378,23 @@ def test_fla_packed_decode_contract(device) -> None:
     """Check FLA packed decode dispatch returns valid output/state tensors."""
     batch, num_heads, key_dim, value_dim = 2, 2, 16, 16
     dtype = torch.float16
-    mixed_qkv = torch.randn(
-        batch,
-        num_heads,
-        key_dim * 2 + value_dim,
-        device=device,
-        dtype=dtype,
+    q = torch.randn(
+        batch, num_heads, key_dim, device=device, dtype=dtype
+    )
+    k = torch.randn_like(q)
+    v = torch.randn(
+        batch, num_heads, value_dim, device=device, dtype=dtype
+    )
+    mixed_qkv = torch.cat(
+        [q.flatten(1), k.flatten(1), v.flatten(1)], dim=-1
     )
     a = torch.randn(batch, num_heads, device=device, dtype=dtype)
     b = torch.randn(batch, num_heads, device=device, dtype=dtype)
     A_log = torch.randn(num_heads, device=device, dtype=dtype)
     dt_bias = torch.randn(num_heads, device=device, dtype=dtype)
-    initial_state = torch.randn(batch, num_heads, key_dim, value_dim, device=device, dtype=dtype)
+    initial_state = torch.randn(
+        batch, num_heads, value_dim, key_dim, device=device, dtype=dtype
+    )
     out = torch.empty(batch, num_heads, value_dim, device=device, dtype=dtype)
     ssm_state_indices = torch.arange(batch, device=device, dtype=torch.int32)
 

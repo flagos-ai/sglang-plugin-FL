@@ -47,4 +47,4 @@ def causal_conv1d_fn(
 
 def patch_causal_conv1d_fn():
     from sglang.srt.plugins.hook_registry import HookRegistry, HookType
-    HookRegistry.register(f"sglang.srt.layers.attention.mamba.causal_conv1d_triton.causal_conv1d_fn", causal_conv1d_fn, HookType.REPLACE)
+    HookRegistry.register(f"sglang.kernels.ops.mamba.causal_conv1d_triton.causal_conv1d_fn", causal_conv1d_fn, HookType.REPLACE)

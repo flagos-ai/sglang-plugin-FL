@@ -1,0 +1,42 @@
+# Allocated GCU tests; external environment overrides these defaults.
+platform: enflame
+vendor: enflame
+device_types:
+  gcu:
+    tags: [gcu, bf16, fp16]
+tolerance:
+  inference:
+    bfloat16: {rtol: 1.0e-3, atol: 1.0e-3}
+engine_overrides: {}
+device_overrides: {}
+unsupported_features: []
+env_defaults:
+  SGLANG_WARMUP_TIMEOUT: "1200"
+  SGLANG_PLATFORM: sglang_fl
+  SGLANG_PLUGINS: sglang_fl
+  ATTENTION_BACKEND: fa3
+  SGLANG_FL_PER_OP: "silu_and_mul=flagos;mrotary_embedding=reference;topk=reference;gemma_rms_norm=reference;fused_moe=vendor;chunk_gated_delta_rule=vendor;fused_recurrent_gated_delta_rule_packed_decode=vendor"
+  TOPS_VISIBLE_DEVICES: "0,1,2,3"
+  TORCH_GCU_ENABLE_INT64_AND_UINT64: "1"
+  ENABLE_I64_CHECK: "0"
+  TORCHDYNAMO_DISABLE: "1"
+  SGLANG_ENABLE_FAST_INPUT_LOGPROBS: "0"
+  SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE: "0"
+  FLAGCX_PATH: /sgl-workspace/FlagCX
+  SGLANG_FL_DIST_BACKEND: flagcx
+gcu:
+  tests:
+    e2e:
+      inference:
+        qwen3: [4b_tp2, 06b_tp1]
+        qwen3_6: [27b_tp4_nograph, 35b_a3b_tp4_nograph]
+      concurrent:
+        qwen3_6: [27b_tp4_nograph, 35b_a3b_tp4_nograph]
+      serving:
+        qwen3: [4b_tp2]
+        qwen3_6: [27b_tp4_nograph, 35b_a3b_tp4_nograph]
+    unit: {include: "*", exclude: []}
+    functional: {include: "*", exclude: []}
+    benchmark:
+      enabled: true
+      smoke: [throughput, latency, serve]
