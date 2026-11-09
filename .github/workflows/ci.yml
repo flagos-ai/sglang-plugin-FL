@@ -42,6 +42,17 @@ permissions:
   pull-requests: write
 
 jobs:
+  # Temporary direct path for validating the runtime-derived T-Head image while
+  # GitHub intermittently abandons the discover job before it is instantiated.
+  validate-thead-runtime:
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: thead
+      ci_stage: pr
+      run_e2e: false
+      run_benchmark: false
+    secrets: inherit
+
   # ============================================================
   # Job 1: Lint (ruff check, ruff format, typos)
   # ============================================================
