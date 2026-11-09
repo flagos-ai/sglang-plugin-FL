@@ -42,6 +42,38 @@ permissions:
   pull-requests: write
 
 jobs:
+  # Temporary direct path for validating the runtime-derived Kunlunxin image
+  # while GitHub intermittently abandons the discover job before scheduling it.
+  validate-kunlunxin-runtime:
+    runs-on: [ci-sglang-plugin-fl-kunlunxin]
+    timeout-minutes: 30
+    container:
+      image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:b8737419f7f47b2d234b8cba84b1cb914b6eca03b6516f5fb6d17fddb0387325
+      volumes:
+        - /data/models:/data/models
+        - /data/models/Qwen:/models
+      options: >-
+        --hostname sglang-plugin-fl
+        --privileged
+        --ipc=host
+        --shm-size=64g
+        --ulimit memlock=-1
+        --ulimit stack=67108864
+        --user root
+        --init
+        -e USE_FLAGGEMS=1
+        -e SGLANG_PLUGINS=sglang_fl
+        -e SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1
+        -e SGLANG_FL_DIST_BACKEND=flagcx
+        -e SGLANG_FL_CONFIG=/__w/sglang-plugin-FL/sglang-plugin-FL/sglang_fl/dispatch/config/kunlunxin.yaml
+        -e SGLANG_FL_PER_OP=silu_and_mul=flagos;mrotary_embedding=flagos;topk=reference;gemma_rms_norm=reference;fused_moe=vendor;chunk_gated_delta_rule=vendor;fused_recurrent_gated_delta_rule_packed_decode=vendor
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - run: bash .github/scripts/kunlunxin/check.sh
+      - run: bash .github/scripts/kunlunxin/setup.sh
+      - name: Run unit tests
+        run: python tests/run.py --platform kunlunxin --scope unit
+
   # ============================================================
   # Job 1: Lint (ruff check, ruff format, typos)
   # ============================================================
