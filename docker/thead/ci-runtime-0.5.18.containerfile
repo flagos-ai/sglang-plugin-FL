@@ -1,7 +1,7 @@
 # Build from the repository root. Stable dependencies precede all plugin sources.
 # --target dependencies builds an image for iterating on the plugin without
 # reinstalling the vendor stack or SGLang. Export/import BuildKit cache in CI.
-FROM harbor.baai.ac.cn/flagos-runtime/flagos-runtime-thead-ppu2.1.0@sha256:ee5b2b9420dedc8eb6ad6658397e9d9602533f1c6e74a53b924ff976a113d4ab AS runtime
+FROM harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:ee5b2b9420dedc8eb6ad6658397e9d9602533f1c6e74a53b924ff976a113d4ab AS runtime
 
 ARG PIP_INDEX_URL=https://pypi.org/simple
 ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
