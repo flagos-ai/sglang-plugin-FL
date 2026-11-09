@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           repository: lentil1016/sglang-plugin-FL
-          ref: 0cc0a5c3491ccb05c5db264d5e1820dc9142532f
+          ref: 0cc0a5cf155864b956dd45a0ab19f39506911e16
           fetch-depth: 1
 
       - name: Log in to Harbor
