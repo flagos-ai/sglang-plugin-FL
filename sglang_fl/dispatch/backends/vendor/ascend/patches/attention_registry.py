@@ -32,10 +32,11 @@ def patch_attn_backend_wrapper() -> None:
         need to change the code of the original attention backend.
         """
         assert not (
-            runner.hybrid_gdn_config is not None and runner.use_mla_backend
+            getattr(runner, "hybrid_gdn_config", None) is not None
+            and getattr(runner, "use_mla_backend", False)
         ), "hybrid_gdn can only be used with non-MLA models."
 
-        if cfg := runner.mambaish_config:
+        if cfg := getattr(runner, "mambaish_config", None):
             from sglang.srt.configs.linear_attn_model_registry import (
                 get_linear_attn_config,
                 import_backend_class,

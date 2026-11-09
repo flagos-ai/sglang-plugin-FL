@@ -89,6 +89,16 @@ class FlagOSBackend(Backend):
 
         return mrotary_embedding_flagos(obj, positions, query, key)
 
+    def mhc_pre(self, *args, **kwargs):
+        from .impl.mhc import mhc_pre_flagos
+
+        return mhc_pre_flagos(*args, **kwargs)
+
+    def mhc_post(self, *args, **kwargs):
+        from .impl.mhc import mhc_post_flagos
+
+        return mhc_post_flagos(*args, **kwargs)
+
     def fused_recurrent_gated_delta_rule(
         self,
         q,
