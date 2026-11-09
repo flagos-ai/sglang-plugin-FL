@@ -76,8 +76,7 @@ RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
 FROM vendor-kernel AS vision
 COPY --from=torchvision-builder /opt/vision-wheels/torchvision-*.whl /tmp/
 RUN python -m pip install --no-deps /tmp/torchvision-*.whl && \
-    rm -f /tmp/torchvision-*.whl && \
-    python -c "import torchvision; from torchvision.io import decode_jpeg; assert torchvision.__version__.split('+')[0] == '0.25.0'"
+    rm -f /tmp/torchvision-*.whl
 
 # Snapshot the vendor constraints once, before adding generic Python packages.
 RUN python - <<'PY'
@@ -110,7 +109,8 @@ RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
         -e '/opt/sglang/python[srt_empty]' && \
     PIP_INDEX_URL="${CI_PIP_INDEX_URL}" \
         python -m pip install --no-deps \
-        xgrammar==0.2.1 compressed-tensors==0.15.0
+        xgrammar==0.2.1 compressed-tensors==0.15.0 && \
+    python -c "import torchvision; from torchvision.io import decode_jpeg; assert torchvision.__version__.split('+')[0] == '0.25.0'"
 
 FROM sglang AS dependencies
 RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
