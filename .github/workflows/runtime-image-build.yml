@@ -8,10 +8,17 @@ permissions:
   contents: read
 
 jobs:
-  mirror-runtime-bases:
+  build-kunlunxin:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 240
     steps:
+      - name: Check out Kunlunxin image source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          repository: lentil1016/sglang-plugin-FL
+          ref: fc623ac9fce82e37c4d15a6ba6b495eb87c5f063
+          fetch-depth: 1
+
       - name: Log in to Harbor
         env:
           HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
@@ -24,56 +31,32 @@ jobs:
           printf '%s' "$HARBOR_PASSWORD" | docker login harbor.baai.ac.cn \
             --username "$HARBOR_USERNAME" --password-stdin
 
-      - name: Copy runtime artifacts inside Harbor
+      - name: Build and push layered Kunlunxin CI image
         env:
-          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
-          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+          IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-runtime-ci-20261109
         shell: bash
         run: |
           set -euo pipefail
-          api=https://harbor.baai.ac.cn/api/v2.0
-          project=flagos-dev
-          repository=sglang-plugin-fl
-
-          copy_and_tag() {
-            local source=$1 digest=$2 tag=$3 status
-            status=$(curl --silent --show-error \
-              --user "$HARBOR_USERNAME:$HARBOR_PASSWORD" \
-              --request POST --get \
-              --data-urlencode "from=$source@$digest" \
-              --output response.json --write-out '%{http_code}' \
-              "$api/projects/$project/repositories/$repository/artifacts")
-            if [[ "$status" != 201 && "$status" != 409 ]]; then
-              cat response.json
-              echo "Harbor artifact copy failed with HTTP $status" >&2
-              return 1
-            fi
-
-            status=$(curl --silent --show-error \
-              --user "$HARBOR_USERNAME:$HARBOR_PASSWORD" \
-              --request POST --header 'Content-Type: application/json' \
-              --data "{\"name\":\"$tag\"}" \
-              --output response.json --write-out '%{http_code}' \
-              "$api/projects/$project/repositories/$repository/artifacts/$digest/tags")
-            if [[ "$status" != 201 && "$status" != 409 ]]; then
-              cat response.json
-              echo "Harbor tag creation failed with HTTP $status" >&2
-              return 1
-            fi
-          }
-
-          copy_and_tag \
-            flagos-runtime/flagos-runtime-thead-ppu2.1.0 \
-            sha256:ee5b2b9420dedc8eb6ad6658397e9d9602533f1c6e74a53b924ff976a113d4ab \
-            runtime-thead-ppu2.1.0
-          copy_and_tag \
-            flagos-runtime/flagos-runtime-kunlunxin-xre5.37.1 \
-            sha256:679182a04d187562a3e23bacb9d0eb876dabf09ac0c0a875c2b4a141b64cac69 \
-            runtime-kunlunxin-xre5.37.1
-
-          repo=harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl
-          docker buildx imagetools inspect "$repo:runtime-thead-ppu2.1.0"
-          docker buildx imagetools inspect "$repo:runtime-kunlunxin-xre5.37.1"
+          df -h .
+          docker buildx use default
+          docker buildx inspect default --bootstrap
+          docker buildx build \
+            --builder default \
+            --file docker/kunlunxin/ci-runtime-0.5.18.containerfile \
+            --target ci \
+            --tag "$IMAGE" \
+            --cache-from "type=registry,ref=$IMAGE" \
+            --cache-to type=inline \
+            --push \
+            --provenance=false \
+            --metadata-file build-metadata.json \
+            .
+          python3 - <<'PY'
+          import json
+          metadata = json.load(open('build-metadata.json'))
+          print('image digest:', metadata.get('containerimage.digest'))
+          PY
+          docker buildx imagetools inspect "$IMAGE"
 
       - name: Log out of Harbor
         if: always()
