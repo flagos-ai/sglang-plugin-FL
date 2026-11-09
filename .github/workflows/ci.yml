@@ -73,7 +73,7 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          from importlib.metadata import PackageNotFoundError, distribution, version
+          from importlib.metadata import PackageNotFoundError, distributions, distribution, version
           from pathlib import Path
           import subprocess
 
@@ -88,10 +88,19 @@ jobs:
               if path.suffix == ".so":
                   print(f"native={path}")
                   subprocess.run(["ldd", str(path)], check=False)
+          needles = ("torch", "xpu", "xmlir", "flag", "xre", "infer", "sglang")
+          for candidate in sorted(distributions(), key=lambda d: d.metadata["Name"].lower()):
+              name = candidate.metadata["Name"]
+              if any(needle in name.lower() for needle in needles):
+                  print(f"dist={name}=={candidate.version} location={candidate.locate_file('')}")
+                  for item in candidate.files or ():
+                      if str(item).endswith(".dist-info/direct_url.json"):
+                          direct_url = Path(candidate.locate_file(item))
+                          print(f"direct-url[{name}]={direct_url.read_text()}")
           PY
           find /flagos /usr /opt /sgl-workspace \
             \( -name 'libglog.so*' -o -name 'libapiinfer.so*' \) \
-            -print 2>/dev/null | sort
+            -print 2>/dev/null | sort || true
 
   # ============================================================
   # Job 1: Lint (ruff check, ruff format, typos)
