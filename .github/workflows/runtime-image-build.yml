@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           repository: lentil1016/sglang-plugin-FL
-          ref: 6ac4c2ba8eb3ebdcc59ebabff3dfb123d1dd4a1b
+          ref: f17a0dafbc603186ae2b1f5ef508357eeb6d5984
           fetch-depth: 1
 
       - name: Log in to Harbor
@@ -33,8 +33,8 @@ jobs:
 
       - name: Build and push layered T-Head CI image
         env:
-          IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-runtime-ci-20261109-v5
-          CACHE_IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-runtime-ci-20261109-v4
+          IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-runtime-ci-20261109-v6
+          CACHE_IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-runtime-ci-20261109-v5
         shell: bash
         run: |
           set -euo pipefail
@@ -44,6 +44,61 @@ jobs:
           docker buildx build \
             --builder default \
             --file docker/thead/ci-runtime-0.5.18.containerfile \
+            --target ci \
+            --tag "$IMAGE" \
+            --cache-from "type=registry,ref=$CACHE_IMAGE" \
+            --cache-to type=inline \
+            --push \
+            --provenance=false \
+            --metadata-file build-metadata.json \
+            .
+          python3 - <<'PY'
+          import json
+          metadata = json.load(open('build-metadata.json'))
+          print('image digest:', metadata.get('containerimage.digest'))
+          PY
+          docker buildx imagetools inspect "$IMAGE"
+
+      - name: Log out of Harbor
+        if: always()
+        run: docker logout harbor.baai.ac.cn || true
+
+  build-kunlunxin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Check out Kunlunxin image source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          repository: lentil1016/sglang-plugin-FL
+          ref: 169e0a524309ab9bebb1cf71155d770650c03a87
+          fetch-depth: 1
+
+      - name: Log in to Harbor
+        env:
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HARBOR_USERNAME"
+          test -n "$HARBOR_PASSWORD"
+          printf '%s' "$HARBOR_PASSWORD" | docker login harbor.baai.ac.cn \
+            --username "$HARBOR_USERNAME" --password-stdin
+
+      - name: Build and push layered Kunlunxin CI image
+        env:
+          IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-runtime-ci-20261109-v4
+          CACHE_IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-runtime-ci-20261109-v3
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h .
+          docker buildx use default
+          docker buildx inspect default --bootstrap
+          docker buildx build \
+            --builder default \
+            --file docker/kunlunxin/ci-runtime-0.5.18.containerfile \
             --target ci \
             --tag "$IMAGE" \
             --cache-from "type=registry,ref=$CACHE_IMAGE" \
