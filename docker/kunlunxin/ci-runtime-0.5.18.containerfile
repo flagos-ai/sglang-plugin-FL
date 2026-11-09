@@ -26,7 +26,7 @@ RUN --mount=type=cache,id=kunlunxin-pip,target=/root/.cache/pip \
 
 # Preserve the runtime's paired Torch/XRE/FlagTree/FlagCX builds when resolving
 # generic SGLang dependencies. FlagCX's runtime wheel supplies its shared library;
-# the source tree supplies the interservice wrapper used by sglang_fl.
+# keep the matching source revision at FLAGCX_PATH for the validated CI layout.
 FROM gems AS flagcx
 ARG FLAGCX_COMMIT=7812d2e90057868ba5c41f47fbb45a429252b9aa
 RUN git init /opt/FlagCX && \
@@ -94,4 +94,4 @@ COPY sglang_fl/ ./sglang_fl/
 RUN --mount=type=cache,id=kunlunxin-pip,target=/root/.cache/pip \
     python -m pip install --no-deps --no-build-isolation -e . && \
     python -c "from importlib.metadata import version; assert version('sglang') == '0.5.18'; assert version('flagtree') == '0.7.0+xpu3.6'" && \
-    test -f /opt/FlagCX/plugin/interservice/flagcx_wrapper.py
+    test -f /opt/FlagCX/build/lib/libflagcx.so
