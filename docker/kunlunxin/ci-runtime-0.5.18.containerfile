@@ -93,5 +93,5 @@ COPY pyproject.toml ./
 COPY sglang_fl/ ./sglang_fl/
 RUN --mount=type=cache,id=kunlunxin-pip,target=/root/.cache/pip \
     python -m pip install --no-deps --no-build-isolation -e . && \
-    python -c "from importlib.metadata import version; assert version('sglang') == '0.5.18'; assert version('flagtree') == '0.7.1a1+xpu3.6'" && \
+    python -c "from importlib.metadata import version; assert version('sglang') == '0.5.18'; assert version('flagtree') == '0.7.0+xpu3.6'" && \
     test -f /opt/FlagCX/plugin/interservice/flagcx_wrapper.py
