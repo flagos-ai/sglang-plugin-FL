@@ -8,15 +8,15 @@ permissions:
   contents: read
 
 jobs:
-  build-kunlunxin:
+  build-thead:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 360
     steps:
-      - name: Check out Kunlunxin image source
+      - name: Check out T-Head image source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           repository: lentil1016/sglang-plugin-FL
-          ref: e57e470705504ee3c8a6000c3603b16144db3d6c
+          ref: 241d8a6d5be6a0bfc6fe6dc3736aaff9b5d3b574
           fetch-depth: 1
 
       - name: Log in to Harbor
@@ -31,9 +31,9 @@ jobs:
           printf '%s' "$HARBOR_PASSWORD" | docker login harbor.baai.ac.cn \
             --username "$HARBOR_USERNAME" --password-stdin
 
-      - name: Build and push layered Kunlunxin CI image
+      - name: Build and push layered T-Head CI image
         env:
-          IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-runtime-ci-20261109
+          IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-runtime-ci-20261109
         shell: bash
         run: |
           set -euo pipefail
@@ -42,7 +42,7 @@ jobs:
           docker buildx inspect default --bootstrap
           docker buildx build \
             --builder default \
-            --file docker/kunlunxin/ci-runtime-0.5.18.containerfile \
+            --file docker/thead/ci-runtime-0.5.18.containerfile \
             --target ci \
             --tag "$IMAGE" \
             --cache-from "type=registry,ref=$IMAGE" \
