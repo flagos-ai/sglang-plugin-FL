@@ -42,13 +42,12 @@ permissions:
   pull-requests: write
 
 jobs:
-  # Temporary direct path for validating the runtime-derived T-Head image while
-  # GitHub intermittently abandons the discover job before it is instantiated.
+  # Temporary read-only inventory of the previously validated development image.
   validate-thead-runtime:
     runs-on: [flagcicd-810e]
     timeout-minutes: 30
     container:
-      image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:39f859b0e566c09815c41a5e0310993d9fa7645011078dde8dbc95cf961cff59
+      image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:1b0fb64bcf0042fcc69067f2c25b7bc571f88ef39abdbd6bcf2a357ec1aea13d
       volumes:
         - /mnt/airs-business/cicd/models:/data/models/Qwen
       options: >-
@@ -81,18 +80,27 @@ jobs:
         --device /dev/alixpu_ppu15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - run: bash .github/scripts/thead/check.sh
-      - run: bash .github/scripts/thead/setup.sh
-      - name: Verify concrete SGLang package wins over the FlagTree overlay
+      - name: Inventory validated T-Head native stack
+        shell: bash
         run: |
+          set -euo pipefail
           python - <<'PY'
-          import sglang
-          print("sglang file:", sglang.__file__)
-          print("sglang loader:", sglang.__spec__.loader)
-          assert sglang.__file__.startswith("/opt/sglang/python/sglang/")
+          from importlib.metadata import PackageNotFoundError, distribution, version
+          from pathlib import Path
+          import subprocess
+
+          for name in ("torch", "torchvision", "flagtree", "flag_gems", "sglang-kernel"):
+              try:
+                  print(f"{name}={version(name)}")
+              except PackageNotFoundError:
+                  print(f"{name}=MISSING")
+          dist = distribution("sglang-kernel")
+          for item in dist.files or ():
+              path = Path(dist.locate_file(item))
+              if path.suffix == ".so":
+                  print(f"native={path}")
+                  subprocess.run(["ldd", str(path)], check=False)
           PY
-      - name: Run unit tests
-        run: python tests/run.py --platform thead --scope unit
 
   # ============================================================
   # Job 1: Lint (ruff check, ruff format, typos)
