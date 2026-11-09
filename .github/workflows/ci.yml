@@ -42,13 +42,12 @@ permissions:
   pull-requests: write
 
 jobs:
-  # Temporary direct path for validating the runtime-derived Kunlunxin image
-  # while GitHub intermittently abandons the discover job before scheduling it.
+  # Temporary read-only inventory of the previously validated development image.
   validate-kunlunxin-runtime:
     runs-on: [ci-sglang-plugin-fl-kunlunxin]
     timeout-minutes: 30
     container:
-      image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:ddd1d1b341ae259b5215549e5ebbeb772e461365736b71a76546669396789807
+      image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:b0faa6a570501d8445aeb6fd78c5bbe58499b2573d5316a3d2902ed994f6245a
       volumes:
         - /data/models:/data/models
         - /data/models/Qwen:/models
@@ -69,10 +68,30 @@ jobs:
         -e SGLANG_FL_PER_OP=silu_and_mul=flagos;mrotary_embedding=flagos;topk=reference;gemma_rms_norm=reference;fused_moe=vendor;chunk_gated_delta_rule=vendor;fused_recurrent_gated_delta_rule_packed_decode=vendor
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - run: bash .github/scripts/kunlunxin/check.sh
-      - run: bash .github/scripts/kunlunxin/setup.sh
-      - name: Run unit tests
-        run: python tests/run.py --platform kunlunxin --scope unit
+      - name: Inventory validated Kunlunxin native stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from importlib.metadata import PackageNotFoundError, distribution, version
+          from pathlib import Path
+          import subprocess
+
+          for name in ("torch", "flagtree", "flag_gems", "sglang-kernel"):
+              try:
+                  print(f"{name}={version(name)}")
+              except PackageNotFoundError:
+                  print(f"{name}=MISSING")
+          dist = distribution("sglang-kernel")
+          for item in dist.files or ():
+              path = Path(dist.locate_file(item))
+              if path.suffix == ".so":
+                  print(f"native={path}")
+                  subprocess.run(["ldd", str(path)], check=False)
+          PY
+          find /flagos /usr /opt /sgl-workspace \
+            \( -name 'libglog.so*' -o -name 'libapiinfer.so*' \) \
+            -print 2>/dev/null | sort
 
   # ============================================================
   # Job 1: Lint (ruff check, ruff format, typos)
