@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           repository: lentil1016/sglang-plugin-FL
-          ref: ci/runtime-kunlunxin-0.5.18
+          ref: 19964582a16666d690dd9dd573b45da333b2cb67
           fetch-depth: 1
 
       - name: Log in to Harbor
