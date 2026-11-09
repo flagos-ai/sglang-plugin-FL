@@ -6,7 +6,7 @@ Checks only:
   2) versions match expected values (optional, --check-versions)
   3) CUDA-compat devices are visible and enough (--require-gpu)
 
-Versions reference the validated container limy-sglang-upgrade.
+Versions reference the validated operations runtime-derived CI image.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ REQUIRED_DISTRIBUTIONS = (
 EXPECTED_VERSIONS = {
     "sglang": "0.5.18",
     "torch": "2.9.0",
-    "flagtree": "0.7.1a1+xpu3.6",
+    "flagtree": "0.7.0+xpu3.6",
     "flag_gems": "0.0+g7fcdbed07",
 }
 
