@@ -59,6 +59,17 @@ jobs:
         env:
           IMAGE: ${{ matrix.image }}
         run: |
-          docker run --rm --entrypoint python "$IMAGE" -m pip index versions \
-            --timeout 15 --retries 1 --index-url https://aiext-pypi.mirrors.aliyuncs.com/pg1-pip/ubuntu_cu130/simple/ \
-            sglang-kernel
+          docker run --name runtime-kernel-${GITHUB_RUN_ID} --entrypoint python "$IMAGE" -m pip download \
+            --no-deps --dest /tmp/vendor-wheels --timeout 30 --retries 1 \
+            --index-url https://aiext-pypi.mirrors.aliyuncs.com/pg1-pip/ubuntu_cu130/simple/ \
+            sglang-kernel==0.4.2.post2
+          docker cp runtime-kernel-${GITHUB_RUN_ID}:/tmp/vendor-wheels ./vendor-wheels
+          docker rm runtime-kernel-${GITHUB_RUN_ID}
+          ls -lh vendor-wheels
+      - name: Upload vendor package for build inspection
+        if: matrix.platform == 'thead'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: thead-kernel-wheel
+          path: vendor-wheels
+          retention-days: 3
