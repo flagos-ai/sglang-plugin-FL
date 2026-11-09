@@ -39,11 +39,10 @@ RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
         python -m pip install --no-deps /opt/FlagGems
 
 FROM gems AS vendor-kernel
-ARG PPU_PIP_INDEX_URL=https://aiext-pypi.mirrors.aliyuncs.com/pg1-pip/ubuntu_cu130/simple/
-ARG PPU_SGL_KERNEL_VERSION=0.4.2.post2
+ARG PPU_SGL_KERNEL_URL=https://aiext-pypi.mirrors.aliyuncs.com/pg1-pip/ubuntu_cu130/packages/5a/c8/262263edac73965f190bffd4c072ec65705d9176486b10eda4d5632db1ab/sglang_kernel-0.4.2.post2-cp310-abi3-manylinux2014_x86_64.whl
 RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
-    python -m pip install --no-deps --index-url "${PPU_PIP_INDEX_URL}" \
-        "sglang-kernel==${PPU_SGL_KERNEL_VERSION}"
+    python -m pip install --no-deps \
+        "${PPU_SGL_KERNEL_URL}#sha256=f275ce01010933c4ea655e832a05442b766ab8f23dcfd6ff678b15e295d42203"
 
 # Snapshot the vendor constraints once, before adding generic Python packages.
 RUN python - <<'PY'
