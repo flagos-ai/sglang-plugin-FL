@@ -18,12 +18,10 @@ jobs:
             ref: ci/runtime-thead-0.5.18
             dockerfile: docker/thead/ci-runtime-0.5.18.containerfile
             image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-runtime-ci-20261109
-            cache: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:buildcache-0.5.18-thead-runtime-ci
           - platform: kunlunxin
             ref: ci/runtime-kunlunxin-0.5.18
             dockerfile: docker/kunlunxin/ci-runtime-0.5.18.containerfile
             image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-runtime-ci-20261109
-            cache: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:buildcache-0.5.18-kunlunxin-runtime-ci
     runs-on: flagcicd-810e
     timeout-minutes: 240
     steps:
@@ -39,21 +37,23 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           DOCKERFILE: ${{ matrix.dockerfile }}
           IMAGE: ${{ matrix.image }}
-          CACHE_IMAGE: ${{ matrix.cache }}
         shell: bash
         run: |
           set -euo pipefail
           docker buildx version
-          builder="runtime-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${PLATFORM}"
-          docker buildx create --name "$builder" --driver docker-container --use
-          trap 'docker buildx rm --force "$builder" >/dev/null 2>&1 || true' EXIT
-          docker buildx inspect --bootstrap
+          # Use the engine-backed builder. The docker-container driver pulls its
+          # BuildKit image from Docker Hub, which is not reachable on this runner.
+          # Inline cache travels with the CI image and local failed-build layers
+          # remain available in the persistent daemon between attempts.
+          docker buildx use default
+          docker buildx inspect default --bootstrap
           docker buildx build \
+            --builder default \
             --file "$DOCKERFILE" \
             --target ci \
             --tag "$IMAGE" \
-            --cache-from "type=registry,ref=$CACHE_IMAGE" \
-            --cache-to "type=registry,ref=$CACHE_IMAGE,mode=max,image-manifest=true,oci-mediatypes=true" \
+            --cache-from "type=registry,ref=$IMAGE" \
+            --cache-to type=inline \
             --push \
             --provenance=false \
             --metadata-file build-metadata.json \
