@@ -8,16 +8,12 @@ permissions:
   contents: read
 
 jobs:
-  build-thead:
-    runs-on: ubuntu-latest
-    timeout-minutes: 240
+  build-kunlunxin-flagtree-artifact:
+    runs-on: ci-sglang-plugin-fl-kunlunxin
+    timeout-minutes: 60
     steps:
-      - name: Check out T-Head image source
+      - name: Check out artifact definition
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-        with:
-          repository: lentil1016/sglang-plugin-FL
-          ref: 0cc0a5cf155864b956dd45a0ab19f39506911e16
-          fetch-depth: 1
 
       - name: Log in to Harbor
         env:
@@ -29,29 +25,34 @@ jobs:
           printf '%s' "$HARBOR_PASSWORD" | docker login harbor.baai.ac.cn \
             --username "$HARBOR_USERNAME" --password-stdin
 
-      - name: Build and push layered T-Head CI image
+      - name: Extract and publish matched FlagTree compiler artifact
         env:
-          IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-runtime-ci-20261109-v8
-          CACHE_IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-runtime-ci-20261109-v7
+          SOURCE_IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:b0faa6a570501d8445aeb6fd78c5bbe58499b2573d5316a3d2902ed994f6245a
+          ARTIFACT_IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-flagtree-0.7.1a1-xpu3.6
         shell: bash
         run: |
           set -euo pipefail
-          df -h .
-          docker buildx use default
-          docker buildx inspect default --bootstrap
+          context=$(mktemp -d)
+          cid=$(docker create "$SOURCE_IMAGE")
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true; rm -rf "$context"' EXIT
+
+          docker cp "$cid:/opt/kunlun/venv/lib/python3.10/site-packages/flagtree" "$context/flagtree"
+          docker cp "$cid:/opt/kunlun/venv/lib/python3.10/site-packages/flagtree-0.7.1a1+xpu3.6.dist-info" "$context/flagtree-0.7.1a1+xpu3.6.dist-info"
+          docker cp "$cid:/opt/kunlun/venv/lib/python3.10/site-packages/triton" "$context/triton"
+          mkdir -p "$context/bin"
+          docker cp "$cid:/opt/kunlun/venv/bin/proton" "$context/bin/proton"
+          docker cp "$cid:/opt/kunlun/venv/bin/proton-viewer" "$context/bin/proton-viewer"
+          du -sh "$context"/*
+
           docker buildx build \
-            --builder default \
-            --file docker/thead/ci-runtime-0.5.18.containerfile \
-            --target ci \
-            --tag "$IMAGE" \
-            --cache-from "type=registry,ref=$CACHE_IMAGE" \
-            --cache-to type=inline \
+            --file .github/runtime-artifacts/kunlunxin-flagtree.containerfile \
+            --tag "$ARTIFACT_IMAGE" \
             --push \
             --provenance=false \
             --metadata-file build-metadata.json \
-            .
+            "$context"
           python3 -c "import json; print(json.load(open('build-metadata.json'))['containerimage.digest'])"
-          docker buildx imagetools inspect "$IMAGE"
+          docker buildx imagetools inspect "$ARTIFACT_IMAGE"
 
       - name: Log out of Harbor
         if: always()
