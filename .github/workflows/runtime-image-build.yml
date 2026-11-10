@@ -8,9 +8,22 @@ permissions:
   contents: read
 
 jobs:
-  inventory-kunlunxin-runtime:
+  inventory-runtime:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: hygon-dtk26.10
+            image: harbor.baai.ac.cn/flagos-runtime/flagos-runtime-hygon-dtk26.10@sha256:1a22c8198f87d7224008fc95dd3f569259635ac6d162989d4db2e85cbb041cd4
+          - name: hygon-dtk26.04
+            image: harbor.baai.ac.cn/flagos-runtime/flagos-runtime-hygon-dtk26.04@sha256:03e598b348e58e7233628394bbefa0ccef26969a091c7e6f2f02835161757f8b
+          - name: nvidia-cuda12.8
+            image: harbor.baai.ac.cn/flagos-runtime/flagos-runtime-nvidia-cuda12.8@sha256:7ccce88706f2b70af357c011f78a3658c2c67acad1834a7fb6524b788fd62fa5
+          - name: nvidia-cuda13.3
+            image: harbor.baai.ac.cn/flagos-runtime/flagos-runtime-nvidia-cuda13.3@sha256:edf29b9a28badaf72fc75fd0e057325df9610694914cca3f571e587038bf17e8
+    name: inventory ${{ matrix.name }}
     steps:
       - name: Check out probe branch
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
@@ -25,12 +38,11 @@ jobs:
           printf '%s' "$HARBOR_PASSWORD" | docker login harbor.baai.ac.cn \
             --username "$HARBOR_USERNAME" --password-stdin
 
-      - name: Inventory kunlunxin operations runtime image
+      - name: Inventory operations runtime image
         shell: bash
         run: |
           set -euo pipefail
-          img='harbor.baai.ac.cn/flagos-runtime/flagos-runtime-kunlunxin-xre5.37.1@sha256:679182a04d187562a3e23bacb9d0eb876dabf09ac0c0a875c2b4a141b64cac69'
-          docker pull "$img"
+          docker pull "${{ matrix.image }}"
           cat > /tmp/inventory.sh <<'EOF'
           set +e
           PY="$(command -v python || command -v python3)"
@@ -40,24 +52,18 @@ jobs:
           echo "=== pip freeze ==="
           "$PY" -m pip freeze 2>/dev/null | sort
           echo "=== /opt ==="
-          ls -la /opt 2>&1
-          echo "=== /flagos ==="
-          ls /flagos 2>&1
-          echo "=== /flagos/bin ==="
-          ls /flagos/bin 2>&1
-          echo "=== /opt/flagtree (top 40) ==="
-          ls /opt/flagtree 2>/dev/null | head -40
+          ls /opt 2>&1
           echo "=== key imports ==="
-          for m in torch triton flagtree sglang sgl_kernel flag_gems flagcx transformers pytest; do
+          for m in torch triton sglang sgl_kernel flag_gems flagcx transformers pytest; do
             printf '%s: ' "$m"
             "$PY" -c "import $m; print(getattr($m, '__version__', 'n/a'), $m.__file__)" 2>&1 | tail -1
           done
-          echo "=== XRE versions ==="
-          cat /flagos/lib/python3.10/site-packages/torch_xmlir/_versions.txt 2>&1
+          echo "=== torch build info ==="
+          "$PY" -c "import torch; print(torch.__version__); print('hip:', getattr(torch.version, 'hip', None)); print('cuda:', getattr(torch.version, 'cuda', None))" 2>&1 | tail -3
           echo "=== relevant env ==="
-          env | grep -iE '^(PYTHON|LD_LIBRARY|PATH|FLAG)' | sort
+          env | grep -iE '^(PYTHON|LD_LIBRARY|PATH|FLAG|HIP|CUDA)' | sort
           EOF
-          docker run --rm -i --entrypoint /bin/bash "$img" -s < /tmp/inventory.sh
+          docker run --rm -i --entrypoint /bin/bash "${{ matrix.image }}" -s < /tmp/inventory.sh
 
       - name: Log out of Harbor
         if: always()
