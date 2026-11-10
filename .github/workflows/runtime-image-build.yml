@@ -28,21 +28,32 @@ jobs:
       - name: Extract and publish matched FlagTree compiler artifact
         env:
           SOURCE_IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:b0faa6a570501d8445aeb6fd78c5bbe58499b2573d5316a3d2902ed994f6245a
+          RUNTIME_IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:679182a04d187562a3e23bacb9d0eb876dabf09ac0c0a875c2b4a141b64cac69
           ARTIFACT_IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-flagtree-0.7.1a1-xpu3.6
         shell: bash
         run: |
           set -euo pipefail
           context=$(mktemp -d)
-          cid=$(docker create "$SOURCE_IMAGE")
-          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true; rm -rf "$context"' EXIT
+          source_cid=$(docker create "$SOURCE_IMAGE")
+          runtime_cid=$(docker create "$RUNTIME_IMAGE")
+          trap 'docker rm -f "$source_cid" "$runtime_cid" >/dev/null 2>&1 || true; rm -rf "$context"' EXIT
 
-          docker cp "$cid:/opt/kunlun/venv/lib/python3.10/site-packages/flagtree" "$context/flagtree"
-          docker cp "$cid:/opt/kunlun/venv/lib/python3.10/site-packages/flagtree-0.7.1a1+xpu3.6.dist-info" "$context/flagtree-0.7.1a1+xpu3.6.dist-info"
-          docker cp "$cid:/opt/kunlun/venv/lib/python3.10/site-packages/triton" "$context/triton"
-          mkdir -p "$context/bin"
-          docker cp "$cid:/opt/kunlun/venv/bin/proton" "$context/bin/proton"
-          docker cp "$cid:/opt/kunlun/venv/bin/proton-viewer" "$context/bin/proton-viewer"
-          du -sh "$context"/*
+          docker cp "$source_cid:/opt/kunlun/venv/lib/python3.10/site-packages/flagtree-0.7.1a1+xpu3.6.dist-info/RECORD" "$context/source.RECORD"
+          docker cp "$runtime_cid:/flagos/lib/python3.10/site-packages/flagtree-0.7.0+xpu3.6.dist-info/RECORD" "$context/runtime.RECORD"
+          python3 .github/runtime-artifacts/build_flagtree_overlay.py \
+            --source-record "$context/source.RECORD" \
+            --runtime-record "$context/runtime.RECORD" \
+            --copy-list "$context/copy-paths.txt" \
+            --remove-list "$context/remove-paths.txt"
+
+          mkdir -p "$context/overlay/site-packages" "$context/overlay/bin"
+          while IFS=$'\t' read -r source_path artifact_path; do
+            destination="$context/overlay/$artifact_path"
+            mkdir -p "$(dirname "$destination")"
+            docker cp "$source_cid:$source_path" "$destination"
+          done < "$context/copy-paths.txt"
+          cp "$context/remove-paths.txt" "$context/overlay/remove-paths.txt"
+          du -sh "$context/overlay"/*
 
           docker buildx build \
             --file .github/runtime-artifacts/kunlunxin-flagtree.containerfile \
@@ -50,7 +61,7 @@ jobs:
             --push \
             --provenance=false \
             --metadata-file build-metadata.json \
-            "$context"
+            "$context/overlay"
           python3 -c "import json; print(json.load(open('build-metadata.json'))['containerimage.digest'])"
           docker buildx imagetools inspect "$ARTIFACT_IMAGE"
 
