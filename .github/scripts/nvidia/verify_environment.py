@@ -1,27 +1,34 @@
 #!/usr/bin/env python3
-"""Verify the pinned NVIDIA SGLang 0.5.18 CI environment."""
+"""Verify the NVIDIA operations-runtime SGLang 0.5.18 CI environment."""
 
 from __future__ import annotations
 
 import argparse
 import importlib
+import importlib.util
 import sys
 from importlib import metadata
 
 
+# Operations runtime (flagos-runtime-nvidia-cuda13.3, digest-pinned in the
+# containerfile) plus the SGLang closure layered on top by the image build.
+# The runtime contributes torch/flagtree/flag-gems/numpy/SQLAlchemy; the
+# SGLang wheel closure contributes sglang/sglang-kernel/flashinfer/triton.
 EXPECTED_RUNTIME_DISTRIBUTIONS = {
     "sglang": "0.5.18",
     "torch": "2.13.0+cu130",
     "sglang-kernel": "0.4.6.post1",
-    "flagtree": "0.6.2a1",
-    "flag-gems": "5.3.6.dev0+g8ea5925",
+    "flagtree": "0.7.0",
+    "flag-gems": "5.4.0",
     "flashinfer-python": "0.6.17",
-    "numpy": "2.3.5",
+    "numpy": "1.26.4",
     "packaging": "26.3",
     "PyYAML": "6.0.1",
-    "SQLAlchemy": "2.0.48",
+    "SQLAlchemy": "2.0.57",
 }
 
+# Installed into the ephemeral CI container by setup.sh, not baked into the
+# image (the operations runtime must stay free of test packages).
 EXPECTED_CI_DISTRIBUTIONS = {
     "pytest": "9.1.1",
     "pytest-timeout": "2.4.0",
@@ -52,24 +59,33 @@ def verify(
     if require_ci:
         for name, expected in EXPECTED_CI_DISTRIBUTIONS.items():
             _require_distribution(name, expected)
-
-    try:
-        standalone_triton = metadata.version("triton")
-    except metadata.PackageNotFoundError:
-        standalone_triton = None
-    if standalone_triton is not None:
+        # Post-setup: triton must be 3.6.0 (matching FlagTree's version at
+        # /opt/flagtree). The original 3.7.1 from the standard closure caused
+        # kernel-launch crashes (SystemError in the nvidia driver launcher);
+        # having no pip triton at all triggers FlagTree import side effects
+        # that corrupt sys.modules during test-suite execution.
+        try:
+            standalone_triton = metadata.version("triton")
+        except metadata.PackageNotFoundError:
+            standalone_triton = None
+        if standalone_triton != "3.6.0":
+            raise RuntimeError(
+                f"triton must be 3.6.0 (FlagTree's version); found {standalone_triton}"
+            )
+    # FlagTree's triton module must be what resolves (PYTHONPATH=/opt/flagtree
+    # precedes site-packages at container start; find_spec resolves without
+    # executing device libraries).
+    triton_spec = importlib.util.find_spec("triton")
+    if (
+        triton_spec is None
+        or not triton_spec.origin
+        or not triton_spec.origin.startswith("/opt/flagtree")
+    ):
+        found = triton_spec.origin if triton_spec else None
         raise RuntimeError(
-            "the standalone triton distribution must be uninstalled; "
-            f"found triton={standalone_triton}"
+            f"triton module must resolve under /opt/flagtree, found {found}"
         )
-
-    triton = importlib.import_module("triton")
-    triton_version = getattr(triton, "__version__", "unknown")
-    if triton_version != "3.6.0":
-        raise RuntimeError(
-            f"FlagTree must provide triton 3.6.0, found {triton_version}"
-        )
-    print(f"[cuda-env] triton-module={triton_version} (provided by FlagTree)")
+    print(f"[cuda-env] triton-module authoritative at {triton_spec.origin}")
 
     torch = importlib.import_module("torch")
     if torch.version.cuda != "13.0":
