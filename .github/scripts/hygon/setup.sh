@@ -14,8 +14,11 @@ if [ ! -f "$EVIDENCE/runtime-distributions-before.json" ]; then
   exit 1
 fi
 # The operations runtime intentionally ships no test packages; install the
-# pinned runner into the ephemeral job container before the image check.
-python -m pip install pytest==9.1.1 pytest-timeout==2.4.0
+# pinned runner into the ephemeral job container, then verify the runner
+# landed (check.sh's --check-image runs earlier and cannot see it yet).
+python -m pip install pytest==9.1.1 pytest-timeout==2.4.0 \
+  iniconfig==2.3.1 pluggy==1.7.0
+python .github/scripts/hygon/ci_environment.py --check-ci-packages
 # Never resolve dependencies: xgrammar pulls a standalone triton wheel whose
 # import is shadowed by FlagTree's /opt/flagtree entry, and the runtime's
 # own distributions must never move.

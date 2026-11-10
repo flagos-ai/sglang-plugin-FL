@@ -65,10 +65,17 @@ RUNTIME_IMAGE_RELEASES = {
 }
 RUNTIME_IMAGE_FLAGTREE = "0.7.0+hcu3.6"
 RUNTIME_IMAGE_TRITON_DIST = "3.8.0"
-# Installed into the ephemeral CI job container by setup.sh; the operations
-# runtime intentionally ships no test packages. sglang_fl is the editable
-# plugin checkout installed by the standard setup flow.
-JOB_CONTAINER_DISTRIBUTIONS = ("pytest", "pytest-timeout", "sglang-fl")
+# Installed into the ephemeral CI job container by setup.sh, pinned with
+# their transitive closure; the operations runtime intentionally ships no
+# test packages. sglang_fl is the editable plugin checkout installed by the
+# standard setup flow.
+JOB_CONTAINER_DISTRIBUTIONS = (
+    "pytest",
+    "pytest-timeout",
+    "iniconfig",
+    "pluggy",
+    "sglang-fl",
+)
 
 
 def _distribution_version(name: str) -> str:
@@ -316,11 +323,7 @@ def _verify_runtime_evidence(evidence: Path) -> None:
     )
 
     spec = importlib.util.find_spec("triton")
-    if (
-        spec is None
-        or not spec.origin
-        or not spec.origin.startswith("/opt/flagtree")
-    ):
+    if spec is None or not spec.origin or not spec.origin.startswith("/opt/flagtree"):
         found = spec.origin if spec else None
         raise RuntimeError(
             f"triton module must resolve under /opt/flagtree, found {found}"

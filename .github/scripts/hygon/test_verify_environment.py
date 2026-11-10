@@ -827,11 +827,15 @@ class RuntimeEvidenceTests(unittest.TestCase):
             self._dist("triton", "3.8.0"),
             self._dist("xgrammar", "0.2.1"),
             self._dist("pytest", "9.1.1"),
+            self._dist("iniconfig", "2.3.1"),
+            self._dist("pluggy", "1.7.0"),
             self._dist("sglang_fl", "0.1.0"),
         ]
         spec = SimpleNamespace(origin="/opt/flagtree/triton/__init__.py")
         with (
-            patch.object(verifier.metadata, "distributions", lambda: iter(distributions)),
+            patch.object(
+                verifier.metadata, "distributions", lambda: iter(distributions)
+            ),
             patch.object(verifier.importlib.util, "find_spec", return_value=spec),
         ):
             verifier._verify_runtime_evidence(evidence)
@@ -856,7 +860,9 @@ class RuntimeEvidenceTests(unittest.TestCase):
         ]
         spec = SimpleNamespace(origin="/opt/flagtree/triton/__init__.py")
         with (
-            patch.object(verifier.metadata, "distributions", lambda: iter(distributions)),
+            patch.object(
+                verifier.metadata, "distributions", lambda: iter(distributions)
+            ),
             patch.object(verifier.importlib.util, "find_spec", return_value=spec),
         ):
             with self.assertRaisesRegex(RuntimeError, "beyond the reviewed closure"):
@@ -873,7 +879,9 @@ class RuntimeEvidenceTests(unittest.TestCase):
             origin="/flagos/lib/python3.10/site-packages/triton/__init__.py"
         )
         with (
-            patch.object(verifier.metadata, "distributions", lambda: iter(distributions)),
+            patch.object(
+                verifier.metadata, "distributions", lambda: iter(distributions)
+            ),
             patch.object(verifier.importlib.util, "find_spec", return_value=spec),
         ):
             with self.assertRaisesRegex(RuntimeError, "/opt/flagtree"):

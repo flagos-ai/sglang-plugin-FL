@@ -69,6 +69,12 @@ def verify_image_metadata(version=metadata.version):
             f"Hygon CI requires SGLang {EXPECTED_SGLANG}; image contains {actual}. "
             "The legacy main-branch 0.5.11 CI image cannot run this suite."
         )
+
+
+def verify_ci_packages(version=metadata.version):
+    # The operations-runtime image ships no test packages; setup.sh installs
+    # the pinned runner into the ephemeral job container first, so this check
+    # only runs after that install (check.sh's --check-image runs before it).
     for package in CI_DISTRIBUTIONS:
         print(f"[hygon-ci] {package}={version(package)}")
 
@@ -76,11 +82,14 @@ def verify_image_metadata(version=metadata.version):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check-image", action="store_true")
+    parser.add_argument("--check-ci-packages", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     environ = normalized_environment(os.environ)
     if args.check_image:
         verify_image_metadata()
+    if args.check_ci_packages:
+        verify_ci_packages()
     persist_for_actions(environ)
     command = args.command
     if command[:1] == ["--"]:

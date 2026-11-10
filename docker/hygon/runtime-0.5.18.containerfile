@@ -5,10 +5,13 @@
 #     upgraded, downgraded, replaced, or removed. The resolver must only ADD
 #     the SGLang dependency closure. Any planned change to an existing
 #     distribution fails the build.
-#   * Hygon installs sglang[srt_empty]: the dependency-ownership-inversion
-#     extra. The DTK torch/FlagTree/FlagGems/FlagCX stack comes from the
-#     runtime, never from this build. No hand-added packages beyond the
-#     wheel's own closure.
+#   * Hygon installs sglang[srt_empty,runtime_common]: the dependency
+#     ownership-inversion extras. The DTK torch/FlagTree/FlagGems/FlagCX
+#     stack comes from the runtime, never from this build. runtime_common
+#     is the wheel's own extra that adds compressed-tensors (unpinned)
+#     beyond runtime_base, because sglang.srt's quantization registry
+#     imports compressed_tensors eagerly at server start while the wheel
+#     only declares it under runtime-common. No hand-picked packages.
 #   * No sglang-plugin-FL source in this image; CI installs the plugin from
 #     the PR checkout via the standard setup flow.
 #
@@ -27,17 +30,23 @@ ARG SGLANG_WHEEL_NAME=sglang-0.5.18+flagos-cp310-cp310-linux_x86_64.whl
 # and pip does not retry HTTP 504; every pip call below loops instead, because
 # pip's HTTP cache keeps whatever the previous attempt already fetched.
 ARG PIP_MAIN_INDEX=https://resource.flagos.net/repository/flagos-pypi-hygon/simple
-ARG PIP_EXTRA_INDEX=https://resource.flagos.net/repository/pypi-proxy/simple
-# Last-resort index with two jobs: (a) very large closure wheels whose
-# delivery through the proxy times out on transpacific links, and (b)
-# versions newer than the proxy cache - the runtime ships fsspec 2026.9.0,
-# which every datasets release the proxy carries caps below (<=2026.7.0);
-# datasets 5.2.0 (pure-python wheel) is the first release allowing it.
-# Index priority order is kept, so flagos builds still win for everything
-# the platform index carries.
+# PyPI serves generic wheels at datacenter speed; the pypi-proxy mirrors
+# PyPI byte-for-byte but its gateway times out delivering large wheels on
+# transpacific links (sglang-kernel is 377 MB), so it stays the LAST index.
+# The platform index keeps first priority: flagos-built wheels (and the
+# fsspec-pin reality - the runtime ships 2026.9.0, which every datasets
+# release the proxy carries caps below; datasets 5.2.0 is the first
+# release allowing it) always win from flagos-pypi-hygon.
 ARG PIP_FALLBACK_INDEX=https://pypi.org/simple
+ARG PIP_EXTRA_INDEX=https://resource.flagos.net/repository/pypi-proxy/simple
 
 WORKDIR /opt/sglang-ci
+
+# Version lock for every SGLang closure addition (name==version), extracted
+# from the reviewed resolver run. Passed as an extra --constraint so resolver
+# drift across indexes cannot change the closure; the dry-run gate still
+# verifies zero runtime replacements on top of it.
+COPY docker/hygon/runtime-0.5.18.additions.lock /opt/sglang-ci/sglang-additions.lock
 
 # --- Stable, slow: fetch and SHA256-verify the SGLang wheel ------------------
 # Pure-Python downloader so the build depends only on the runtime's own Python.
@@ -95,8 +104,15 @@ import importlib.metadata as md
 import importlib.util
 import json
 import os
+import sys
 from pathlib import Path
 from packaging.utils import canonicalize_name
+
+# Mirror the runtime's container-start module resolution: PYTHONPATH
+# (/opt/flagtree) precedes site-packages there, while build RUN steps do not
+# inherit that ENV. Same position, same precedence as at container start.
+if not os.environ.get("PYTHONPATH"):
+    sys.path.insert(0, "/opt/flagtree")
 
 evidence = Path("/opt/sglang-ci")
 
@@ -110,6 +126,25 @@ with (evidence / "runtime-distributions-before.json").open("w") as f:
 with (evidence / "runtime-constraints.txt").open("w") as f:
     for name, version in sorted(packages.items()):
         f.write(f"{name}=={version}\n")
+
+import hashlib
+import sysconfig
+
+# File-level baseline for the runtime's site-packages: every file's SHA256.
+# The post-install gate requires every baseline file to still exist with the
+# identical hash, so an in-place overwrite by any closure wheel is caught
+# even when pip metadata (or an import origin) stays unchanged.
+purelib = Path(sysconfig.get_paths()["purelib"])
+manifest = {}
+for path in sorted(purelib.rglob("*")):
+    if path.is_file():
+        manifest[str(path.relative_to(purelib))] = hashlib.sha256(
+            path.read_bytes()
+        ).hexdigest()
+with (evidence / "site-files-before.sha256").open("w") as f:
+    for relative, digest in manifest.items():
+        f.write(f"{digest}  {relative}\n")
+print(f"site-packages baseline: {len(manifest)} files hashed under {purelib}")
 
 def probe_module(module):
     # find_spec resolves without executing the module: no device libraries
@@ -156,10 +191,11 @@ RUN --mount=type=cache,target=/tmp/pip-cache \
              --cache-dir /tmp/pip-cache \
              --report /opt/sglang-ci/sglang-resolver-plan.json \
              --constraint /opt/sglang-ci/runtime-constraints.txt \
+             --constraint /opt/sglang-ci/sglang-additions.lock \
              --index-url "$PIP_MAIN_INDEX" \
-             --extra-index-url "$PIP_EXTRA_INDEX" \
              --extra-index-url "$PIP_FALLBACK_INDEX" \
-             "/opt/sglang-ci/wheels/${SGLANG_WHEEL_NAME}[srt_empty]"; then \
+             --extra-index-url "$PIP_EXTRA_INDEX" \
+             "/opt/sglang-ci/wheels/${SGLANG_WHEEL_NAME}[srt_empty,runtime_common]"; then \
            dry_run_rc=0; break; \
          else \
            dry_run_rc="$?"; \
@@ -226,10 +262,11 @@ RUN --mount=type=cache,target=/tmp/pip-cache \
              --retries 20 \
              --cache-dir /tmp/pip-cache \
              --constraint /opt/sglang-ci/runtime-constraints.txt \
+             --constraint /opt/sglang-ci/sglang-additions.lock \
              --index-url "$PIP_MAIN_INDEX" \
-             --extra-index-url "$PIP_EXTRA_INDEX" \
              --extra-index-url "$PIP_FALLBACK_INDEX" \
-             "/opt/sglang-ci/wheels/${SGLANG_WHEEL_NAME}[srt_empty]"; then \
+             --extra-index-url "$PIP_EXTRA_INDEX" \
+             "/opt/sglang-ci/wheels/${SGLANG_WHEEL_NAME}[srt_empty,runtime_common]"; then \
            install_rc=0; break; \
          else \
            install_rc="$?"; \
@@ -246,9 +283,16 @@ RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
     && "$PYTHON_BIN" - <<'PY'
 import importlib.metadata as md
 import json
+import os
 import sys
 from pathlib import Path
 from packaging.utils import canonicalize_name
+
+# Same container-start resolution mirroring as the baseline probe above:
+# the runtime's flagtree dist-info lives under /opt/flagtree, which is on
+# sys.path via PYTHONPATH at container start.
+if not os.environ.get("PYTHONPATH"):
+    sys.path.insert(0, "/opt/flagtree")
 
 evidence = Path("/opt/sglang-ci")
 before = json.loads((evidence / "runtime-distributions-before.json").read_text())
@@ -293,6 +337,42 @@ if removed:
 sys.exit(1 if failed else 0)
 PY
 
+# 1b. File-level zero-drift: every baseline site-packages file must still
+#     exist with the identical SHA256 (catches in-place overwrites).
+RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
+    && "$PYTHON_BIN" - <<'PY'
+import hashlib
+import sysconfig
+import sys
+from pathlib import Path
+
+evidence = Path("/opt/sglang-ci")
+purelib = Path(sysconfig.get_paths()["purelib"])
+baseline = {}
+for line in (evidence / "site-files-before.sha256").read_text().splitlines():
+    digest, relative = line.split("  ", 1)
+    baseline[relative] = digest
+
+missing = []
+changed = []
+for relative, expected in baseline.items():
+    path = purelib / relative
+    if not path.is_file():
+        missing.append(relative)
+    elif hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+        changed.append(relative)
+if missing or changed:
+    print(f"FATAL: site-packages baseline drifted: {len(missing)} missing, "
+          f"{len(changed)} content-changed")
+    for item in missing[:20]:
+        print(f"  - missing: {item}")
+    for item in changed[:20]:
+        print(f"  ! changed: {item}")
+    sys.exit(1)
+print(f"site-packages file baseline unchanged "
+      f"({len(baseline)} files re-hashed identical)")
+PY
+
 # 2. pip check: only violations NEW relative to the runtime baseline fail the
 #    build; the runtime's own pre-existing findings stay on record.
 RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
@@ -321,8 +401,13 @@ RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
     && "$PYTHON_BIN" - <<'PY'
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
+
+# Same container-start resolution mirroring as the baseline probe above.
+if not os.environ.get("PYTHONPATH"):
+    sys.path.insert(0, "/opt/flagtree")
 
 evidence = Path("/opt/sglang-ci")
 
@@ -343,33 +428,20 @@ recorded = json.loads((evidence / "module-provenance-before.json").read_text())
 context = recorded.pop("_context")
 before = recorded
 
-failed = False
-for module in sorted(set(before) | set(after)):
-    if before.get(module) != after.get(module):
-        triton_volume_case = (
-            module == "triton"
-            and before[module] == {"found": False}
-            and after[module].get("found") is True
-            and "/site-packages/triton/__init__.py" in after[module]["origin"]
-            and context.get("flagtree_dir_present") is True
-            and context.get("flagtree_entries") == []
-            and "/opt/flagtree" in (context.get("pythonpath") or "").split(":")
-        )
-        if triton_volume_case:
-            print("NOTE: standalone triton wheel installed into site-packages "
-                  "by the SGLang closure; the runtime's authoritative triton "
-                  "resides in the /opt/flagtree volume and keeps precedence "
-                  "via PYTHONPATH at container start. CI job-time checks "
-                  "assert that resolution.")
-            continue
-        failed = True
-        print(f"FATAL: module {module} provenance changed: "
-              f"{before.get(module)} -> {after.get(module)}")
-if failed:
+changed = {
+    module: (before.get(module), after.get(module))
+    for module in sorted(set(before) | set(after))
+    if before.get(module) != after.get(module)
+}
+if changed:
+    print("FATAL: vendor module provenance changed across the install:")
+    for module, (was, now) in changed.items():
+        print(f"  ! {module}: {was} -> {now}")
     print("--- recorded build context ---")
     print(json.dumps(context, indent=2, sort_keys=True))
     sys.exit(1)
-print("module provenance unchanged (see NOTE lines for allowed transitions):")
+print("module provenance unchanged under container-start resolution order "
+      "(triton resolves via /opt/flagtree before site-packages):")
 print(json.dumps(after, indent=2, sort_keys=True))
 PY
 

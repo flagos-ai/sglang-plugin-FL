@@ -17,6 +17,7 @@ from ci_environment import (
     main,
     normalized_environment,
     persist_for_actions,
+    verify_ci_packages,
     verify_image_metadata,
 )
 
@@ -165,14 +166,15 @@ class ImageAndSetupTests(unittest.TestCase):
             verify_image_metadata(version)
         self.assertEqual(calls, ["sglang"])
 
-    def test_expected_image_requires_preinstalled_ci_dependencies(self):
+    def test_expected_image_passes_the_pregate_without_ci_packages(self):
+        # check.sh runs --check-image before setup.sh installs the test
+        # runner, so the sglang gate must not require CI packages.
+        verify_image_metadata(lambda name: "0.5.18+flagos")
+
+    def test_expected_image_requires_ci_packages_after_install(self):
         with self.assertRaisesRegex(RuntimeError, "missing pytest"):
-            verify_image_metadata(
-                lambda name: (
-                    "0.5.18+flagos"
-                    if name == "sglang"
-                    else (_ for _ in ()).throw(RuntimeError("missing pytest"))
-                )
+            verify_ci_packages(
+                lambda name: (_ for _ in ()).throw(RuntimeError("missing pytest"))
             )
 
     def test_check_image_failure_cannot_execute_install_command(self):
@@ -204,7 +206,9 @@ class ImageAndSetupTests(unittest.TestCase):
         # dependency-preserving plugin install (--no-deps).
         self.assertEqual(len(installs), 2)
         self.assertIn("pytest==9.1.1 pytest-timeout==2.4.0", installs[0])
-        self.assertIn("--no-deps --no-build-isolation -e", installs[1])
+        self.assertIn("iniconfig==2.3.1 pluggy==1.7.0", source)
+        self.assertIn("--no-deps --no-build-isolation -e", installs[-1])
+        self.assertIn("--check-ci-packages", source)
         self.assertNotIn("--upgrade", source)
         self.assertNotIn(".[dev]", source)
         self.assertIn("--runtime-evidence", source)
