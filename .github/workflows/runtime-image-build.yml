@@ -9,11 +9,66 @@ permissions:
 
 jobs:
   build-kunlunxin-flagtree-artifact:
-    runs-on: ci-sglang-plugin-fl-kunlunxin
-    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - name: Check out artifact definition
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Extract digest-pinned FlagTree compiler overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime_archive=/tmp/kunlunxin-runtime-flagtree.tar.gz
+          source_archive=/tmp/kunlunxin-validated-flagtree.tar.gz
+          context=/tmp/kunlunxin-flagtree-overlay
+          mkdir -p "$context/site-packages" "$context/bin"
+
+          python3 .github/scripts/extract_remote_archive_members.py \
+            --registry-repository flagos-runtime/flagos-runtime-kunlunxin-xre5.37.1 \
+            --blob-digest sha256:ceef0ba6a7389184724944acca0a8d3a8050d9e840140b5bb961cf2ccd69a4af \
+            --size 3380282197 \
+            --sha256 ceef0ba6a7389184724944acca0a8d3a8050d9e840140b5bb961cf2ccd69a4af \
+            --workers 16 \
+            --archive-output "$runtime_archive"
+          runtime_record=$(tar -tzf "$runtime_archive" \
+            | grep -E '^opt/flagtree/flagtree-0\.7\.0.*\.dist-info/RECORD$' \
+            | tail -n 1)
+          test -n "$runtime_record"
+          tar -xOzf "$runtime_archive" "$runtime_record" > /tmp/runtime.RECORD
+          rm -f "$runtime_archive"
+
+          python3 .github/scripts/extract_remote_archive_members.py \
+            --registry-repository flagos-dev/sglang-plugin-fl \
+            --blob-digest sha256:7b9414d6aad715386635a5e475813a400332e3b41eeac8ac48ebedcac54e00f6 \
+            --size 6912438598 \
+            --sha256 7b9414d6aad715386635a5e475813a400332e3b41eeac8ac48ebedcac54e00f6 \
+            --workers 16 \
+            --archive-output "$source_archive"
+          source_record=$(tar -tzf "$source_archive" \
+            | grep -F 'opt/kunlun/venv/lib/python3.10/site-packages/flagtree-0.7.1a1+xpu3.6.dist-info/RECORD' \
+            | tail -n 1)
+          test -n "$source_record"
+          tar -xOzf "$source_archive" "$source_record" > /tmp/source.RECORD
+
+          python3 .github/runtime-artifacts/build_flagtree_overlay.py \
+            --source-record /tmp/source.RECORD \
+            --runtime-record /tmp/runtime.RECORD \
+            --copy-list /tmp/copy-paths.txt \
+            --remove-list "$context/remove-paths.txt"
+          awk -F '\t' '$2 ~ /^site-packages\// {sub("^/", "", $1); print $1}' \
+            /tmp/copy-paths.txt > /tmp/site-members.txt
+          awk -F '\t' '$2 ~ /^bin\// {sub("^/", "", $1); print $1}' \
+            /tmp/copy-paths.txt > /tmp/bin-members.txt
+          tar -xzf "$source_archive" -C "$context/site-packages" \
+            --strip-components=6 -T /tmp/site-members.txt
+          tar -xzf "$source_archive" -C "$context/bin" \
+            --strip-components=4 -T /tmp/bin-members.txt
+          rm -f "$source_archive"
+
+          du -sh "$context"/*
+          df -h /tmp
+          echo "ARTIFACT_CONTEXT=$context" >> "$GITHUB_ENV"
 
       - name: Log in to Harbor
         env:
@@ -25,44 +80,21 @@ jobs:
           printf '%s' "$HARBOR_PASSWORD" | docker login harbor.baai.ac.cn \
             --username "$HARBOR_USERNAME" --password-stdin
 
-      - name: Extract and publish matched FlagTree compiler artifact
+      - name: Publish matched FlagTree compiler artifact
         env:
-          SOURCE_IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:b0faa6a570501d8445aeb6fd78c5bbe58499b2573d5316a3d2902ed994f6245a
-          RUNTIME_IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:679182a04d187562a3e23bacb9d0eb876dabf09ac0c0a875c2b4a141b64cac69
           ARTIFACT_IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-flagtree-0.7.1a1-xpu3.6
         shell: bash
         run: |
           set -euo pipefail
-          context=$(mktemp -d)
-          source_cid=$(docker create "$SOURCE_IMAGE")
-          runtime_cid=$(docker create "$RUNTIME_IMAGE")
-          trap 'docker rm -f "$source_cid" "$runtime_cid" >/dev/null 2>&1 || true; rm -rf "$context"' EXIT
-
-          docker cp "$source_cid:/opt/kunlun/venv/lib/python3.10/site-packages/flagtree-0.7.1a1+xpu3.6.dist-info/RECORD" "$context/source.RECORD"
-          docker cp "$runtime_cid:/flagos/lib/python3.10/site-packages/flagtree-0.7.0+xpu3.6.dist-info/RECORD" "$context/runtime.RECORD"
-          python3 .github/runtime-artifacts/build_flagtree_overlay.py \
-            --source-record "$context/source.RECORD" \
-            --runtime-record "$context/runtime.RECORD" \
-            --copy-list "$context/copy-paths.txt" \
-            --remove-list "$context/remove-paths.txt"
-
-          mkdir -p "$context/overlay/site-packages" "$context/overlay/bin"
-          while IFS=$'\t' read -r source_path artifact_path; do
-            destination="$context/overlay/$artifact_path"
-            mkdir -p "$(dirname "$destination")"
-            docker cp "$source_cid:$source_path" "$destination"
-          done < "$context/copy-paths.txt"
-          cp "$context/remove-paths.txt" "$context/overlay/remove-paths.txt"
-          du -sh "$context/overlay"/*
-
           docker buildx build \
+            --platform linux/amd64 \
             --file .github/runtime-artifacts/kunlunxin-flagtree.containerfile \
             --tag "$ARTIFACT_IMAGE" \
             --push \
             --provenance=false \
-            --metadata-file build-metadata.json \
-            "$context/overlay"
-          python3 -c "import json; print(json.load(open('build-metadata.json'))['containerimage.digest'])"
+            --metadata-file /tmp/build-metadata.json \
+            "$ARTIFACT_CONTEXT"
+          python3 -c "import json; print(json.load(open('/tmp/build-metadata.json'))['containerimage.digest'])"
           docker buildx imagetools inspect "$ARTIFACT_IMAGE"
 
       - name: Log out of Harbor
