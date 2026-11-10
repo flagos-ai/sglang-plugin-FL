@@ -169,7 +169,7 @@ class ImageAndSetupTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "missing pytest"):
             verify_image_metadata(
                 lambda name: (
-                    "0.5.18"
+                    "0.5.18+flagos"
                     if name == "sglang"
                     else (_ for _ in ()).throw(RuntimeError("missing pytest"))
                 )
@@ -200,11 +200,14 @@ class ImageAndSetupTests(unittest.TestCase):
     def test_setup_has_one_dependency_preserving_install(self):
         source = (SCRIPTS / "setup.sh").read_text(encoding="utf-8")
         installs = [line for line in source.splitlines() if "pip install" in line]
-        self.assertEqual(len(installs), 1)
-        self.assertIn("--no-deps --no-build-isolation -e", installs[0])
+        # One pinned job-time test-runner install plus exactly one
+        # dependency-preserving plugin install (--no-deps).
+        self.assertEqual(len(installs), 2)
+        self.assertIn("pytest==9.1.1 pytest-timeout==2.4.0", installs[0])
+        self.assertIn("--no-deps --no-build-isolation -e", installs[1])
         self.assertNotIn("--upgrade", source)
         self.assertNotIn(".[dev]", source)
-        self.assertIn("--baseline", source)
+        self.assertIn("--runtime-evidence", source)
         self.assertIn("--require-gpu --min-gpus 2", source)
 
 

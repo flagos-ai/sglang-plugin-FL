@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import subprocess
 
-EXPECTED_SGLANG = "0.5.18"
+EXPECTED_SGLANG = "0.5.18+flagos"
 CI_DISTRIBUTIONS = ("pytest", "pytest-timeout", "pyyaml", "Pillow", "requests")
 
 
