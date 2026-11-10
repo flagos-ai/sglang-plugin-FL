@@ -1,0 +1,87 @@
+# Temporary build-environment probe; not intended for merge.
+name: Runtime CI build probe
+on:
+  pull_request:
+    paths: [.github/workflows/runtime-build-probe.yml]
+permissions:
+  contents: read
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: thead
+            runner: flagcicd-810e
+            image: harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:fbf1fb254dd0382ffc38229342987472a626a19a66f511e89dd341f051bd648b
+          - platform: kunlunxin
+            runner: ci-sglang-plugin-fl-kunlunxin
+            image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-ci-202611021838
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - name: Check build capability without disclosing credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker version --format '{{.Server.Version}}'
+          docker info --format 'arch={{.Architecture}} driver={{.Driver}}'
+          df -h .
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path(os.environ.get('DOCKER_CONFIG', str(Path.home() / '.docker'))) / 'config.json'
+          if p.exists():
+              cfg = json.loads(p.read_text())
+              hosts = set(cfg.get('auths', {})) | set(cfg.get('credHelpers', {}))
+              print('Harbor credential entry:', any('harbor.baai.ac.cn' in h for h in hosts))
+              print('Credential helper configured:', bool(cfg.get('credsStore')))
+          else:
+              print('Docker credential config: absent')
+          PY
+      - name: Inspect vendor kernel and FlagCX installation
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          docker run --rm --entrypoint python "$IMAGE" -c '
+          from importlib.metadata import distribution, PackageNotFoundError
+          import os
+          for name in ("sglang-kernel", "sgl-kernel", "flagcx", "torch", "flagtree"):
+              try:
+                  d = distribution(name)
+                  print(name, d.version, d.locate_file(""))
+              except PackageNotFoundError:
+                  print(name, "absent")
+          print("FLAGCX_PATH", os.environ.get("FLAGCX_PATH"))
+          '
+      - name: Check T-Head package source from build runner
+        if: matrix.platform == 'thead'
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          docker run --name runtime-kernel-${GITHUB_RUN_ID} --entrypoint python "$IMAGE" -m pip download \
+            --no-deps --dest /tmp/vendor-wheels --timeout 30 --retries 1 \
+            --index-url https://aiext-pypi.mirrors.aliyuncs.com/pg1-pip/ubuntu_cu130/simple/ \
+            sglang-kernel==0.4.2.post2
+          docker cp runtime-kernel-${GITHUB_RUN_ID}:/tmp/vendor-wheels ./vendor-wheels
+          docker rm runtime-kernel-${GITHUB_RUN_ID}
+          ls -lh vendor-wheels
+          sha256sum vendor-wheels/*.whl
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+          wheel = next(Path('vendor-wheels').glob('*.whl'))
+          with ZipFile(wheel) as archive:
+              metadata = next(name for name in archive.namelist()
+                              if name.endswith('.dist-info/METADATA'))
+              for line in archive.read(metadata).decode().splitlines():
+                  if line.startswith(('Name:', 'Version:')):
+                      print(line)
+          PY
+      - name: Upload vendor package for build inspection
+        if: matrix.platform == 'thead'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: thead-kernel-wheel
+          path: vendor-wheels
+          retention-days: 3

@@ -1,0 +1,70 @@
+# Temporary runtime image probe; this branch is not intended to merge.
+name: Runtime CI image build
+on:
+  push:
+    branches: [ci/runtime-build-probe]
+
+permissions:
+  contents: read
+
+jobs:
+  inventory-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: hygon-dtk26.10
+            image: harbor.baai.ac.cn/flagos-runtime/flagos-runtime-hygon-dtk26.10@sha256:1a22c8198f87d7224008fc95dd3f569259635ac6d162989d4db2e85cbb041cd4
+          - name: hygon-dtk26.04
+            image: harbor.baai.ac.cn/flagos-runtime/flagos-runtime-hygon-dtk26.04@sha256:03e598b348e58e7233628394bbefa0ccef26969a091c7e6f2f02835161757f8b
+          - name: nvidia-cuda12.8
+            image: harbor.baai.ac.cn/flagos-runtime/flagos-runtime-nvidia-cuda12.8@sha256:7ccce88706f2b70af357c011f78a3658c2c67acad1834a7fb6524b788fd62fa5
+          - name: nvidia-cuda13.3
+            image: harbor.baai.ac.cn/flagos-runtime/flagos-runtime-nvidia-cuda13.3@sha256:edf29b9a28badaf72fc75fd0e057325df9610694914cca3f571e587038bf17e8
+    name: inventory ${{ matrix.name }}
+    steps:
+      - name: Check out probe branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Log in to Harbor
+        env:
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$HARBOR_PASSWORD" | docker login harbor.baai.ac.cn \
+            --username "$HARBOR_USERNAME" --password-stdin
+
+      - name: Inventory operations runtime image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "${{ matrix.image }}"
+          cat > /tmp/inventory.sh <<'EOF'
+          set +e
+          PY="$(command -v python || command -v python3)"
+          echo "=== python ==="
+          "$PY" -V 2>&1
+          command -v python python3 pip 2>&1
+          echo "=== pip freeze ==="
+          "$PY" -m pip freeze 2>/dev/null | sort
+          echo "=== /opt ==="
+          ls /opt 2>&1
+          echo "=== key imports ==="
+          for m in torch triton sglang sgl_kernel flag_gems flagcx transformers pytest; do
+            printf '%s: ' "$m"
+            "$PY" -c "import $m; print(getattr($m, '__version__', 'n/a'), $m.__file__)" 2>&1 | tail -1
+          done
+          echo "=== torch build info ==="
+          "$PY" -c "import torch; print(torch.__version__); print('hip:', getattr(torch.version, 'hip', None)); print('cuda:', getattr(torch.version, 'cuda', None))" 2>&1 | tail -3
+          echo "=== relevant env ==="
+          env | grep -iE '^(PYTHON|LD_LIBRARY|PATH|FLAG|HIP|CUDA)' | sort
+          EOF
+          docker run --rm -i --entrypoint /bin/bash "${{ matrix.image }}" -s < /tmp/inventory.sh
+
+      - name: Log out of Harbor
+        if: always()
+        run: docker logout harbor.baai.ac.cn || true

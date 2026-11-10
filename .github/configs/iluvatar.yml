@@ -6,19 +6,27 @@ platform: iluvatar
 # Published tag: 0.5.18-iluvatar-ci. Pin the manifest returned by docker push.
 ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:8cc9b2ecd0b99f200eadde5bc13e556953a4a0001156864d2ae106fc3911741a
 
-# Match the pool label used by successful vLLM jobs. Do not add the
+# Use the dedicated SGLang 0.5.18 Iluvatar runner scale set. Do not add the
 # conventional self-hosted default label to the configured runner scale set.
 runner_labels:
-  - iluvatar-cicd-vllm-plugin
+  - flagcicd-iluvatar-dood-sglang518
 
 # Use the first four GPUs from the existing runner's 0..7 configuration for TP4.
 # Devices must be reserved by the runner; busy memory fails instead of changing GPUs.
 cuda_visible_devices: '0,1,2,3'
 models_path: /mnt/share/user_homes/models
 
-# Iluvatar-only workflow settings; reserve one TP4 allocation across its stages.
+# Shared platform-workflow settings. Keep the strict Iluvatar driver while the
+# common workflow owns orchestration, timeouts, artifacts, and matrix routing.
+test_driver: .github/scripts/iluvatar/run_tests.py
 test_timeout: 180
-concurrency_group: iluvatar-gpu-iluvatar-cicd-vllm-plugin
+test_artifact_path: artifacts/iluvatar/
+test_artifact_required: true
+e2e_max_parallel: 1
+
+# The runner pool queues TP4 allocations. Do not add a shared GitHub
+# concurrency group here: Actions retains only one pending job per group and
+# cancels older PRs when another request arrives.
 container_volumes:
   - /dev:/dev
   - /lib/modules:/lib/modules

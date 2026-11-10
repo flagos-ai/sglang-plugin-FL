@@ -1,15 +1,30 @@
-# Per-platform test workflow, invoked by ci.yml via workflow_call (one job per platform).
+# Per-platform test workflow, invoked by ci.yml / nightly.yml / weekly.yml
+# via workflow_call (one invocation per platform).
+#
+# ci_stage controls which case sets run (ported from vllm-plugin-FL #581):
+#   pr      — functional (unit+functional merged) + e2e pr subset + serve smoke
+#   nightly — functional + e2e full cases (incl. concurrent) + full benchmark
+#   weekly  — falls back to nightly case sets (no weekly key defined yet)
+#
+# On PRs the caller tier-selects jobs via run_e2e / run_benchmark derived
+# from labels: no tier label (or ci-full) runs the full pr-stage stack;
+# ci-functional runs functional only; ci-e2e adds e2e.
 #
 # Main steps:
 # 1. setup:      Load platform config and generate test matrices
-# 2. unit:       Run unit tests with platform-specific include/exclude patterns
-# 3. functional: Run component-level GPU tests (ops, compilation, distributed) — fast
-# 4. e2e:        Run end-to-end model tests (inference, serving) — slow, needs model files
-# 5. benchmark:  Run benchmark smoke tests (throughput, latency, serve entrypoints)
-# 6. notify:     Send Feishu notification with overall platform status
+# 2. functional: Run unit tests (pure-logic) then component-level GPU tests
+#                (ops, compilation, distributed) in a single job — combining
+#                them avoids a second container startup and project install
+# 3. e2e:        Run end-to-end model tests (inference, serving) — slow, needs model files
+# 4. benchmark:  Run benchmark smoke tests (throughput, latency, serve entrypoints)
+# 5. notify:     Send Feishu notification with overall platform status
+#
+# Platforms use tests/run.py by default. A platform can select a stricter
+# compatible driver, stage timeout, artifact path, or matrix parallelism in
+# .github/configs/<platform>.yml without forking this orchestration workflow.
 #
 # Users can modify test settings in tests/platforms/*.yaml:
-# - e2e: Add/remove model test cases in the support lists
+# - e2e: Add/remove model test cases in the stage-keyed support lists
 # - functional: Adjust include/exclude patterns for component tests
 # - unit: Add/remove paths in include and exclude lists
 # - tolerance: Adjust numerical comparison tolerance for result validation
@@ -22,6 +37,26 @@ on:
       platform:
         required: true
         type: string
+      ci_stage:
+        description: "CI stage: pr / nightly / weekly (selects the stage-keyed e2e/benchmark case sets)"
+        required: false
+        type: string
+        default: "nightly"
+      branch:
+        description: "Branch/ref under test (nightly/weekly branch input; empty = caller ref)"
+        required: false
+        type: string
+        default: ""
+      run_e2e:
+        description: "Run the e2e jobs (label-tiered on PRs)"
+        required: false
+        type: boolean
+        default: true
+      run_benchmark:
+        description: "Run the benchmark job (label-tiered on PRs)"
+        required: false
+        type: boolean
+        default: true
     secrets:
       FEISHU_APP_ID:
         required: false
@@ -42,6 +77,7 @@ jobs:
         id: checkout1
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ inputs.branch }}
           fetch-depth: 0
         continue-on-error: true
       - name: Checkout (attempt 2)
@@ -49,12 +85,14 @@ jobs:
         if: steps.checkout1.outcome == 'failure'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ inputs.branch }}
           fetch-depth: 0
         continue-on-error: true
       - name: Checkout (attempt 3)
         if: steps.checkout2.outcome == 'failure'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ inputs.branch }}
           fetch-depth: 0
       - name: Install CI script dependencies
         run: pip install pyyaml
@@ -66,61 +104,66 @@ jobs:
       - name: Check Hygon CI allocation and image guards
         if: inputs.platform == 'hygon'
         run: python -m unittest discover -s .github/scripts/hygon -p 'test_ci_*.py'
-      - id: changes
-        name: Detect changed files (PR only)
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.sha }} > /tmp/changed_files.txt
-            echo "file=/tmp/changed_files.txt" >> "$GITHUB_OUTPUT"
-          else
-            echo "file=" >> "$GITHUB_OUTPUT"
-          fi
       - id: matrix
         run: |
-          CHANGED_ARG=""
-          if [ -n "${{ steps.changes.outputs.file }}" ]; then
-            CHANGED_ARG="--changed-files ${{ steps.changes.outputs.file }}"
-          fi
           python .github/scripts/generate_matrix.py \
             --platform ${{ inputs.platform }} \
-            $CHANGED_ARG
+            --ci-stage ${{ inputs.ci_stage }}
 
-  unit:
+  # Self-hosted docker runners accumulate leaked job networks — cancelled runs
+  # skip the runner's per-job labeled cleanup — which eventually exhausts the
+  # daemon address pool ("all predefined address pools have been fully
+  # subnetted") and blocks every subsequent container job on that host.
+  # This job runs WITHOUT a container (no docker network allocation needed), so
+  # it can start on an exhausted host, and removes only stale github_network_*
+  # entries; in-use networks fail the rm and are kept. It runs for every
+  # platform and must NOT be gated or skipped: functional depends on it, and a
+  # skipped dependency cascades skip through the whole chain.
+  docker-cleanup:
+    name: "Docker network cleanup"
     needs: [setup]
-    uses: ./.github/workflows/_unit_test.yml
-    with:
-      platform: ${{ inputs.platform }}
-      ci_image: ${{ fromJson(needs.setup.outputs.config).ci_image }}
-      runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
-      container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
-      container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
-      # Include cold initialization of the vendor image in the job timeout.
-      timeout: ${{ inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 90 || 30 }}
+    runs-on: ${{ fromJson(needs.setup.outputs.config).runner_labels }}
+    steps:
+      - name: Remove leaked github_network_* networks
+        run: |
+          # No-op on hosts without docker (cloud runners); harmless where it
+          # exists: only stale github_network_* entries are removed, in-use
+          # networks fail the rm and are kept.
+          command -v docker >/dev/null || exit 0
+          docker network ls --format '{{.Name}}' \
+            | grep '^github_network_' \
+            | xargs -r -n1 docker network rm || true
 
+  # Unit + functional tests in one job (GPU runner required): unit tests
+  # (pure-logic) run first, then component-level GPU tests. One container
+  # startup and one project install instead of two.
   functional:
-    needs: [setup, unit]
+    needs: [setup, docker-cleanup]
     uses: ./.github/workflows/_functional_test.yml
     with:
       platform: ${{ inputs.platform }}
+      branch: ${{ inputs.branch }}
       ci_image: ${{ fromJson(needs.setup.outputs.config).ci_image }}
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
-      timeout: ${{ inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 60 || 15 }}
+      test_driver: ${{ fromJson(needs.setup.outputs.config).test_driver || 'tests/run.py' }}
+      test_artifact_path: ${{ fromJson(needs.setup.outputs.config).test_artifact_path || '' }}
+      test_artifact_required: ${{ fromJson(needs.setup.outputs.config).test_artifact_required || false }}
+      timeout: ${{ fromJson(needs.setup.outputs.config).test_timeout || (inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 60 || 45) }}
 
   e2e:
     needs: [setup, functional]
-    if: needs.setup.outputs.e2e_matrix != '[]'
+    if: inputs.run_e2e && needs.setup.outputs.e2e_matrix != '[]'
     strategy:
       fail-fast: false
-      # MUSA, Ascend and Hygon groups share fixed per-platform GPU allocations.
-      # Keep each platform's E2E groups serial.
-      max-parallel: ${{ (inputs.platform == 'musa' || inputs.platform == 'ascend' || inputs.platform == 'hygon') && 1 || 256 }}
+      max-parallel: ${{ fromJson(needs.setup.outputs.config).e2e_max_parallel || ((inputs.platform == 'musa' || inputs.platform == 'ascend' || inputs.platform == 'hygon') && 1 || 256) }}
       matrix:
         test: ${{ fromJson(needs.setup.outputs.e2e_matrix) }}
     uses: ./.github/workflows/_e2e_test.yml
     with:
       platform: ${{ inputs.platform }}
+      branch: ${{ inputs.branch }}
       task: ${{ matrix.test.task }}
       device: ${{ matrix.test.device }}
       cases: ${{ matrix.test.cases }}
@@ -128,33 +171,41 @@ jobs:
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
-      timeout: ${{ inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 120 || inputs.platform == 'hygon' && 120 || matrix.test.timeout || 60 }}
+      test_driver: ${{ fromJson(needs.setup.outputs.config).test_driver || 'tests/run.py' }}
+      test_artifact_path: ${{ fromJson(needs.setup.outputs.config).test_artifact_path || '' }}
+      test_artifact_required: ${{ fromJson(needs.setup.outputs.config).test_artifact_required || false }}
+      timeout: ${{ fromJson(needs.setup.outputs.config).test_timeout || (inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 120 || inputs.platform == 'hygon' && 120 || matrix.test.timeout || 60) }}
+      ci_stage: ${{ inputs.ci_stage }}
 
   benchmark:
-    needs: [setup, e2e]
+    needs: [setup, functional, e2e]
+    if: always() && inputs.run_benchmark && needs.functional.result == 'success' && (needs.e2e.result == 'success' || needs.e2e.result == 'skipped')
     uses: ./.github/workflows/_benchmark_test.yml
     with:
       platform: ${{ inputs.platform }}
+      branch: ${{ inputs.branch }}
       ci_image: ${{ fromJson(needs.setup.outputs.config).ci_image }}
       runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
       container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
-      timeout: ${{ inputs.platform == 'musa' && 180 || inputs.platform == 'ascend' && 60 || 30 }}
+      test_driver: ${{ fromJson(needs.setup.outputs.config).test_driver || 'tests/run.py' }}
+      test_artifact_path: ${{ fromJson(needs.setup.outputs.config).test_artifact_path || '' }}
+      test_artifact_required: ${{ fromJson(needs.setup.outputs.config).test_artifact_required || false }}
+      timeout: ${{ fromJson(needs.setup.outputs.config).test_timeout || 30 }}
+      ci_stage: ${{ inputs.ci_stage }}
 
   notify:
-    needs: [unit, functional, e2e, benchmark]
+    needs: [functional, e2e, benchmark]
     if: always()
     uses: ./.github/workflows/_notify_feishu.yml
     with:
       platform: ${{ inputs.platform }}
       status: >-
-        ${{ (needs.unit.result == 'success' &&
-             needs.functional.result == 'success' &&
+        ${{ (needs.functional.result == 'success' &&
              (needs.e2e.result == 'success' || needs.e2e.result == 'skipped') &&
              (needs.benchmark.result == 'success' || needs.benchmark.result == 'skipped'))
             && 'success'
-            || (needs.unit.result == 'cancelled' ||
-                needs.functional.result == 'cancelled' ||
+            || (needs.functional.result == 'cancelled' ||
                 needs.e2e.result == 'cancelled' ||
                 needs.benchmark.result == 'cancelled')
                && 'cancelled'
