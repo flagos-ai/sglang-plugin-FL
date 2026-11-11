@@ -19,7 +19,7 @@ def fused_moe_txda(
     ``flag_gems.fused.fused_experts_impl``, and returns a
     ``StandardCombineInput``.
     """
-    from flag_gems.fused import fused_experts_impl
+    from flag_gems import fused_experts_impl
     from sglang.srt.layers.moe.token_dispatcher.standard import StandardCombineInput
 
     hidden_states = dispatch_output.hidden_states  # [M, N]

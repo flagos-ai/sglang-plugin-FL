@@ -31,8 +31,10 @@ def _create_txda_oot_backend(runner):
     Defer heavy imports (vendor SDK, CUDA-only headers, etc.) to the body
     of this function so the module stays importable on any host.
     """
-    # Default: use torch_native (PyTorch SDPA) for TXDA hardware.
-    # Replace with a custom TXDA attention backend when available.
-    from sglang.srt.layers.attention.torch_native_backend import TorchNativeAttnBackend
+    # Route the extend/prefill path to the flaggems _tsingmicro kernel; decode
+    # and metadata are inherited from TritonAttnBackend.
+    from sglang_fl.dispatch.backends.vendor.tsingmicro.impl.attention_backend import (
+        TxdaAttnBackend,
+    )
 
-    return TorchNativeAttnBackend(runner)
+    return TxdaAttnBackend(runner)
