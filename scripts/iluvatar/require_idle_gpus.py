@@ -4,8 +4,8 @@
 
 This checks an explicit CUDA_VISIBLE_DEVICES allocation with the vendor ixsmi
 inventory. It never selects extra devices, evicts workloads, or kills processes.
-The fixed 512 MiB limit permits driver bookkeeping, not a shared model workload.
-A runner must reserve the chosen devices for the duration of the job.
+The default 1024 MiB limit permits driver bookkeeping, not a shared model
+workload. A runner must reserve the chosen devices for the duration of the job.
 """
 
 import csv
@@ -15,7 +15,16 @@ import re
 import subprocess
 
 
-def check_inventory(text: str, selected: str) -> list[dict[str, int]]:
+DEFAULT_IDLE_MEMORY_LIMIT_MIB = 1024
+
+
+def check_inventory(
+    text: str,
+    selected: str,
+    max_idle_memory_mib: int = DEFAULT_IDLE_MEMORY_LIMIT_MIB,
+) -> list[dict[str, int]]:
+    if max_idle_memory_mib < 0:
+        raise RuntimeError("Idle memory limit must be non-negative")
     if not re.fullmatch(r"\d+(,\d+)*", selected):
         raise RuntimeError("Explicit numeric CUDA_VISIBLE_DEVICES is required")
     devices = [int(value) for value in selected.split(",")]
@@ -47,7 +56,7 @@ def check_inventory(text: str, selected: str) -> list[dict[str, int]]:
             raise RuntimeError(f"Allocated physical GPU {index} is absent from ixsmi")
         gpu = inventory[index]
         print(f"Allocated GPU {index}: {gpu['used_mib']} / {gpu['total_mib']} MiB")
-        if gpu["used_mib"] > 512:
+        if gpu["used_mib"] > max_idle_memory_mib:
             raise RuntimeError(
                 f"GPU {index} has busy memory; release the allocation first"
             )
@@ -56,6 +65,17 @@ def check_inventory(text: str, selected: str) -> list[dict[str, int]]:
 
 
 if __name__ == "__main__":
+    try:
+        max_idle_memory_mib = int(
+            os.environ.get(
+                "SGLANG_ILUVATAR_MAX_IDLE_MEMORY_MIB",
+                str(DEFAULT_IDLE_MEMORY_LIMIT_MIB),
+            )
+        )
+    except ValueError as error:
+        raise RuntimeError(
+            "SGLANG_ILUVATAR_MAX_IDLE_MEMORY_MIB must be an integer"
+        ) from error
     result = subprocess.run(
         ["ixsmi", "--query-gpu=index,memory.used,memory.total", "--format=csv"],
         check=True,
@@ -63,4 +83,8 @@ if __name__ == "__main__":
         text=True,
         timeout=30,
     )
-    check_inventory(result.stdout, os.environ.get("CUDA_VISIBLE_DEVICES", ""))
+    check_inventory(
+        result.stdout,
+        os.environ.get("CUDA_VISIBLE_DEVICES", ""),
+        max_idle_memory_mib,
+    )

@@ -12,6 +12,7 @@ Environment variables:
   MODEL_PATH    Model path (default: /models/Qwen3.6-27B)
   TP_SIZE       Tensor parallelism (default: 4 on CoreX/Ascend/TXDA, otherwise 1)
   MAX_TOKENS    Max generation tokens (default: 10)
+  MEM_FRACTION_STATIC  Static memory fraction (default: 0.6 on TXDA, otherwise 0.85)
   FL_CONCURRENT_VL_MAX_TOKENS  CoreX VL token limit (default: 256; other backends keep 64)
   IMAGE_DIR     Test image directory (default: examples/test_images/ next to this file)
 """
@@ -56,6 +57,9 @@ if _is_txda:
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-27B")
 TP_SIZE = int(os.environ.get("TP_SIZE", "4" if _is_npu or _is_txda or _is_corex else "1"))
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "10"))
+MEM_FRACTION_STATIC = float(
+    os.environ.get("MEM_FRACTION_STATIC", "0.6" if _is_txda else "0.85")
+)
 VL_MAX_TOKENS = 64
 if _is_corex:
     VL_MAX_TOKENS = int(os.environ.get("FL_CONCURRENT_VL_MAX_TOKENS", "256"))
@@ -104,6 +108,7 @@ elif _is_corex:
         "watchdog_timeout": 3600,
         "attention_backend": "triton",
         "cuda_graph_max_bs_decode": 16,
+        "cuda_graph_max_bs_prefill": 256,
     }
 elif _is_hcu:
     _extra_engine_kwargs = {
@@ -216,7 +221,7 @@ def run_engine():
     engine = Engine(
         model_path=MODEL_PATH,
         tp_size=TP_SIZE,
-        mem_fraction_static=0.6 if _is_txda else 0.85,
+        mem_fraction_static=MEM_FRACTION_STATIC,
         disable_cuda_graph=os.environ.get("DISABLE_CUDA_GRAPH", "1") != "0",
         **_extra_engine_kwargs,
     )

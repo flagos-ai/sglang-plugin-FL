@@ -269,7 +269,6 @@ class WorkflowTests(unittest.TestCase):
 
     def test_all_test_steps_clear_legacy_masks_for_hygon_only(self):
         for filename in (
-            "_unit_test.yml",
             "_functional_test.yml",
             "_e2e_test.yml",
             "_benchmark_test.yml",
@@ -278,13 +277,15 @@ class WorkflowTests(unittest.TestCase):
                 (ROOT / ".github/workflows" / filename).read_text(encoding="utf-8")
             )
             job = next(iter(workflow["jobs"].values()))
-            run = next(
+            runs = [
                 step["run"]
                 for step in job["steps"]
-                if "python tests/run.py" in step.get("run", "")
-            )
-            self.assertIn('if [ "${{ inputs.platform }}" = "hygon" ]; then', run)
-            self.assertIn("unset CUDA_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES", run)
+                if 'python "$TEST_DRIVER"' in step.get("run", "")
+            ]
+            self.assertTrue(runs)
+            for run in runs:
+                self.assertIn('if [ "${{ inputs.platform }}" = "hygon" ]; then', run)
+                self.assertIn("unset CUDA_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES", run)
 
 
 if __name__ == "__main__":

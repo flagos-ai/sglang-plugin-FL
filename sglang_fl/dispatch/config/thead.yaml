@@ -1,0 +1,38 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# SGLang-FL Dispatch Configuration for T-Head PPU (empty runtime).
+# PPU used nvidia.yaml before; keep it separate so NVIDIA-only choices
+# (e.g. TopK on forward_cuda, native mm) do not leak onto PPU.
+prefer: flagos
+
+# FlagGems operators that do not match the PPU / SGLang 0.5.18 contracts:
+#   - masked_scatter_: SGLang 0.5.18 (#26082) scatters multimodal embeddings
+#     with masked_scatter_. Qwen3.5/3.6 have no deepstack layers, so every
+#     image/video request scatters into an empty (N, 0) placeholder; FlagGems'
+#     thead backend rejects zero-size dims where PyTorch treats it as a no-op.
+#   - _foreach_copy_: SGLang 0.5.18 refreshes CUDA graph input buffers with
+#     torch._foreach_copy_ (runner_utils/buffers.py). With the FlagGems version,
+#     MTP (EAGLE) draft graph replay hits HGGC illegal memory access on PPU.
+#     Found by whitelist bisect over all FlagGems ops; isolated calls are correct.
+flagos_blacklist:
+  - masked_scatter_
+  - _foreach_copy_
+
+# Default --mem-fraction-static when pipeline parallelism is enabled and the user
+# did not set one (see vendor/thead/runtime_config.py). SGLang 0.5.18 gives each
+# PP stage about twice the mamba state pool of 0.5.11; at 0.85 the PP1 stage of
+# Qwen3.6-35B-A3B OOMs on 4096-token prompts at concurrency 64. 0.75 passed the
+# TP4 x PP2 stress run. Override: SGLANG_FL_THEAD_PP_MEM_FRACTION (``auto`` = SGLang default).
+pp_mem_fraction_static: 0.75

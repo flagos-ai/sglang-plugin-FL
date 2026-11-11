@@ -23,6 +23,7 @@ _SINGLE_CASES = [
     ("qwen3_6_35b_a3b_concurrent.py", "_make_engine"),
 ]
 _OFFLINE = [name for name, factory in _SINGLE_CASES if factory == "run_engine"]
+_CONCURRENT = [name for name, factory in _SINGLE_CASES if factory == "_make_engine"]
 _MULTINODE = ["qwen3_6_27b_multinode.py", "qwen3_6_35b_a3b_multinode.py"]
 
 
@@ -90,6 +91,30 @@ def test_corex_default_tp_and_explicit_override(monkeypatch, tp, name, factory):
     assert captured["tp_size"] == (4 if tp is None else 2)
 
 
+@pytest.mark.parametrize("name", _OFFLINE)
+def test_offline_static_memory_fraction_override_reaches_engine(monkeypatch, name):
+    _cuda_platform(monkeypatch, corex=True)
+    monkeypatch.setenv("MEM_FRACTION_STATIC", "0.70")
+    captured = _capture_engine(monkeypatch)
+    namespace = _load_example(monkeypatch, name)
+    with pytest.raises(CapturedEngine):
+        namespace["run_engine"]()
+    assert captured["mem_fraction_static"] == 0.70
+    assert captured["cuda_graph_max_bs_decode"] == 16
+    assert captured["cuda_graph_max_bs_prefill"] == 256
+
+
+@pytest.mark.parametrize("name", _CONCURRENT)
+def test_concurrent_static_memory_fraction_override_reaches_engine(monkeypatch, name):
+    _cuda_platform(monkeypatch, corex=True)
+    monkeypatch.setenv("MEM_FRACTION_STATIC", "0.70")
+    captured = _capture_engine(monkeypatch)
+    namespace = _load_example(monkeypatch, name)
+    with pytest.raises(CapturedEngine):
+        namespace["_make_engine"]()
+    assert captured["mem_fraction_static"] == 0.70
+
+
 @pytest.mark.parametrize("name,factory", _SINGLE_CASES)
 def test_other_cuda_default_tp_stays_one(monkeypatch, name, factory):
     _cuda_platform(monkeypatch, corex=False)
@@ -115,6 +140,7 @@ def test_corex_graph_limit_covers_concurrent_requests(monkeypatch, concurrency, 
     namespace = _load_example(monkeypatch, name)
     engine = namespace["_make_engine"]()
     assert engine.server_args.cuda_graph_max_bs_decode == concurrency
+    assert engine.server_args.cuda_graph_max_bs_prefill == 256
     assert engine.server_args.disable_fast_image_processor is True
 
 
@@ -139,6 +165,7 @@ class _ServerArgs0518:
     attention_backend: str | None = None
     watchdog_timeout: float = 300
     cuda_graph_max_bs_decode: int | None = None
+    cuda_graph_max_bs_prefill: int | None = None
     max_running_requests: int | None = None
     disable_prefill_cuda_graph: bool = False
     speculative_algorithm: str | None = None
@@ -163,6 +190,10 @@ def _install_current_server_args_engine(monkeypatch):
 
 def _load_mtp_example(monkeypatch, vendor="iluvatar"):
     monkeypatch.delenv("SGLANG_SIMULATE_ACC_LEN", raising=False)
+    # The example detects T-Head PPU via PPU_SDK in the environment, not via a
+    # torch attribute, so the fake torch below cannot neutralize it — clear it
+    # explicitly or every simulated vendor resolves TP_SIZE=4 on PPU hosts.
+    monkeypatch.delenv("PPU_SDK", raising=False)
     # Execute the real script with an explicit device identity. This creates no
     # accelerator context and does not depend on the machine running pytest.
     probed_torch = ModuleType("torch")
@@ -377,7 +408,10 @@ def _acceptance_harness(tmp_path, profile="vendor"):
     binaries.mkdir()
     python = binaries / "python"
     python.write_text(
-        '#!/bin/bash\nprintf \'%s\\t%s\\n\' "${DISABLE_CUDA_GRAPH:-unset}" "$*" >> "$CALL_LOG"\n',
+        "#!/bin/bash\n"
+        "printf '%s\\t%s\\t%s\\n' \\\n"
+        '  "${DISABLE_CUDA_GRAPH:-unset}" "${MEM_FRACTION_STATIC:-unset}" "$*" \\\n'
+        '  >> "$CALL_LOG"\n',
         encoding="utf-8",
     )
     python.chmod(0o755)
@@ -395,6 +429,13 @@ def _acceptance_harness(tmp_path, profile="vendor"):
         SGLANG_FL_DIST_BACKEND="nccl",
     )
     env.pop("DISABLE_CUDA_GRAPH", None)
+    env.pop("MEM_FRACTION_STATIC", None)
+    # Non-interactive Bash still sources BASH_ENV even with --noprofile and
+    # --norc. Vendor images use it to prepend their Python environment, which
+    # would bypass the fake interpreter above and make this shell-only test
+    # depend on the host image. ENV has the equivalent role for other shells.
+    env.pop("BASH_ENV", None)
+    env.pop("ENV", None)
     return script, calls, logs, env
 
 
@@ -416,15 +457,24 @@ def test_acceptance_runs_both_models_and_concurrency_with_each_graph_mode(
 ):
     script, calls, logs, env = _acceptance_harness(tmp_path, profile)
     _run_acceptance(script, tmp_path, env, check=True)
-    invocations = [line.split("\t", 1) for line in calls.read_text().splitlines()]
-    assert f"--fused-profile {profile}" in invocations[0][1]
+    invocations = [line.split("\t", 2) for line in calls.read_text().splitlines()]
+    assert f"--fused-profile {profile}" in invocations[0][2]
+    assert {invocation[1] for invocation in invocations} == {"0.69"}
     expected = []
     for model in ("27b", "35b_a3b"):
         for disabled in ("1", "0"):
             expected.extend(
                 [
-                    [disabled, f"examples/qwen3_6_{model}_offline_inference.py"],
-                    [disabled, f"examples/qwen3_6_{model}_concurrent.py --mode all"],
+                    [
+                        disabled,
+                        "0.69",
+                        f"examples/qwen3_6_{model}_offline_inference.py",
+                    ],
+                    [
+                        disabled,
+                        "0.69",
+                        f"examples/qwen3_6_{model}_concurrent.py --mode all",
+                    ],
                 ]
             )
             assert (logs / f"{model}_offline_graph_disabled_{disabled}.log").is_file()

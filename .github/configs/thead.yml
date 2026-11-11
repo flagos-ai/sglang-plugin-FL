@@ -3,19 +3,20 @@
 
 platform: thead
 
-# Docker image for this hardware
-ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-thead-ci
+# CI-only image built from the operations runtime base. Pin the validated
+# artifact so a mutable tag cannot change the environment underneath CI.
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:ee1644a0740b21e83f9079e390942be12e27906697b0dac2ef09d41a20fef1ef
 
 # Runner labels for this hardware
 runner_labels:
   - flagcicd-810e
 
 # Container volumes (hardware-specific paths)
-# Model files live under the runner's model store and the test model configs reference
-# /data/models/Qwen/<model> in-container, so mount the store to that path (same pattern
-# as cuda.yml). Adjust the host side to wherever the thead runner exposes the models.
+# The runner store contains a Qwen directory at this path. Mount that directory,
+# rather than its parent, so the test configs resolve /data/models/Qwen/<model>
+# without an extra /data/models/Qwen/Qwen nesting level.
 container_volumes:
-  - /mnt/airs-business/cicd/models:/data/models/Qwen
+  - /mnt/airs-business/cicd/models/Qwen:/data/models/Qwen
 
 # Container options.
 # PPU device access: the host docker daemon ships ONLY runc -- there is no
@@ -27,7 +28,7 @@ container_volumes:
 #
 # DinD compatibility: the thead CI runner is a T-Head DinD environment whose authZ
 # plugin FORBITS --privileged, --pid=host, --ipc=host, --cap-add, --security-opt.
-# So unlike cuda/musa (real-docker runners that use --ipc=host), thead deliberately
+# So unlike nvidia/musa (real-docker runners that use --ipc=host), thead deliberately
 # OMITS --ipc=host and uses --shm-size for NCCL/process shared memory instead.
 # This is the exact combination validated end-to-end (no --privileged, no --ipc).
 # --user root is required: the image installs libs under system paths and the
@@ -38,6 +39,9 @@ container_volumes:
 # accepts no globs). The declared device_type is zw810e @ 96GB (see tests/platforms/thead.yaml).
 container_options: >-
   --hostname sglang-plugin-fl
+  -e PYTHONPATH=/opt/sglang/python:/opt/flagtree
+  -e HF_HUB_OFFLINE=1
+  -e TRANSFORMERS_OFFLINE=1
   --shm-size=64g
   --ulimit memlock=-1
   --ulimit stack=67108864

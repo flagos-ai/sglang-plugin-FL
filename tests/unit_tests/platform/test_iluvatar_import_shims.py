@@ -8,6 +8,7 @@ packages and this test's compatibility imports never replace one another.
 
 import gc
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -87,6 +88,12 @@ def test_unknown_symbols_and_standard_module_attributes_are_honest():
     )
 
 
+@pytest.mark.skipif(
+    "PPU_SDK" in os.environ,
+    reason="On PPU hosts the installed sgl-kernel build itself imports "
+    "sgl_kernel_npu, so this test's 'sgl_kernel_npu not in sys.modules' "
+    "premise only holds on Iluvatar-style images",
+)
 def test_critical_cuda_alias_imports_work_before_plugin_loading():
     _probe(
         """

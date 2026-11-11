@@ -916,7 +916,33 @@ def activate_platform() -> str | None:
         info.vendor_name,
         info.device_type,
     )
+    _apply_vendor_early_patches(info.vendor_name)
     return "sglang_fl.platform:PlatformFL"
+
+
+def _apply_vendor_early_patches(vendor_name: str) -> None:
+    """Import vendor/<vendor_name>/early.py during platform discovery.
+
+    Platform discovery runs while ``sglang`` itself is being imported, before
+    any ``sglang.srt.layers`` module, in every process. Use this only for
+    patches that must precede SGLang's module-level imports (e.g. import
+    guards); everything else belongs in ``patch.py``.
+    """
+    import importlib
+    import importlib.util
+
+    module = f"sglang_fl.dispatch.backends.vendor.{vendor_name}.early"
+    try:
+        has_early = importlib.util.find_spec(module) is not None
+    except ModuleNotFoundError:
+        # find_spec raises (not returns None) when the parent vendor package
+        # itself has no directory — e.g. "nvidia" resolves to vendor/cuda.
+        # Swallow it or activate_platform() aborts for the whole platform.
+        return
+    if not has_early:
+        return
+    importlib.import_module(module)
+    logger.info("vendor early patch loaded: %s", module)
 
 
 # ─── General Plugin entry point ──────────────────────────────────────────────
