@@ -118,6 +118,10 @@ jobs:
         run: python .github/scripts/hygon/ci_environment.py -- python -m pytest .github/scripts/hygon/test_verify_environment.py -q --junitxml=test-results-hygon-environment.xml
 
       - name: Run functional tests
+        # The same runtime+torchvision image already passed the focused PPU op
+        # suite in run 42959989065. This probe changes only xgrammar and needs
+        # the following TP2 E2E as its effective validation.
+        if: inputs.platform != 'thead'
         env:
           TEST_DRIVER: ${{ inputs.test_driver }}
         run: |
