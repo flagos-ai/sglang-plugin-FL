@@ -125,7 +125,8 @@ COPY --from=torchvision-builder /opt/vision-wheels/torchvision-*.whl /tmp/
 # not introduce a second implementation beside the runtime-owned FlagTree one.
 RUN export PYTHONPATH=/opt/flagtree && \
     python -m pip install --no-deps /tmp/torchvision-*.whl && \
-    python -m pip install --no-deps xgrammar==0.2.1 && \
+    PIP_INDEX_URL=https://pypi.org/simple \
+        python -m pip install --no-deps xgrammar==0.2.1 && \
     rm -f /tmp/torchvision-*.whl && \
     python - <<'PY'
 from importlib.metadata import distributions, version
