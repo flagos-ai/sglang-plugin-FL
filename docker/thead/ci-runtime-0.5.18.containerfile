@@ -94,6 +94,74 @@ print(f"SGLang closure additions: {len(added)}")
 print(Path("/opt/sglang-added-distributions.txt").read_text())
 PY
 
+# SGLang's srt_empty metadata does not declare torchvision, but importing
+# sglang.Engine unconditionally imports torchvision.io.decode_jpeg.  The public
+# torchvision wheel is not ABI-compatible with the PPU vendor Torch, so build
+# the matching release against the runtime-owned Torch.  Build tools and JPEG
+# headers stay in this throw-away stage.  Keeping this after the SGLang closure
+# also preserves the expensive dependency layer when iterating on this probe.
+FROM runtime AS torchvision-builder
+ARG TORCHVISION_VERSION=0.25.0
+ARG TORCHVISION_COMMIT=8ac84ee75afb1c327902156b5336f56ad63b7e2f
+ARG BUILD_JOBS=4
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libjpeg-dev && \
+    rm -rf /var/lib/apt/lists/*
+RUN git init /opt/vision && \
+    git -C /opt/vision remote add origin https://github.com/pytorch/vision.git && \
+    git -C /opt/vision fetch --depth 1 origin "${TORCHVISION_COMMIT}" && \
+    git -C /opt/vision checkout --detach FETCH_HEAD
+RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
+    python -m pip install setuptools==69.5.1 wheel && \
+    BUILD_VERSION="${TORCHVISION_VERSION}" MAX_JOBS="${BUILD_JOBS}" \
+    TORCHVISION_USE_NVJPEG=0 TORCHVISION_USE_WEBP=0 \
+        python -m pip wheel --no-build-isolation --no-deps \
+        --wheel-dir /opt/vision-wheels /opt/vision
+
+FROM runtime AS sglang-runtime
+COPY --from=torchvision-builder /opt/vision-wheels/torchvision-*.whl /tmp/
+RUN python -m pip install --no-deps /tmp/torchvision-*.whl && \
+    rm -f /tmp/torchvision-*.whl && \
+    python - <<'PY'
+from importlib.metadata import distributions, version
+from pathlib import Path
+from torchvision.io import decode_jpeg
+
+assert version("torchvision") == "0.25.0"
+assert decode_jpeg is not None
+
+before = {}
+for line in Path("/opt/runtime-distributions.before").read_text().splitlines():
+    name, dist_version = line.rsplit("==", 1)
+    before[name.lower()] = (name, dist_version)
+
+after = {}
+for dist in distributions(path=["/flagos/lib/python3.12/site-packages"]):
+    name = dist.metadata.get("Name")
+    if name:
+        after[name.lower()] = (name, dist.version)
+
+drift = []
+for key, (name, dist_version) in before.items():
+    if key not in after:
+        drift.append(f"{name}=={dist_version} -> REMOVED")
+    elif after[key][1] != dist_version:
+        drift.append(f"{name}=={dist_version} -> {after[key][0]}=={after[key][1]}")
+if drift:
+    raise SystemExit("runtime distribution drift:\n" + "\n".join(drift))
+
+added = [after[key] for key in sorted(set(after) - set(before))]
+Path("/opt/sglang-added-distributions.txt").write_text(
+    "".join(f"{name}=={dist_version}\n" for name, dist_version in added)
+)
+PY
+
+# This is the exact import that failed in the runtime-only image.  Keep it as a
+# build-time contract so an image cannot be published with an incompatible
+# torchvision build.
+RUN PYTHONPATH=/opt/sglang/python:/opt/flagtree \
+    python -c "from sglang import Engine; assert Engine is not None"
+
 ENV PYTHONPATH=/opt/sglang/python:/opt/flagtree \
     SGLANG_PLUGINS=sglang_fl \
     SGLANG_PLATFORM=sglang_fl \
