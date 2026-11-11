@@ -124,9 +124,16 @@ jobs:
           if [ "${{ inputs.platform }}" = "hygon" ]; then
             unset CUDA_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES
           fi
-          python "$TEST_DRIVER" \
-            --platform ${{ inputs.platform }} \
-            --scope functional
+          if [ "${{ inputs.platform }}" = "thead" ]; then
+            # Focus the minimal-runtime acceptance on real PPU op execution.
+            # Full SGLang startup is exercised by the following TP2 E2E job.
+            python -m pytest tests/functional_tests/ops/test_ops_correctness.py \
+              -v --tb=short -s
+          else
+            python "$TEST_DRIVER" \
+              --platform ${{ inputs.platform }} \
+              --scope functional
+          fi
 
       - name: Upload test results
         if: always()
