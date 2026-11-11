@@ -5,7 +5,7 @@ platform: thead
 
 # CI-only image built from the operations runtime base. Pin the validated
 # artifact so a mutable tag cannot change the environment underneath CI.
-ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:1e73d5d1e465806eda9c0fc694b7ae90b403cd5ed83eff7d8042ad033a833959
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:6f3f5c68149452279941861ae1f63d6a41ab7f4c62bea4e12506f598b527f944
 
 # Runner labels for this hardware
 runner_labels:
