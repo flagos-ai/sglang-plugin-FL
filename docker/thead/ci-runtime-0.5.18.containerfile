@@ -120,15 +120,24 @@ RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
 
 FROM runtime AS sglang-runtime
 COPY --from=torchvision-builder /opt/vision-wheels/torchvision-*.whl /tmp/
-RUN python -m pip install --no-deps /tmp/torchvision-*.whl && \
+# The real plugin-activated Engine path also imports xgrammar unconditionally.
+# Install it without dependency resolution: its declared standalone Triton must
+# not introduce a second implementation beside the runtime-owned FlagTree one.
+RUN export PYTHONPATH=/opt/flagtree && \
+    python -m pip install --no-deps /tmp/torchvision-*.whl && \
+    python -m pip install --no-deps xgrammar==0.2.1 && \
     rm -f /tmp/torchvision-*.whl && \
     python - <<'PY'
 from importlib.metadata import distributions, version
 from pathlib import Path
+import triton
+import xgrammar
 from torchvision.io import decode_jpeg
 
 assert version("torchvision") == "0.25.0"
+assert version("xgrammar") == "0.2.1"
 assert decode_jpeg is not None
+assert Path(triton.__file__).resolve().is_relative_to(Path("/opt/flagtree"))
 
 before = {}
 for line in Path("/opt/runtime-distributions.before").read_text().splitlines():
