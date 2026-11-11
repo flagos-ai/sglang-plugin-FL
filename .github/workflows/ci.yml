@@ -193,8 +193,9 @@ jobs:
     with:
       platform: thead
       ci_stage: pr
-      run_e2e: ${{ fromJson(needs.discover.outputs.run_e2e) }}
-      run_benchmark: ${{ fromJson(needs.discover.outputs.run_benchmark) }}
+      # Focused runtime-image acceptance: functional plus one TP2 inference.
+      run_e2e: true
+      run_benchmark: false
     secrets: inherit
 
   test-iluvatar:

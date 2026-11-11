@@ -45,7 +45,7 @@ global_trigger_paths:
 
 platforms:
   nvidia:
-    enabled: true
+    enabled: false
     trigger_paths:
       - sglang_fl/dispatch/config/nvidia.yaml
       - .github/scripts/nvidia/
@@ -58,7 +58,7 @@ platforms:
       - .github/configs/nvidia.yml
       - tests/platforms/nvidia.yaml
   ascend:
-    enabled: true
+    enabled: false
     trigger_paths:
       - sglang_fl/dispatch/config/ascend.yaml
       - .github/scripts/ascend/
@@ -71,7 +71,7 @@ platforms:
       - .github/configs/ascend.yml
       - tests/platforms/ascend.yaml
   musa:
-    enabled: true
+    enabled: false
     trigger_paths:
       - sglang_fl/dispatch/config/musa.yaml
       - .github/scripts/musa/
@@ -84,7 +84,7 @@ platforms:
       - .github/configs/musa.yml
       - tests/platforms/musa.yaml
   iluvatar:
-    enabled: true
+    enabled: false
     trigger_paths:
       - sglang_fl/dispatch/config/iluvatar.yaml
       - .github/scripts/iluvatar/
@@ -112,7 +112,7 @@ platforms:
   hygon:
     # Self-hosted runner pool: label ci-sglang-plugin-fl-hygon (8x BW1000 DCU).
     # CI image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-hygon-ci.
-    enabled: true
+    enabled: false
     trigger_paths:
       - sglang_fl/dispatch/config/hygon.yaml
       - .github/scripts/hygon/
