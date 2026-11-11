@@ -120,23 +120,35 @@ RUN --mount=type=cache,id=thead-pip,target=/root/.cache/pip \
 
 FROM runtime AS sglang-runtime
 COPY --from=torchvision-builder /opt/vision-wheels/torchvision-*.whl /tmp/
-# The real plugin-activated Engine path also imports xgrammar unconditionally.
-# Install it without dependency resolution: its declared standalone Triton must
-# not introduce a second implementation beside the runtime-owned FlagTree one.
+# The real plugin-activated Engine path also imports xgrammar and
+# compressed-tensors unconditionally.  srt_empty intentionally omits both
+# because their package metadata reaches into the device stack.  Install the
+# SGLang 0.5.18-compatible versions without dependency resolution so xgrammar's
+# declared standalone Triton and compressed-tensors' declared Torch cannot
+# introduce second implementations beside the runtime-owned stack.  Loguru is
+# compressed-tensors' only declared runtime dependency not already supplied by
+# the srt_empty closure.
 RUN export PYTHONPATH=/opt/flagtree && \
     python -m pip install --no-deps /tmp/torchvision-*.whl && \
     PIP_INDEX_URL=https://pypi.org/simple \
-        python -m pip install --no-deps xgrammar==0.2.1 && \
+        python -m pip install --no-deps \
+            xgrammar==0.2.1 \
+            compressed-tensors==0.15.0 \
+            loguru==0.7.3 && \
     rm -f /tmp/torchvision-*.whl && \
     python - <<'PY'
 from importlib.metadata import distributions, version
 from pathlib import Path
 import triton
 import xgrammar
+from compressed_tensors.config import CompressionFormat
 from torchvision.io import decode_jpeg
 
 assert version("torchvision") == "0.25.0"
 assert version("xgrammar") == "0.2.1"
+assert version("compressed-tensors") == "0.15.0"
+assert version("loguru") == "0.7.3"
+assert CompressionFormat is not None
 assert decode_jpeg is not None
 assert Path(triton.__file__).resolve().is_relative_to(Path("/opt/flagtree"))
 
@@ -166,11 +178,11 @@ Path("/opt/sglang-added-distributions.txt").write_text(
 )
 PY
 
-# This is the exact import that failed in the runtime-only image.  Keep it as a
-# build-time contract so an image cannot be published with an incompatible
-# torchvision build.
+# These are the exact import paths that failed in the preceding runtime probes.
+# Keep them as build-time contracts so an image cannot be published while the
+# Engine's eager import graph is incomplete.
 RUN PYTHONPATH=/opt/sglang/python:/opt/flagtree \
-    python -c "from sglang import Engine; assert Engine is not None"
+    python -c "from sglang import Engine; from sglang.srt.layers import quantization; assert Engine is not None and quantization.QUANTIZATION_METHODS"
 
 ENV PYTHONPATH=/opt/sglang/python:/opt/flagtree \
     SGLANG_PLUGINS=sglang_fl \
