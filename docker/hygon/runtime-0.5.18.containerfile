@@ -276,6 +276,33 @@ RUN --mount=type=cache,target=/tmp/pip-cache \
        done \
     && [ "$install_rc" -eq 0 ]
 
+# --- Application compatibility: distinguish HCU from AMD ROCm --------------
+# Keep this after the slow dependency layer so changes to the application-only
+# compatibility patch reuse the downloaded and installed requirements cache.
+# SGLang 0.5.18 treats every HIP runtime as AMD ROCm in three eagerly-imported
+# Quark modules and consequently imports AMD AITER on HCU.  AITER is not an HCU
+# requirement and must not be added to the Runtime.  Apply the reviewed SGLang
+# source patch to the installed application package instead.  --check makes a
+# future wheel/source change fail visibly rather than silently shipping an
+# unpatched image.
+COPY docker/hygon/sglang-v0.5.18-hcu.patch /opt/sglang-ci/sglang-v0.5.18-hcu.patch
+RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
+    && PURELIB="$("$PYTHON_BIN" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" \
+    && cd "$PURELIB" \
+    && git apply --check -p2 /opt/sglang-ci/sglang-v0.5.18-hcu.patch \
+    && git apply -p2 /opt/sglang-ci/sglang-v0.5.18-hcu.patch \
+    && git apply --reverse --check -p2 /opt/sglang-ci/sglang-v0.5.18-hcu.patch \
+    && "$PYTHON_BIN" -m compileall -q \
+         sglang/srt/layers/quantization/quark/schemes/quark_w4a4_mxfp4.py \
+         sglang/srt/layers/quantization/quark/schemes/quark_w4a4_mxfp4_moe.py \
+         sglang/srt/layers/quantization/quark_int4fp8_moe.py \
+         sglang/srt/layers/attention/triton_backend.py \
+         sglang/srt/layers/activation.py \
+         sglang/srt/layers/layernorm.py \
+         sglang/srt/layers/sampler.py \
+    && sha256sum /opt/sglang-ci/sglang-v0.5.18-hcu.patch \
+         > /opt/sglang-ci/sglang-hcu-patch.sha256
+
 # --- Volatile verification (cheap layers, tuned without re-downloading) ------
 # 1. Every runtime distribution survives with the exact same version and the
 #    installed additions match the reviewed resolver plan.
