@@ -176,21 +176,24 @@ print(f"zero drift over {len(before)} runtime distributions; "
 # device stack (proven on a hosted runner: import fails with "operator
 # torchvision::nms does not exist" / "Could not load libtorchaudio.so" under
 # every PYTHONPATH/LD_LIBRARY_PATH combination, while the same wheel set is
-# what build-infra PR #1738 ships).  They are asserted as installed
-# distributions here and exercised for real on the PPU hardware (step 6 and
-# the unit/functional/e2e stages).
+# what build-infra PR #1738 ships).  That also blocks compressed-tensors
+# (its config import pulls transformers' PreTrainedModel chain, which imports
+# torchvision) and every full sglang import.  Those packages are asserted as
+# installed distributions here and exercised for real on the PPU hardware
+# (step 6 and the unit/functional/e2e stages).
 import torch, xgrammar, loguru
-from compressed_tensors.config import CompressionFormat
 triton = importlib.import_module("triton")
 assert m.version("sglang").split("+")[0] == sglang_version, m.version("sglang")
 assert m.version("xgrammar") == "0.2.1"
 assert m.version("compressed-tensors") == "0.15.0"
 assert m.version("loguru") == "0.7.3"
-assert CompressionFormat is not None
+assert m.version("torchvision") == "0.25.0+v0.1.0.ppu2.1.1"
+assert m.version("torchaudio") == "2.10.0+v0.1.0.ppu2.1.1"
 print("sglang", m.version("sglang"),
       "| torch", torch.__version__,
       "| torchvision", m.version("torchvision"), "(dist)",
       "| torchaudio", m.version("torchaudio"), "(dist)",
+      "| compressed-tensors", m.version("compressed-tensors"), "(dist)",
       "| triton from", triton.__file__)
 EOF
 
