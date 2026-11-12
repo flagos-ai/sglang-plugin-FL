@@ -39,6 +39,10 @@ jobs:
         --device /dev/dri
         --group-add video
 
+    defaults:
+      run:
+        shell: bash
+
     steps:
       # No actions/* usage: action resolution on the self-hosted runner goes
       # through a proxy that is flaky today; every check below is inline.
