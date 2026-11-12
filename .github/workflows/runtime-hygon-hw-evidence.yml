@@ -40,11 +40,26 @@ jobs:
         --group-add video
 
     steps:
-      - name: Check out probe scripts
-        uses: actions/checkout@34e114876b0b11c390d56381ad16ebd13914f8d5 # v4
-
+      # No actions/* usage: action resolution on the self-hosted runner goes
+      # through a proxy that is flaky today; every check below is inline.
+      # Mirrors the core assertions of .github/scripts/hygon/check.sh
+      # (device nodes + idle-GPU inventory) without the repo checkout.
       - name: Check device availability
-        run: bash .github/scripts/hygon/check.sh
+        run: |
+          set -euo pipefail
+          test -e /dev/kfd
+          test -e /dev/mkfd
+          test -d /dev/dri
+          test -d /opt/hyhal
+          python - <<'PY'
+          import torch
+          n = torch.cuda.device_count()
+          print("device_count:", n)
+          assert n >= 1, "no HCU device visible"
+          for i in range(n):
+              free, total = torch.cuda.mem_get_info(i)
+              print(f"  visible {i}: {free/total:.0%} free")
+          PY
 
       - name: Environment and patch evidence
         run: |
