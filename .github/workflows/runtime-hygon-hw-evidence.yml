@@ -124,6 +124,35 @@ jobs:
           print("all triton paths under /opt/flagtree: OK")
           PY
 
+      - name: Reproduce CI attention_backend import with full traceback
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE" || true
+          pip install --no-deps --no-build-isolation -e . >/dev/null 2>&1 || pip install --no-deps -e .
+          python - <<'PY'
+          import traceback
+          import importlib
+
+          name = "sglang_fl.dispatch.backends.vendor.hygon.impl.attention_backend"
+          try:
+              importlib.import_module(name)
+              print("IMPORT OK:", name)
+          except BaseException:
+              print("=" * 60)
+              traceback.print_exc()
+              exc = getattr(traceback.format_exc(), "__cause__", None)
+              # walk the full chained causes
+              import sys
+              e = sys.exc_info()[1]
+              depth = 0
+              while e is not None and depth < 10:
+                  print(f"--- cause chain level {depth}: {type(e).__name__}: {e}")
+                  e = e.__cause__ or e.__context__
+                  depth += 1
+              print("=" * 60)
+              raise SystemExit(1)
+          PY
+
       - name: Representative BF16 triton compile on HCU
         run: |
           unset CUDA_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES
