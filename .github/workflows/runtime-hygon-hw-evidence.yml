@@ -138,7 +138,9 @@ jobs:
             "https://codeload.github.com/lentil1016/sglang-plugin-FL/tar.gz/7ee24c16c55e6283d4722b85500c58a25269de7a" \
             -o "$work/plugin.tar.gz"
           mkdir -p "$work/src" && tar -xzf "$work/plugin.tar.gz" --strip-components=1 -C "$work/src"
-          export PYTHONPATH="$work/src:/opt/flagtree"
+          # Register the plugin's entry_points properly (sglang's platform
+          # discovery needs them; a bare PYTHONPATH copy is not enough).
+          pip install --no-deps --no-build-isolation -e "$work/src" >/dev/null
           export SGLANG_PLATFORM=sglang_fl
           python - <<'PY'
           import importlib
