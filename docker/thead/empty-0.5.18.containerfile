@@ -12,13 +12,24 @@
 # (unit/functional/qwen3 4b_tp2 e2e) does not need them; re-adding any of them
 # requires a fresh hardware failure as evidence.
 #
-# Layers are ordered so that frequently changing inputs come last:
-#   1. runtime (digest-pinned) + vendor snapshot + SGLang srt_empty +
-#      srt_empty-missing application extras + zero-drift verification
-#      (docker/thead/install-sglang-0.5.18-empty.sh);
+# The vendor torchvision/torchaudio wheels currently fail to import on a
+# device-less builder (torchvision::nms op not registered; libtorchaudio.so
+# will not load).  The cause is not yet determined; on-device verification
+# decides.  Until then the build-time contracts assert them only as installed
+# distributions, and the on-device probe (CI setup) plus the
+# unit/functional/e2e stages exercise the real imports.
+#
+# Layers are ordered so that frequently changing inputs come last, and every
+# layer appends its added distributions to /opt/added-distributions.txt so the
+# final layer can prove a closed set:
+#   1. runtime (digest-pinned) + vendor snapshot + SGLang srt_empty (pinned
+#      commit) + startup-failure-selected application extras + zero-drift and
+#      additions-lock verification (docker/thead/install-sglang-0.5.18-empty.sh);
 #   2. CI test toolchain;
 #   3. sglang-plugin-FL (metadata + package tree only; CI re-installs the
-#      plugin under test from the checkout at job time).
+#      plugin under test from the checkout at job time);
+#   4. VERIFY_ONLY pass: runtime distributions unchanged, everything else
+#      covered by lock + ledger, pip check at its reviewed baseline.
 #
 # Build from the repository root:
 #   docker build -f docker/thead/empty-0.5.18.containerfile \
@@ -49,19 +60,41 @@ ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
 ENV PYTHONPATH=/opt/flagtree \
     LD_LIBRARY_PATH=/opt/accl-p:${LD_LIBRARY_PATH}
 
-# Layer 1: vendor snapshot + SGLang srt_empty + application extras +
-# zero-drift verification.  Only the install script enters this layer.
-COPY docker/thead/install-sglang-0.5.18-empty.sh /tmp/install-sglang-0.5.18-empty.sh
+# Layer 1: vendor snapshot + SGLang srt_empty (commit-pinned) + application
+# extras + zero-drift and additions-lock verification.  The install script and
+# its lock stay in the image for auditability.
+COPY docker/thead/install-sglang-0.5.18-empty.sh /opt/install-sglang-0.5.18-empty.sh
+COPY docker/thead/empty-0.5.18.additions.lock /opt/empty-0.5.18.additions.lock
 RUN echo "pip index: ${PIP_INDEX_URL}" && \
     SGLANG_VERSION=${SGLANG_VERSION} SGLANG_SRC=/opt/sglang-${SGLANG_VERSION} \
+    ADDITIONS_LOCK=/opt/empty-0.5.18.additions.lock \
     SKIP_DEVICE_CHECK=1 INSTALL_PLUGIN=0 \
-    bash /tmp/install-sglang-0.5.18-empty.sh && \
-    rm -f /tmp/install-sglang-0.5.18-empty.sh && \
+    bash /opt/install-sglang-0.5.18-empty.sh && \
     pip cache purge
 
 # Layer 2: test toolchain baked in so CI does not depend on PyPI at job time
 # (.github/scripts/thead/setup.sh still re-installs the plugin under test).
-RUN pip install --no-cache-dir pytest pytest-timeout pyyaml
+# Record this layer's added distributions in the ledger.
+RUN pip install --no-cache-dir pytest pytest-timeout pyyaml && \
+    python - /opt/runtime-distributions.before /opt/added-distributions.txt <<'PY'
+import importlib.metadata as m, sys
+from pathlib import Path
+
+def norm(name):
+    return name.lower().replace("_", "-")
+
+before = {norm(l.split("==", 1)[0]) for l in Path(sys.argv[1]).read_text().splitlines()
+          if l and not l.startswith("#")}
+ledger = Path(sys.argv[2])
+known = {norm(l.split("==", 1)[0]) for l in ledger.read_text().splitlines()
+         if l and not l.startswith("#")} if ledger.exists() else set()
+with ledger.open("a") as fh:
+    for d in m.distributions():
+        name = d.metadata.get("Name")
+        if name and norm(name) not in before and norm(name) not in known:
+            fh.write(f"{name}=={d.version}\n")
+            print("ledger +", name, d.version)
+PY
 
 # Layer 3 (most volatile): sglang-plugin-FL.  Only packaging metadata and the
 # package tree enter the image; the plugin's dependencies are already present.
@@ -70,7 +103,34 @@ COPY sglang_fl/ ./sglang_fl/
 RUN pip install --no-deps --no-build-isolation -e . && \
     python -c "import importlib.metadata as m, sglang_fl; \
                print('sglang', m.version('sglang'), '| sglang_fl', m.version('sglang_fl'), \
-                     'from', sglang_fl.__file__)"
+                     'from', sglang_fl.__file__)" && \
+    python - /opt/runtime-distributions.before /opt/added-distributions.txt <<'PY'
+import importlib.metadata as m, sys
+from pathlib import Path
+
+def norm(name):
+    return name.lower().replace("_", "-")
+
+before = {norm(l.split("==", 1)[0]) for l in Path(sys.argv[1]).read_text().splitlines()
+          if l and not l.startswith("#")}
+ledger = Path(sys.argv[2])
+known = {norm(l.split("==", 1)[0]) for l in ledger.read_text().splitlines()
+         if l and not l.startswith("#")} if ledger.exists() else set()
+with ledger.open("a") as fh:
+    for d in m.distributions():
+        name = d.metadata.get("Name")
+        if name and norm(name) not in before and norm(name) not in known:
+            fh.write(f"{name}=={d.version}\n")
+            print("ledger +", name, d.version)
+PY
+
+# Layer 4: final closed-set verification.  The runtime snapshot must be
+# unchanged and every other distribution must be covered by the committed
+# additions lock plus the layer ledger; pip check must sit at its reviewed
+# baseline (the single xgrammar/triton metadata exception).
+RUN VERIFY_ONLY=1 SKIP_DEVICE_CHECK=1 \
+    ADDITIONS_LOCK=/opt/empty-0.5.18.additions.lock \
+    bash /opt/install-sglang-0.5.18-empty.sh
 
 # Runtime defaults for the empty runtime (match the validated 0.5.11 empty env).
 #   SGLANG_IS_FLASHINFER_AVAILABLE=false: FlashInfer is not installed; the plugin also
