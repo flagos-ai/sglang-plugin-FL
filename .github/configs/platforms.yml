@@ -5,17 +5,20 @@
 #
 # Set `enabled: false` to skip a platform without removing its config file.
 
+# TEMPORARY probe branch (thead runtime image hardware validation):
+# every platform except thead is disabled so the run cannot consume other
+# pools. Do not merge this change; it lives only on probe/thead-rt163f-hw.
 platforms:
   cuda:
-    enabled: true
+    enabled: false
   ascend:
     # Published image is pinned to its Harbor digest and passed the four-card
     # baked-image gate; CI now validates the dedicated runner's non-privileged path.
-    enabled: true
+    enabled: false
   musa:
-    enabled: true
+    enabled: false
   iluvatar:
-    enabled: true
+    enabled: false
   thead:
     # Self-hosted runner pool: label flagcicd-810e (4 runners, online).
     # SGLang 0.5.18 empty-mode CI image is set in thead.yml; it must be built from
@@ -24,4 +27,4 @@ platforms:
 
   hygon:
     # Validated SGLang 0.5.18 image is pinned in hygon.yml.
-    enabled: true
+    enabled: false
