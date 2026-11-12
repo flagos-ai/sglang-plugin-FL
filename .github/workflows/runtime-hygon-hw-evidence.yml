@@ -129,6 +129,22 @@ jobs:
       # No actions/checkout (its resolution on this runner pool is flaky
       # today); fetch the PR-head tarball directly and put it on PYTHONPATH,
       # which is all the verifier needs to import sglang_fl.
+      - name: Diagnose libgalaxyhip loading conditions
+        run: |
+          set -euo pipefail
+          echo "=== step env ==="
+          env | grep -E "VISIBLE|AUTOLOAD|LD_LIBRARY" | sort || true
+          echo "=== ldconfig cache ==="
+          ldconfig -p | grep -i galaxy || echo "(not in ld cache)"
+          echo "=== file search ==="
+          find /opt/hyhal /usr/local/hyhal /flagos /opt -name 'libgalaxyhip*' 2>/dev/null | head -5 || true
+          echo "=== bare import ==="
+          python -c "import torch; print('BARE OK', torch.__version__, torch.cuda.device_count())" 2>&1 | tail -3 || true
+          echo "=== import with CUDA_VISIBLE_DEVICES unset ==="
+          env -u CUDA_VISIBLE_DEVICES -u ROCR_VISIBLE_DEVICES python -c "import torch; print('NOMASK OK', torch.cuda.device_count())" 2>&1 | tail -3 || true
+          echo "=== torch libs dir ==="
+          ls /flagos/lib/python3.10/site-packages/torch/lib/ 2>/dev/null | grep -i "galaxy\|hip" | head -5 || true
+
       - name: Reproduce CI attention_backend import with full traceback
         run: |
           set -euo pipefail
