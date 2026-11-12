@@ -18,7 +18,7 @@ jobs:
     runs-on: [ci-sglang-plugin-fl-hygon]
     timeout-minutes: 120
     container:
-      image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:7ce9a543522fb3c16fd91362313d67858a59280166277478c5bdfce5e0af1826
+      image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:c9263b11500c897748c48775b6be521b8ffc84d2736ea681d6e5f8325ed2271b
       volumes:
         - /opt/hyhal:/opt/hyhal
         - /usr/local/hyhal:/usr/local/hyhal
