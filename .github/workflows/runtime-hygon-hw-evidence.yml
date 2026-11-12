@@ -123,7 +123,10 @@ jobs:
       - name: Representative BF16 triton compile on HCU
         run: |
           unset CUDA_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES
-          python - <<'PY'
+          # @triton.jit needs inspect.getsource, so the kernel must live in a
+          # real file — heredoc/stdin scripts fail with "should be defined in
+          # a Python file".
+          cat > /tmp/bf16_kernel_test.py <<'PY'
           import torch
           import triton
           import triton.language as tl
@@ -149,3 +152,4 @@ jobs:
               f"BF16 kernel numerics wrong: max diff {(out.float()-ref).abs().max()}"
           print("BF16 triton kernel compiled + executed on HCU: OK")
           PY
+          python /tmp/bf16_kernel_test.py
