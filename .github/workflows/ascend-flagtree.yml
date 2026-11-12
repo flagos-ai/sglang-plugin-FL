@@ -1,0 +1,113 @@
+name: Ascend FlagTree
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ["dev/0.5.18"]
+    paths:
+      - ".github/workflows/ascend-flagtree.yml"
+      - ".github/configs/ascend.yml"
+      - ".github/scripts/ascend/**"
+      - "docker/ascend/**"
+      - "sglang_fl/dispatch/backends/vendor/ascend/**"
+      - "sglang_fl/dispatch/config/ascend.yaml"
+      - "tests/platforms/ascend.yaml"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  FLAGTREE_VERSION: "0.6.0+ascend3.2"
+  FLAGTREE_WHEEL: "flagtree-0.6.0+ascend3.2-cp311-cp311-linux_aarch64.whl"
+  FLAGTREE_SHA256: "1d0c50f4828accc890a83f150d48fc12893a4ef775e8ea7647d73bca8aae5c53"
+
+jobs:
+  prepare:
+    name: Prepare FlagTree wheel
+    runs-on: ubuntu-latest
+    outputs:
+      config: ${{ steps.load.outputs.config }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - id: load
+        name: Load Ascend runner configuration
+        run: |
+          python -m pip install pyyaml
+          python .github/scripts/load_config.py --platform ascend
+      - name: Download and verify the ARM64 wheel
+        run: |
+          curl --fail --location --retry 5 --retry-delay 3 \
+            "https://resource.flagos.net/repository/flagos-pypi-ascend/packages/flagtree/$FLAGTREE_VERSION/$FLAGTREE_WHEEL" \
+            --output "$FLAGTREE_WHEEL"
+          printf '%s  %s\n' "$FLAGTREE_SHA256" "$FLAGTREE_WHEEL" | sha256sum --check
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ascend-flagtree-wheel
+          path: ${{ env.FLAGTREE_WHEEL }}
+          if-no-files-found: error
+          compression-level: 0
+
+  test:
+    name: FlagTree on Ascend 910C
+    needs: prepare
+    runs-on: ${{ fromJson(needs.prepare.outputs.config).runner_labels }}
+    timeout-minutes: 120
+    container:
+      image: ${{ fromJson(needs.prepare.outputs.config).ci_image }}
+      volumes: ${{ fromJson(needs.prepare.outputs.config).container_volumes }}
+      options: ${{ fromJson(needs.prepare.outputs.config).container_options }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ascend-flagtree-wheel
+          path: ${{ runner.temp }}/ascend-flagtree
+      - name: Check device availability
+        run: |
+          mkdir -p flagtree-test-results
+          bash .github/scripts/ascend/check.sh 2>&1 | tee flagtree-test-results/preflight.log
+      - name: Install and verify FlagTree
+        run: |
+          wheel="$RUNNER_TEMP/ascend-flagtree/$FLAGTREE_WHEEL"
+          bash .github/scripts/ascend/setup.sh "$wheel" 2>&1 | tee flagtree-test-results/setup.log
+      - name: Check native NPU kernels
+        run: |
+          python3 .github/scripts/ascend/test_flagtree_kernels.py 2>&1 | tee flagtree-test-results/kernels.log
+      - name: Run Qwen3.6 inference and concurrent tests
+        run: |
+          failed=0
+          for task in inference concurrent; do
+            for model_case in 35b_a3b_tp4_nograph 27b_tp4_nograph; do
+              result="flagtree-test-results/$task-$model_case"
+              if ! python3 tests/run.py --platform ascend --device 910c --scope e2e \
+                --task "$task" --model qwen3_6 --case "$model_case" \
+                -- --junitxml="$result.xml" 2>&1 | tee "$result.log"; then
+                failed=1
+              fi
+            done
+          done
+          if [ "$failed" -ne 0 ]; then
+            exit "$failed"
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree
+
+          reports = sorted(Path("flagtree-test-results").glob("*.xml"))
+          if len(reports) != 4:
+              raise SystemExit(f"Expected four model reports, found {len(reports)}")
+          for report in reports:
+              cases = ElementTree.parse(report).findall(".//testcase")
+              if not cases or all(case.find("skipped") is not None for case in cases):
+                  raise SystemExit(f"No passing tests recorded in {report}")
+          PY
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ascend-flagtree-test-results
+          path: flagtree-test-results/
