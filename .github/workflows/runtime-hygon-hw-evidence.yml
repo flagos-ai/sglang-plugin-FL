@@ -124,6 +124,9 @@ jobs:
           print("all triton paths under /opt/flagtree: OK")
           PY
 
+      - name: Check out plugin source
+        uses: actions/checkout@34e114876b0b11c390d56381ad16ebd13914f8d5 # v4
+
       - name: Reproduce CI attention_backend import with full traceback
         run: |
           set -euo pipefail
