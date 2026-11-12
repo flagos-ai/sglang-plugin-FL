@@ -8,12 +8,15 @@ name: T-Head runtime CI image relay build
 on:
   push:
     branches: [probe/thead-rt163f-relay]
+  pull_request:
+    branches: [dev/0.5.18]
 
 permissions:
   contents: read
 
 jobs:
   build-push:
+    if: github.repository == 'flagos-ai/sglang-plugin-FL'
     runs-on: flagcicd-810e
     timeout-minutes: 120
     steps:
