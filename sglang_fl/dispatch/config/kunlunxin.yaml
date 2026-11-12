@@ -15,6 +15,13 @@
 # SGLang-FL Dispatch Configuration for Kunlunxin Platform
 prefer: flagos
 
+# Vendor backends that must never be selected here: the device reports a
+# CUDA-compatible torch, so `cuda` would otherwise be a candidate backend.
+# Supersedes `export SGLANG_FL_DENY_VENDORS=cuda` (same key upstream PR #139
+# uses in iluvatar.yaml).
+deny_vendors:
+  - cuda
+
 # FlagGems Layer 1 (ATen -> klx Triton) blacklist. With USE_FLAGGEMS=1 (default),
 # ALL ~410 ATen ops route through FlagGems EXCEPT those listed here (they fall
 # back to vendor/native). Excluded because the klx FlagGems kernel is broken
@@ -58,6 +65,7 @@ flagos_blacklist:
   - _scaled_dot_product_efficient_attention
   - max
   - min
+  - softmax
 
 # Per-op backend order (overrides `prefer` for the listed op only).
 # Tokens: vendor (platform-native), flagos (FlagGems/Triton), reference (pure PyTorch)
@@ -65,4 +73,11 @@ flagos_blacklist:
 op_backends:
   topk:
     - reference
+  gemma_rms_norm:
+    - reference
+  fused_moe:
+    - vendor
+  chunk_gated_delta_rule:
+    - vendor
+  fused_recurrent_gated_delta_rule_packed_decode:
     - vendor

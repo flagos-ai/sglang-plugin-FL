@@ -9,5 +9,4 @@ FROM ${BASE_IMAGE}
 RUN python -m pip install --no-build-isolation \
         pytest pytest-cov pytest-timeout pytest-json-report pytest-metadata numpy requests ruff pyyaml && \
     python -c "from importlib.metadata import version; \
-        assert version('sglang').startswith('0.5.18'); \
-        assert version('pytest-timeout') == '2.4.0'"
+        assert version('sglang').startswith('0.5.18')"

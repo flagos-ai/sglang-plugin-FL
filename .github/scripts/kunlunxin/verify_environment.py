@@ -5,6 +5,9 @@ Checks only:
   1) required packages are installed
   2) versions match expected values (optional, --check-versions)
   3) CUDA-compat devices are visible and enough (--require-gpu)
+  4) with --require-gpu: the XPU platform marker, a real per-device tensor
+     round-trip, and the FlagCX runtime that ``SGLANG_FL_DIST_BACKEND=flagcx``
+     requires
 
 Versions reference the validated container limy-sglang-upgrade.
 """
@@ -14,6 +17,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import importlib.util
+import os
 import sys
 from importlib import metadata
 from pathlib import Path
@@ -32,7 +36,7 @@ EXPECTED_VERSIONS = {
     "sglang": "0.5.18",
     "torch": "2.9.0",
     "flagtree": "0.7.1a1+xpu3.6",
-    "flag_gems": "0.0+g7fcdbed07",
+    "flag_gems": "0.0.0+g75823ed",
 }
 
 
@@ -75,11 +79,39 @@ def verify(
     print(f"[kunlunxin-env] sglang_fl path={Path(spec.origin).resolve()}")
 
     if require_gpu:
-        torch = importlib.import_module("torch")
+        # Import with a statement, not ``importlib.import_module``: Kunlunxin
+        # patches ``builtins.__import__`` to run its symbol rewrite, and the
+        # importlib path bypasses that hook. Loading torch that way leaves the
+        # CUDA-compat kernels unrewritten, so every later kernel fails with
+        # "invalid device function".
+        import torch
+
         if not torch.cuda.is_available():
             raise RuntimeError(
                 "torch.cuda.is_available() is false (expected Kunlunxin CUDA-compat)"
             )
+
+        # Platform identity contract. ``get_platform_name`` keys Kunlunxin off
+        # ``torch.xpu``: without that attribute it falls through to "nvidia",
+        # ``dispatch/config/kunlunxin.yaml`` is never loaded, and the CUDA-compat
+        # backend stays enabled (``deny_vendors: [cuda]`` silently dropped).
+        # Fail here rather than later as an unrelated unit-test mismatch.
+        if not hasattr(torch, "xpu"):
+            raise RuntimeError(
+                "torch exposes no 'xpu' attribute; sglang_fl would report the "
+                "platform as 'nvidia' and skip dispatch/config/kunlunxin.yaml"
+            )
+
+        from sglang_fl.dispatch.config import utils as config_utils
+
+        detected = config_utils.get_platform_name()
+        if detected != "kunlunxin":
+            raise RuntimeError(
+                f"get_platform_name() returned {detected!r}, expected 'kunlunxin'; "
+                "dispatch/config/kunlunxin.yaml would be skipped"
+            )
+        print(f"[kunlunxin-env] platform={detected}")
+
         count = torch.cuda.device_count()
         if count < min_gpus:
             raise RuntimeError(f"need >= {min_gpus} GPUs, found {count}")
@@ -87,6 +119,36 @@ def verify(
             f"{i}:{torch.cuda.get_device_name(i)}" for i in range(count)
         )
         print(f"[kunlunxin-env] visible-gpus={count} ({devices})")
+
+        # Device visibility is not device health: the CUDA-compat layer can
+        # enumerate a P800 that then fails inside a kernel. Run a tiny real
+        # computation per device (same idea as Iluvatar's check.sh).
+        for index in range(count):
+            probe = torch.arange(4, device=f"cuda:{index}", dtype=torch.float32)
+            total = probe.square().sum().item()
+            torch.cuda.synchronize(index)
+            if total != 14.0:
+                raise RuntimeError(
+                    f"cuda:{index} smoke failed: sum(square)={total} != 14.0"
+                )
+            print(f"[kunlunxin-env] smoke cuda:{index}={total}")
+
+        # The CI config forces SGLANG_FL_DIST_BACKEND=flagcx; a missing runtime
+        # only fails later inside process-group bootstrap.
+        flagcx_root = os.environ.get("FLAGCX_PATH", "").strip() or "/opt/FlagCX"
+        library = Path(flagcx_root) / "build" / "lib" / "libflagcx.so"
+        if not library.is_file():
+            raise RuntimeError(
+                f"FlagCX library is missing: {library} "
+                "(SGLANG_FL_DIST_BACKEND=flagcx is configured)"
+            )
+        try:
+            import flagcx
+        except Exception as exc:
+            raise RuntimeError(
+                f"import flagcx failed with FLAGCX_PATH={flagcx_root}: {exc}"
+            ) from exc
+        print(f"[kunlunxin-env] flagcx={getattr(flagcx, '__file__', '?')}")
 
 
 def main(argv: list[str] | None = None) -> int:

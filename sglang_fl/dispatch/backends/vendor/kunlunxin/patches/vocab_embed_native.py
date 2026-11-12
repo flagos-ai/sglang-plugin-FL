@@ -42,6 +42,14 @@ def patch_vocab_embed_native() -> None:
         logger.warning("vocab_embed_native: import failed: %s", e)
         return
 
+    if not hasattr(VocabParallelEmbedding, "_use_triton_embedding"):
+        logger.warning(
+            "vocab_embed_native patch is obsolete: sglang no longer exposes "
+            "VocabParallelEmbedding._use_triton_embedding; "
+            "remove patches/vocab_embed_native.py"
+        )
+        return
+
     VocabParallelEmbedding._use_triton_embedding = lambda self, input_: False
     logger.warning(
         "patched VocabParallelEmbedding._use_triton_embedding -> False "

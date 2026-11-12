@@ -124,8 +124,8 @@ elif _is_hcu:
 elif _is_kunlunxin:
     _extra_engine_kwargs = {
         "trust_remote_code": True,
-        "disable_radix_cache": True,
-        "disable_overlap_schedule": True
+        # "disable_radix_cache": True,
+        # "disable_overlap_schedule": True
     }
 else:
     _extra_engine_kwargs = {"trust_remote_code": True}

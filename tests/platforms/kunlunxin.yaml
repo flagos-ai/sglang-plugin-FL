@@ -26,7 +26,7 @@ env_defaults:
   USE_FLAGGEMS: "1"
   USE_FLAGTUNE: "0"
   SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK: "1"
-  FLAGCX_PATH: "/sgl-workspace/sglang-upgrade/FlagCX"
+  FLAGCX_PATH: "/opt/FlagCX"
 
 p800:
   name: "p800"

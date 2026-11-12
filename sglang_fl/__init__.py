@@ -51,6 +51,7 @@ Environment variables:
   SGLANG_FL_DISPATCH_DEBUG=1|0        Verbose operator selection logging
   SGLANG_FL_LOG_LEVEL=DEBUG|INFO|...  Dispatch module log level
   SGLANG_FL_CONFIG=<path>             YAML config file (overrides platform defaults)
+  SGLANG_FL_SKIP_VERSION_CHECK=1|0    Skip the vendor image dependency guard (default: 0)
   SGLANG_FL_DIST_BACKEND=nccl|hccl|flagcx   Override distributed backend
   FLAGCX_PATH=<path>                         If set, default to flagcx backend
   SGLANG_FL_DISAGG_FLAGCX=1|0         Register FlagCX PD-disagg backend (default: 1)
@@ -916,7 +917,29 @@ def activate_platform() -> str | None:
         info.vendor_name,
         info.device_type,
     )
+    # Vendor ``early.py`` runs here, still before any ``sglang.srt.layers``
+    # module: it holds only patches that must precede SGLang's module-level
+    # imports (import guards); everything else belongs in ``patch.py``.
+    _apply_vendor_early_patches(info.vendor_name)
     return "sglang_fl.platform:PlatformFL"
+
+
+def _apply_vendor_early_patches(vendor_name: str) -> None:
+    """Import vendor/<vendor_name>/early.py during platform discovery.
+
+    Platform discovery runs while ``sglang`` itself is being imported, before
+    any ``sglang.srt.layers`` module, in every process. Use this only for
+    patches that must precede SGLang's module-level imports (e.g. import
+    guards); everything else belongs in ``patch.py``.
+    """
+    import importlib
+    import importlib.util
+
+    module = f"sglang_fl.dispatch.backends.vendor.{vendor_name}.early"
+    if importlib.util.find_spec(module) is None:
+        return
+    importlib.import_module(module)
+    logger.info("vendor early patch loaded: %s", module)
 
 
 # ─── General Plugin entry point ──────────────────────────────────────────────

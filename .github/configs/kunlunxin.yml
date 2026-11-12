@@ -7,7 +7,7 @@ platform: kunlunxin
 
 # Placeholder tag — replace with the harbor image published from
 # docker/kunlunxin/ci-0.5.18.containerfile once the build is pushed.
-ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-ci-202611021838
+ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:5d53e4d1a93b2434e600c493c57726201f55a2011e3615f527075c939f2695a7
 
 # Placeholder runner label — replace with the real self-hosted pool label.
 runner_labels:
@@ -36,5 +36,3 @@ container_options: >-
   -e SGLANG_PLUGINS=sglang_fl
   -e SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1
   -e SGLANG_FL_DIST_BACKEND=flagcx
-  -e SGLANG_FL_CONFIG=/sgl-workspace/sglang-upgrade/sglang-plugin-FL/sglang_fl/dispatch/config/kunlunxin.yaml
-  -e SGLANG_FL_PER_OP="silu_and_mul=flagos;mrotary_embedding=flagos;topk=reference;gemma_rms_norm=reference;fused_moe=vendor;chunk_gated_delta_rule=vendor;fused_recurrent_gated_delta_rule_packed_decode=vendor"

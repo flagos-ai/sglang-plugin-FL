@@ -56,7 +56,7 @@ def patch_qwen35_attn_native() -> None:
     try:
         from sglang.srt.models.qwen3_5 import Qwen3_5AttentionDecoderLayer
     except Exception as e:
-        logger.warning("qwen35_attn_native: cannot import qwen3_5: %s", e)
+        logger.warning("qwen35_attn_native: cannot import qwen3_5: %s.  Remove patches/qwen35_attn_native.py", e)
         return
 
     Qwen3_5AttentionDecoderLayer.self_attention = _native_self_attention

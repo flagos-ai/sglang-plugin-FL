@@ -1,3 +1,17 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Kunlunxin: route is_cuda-gated sglang JIT-CUDA plumbing kernels to native.
 
 Several sglang utilities pick between a CUDA kernel and a pure-torch fallback
@@ -25,6 +39,18 @@ def patch_clamp_position():
 
     from sglang.srt.model_executor import forward_batch_info
 
+    if not (
+        hasattr(forward_batch_info, "clamp_position")
+        and hasattr(forward_batch_info, "_clamp_position_native")
+    ):
+        _applied = True
+        logger.warning(
+            "Kunlunxin clamp_position patch is obsolete: sglang no longer "
+            "exposes forward_batch_info.clamp_position/_clamp_position_native; "
+            "remove patches/clamp_position.py"
+        )
+        return
+        
     forward_batch_info.clamp_position = forward_batch_info._clamp_position_native
 
     _applied = True

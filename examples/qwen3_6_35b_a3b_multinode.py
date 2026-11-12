@@ -154,8 +154,8 @@ elif _is_hcu:
 elif _is_kunlunxin:
     _PLATFORM_SERVER_ARGS = [
         "--trust-remote-code",
-        "--disable-radix-cache",
-        "--disable-overlap-schedule",
+        # "--disable-radix-cache",
+        # "--disable-overlap-schedule",
     ]
 elif _is_nvidia:
     _PLATFORM_SERVER_ARGS = ["--disable-overlap-schedule"]

@@ -72,6 +72,7 @@ def patch_gdn_fused_qkv_split() -> None:
     if not hasattr(gdn_backend, "fused_qkv_split_gdn_prefill"):
         logger.warning(
             "gdn_fused_qkv_split: gdn_backend has no fused_qkv_split_gdn_prefill"
+            "remove patches/gdn_fused_qkv_split.py"
         )
         return
 
