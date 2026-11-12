@@ -18,7 +18,7 @@ jobs:
     runs-on: [ci-sglang-plugin-fl-hygon]
     timeout-minutes: 120
     container:
-      image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:cbf657c2486feb0671359a5f8a618a0a0ef9b269415934d8e24841b6939f08e3
+      image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:ccfb9f0954a0a685131428525ef6343c2e38baf766122e29e25865cf81a0695a
       volumes:
         - /opt/hyhal:/opt/hyhal
         - /usr/local/hyhal:/usr/local/hyhal
@@ -92,10 +92,14 @@ jobs:
           print("device_count:", torch.cuda.device_count())
           print("device 0:", torch.cuda.get_device_name(0))
 
-          # (c) patched Quark modules import without aiter
+          # (c) patched modules import without aiter and without sgl_kernel
           import sglang.srt.layers.quantization.quark.schemes.quark_w4a4_mxfp4
           import sglang.srt.layers.quantization.quark.schemes.quark_w4a4_mxfp4_moe
           import sglang.srt.layers.quantization.quark_int4fp8_moe
+          import sglang.srt.layers.attention.triton_backend
+          import sglang.srt.layers.activation
+          import sglang.srt.layers.layernorm
+          import sglang.srt.layers.sampler
           aiter_modules = sorted(m for m in sys.modules if "aiter" in m.lower())
           print("aiter-ish sys.modules entries:", aiter_modules)
           assert "aiter" not in sys.modules, "aiter leaked into sys.modules"
