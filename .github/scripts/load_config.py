@@ -26,6 +26,31 @@ import yaml
 CONFIGS_DIR = Path(__file__).resolve().parents[1] / "configs"
 
 
+def merge_device_config(platform_config: dict, device: str) -> dict:
+    """Return an effective config for *device* by merging platform defaults
+    with per-device overrides declared under ``devices.<device>``.
+
+    Any field present in the device block overrides the platform-level value.
+    Fields absent from the device block are inherited from the platform.
+    """
+    base = {k: v for k, v in platform_config.items() if k != "devices"}
+    overrides = platform_config.get("devices", {}).get(device, {})
+    merged = {**base, **overrides}
+    merged["device"] = device
+    return merged
+
+
+def build_device_configs(config: dict) -> dict[str, dict]:
+    """Return per-device effective configs for all devices declared in
+    ``devices:``.  Returns an empty dict for configs without that key
+    (backward-compatible with platforms that use the old schema).
+    """
+    devices = config.get("devices", {})
+    if not devices:
+        return {}
+    return {device: merge_device_config(config, device) for device in devices}
+
+
 def load_platform_config(platform: str) -> dict:
     """Read and return the YAML config for *platform*."""
     config_path = CONFIGS_DIR / f"{platform}.yml"
@@ -70,14 +95,23 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     config = load_platform_config(args.platform)
+    device_configs = build_device_configs(config)
 
     config_json = json.dumps(config, separators=(",", ":"))
+    device_configs_json = json.dumps(device_configs, separators=(",", ":"))
     set_output("config", config_json)
+    set_output("device_configs", device_configs_json)
 
     # Also print a human-readable summary for the workflow log
     print(f"Platform:  {config.get('platform')}")
     print(f"Image:     {config.get('ci_image')}")
     print(f"Labels:    {config.get('runner_labels')}")
+    if device_configs:
+        print(f"Devices:   {list(device_configs.keys())}")
+        for dev, dcfg in device_configs.items():
+            print(
+                f"  {dev}: labels={dcfg.get('runner_labels')} image={dcfg.get('ci_image', '(inherited)')}"
+            )
     print(f"Config:    {config_json[:200]}{'...' if len(config_json) > 200 else ''}")
 
     return 0

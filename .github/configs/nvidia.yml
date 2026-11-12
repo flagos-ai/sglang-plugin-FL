@@ -6,7 +6,9 @@ platform: nvidia
 # Docker image for this hardware
 ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-cuda-ci
 
-# Runner labels for this hardware
+# Runner labels for this hardware. Platform-level default kept as the
+# fallback for matrix entries; the per-device fan-out resolves each device's
+# labels from the devices: map below.
 runner_labels:
   - ci-sglang-plugin-fl-nvidia
 
@@ -30,3 +32,15 @@ container_options: >-
   -e NVIDIA_VISIBLE_DEVICES=all
   -e NVIDIA_DRIVER_CAPABILITIES=compute,utility
   --init
+
+# Per-device configuration.
+# Each device inherits all platform-level defaults above (ci_image,
+# container_volumes, container_options, ...) and can override any field.
+# Only fields that differ from the defaults need to be specified; when a
+# second runner joins (e.g. an H100/H20 pool), add a device entry with its
+# runner_labels and any device-specific container_options instead of
+# introducing separate config keys.
+devices:
+  a100:
+    runner_labels:
+      - ci-sglang-plugin-fl-nvidia

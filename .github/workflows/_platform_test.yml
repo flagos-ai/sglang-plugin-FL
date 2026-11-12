@@ -68,6 +68,8 @@ jobs:
     outputs:
       config: ${{ steps.load.outputs.config }}
       e2e_matrix: ${{ steps.matrix.outputs.e2e }}
+      functional_matrix: ${{ steps.matrix.outputs.functional }}
+      benchmark_matrix: ${{ steps.matrix.outputs.benchmark }}
     steps:
       - name: Checkout (attempt 1)
         id: checkout1
@@ -100,19 +102,28 @@ jobs:
             --platform ${{ inputs.platform }} \
             --ci-stage ${{ inputs.ci_stage }}
 
-  # Unit + functional tests in one job (GPU runner required): unit tests
-  # (pure-logic) run first, then component-level GPU tests. One container
-  # startup and one project install instead of two.
+  # Unit + functional tests in one job per device (GPU runner required):
+  # unit tests (pure-logic) run first, then component-level GPU tests. One
+  # container startup and one project install instead of two. Fans out over
+  # functional_matrix so each device declared in tests/platforms/<platform>.yaml
+  # runs on its own runner and container config (from the devices: map in
+  # .github/configs/<platform>.yml, with platform-level defaults).
   functional:
     needs: [setup]
+    if: needs.setup.outputs.functional_matrix != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        test: ${{ fromJson(needs.setup.outputs.functional_matrix) }}
     uses: ./.github/workflows/_functional_test.yml
     with:
       platform: ${{ inputs.platform }}
+      device: ${{ matrix.test.device }}
       branch: ${{ inputs.branch }}
-      ci_image: ${{ fromJson(needs.setup.outputs.config).ci_image }}
-      runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
+      ci_image: ${{ matrix.test.image || fromJson(needs.setup.outputs.config).ci_image }}
+      runner_labels: ${{ toJson(matrix.test.runner_labels || fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
-      container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
+      container_options: ${{ matrix.test.container_options || fromJson(needs.setup.outputs.config).container_options }}
       timeout: 45
 
   e2e:
@@ -130,24 +141,33 @@ jobs:
       task: ${{ matrix.test.task }}
       device: ${{ matrix.test.device }}
       cases: ${{ matrix.test.cases }}
-      ci_image: ${{ fromJson(needs.setup.outputs.config).ci_image }}
-      runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
+      ci_image: ${{ matrix.test.image || fromJson(needs.setup.outputs.config).ci_image }}
+      runner_labels: ${{ toJson(matrix.test.runner_labels || fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
-      container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
+      container_options: ${{ matrix.test.container_options || fromJson(needs.setup.outputs.config).container_options }}
       timeout: ${{ matrix.test.timeout || 60 }}
       ci_stage: ${{ inputs.ci_stage }}
 
+  # Benchmark smoke tests, fanned out per device with benchmark enabled for
+  # this CI stage in tests/platforms/<platform>.yaml. Devices without an
+  # enabled stage block produce no matrix entry, so their benchmark job is
+  # skipped instead of running an empty pass.
   benchmark:
     needs: [setup, functional, e2e]
-    if: always() && inputs.run_benchmark && needs.functional.result == 'success' && (needs.e2e.result == 'success' || needs.e2e.result == 'skipped')
+    if: always() && inputs.run_benchmark && needs.setup.outputs.benchmark_matrix != '[]' && needs.functional.result == 'success' && (needs.e2e.result == 'success' || needs.e2e.result == 'skipped')
+    strategy:
+      fail-fast: false
+      matrix:
+        test: ${{ fromJson(needs.setup.outputs.benchmark_matrix) }}
     uses: ./.github/workflows/_benchmark_test.yml
     with:
       platform: ${{ inputs.platform }}
+      device: ${{ matrix.test.device }}
       branch: ${{ inputs.branch }}
-      ci_image: ${{ fromJson(needs.setup.outputs.config).ci_image }}
-      runner_labels: ${{ toJson(fromJson(needs.setup.outputs.config).runner_labels) }}
+      ci_image: ${{ matrix.test.image || fromJson(needs.setup.outputs.config).ci_image }}
+      runner_labels: ${{ toJson(matrix.test.runner_labels || fromJson(needs.setup.outputs.config).runner_labels) }}
       container_volumes: ${{ toJson(fromJson(needs.setup.outputs.config).container_volumes) }}
-      container_options: ${{ fromJson(needs.setup.outputs.config).container_options }}
+      container_options: ${{ matrix.test.container_options || fromJson(needs.setup.outputs.config).container_options }}
       timeout: 30
       ci_stage: ${{ inputs.ci_stage }}
 
@@ -158,7 +178,7 @@ jobs:
     with:
       platform: ${{ inputs.platform }}
       status: >-
-        ${{ (needs.functional.result == 'success' &&
+        ${{ ((needs.functional.result == 'success' || needs.functional.result == 'skipped') &&
              (needs.e2e.result == 'success' || needs.e2e.result == 'skipped') &&
              (needs.benchmark.result == 'success' || needs.benchmark.result == 'skipped'))
             && 'success'

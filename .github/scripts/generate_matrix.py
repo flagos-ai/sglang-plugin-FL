@@ -16,7 +16,13 @@ Usage (in a workflow step)::
           --ci-stage pr     # or nightly / weekly
 
 Outputs:
-    e2e  — JSON array of ``{task, device, cases, timeout}`` objects grouped by (task, device).
+    e2e        — JSON array of ``{task, device, cases, timeout, image, runner_labels,
+                 container_options}`` objects grouped by (task, device); hardware fields are
+                 the device's effective spec resolved from .github/configs/<platform>.yml.
+    functional — JSON array of ``{device, image, runner_labels, container_options}``, one
+                 per device that declares a functional test block.
+    benchmark  — JSON array of the same shape, one per device with benchmark
+                 enabled for the CI stage.
 
 CI stage semantics (ported from vllm-plugin-FL #581)
 ---------------------------------------------------
@@ -42,6 +48,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PLATFORMS_DIR = REPO_ROOT / "tests" / "platforms"
+CONFIGS_DIR = REPO_ROOT / ".github" / "configs"
 
 # YAML task key → test directory name
 TASK_DIR_MAP: dict[str, str] = {
@@ -83,11 +90,44 @@ def get_device_sections(config: dict) -> list[str]:
     return devices
 
 
+def load_hw_config(platform: str) -> dict:
+    """Load the platform CI hardware config (.github/configs/<platform>.yml).
+
+    Returns an empty dict when the file is absent so that matrix generation
+    still works for platforms without a hardware config.
+    """
+    path = CONFIGS_DIR / f"{platform}.yml"
+    if not path.exists():
+        return {}
+    with open(path) as f:
+        return yaml.safe_load(f) or {}
+
+
+def resolve_device_hw(hw_cfg: dict, device: str) -> dict:
+    """Effective hardware spec for *device*.
+
+    Platform-level defaults (ci_image, runner_labels, container_options, ...)
+    are merged with this device's ``devices.<device>`` overrides, if any.
+    Concrete values are always attached — never missing keys or nulls —
+    because GitHub's ``toJson(<missing>)`` yields the truthy string 'null',
+    which would defeat ``a || b`` fallbacks in the workflow expressions.
+    """
+    base = {k: v for k, v in hw_cfg.items() if k != "devices"}
+    overrides = (hw_cfg.get("devices") or {}).get(device) or {}
+    merged = {**base, **overrides}
+    return {
+        "image": merged.get("ci_image"),
+        "runner_labels": merged.get("runner_labels"),
+        "container_options": merged.get("container_options") or "",
+    }
+
+
 def build_e2e_matrix(
     config: dict,
     devices: list[str],
     unsupported: list[str],
     ci_stage: str = "nightly",
+    hw_cfg: dict | None = None,
 ) -> list[dict]:
     """End-to-end model tests (inference, serving, concurrent).
 
@@ -131,16 +171,71 @@ def build_e2e_matrix(
                     cases.append({"model": model, "case": case})
 
             if cases:
-                matrix.append(
-                    {
-                        "task": task,
-                        "device": device,
-                        "cases": json.dumps(cases, separators=(",", ":")),
-                        "timeout": DEFAULT_TIMEOUT.get(task, 60),
-                    }
-                )
+                entry = {
+                    "task": task,
+                    "device": device,
+                    "cases": json.dumps(cases, separators=(",", ":")),
+                    "timeout": DEFAULT_TIMEOUT.get(task, 60),
+                }
+                # Attach the per-device hardware spec (image / runner_labels /
+                # container_options) so each job picks its runner directly
+                # from the matrix entry.
+                entry.update(resolve_device_hw(hw_cfg or {}, device))
+                matrix.append(entry)
 
     return matrix
+
+
+def build_functional_matrix(
+    config: dict,
+    devices: list[str],
+    hw_cfg: dict | None = None,
+) -> list[dict]:
+    """One functional job per device that declares a functional block.
+
+    Returns one entry per device with the hardware spec attached so the
+    workflow does not need a separate runner-label lookup.  Devices whose
+    functional block is empty (``functional: {}``) are skipped — used by
+    profiles that share another device's silicon and runner pool.
+    """
+    entries = []
+    for device in devices:
+        section = config[device]
+        functional = section.get("tests", {}).get("functional", {})
+        if not functional:
+            continue
+        entry: dict = {"device": device}
+        entry.update(resolve_device_hw(hw_cfg or {}, device))
+        entries.append(entry)
+    return entries
+
+
+def build_benchmark_matrix(
+    config: dict,
+    devices: list[str],
+    ci_stage: str = "nightly",
+    hw_cfg: dict | None = None,
+) -> list[dict]:
+    """One benchmark job per device with benchmark enabled for this stage.
+
+    The ``benchmark`` block is stage-keyed like ``e2e`` (``pr`` /
+    ``nightly``; ``weekly`` falls back to ``nightly``).  Devices without an
+    enabled stage block produce no entry, so their benchmark job is skipped
+    instead of running an empty pass.
+    """
+    entries = []
+    for device in devices:
+        section = config[device]
+        benchmark = section.get("tests", {}).get("benchmark", {})
+        if not benchmark:
+            continue
+        stage_cfg = benchmark.get(ci_stage) or benchmark.get("nightly", {})
+        if not stage_cfg or not stage_cfg.get("enabled", False):
+            continue
+        entry: dict = {"device": device}
+        entry.update(resolve_device_hw(hw_cfg or {}, device))
+        entries.append(entry)
+    return entries
 
 
 def load_changed_files(path: str) -> list[str]:
@@ -234,7 +329,21 @@ def main() -> int:
     unsupported = config.get("unsupported_features", []) or []
 
     ci_stage = args.ci_stage
-    e2e_matrix = build_e2e_matrix(config, devices, unsupported, ci_stage=ci_stage)
+
+    # Hardware config from .github/configs/<platform>.yml: each device
+    # inherits all platform-level defaults (ci_image, runner_labels,
+    # container_options, ...) and overrides any field it declares under
+    # devices:. Platforms without a devices: map resolve every device to the
+    # platform defaults.
+    hw_cfg = load_hw_config(args.platform)
+
+    e2e_matrix = build_e2e_matrix(
+        config, devices, unsupported, ci_stage=ci_stage, hw_cfg=hw_cfg
+    )
+    functional_matrix = build_functional_matrix(config, devices, hw_cfg=hw_cfg)
+    benchmark_matrix = build_benchmark_matrix(
+        config, devices, ci_stage=ci_stage, hw_cfg=hw_cfg
+    )
 
     # Apply PR smart-skip filtering when changed files are provided. No CI
     # caller currently passes --changed-files (the platform-level diff router
@@ -246,13 +355,20 @@ def main() -> int:
             e2e_matrix = filter_e2e_by_changes(e2e_matrix, changed)
 
     e2e_json = json.dumps(e2e_matrix, separators=(",", ":"))
+    functional_json = json.dumps(functional_matrix, separators=(",", ":"))
+    benchmark_json = json.dumps(benchmark_matrix, separators=(",", ":"))
 
     set_output("e2e", e2e_json)
+    set_output("functional", functional_json)
+    set_output("benchmark", benchmark_json)
 
     # Human-readable summary for CI logs
     print(f"Platform:    {args.platform}")
     print(f"Stage:       {ci_stage}")
     print(f"Devices:     {devices}")
+    print(f"Functional:  {len(functional_matrix)} job(s)")
+    for entry in functional_matrix:
+        print(f"  - device={entry['device']} labels={entry.get('runner_labels')}")
     print(f"E2E:         {len(e2e_matrix)} job(s)")
     for entry in e2e_matrix:
         case_list = json.loads(entry["cases"])
@@ -262,6 +378,9 @@ def main() -> int:
         )
         for c in case_list:
             print(f"      {c['model']}/{c['case']}")
+    print(f"Benchmark:   {len(benchmark_matrix)} job(s)")
+    for entry in benchmark_matrix:
+        print(f"  - device={entry['device']} labels={entry.get('runner_labels')}")
 
     return 0
 
