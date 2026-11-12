@@ -55,10 +55,13 @@ AUTO_SCAN_EXCLUDE = {"template", "platforms"}
 # block of .github/workflows/ci.yml — the workflow only skips entirely when
 # ALL changed files are ignored, so mixed PRs still route on their code
 # changes while doc-only files are dropped here.
+# NOTE: examples/ is deliberately NOT ignored here — CI executes example
+# scripts (ascend_compat_probe.py, the Iluvatar acceptance qwen3 entries),
+# so changes there must route (platform trigger_paths or the full-run
+# fallback), never silently skip.
 IGNORED_SUFFIXES = (".md",)
 IGNORED_PATHS = (
     "docs/",
-    "examples/",
     "LICENSE",
     ".github/ISSUE_TEMPLATE/",
     ".github/PULL_REQUEST_TEMPLATE.md",

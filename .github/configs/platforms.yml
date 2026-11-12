@@ -65,6 +65,8 @@ platforms:
       - .github/configs/ascend.yml
       - tests/platforms/ascend.yaml
       - docker/ascend/
+      # Executed directly by the Ascend functional job (_functional_test.yml).
+      - examples/ascend_compat_probe.py
     exempt_from_global:
       - sglang_fl/dispatch/config/ascend.yaml
       - .github/scripts/ascend/
