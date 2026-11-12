@@ -68,3 +68,49 @@ PY
 # found" collection failure can be told apart from a wrong mount level.
 echo "=== Model store inventory (/data/models/Qwen) ==="
 ls -la /data/models/Qwen/ 2>&1 || true
+
+# PROBE BRANCH ONLY (drop before folding): on-device verdict for the vendor
+# vision/audio wheels.  They fail to import on a device-less builder; this
+# block records the imports, the shared-library diagnosis, the libcudart
+# resolution and the CUDA device probe on real PPU hardware.  Non-fatal: the
+# unit/functional/e2e stages decide.
+echo "=== PPU vendor stack import + linkage check (probe) ==="
+python - <<'PY' || true
+import os, sys
+print("LD_LIBRARY_PATH:", os.environ.get("LD_LIBRARY_PATH"))
+print("PYTHONPATH:", os.environ.get("PYTHONPATH"))
+for mod in ("torch", "torchvision", "torchaudio", "triton",
+            "compressed_tensors", "xgrammar", "sglang", "sglang_fl"):
+    try:
+        m = __import__(mod)
+        print(f"import {mod}: OK {getattr(m, '__version__', '?')}")
+    except Exception as e:
+        print(f"import {mod}: FAILED {e!r}")
+try:
+    import torch
+    print("torch.cuda.is_available:", torch.cuda.is_available())
+    print("torch.cuda.device_count:", torch.cuda.device_count())
+except Exception as e:
+    print("torch.cuda probe failed:", repr(e))
+PY
+site="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+for lib in "$site"/torchvision/lib/_C*.so* \
+           "$site"/torchvision/lib/libtorchvision*.so* \
+           "$site"/torchaudio/lib/libtorchaudio*.so*; do
+  [ -e "$lib" ] || continue
+  echo "--- ldd $(basename "$lib")"
+  ldd "$lib" 2>&1 | grep -E "not found" || echo "  (all NEEDED libs resolve)"
+done
+echo "--- libcudart.so.12 resolution:"
+ldconfig -p 2>/dev/null | grep -i "libcudart" || echo "  ldconfig: no libcudart entries"
+found="$(ldconfig -p 2>/dev/null | grep -i "libcudart.so.12" | head -1 | awk '{print $NF}')"
+if [ -n "$found" ]; then
+  echo "  resolved: $found"
+  case "$found" in
+    /data/*|/mnt/*) echo "  provenance: host bind mount" ;;
+    *) echo "  provenance: inside the container filesystem" ;;
+  esac
+else
+  find /opt /usr /flagos -maxdepth 4 -name 'libcudart.so.12*' 2>/dev/null | head -5 || true
+  echo "  (not resolvable via ldconfig)"
+fi
