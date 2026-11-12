@@ -124,35 +124,45 @@ jobs:
           print("all triton paths under /opt/flagtree: OK")
           PY
 
-      - name: Check out plugin source
-        uses: actions/checkout@34e114876b0b11c390d56381ad16ebd13914f8d5 # v4
-
+      # No actions/checkout (its resolution on this runner pool is flaky
+      # today); fetch the PR-head tarball directly and put it on PYTHONPATH,
+      # which is all the verifier needs to import sglang_fl.
       - name: Reproduce CI attention_backend import with full traceback
         run: |
           set -euo pipefail
-          git config --global --add safe.directory "$GITHUB_WORKSPACE" || true
-          pip install --no-deps --no-build-isolation -e . >/dev/null 2>&1 || pip install --no-deps -e .
+          work="$RUNNER_TEMP/plugin-repro"
+          rm -rf "$work" && mkdir -p "$work"
+          curl -fL --retry 5 --retry-delay 10 \
+            "https://codeload.github.com/lentil1016/sglang-plugin-FL/tar.gz/7ee24c16c55e6283d4722b85500c58a25269de7a" \
+            -o "$work/plugin.tar.gz"
+          mkdir -p "$work/src" && tar -xzf "$work/plugin.tar.gz" --strip-components=1 -C "$work/src"
+          export PYTHONPATH="$work/src:/opt/flagtree"
+          export SGLANG_PLATFORM=sglang_fl
           python - <<'PY'
-          import traceback
           import importlib
+          import sys
+          import traceback
 
+          # Mirror the verifier's import order.
+          importlib.import_module("torch")
+          importlib.import_module("sglang")
+          importlib.import_module("sglang_fl")
+          importlib.import_module("sglang.srt.server_args")
+          importlib.import_module("flag_gems")
           name = "sglang_fl.dispatch.backends.vendor.hygon.impl.attention_backend"
           try:
               importlib.import_module(name)
               print("IMPORT OK:", name)
           except BaseException:
-              print("=" * 60)
+              print("=" * 70)
               traceback.print_exc()
-              exc = getattr(traceback.format_exc(), "__cause__", None)
-              # walk the full chained causes
-              import sys
               e = sys.exc_info()[1]
               depth = 0
               while e is not None and depth < 10:
-                  print(f"--- cause chain level {depth}: {type(e).__name__}: {e}")
+                  print(f"--- chain {depth}: {type(e).__name__}: {e}")
                   e = e.__cause__ or e.__context__
                   depth += 1
-              print("=" * 60)
+              print("=" * 70)
               raise SystemExit(1)
           PY
 
