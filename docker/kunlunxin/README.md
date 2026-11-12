@@ -15,7 +15,7 @@ project directory). Override the base image or pip index with `BASE_IMAGE` /
 ```bash
 docker build --network=host \
   -f docker/kunlunxin/empty-0.5.18.containerfile \
-  -t sglang-fl:kunlunxin-0.5.18-202611021836 .
+  -t harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:kunlunxin-0.5.18-202611121806 .
 ```
 
 In-image layout:
@@ -33,11 +33,8 @@ docker run -itd --name kunlunxin-sglang-ci-verify \
   --network=host --ipc=host --privileged --shm-size=512g \
   -v /data/models:/data/models \
   -v /data/models/Qwen:/models \
-  -e USE_FLAGGEMS=1 -e SGLANG_PLUGINS=sglang_fl \
   -e SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1 \
-  -e SGLANG_FL_DIST_BACKEND=flagcx \
-  -e FLAGCX_PATH=/opt/FlagCX \
-  sglang-fl:kunlunxin-0.5.18 bash
+  harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:kunlunxin-0.5.18-202611121806 bash
 
 docker exec -it kunlunxin-sglang-ci-verify bash
 ```
@@ -80,11 +77,11 @@ Kunlunxin shares the unit / functional / benchmark / e2e workflows. See
 from the host `/data/models` to `/data/models`.
 
 Published CI tag:
-`harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-ci-202611021838`.
+`harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:f3764ee03d4d6ce3883b952a6ea030792629de74fe785e2775fa9d5f7ca3a7c7`.
 
-To reproduce, build `sglang-fl:kunlunxin-0.5.18` as above, then:
+To reproduce, build `harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:kunlunxin-0.5.18-202611121806` as above, then:
 
 ```bash
 docker build -f docker/kunlunxin/ci-0.5.18.containerfile \
-  -t harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-ci-202611021838 .
+  -t harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-kunlunxin-ci-202611121808 .
 ```

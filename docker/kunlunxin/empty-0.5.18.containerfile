@@ -126,21 +126,15 @@ RUN python -m pip install "setuptools_scm>=8" wheel packaging && \
 # ---------------------------------------------------------------------------
 # 5) sglang-plugin-FL (codeload; pin SGLANG_FL_REVISION to a full commit SHA)
 # ---------------------------------------------------------------------------
-ARG SGLANG_FL_REPO=flagos-ai/sglang-plugin-FL
-RUN rm -rf /opt/sglang-plugin-fl && mkdir -p /opt/sglang-plugin-fl && \
-    curl -fL --retry 5 --retry-delay 5 \
-        "https://codeload.github.com/${SGLANG_FL_REPO}/tar.gz/${SGLANG_FL_REVISION}" \
-        -o /tmp/sglang-plugin-fl.tar.gz && \
-    tar -xzf /tmp/sglang-plugin-fl.tar.gz --strip-components=1 -C /opt/sglang-plugin-fl && \
-    printf '%s\n' "${SGLANG_FL_REVISION}" \
-        > /opt/sglang-plugin-fl/.flagos-source-commit && \
-    python3 -m pip uninstall -y sglang-fl >/dev/null 2>&1 || true && \
-    python3 -m pip install --no-cache-dir --no-deps --no-build-isolation \
-        /opt/sglang-plugin-fl && \
-    rm -f /tmp/sglang-plugin-fl.tar.gz
+# Install sglang-plugin-FL from git (dev/0.5.18), then editable install.
+ADD . /opt/sglang-plugin-FL
+RUN cd /opt/sglang-plugin-FL && \
+    python -m pip install --index-url "$PYPI_INDEX" -e . && \
+    python .github/scripts/kunlunxin/verify_environment.py --check-versions
+
 
 ENV USE_FLAGGEMS=1 \
     SGLANG_PLUGINS=sglang_fl \
     SGLANG_FL_DIST_BACKEND=flagcx 
 
-WORKDIR /opt/sglang-plugin-fl
+WORKDIR /opt/sglang-plugin-FL

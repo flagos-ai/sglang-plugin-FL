@@ -7,7 +7,7 @@ platform: kunlunxin
 
 # Placeholder tag — replace with the harbor image published from
 # docker/kunlunxin/ci-0.5.18.containerfile once the build is pushed.
-ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:5d53e4d1a93b2434e600c493c57726201f55a2011e3615f527075c939f2695a7
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:f3764ee03d4d6ce3883b952a6ea030792629de74fe785e2775fa9d5f7ca3a7c7
 
 # Placeholder runner label — replace with the real self-hosted pool label.
 runner_labels:
@@ -35,4 +35,4 @@ container_options: >-
   -e USE_FLAGGEMS=1
   -e SGLANG_PLUGINS=sglang_fl
   -e SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1
-  -e SGLANG_FL_DIST_BACKEND=flagcx
+  -e SGLANG_FORCE_COARSE_WAR_BARRIER=1
