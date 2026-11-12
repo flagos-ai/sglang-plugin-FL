@@ -88,51 +88,6 @@ jobs:
         with:
           ref: ${{ inputs.branch }}
 
-      # Temporary evidence-only probe. This intentionally fails after printing
-      # both return codes so no project installation or model test follows.
-      - name: Probe Runtime Torch backend autoload A/B
-        if: inputs.platform == 'hygon'
-        shell: bash
-        run: |
-          set +e
-          python - <<'PY'
-          from importlib import metadata
-
-          print("Installed Torch backend entry points:", flush=True)
-          for ep in metadata.entry_points(group="torch.backends"):
-              dist = getattr(ep, "dist", None)
-              name = dist.metadata.get("Name") if dist is not None else None
-              owner = f"{name}=={dist.version}" if dist is not None else "unknown"
-              print(f"  {ep.name} = {ep.value} ({owner})", flush=True)
-          PY
-          inventory_rc=$?
-
-          echo '=== default/autoload-enabled import ==='
-          env -u TORCH_DEVICE_BACKEND_AUTOLOAD python - <<'PY'
-          import os
-          import torch
-          print("autoload env:", os.getenv("TORCH_DEVICE_BACKEND_AUTOLOAD"), flush=True)
-          print("torch:", torch.__version__, flush=True)
-          print("hcu:", getattr(torch, "__hcu_version__", None), flush=True)
-          print("available:", torch.cuda.is_available(), flush=True)
-          PY
-          default_rc=$?
-
-          echo '=== autoload-disabled import ==='
-          TORCH_DEVICE_BACKEND_AUTOLOAD=0 python - <<'PY'
-          import os
-          import torch
-          print("autoload env:", os.getenv("TORCH_DEVICE_BACKEND_AUTOLOAD"), flush=True)
-          print("torch:", torch.__version__, flush=True)
-          print("hcu:", getattr(torch, "__hcu_version__", None), flush=True)
-          print("available:", torch.cuda.is_available(), flush=True)
-          PY
-          disabled_rc=$?
-
-          printf 'RESULT inventory_rc=%s default_rc=%s disabled_rc=%s\n' \
-            "$inventory_rc" "$default_rc" "$disabled_rc"
-          exit 1
-
       - name: Check device availability
         run: bash .github/scripts/${{ inputs.platform }}/check.sh
 
