@@ -357,6 +357,14 @@ RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
 # expectation; a stub has no version, so skip the probe (iluvatar precedent).
 ENV SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1
 
+# The base runtime ships the DTK userspace under /opt/dtk but leaves the
+# loader path to the deployment environment; runner hosts differ in whether
+# they inject LD_LIBRARY_PATH (observed: identical containers import torch on
+# one host and fail with "libgalaxyhip.so.5: cannot open shared object file"
+# on another).  The paths are image-internal (plus the hyhal bind mounts), so
+# baking them here makes the image self-sufficient and host-independent.
+ENV LD_LIBRARY_PATH=/opt/dtk/dcc/gcvm/lib:/opt/dtk/hip/lib:/opt/dtk/llvm/lib:/opt/dtk/lib:/opt/dtk/lib64:/opt/hyhal/lib:/opt/hyhal/lib64:/opt/dtk/dushmem/lib:/opt/dtk/opencl/lib:/opt/dtk/.hyhal/rocm_smi/lib:/opt/dtk/.hyhal/lib:/opt/dtk/.hyhal/lib64
+
 # --- Volatile verification (cheap layers, tuned without re-downloading) ------
 # 1. Every runtime distribution survives with the exact same version and the
 #    installed additions match the reviewed resolver plan.
@@ -530,14 +538,18 @@ PY
 #    device libraries (libgalaxyhip / libcuda / torch device backends), so
 #    those failures are recorded and tolerated; any other failure - notably
 #    a missing pure-Python dependency of the closure - fails the build.
+# With the loader path baked in above, a GPU-less builder can now load the
+# DTK libraries and may abort (SIGABRT, rc=134) inside HIP device init
+# before Python can classify the failure, so the verdict comes from log
+# sentinels instead of the exit code.
 RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
-    && "$PYTHON_BIN" - <<'PY'
+    && "$PYTHON_BIN" - <<'PY' > /tmp/sglang-import-smoke.log 2>&1 || true
 import importlib.metadata as md
 import traceback
 
 try:
     import sglang
-    print("sglang", md.version("sglang"), "imported from", sglang.__file__)
+    print("SMOKE-PASS sglang", md.version("sglang"), "imported from", sglang.__file__)
 except BaseException:  # noqa: BLE001 - classify below
     text = traceback.format_exc()
     print(text)
@@ -551,6 +563,9 @@ except BaseException:  # noqa: BLE001 - classify below
         raise SystemExit(
             "sglang import failed for reasons other than missing device libraries"
         )
-    print("sglang import blocked by device libraries only "
+    print("SMOKE-TOLERATED sglang import blocked by device libraries only "
           "(expected on a GPU-less builder)")
 PY
+RUN cat /tmp/sglang-import-smoke.log \
+    && grep -qE "SMOKE-PASS|SMOKE-TOLERATED|no ROCm-capable device is detected" \
+       /tmp/sglang-import-smoke.log
