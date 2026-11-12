@@ -6,13 +6,18 @@ platform: hygon
 # Docker image for this hardware: SGLang 0.5.18+flagos on the immutable
 # operations runtime (flagos-runtime-hygon-dtk26.04), built by
 # docker/hygon/runtime-0.5.18.containerfile. Published tag:
-# 0.5.18-hygon-runtime-ci-20261110; digest-pinned. The old development
-# image (and main's 0.5.5.11-era image) is rejected by setup.
+# 0.5.18-hygon-runtime-ci-20261112-appfix4; digest-pinned. The old development
+# image (and main's 0.5.5.11-era image) is rejected by setup. This image also
+# carries the HCU compatibility patches applied to the SGLang wheel (see
+# docker/hygon/sglang-v0.5.18-hcu.patch), import-only stubs for the
+# sgl_kernel/flashinfer wheels HCU does not ship, and the baked DTK loader
+# path, so plain BF16 startup imports neither AMD AITER nor sgl_kernel on
+# HCU and the container is host-independent.
 # The operations-runtime image is ~18 GB; a cold runner spends most of an
 # hour pulling it, so all platform stages get 180 minutes.
 test_timeout: 180
 
-ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:7f7f6f3c40cc382f22a959b33d96561945cdf86d02590df7392b073f1ceb8afe
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:c9263b11500c897748c48775b6be521b8ffc84d2736ea681d6e5f8325ed2271b
 
 # Runner labels for this hardware
 runner_labels:
