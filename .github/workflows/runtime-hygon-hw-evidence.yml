@@ -18,7 +18,7 @@ jobs:
     runs-on: [ci-sglang-plugin-fl-hygon]
     timeout-minutes: 120
     container:
-      image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:ccfb9f0954a0a685131428525ef6343c2e38baf766122e29e25865cf81a0695a
+      image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:7ce9a543522fb3c16fd91362313d67858a59280166277478c5bdfce5e0af1826
       volumes:
         - /opt/hyhal:/opt/hyhal
         - /usr/local/hyhal:/usr/local/hyhal
@@ -100,6 +100,8 @@ jobs:
           import sglang.srt.layers.activation
           import sglang.srt.layers.layernorm
           import sglang.srt.layers.sampler
+          import sglang.srt.speculative.eagle_utils
+          import sglang_fl.dispatch.backends.vendor.hygon.impl.attention_backend
           aiter_modules = sorted(m for m in sys.modules if "aiter" in m.lower())
           print("aiter-ish sys.modules entries:", aiter_modules)
           assert "aiter" not in sys.modules, "aiter leaked into sys.modules"
