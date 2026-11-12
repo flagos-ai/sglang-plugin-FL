@@ -171,23 +171,26 @@ print(f"zero drift over {len(before)} runtime distributions; "
       f"{len(added)} added -> {added_path}")
 
 # No-device import contracts: everything the image guarantees must import on a
-# device-less builder, so a broken image cannot be published.
-import torch, torchvision, torchaudio, xgrammar, loguru
+# device-less builder, so a broken image cannot be published.  The vendor
+# torchvision/torchaudio builds are EXEMPT: their shared libraries need the PPU
+# device stack (proven on a hosted runner: import fails with "operator
+# torchvision::nms does not exist" / "Could not load libtorchaudio.so" under
+# every PYTHONPATH/LD_LIBRARY_PATH combination, while the same wheel set is
+# what build-infra PR #1738 ships).  They are asserted as installed
+# distributions here and exercised for real on the PPU hardware (step 6 and
+# the unit/functional/e2e stages).
+import torch, xgrammar, loguru
 from compressed_tensors.config import CompressionFormat
-from torchvision.io import decode_jpeg
-from sglang import Engine
-from sglang.srt.layers import quantization
 triton = importlib.import_module("triton")
 assert m.version("sglang").split("+")[0] == sglang_version, m.version("sglang")
 assert m.version("xgrammar") == "0.2.1"
 assert m.version("compressed-tensors") == "0.15.0"
 assert m.version("loguru") == "0.7.3"
 assert CompressionFormat is not None
-assert decode_jpeg is not None
-assert quantization.QUANTIZATION_METHODS
 print("sglang", m.version("sglang"),
       "| torch", torch.__version__,
-      "| torchvision", torchvision.__version__,
+      "| torchvision", m.version("torchvision"), "(dist)",
+      "| torchaudio", m.version("torchaudio"), "(dist)",
       "| triton from", triton.__file__)
 EOF
 

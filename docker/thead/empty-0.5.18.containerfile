@@ -69,7 +69,7 @@ COPY pyproject.toml ./
 COPY sglang_fl/ ./sglang_fl/
 RUN pip install --no-deps --no-build-isolation -e . && \
     python -c "import importlib.metadata as m, sglang_fl; \
-               print('sglang', m.version('sglang'), '| sglang_fl', m.version('sglang-plugin-fl'), \
+               print('sglang', m.version('sglang'), '| sglang_fl', m.version('sglang_fl'), \
                      'from', sglang_fl.__file__)"
 
 # Runtime defaults for the empty runtime (match the validated 0.5.11 empty env).
