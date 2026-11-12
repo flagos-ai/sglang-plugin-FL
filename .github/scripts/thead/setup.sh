@@ -1,9 +1,9 @@
 #!/bin/bash
 # Copyright (c) 2026 BAAI. All rights reserved.
 # Install sglang-plugin-FL and test dependencies on T-Head PPU.
-# SGLang 0.5.18 (srt_empty) + PPU torch 2.10 + FlagTree + sgl-kernel ppu build + FlagGems +
-# FlagCX are preinstalled in the CI image (see docker/thead/empty-0.5.18.containerfile);
-# this script only reinstalls the plugin from the checkout under test.
+# The CI image is built from the operations Runtime and adds SGLang 0.5.18
+# (srt_empty plus its application requirements). This script only reinstalls the
+# plugin from the checkout under test.
 # --no-deps: the plugin's dependencies are already in the image, and pip must not
 # resolve against (and replace) the vendor torch / FlagTree builds.
 set -euo pipefail

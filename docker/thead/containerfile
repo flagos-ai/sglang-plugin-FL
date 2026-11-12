@@ -1,23 +1,13 @@
 # CI image for sglang-plugin-FL on T-Head PPU (PPU-ZW810E / 真武, CUDA-compatible).
 #
-# Unlike docker/cuda & docker/mthreads (which build torch/sglang/FlagGems/FlagCX from
-# source on a generic base), this image is a THIN layer on top of T-Head's own PPU
-# release image. The PPU SDK 2.1.0 toolchain + the full sglang stack are proprietary
-# to T-Head and are NOT installable from public (PyPI/aiext only ships the python
-# wheels; the /usr/local/PPU_SDK compiler + eic-sdk debs come from T-Head). So we
-# FROM T-Head's release image (digest-pinned) and only add what the plugin CI needs:
-# the ShareGPT dataset (baked at build time, see below) and pytest/dev tooling.
+# Legacy CI-tooling layer for T-Head PPU.  Its base is the operations-owned PPU
+# runtime, never an application/development release image.  The canonical SGLang
+# 0.5.18 empty-mode image is docker/thead/empty-0.5.18.containerfile.
 #
-# Verified working stack inside the base image (inspected 2026-08-10):
-#   ubuntu:24.04 · PPU SDK 2.1.0 (/usr/local/PPU_SDK, PPU_VERSION=v2.1.0, CUDA_SDK=cuda-13.0)
-#   · python 3.12.3 · torch 2.10.0 · sglang 0.5.12+v0.1.0.ppu2.1.0
-#   · sgl-kernel 0.4.2.post2+ppu2.1.0 · flag_gems 5.3.0rc2 · flagcx 0.13.0
-#   · flashinfer-python 0.6.8.post1+ppu2.1.0 · triton 3.6.0+ppu2.1.0
-# NOTE: the image TAG claims python_3.13.13/torch_2.13.0 but the ACTUAL installed
-# versions are python 3.12.3 / torch 2.10.0 (verified). Pin by digest, never by tag.
-# NOTE: the base ships a stale sglang_fl 0.1.0 (T-Head's copy under /sgl-workspace);
-# the CI setup.sh reinstalls OUR plugin (pip install -e .), and we uninstall the
-# stale one here so there is no ambiguity at import time.
+# Runtime contents include Python 3.12, PPU SDK 2.1.0, vendor Torch
+# 2.10.0+v0.1.0.ppu2.1.1, FlagTree 0.7.0+ppu3.6, FlagGems 5.4.0,
+# torchvision 0.25.0+v0.1.0.ppu2.1.1 and torchaudio
+# 2.10.0+v0.1.0.ppu2.1.1.  Pin by digest, never by mutable tag.
 #
 # PPU device access: there is NO ppu-container-runtime (host docker ships only runc),
 # so unlike cuda (NVIDIA_VISIBLE_DEVICES + nvidia-runtime) or mthreads (mthreads
@@ -33,9 +23,8 @@
 #
 # Push target: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-thead-ci
 
-# Digest-pinned (tag is misleading + timestamped; the digest is immutable).
-# Source: harbor.baai.ac.cn/flagos-inner-models-release/flagrelease-ppu-verify-hx-v2-zhenwu-...-driver_1.3.2-d7f5a2:202607171926
-ARG BASE_IMAGE=harbor.baai.ac.cn/flagos-inner-models-release/flagrelease-ppu-verify-hx-v2-zhenwu-tree_none-gems_none-vllm_none-plugin_none-cx_0.13.0-python_3.13.13-torch_2.13.0_cpu-pcp_hggc13.0-gpu_pp001-arc_amd64-driver_1.3.2-d7f5a2@sha256:045f4cb90340826dd98efd5535d30dc6ba86b2597d06b6e883626f77347c9bdc
+# Runtime rebuilt by build-infra PR #1738; see issue #1730.
+ARG BASE_IMAGE=harbor.baai.ac.cn/flagos-runtime/flagos-runtime-thead-ppu2.1.0@sha256:163faf04cac90612954f32b0f45eef90223708fd3de0408497570ee4fd3b408d
 
 FROM ${BASE_IMAGE}
 
@@ -48,24 +37,14 @@ ARG no_proxy
 ENV DEBIAN_FRONTEND=noninteractive \
     HF_ENDPOINT=https://huggingface.co
 
-# The base image's pip is pinned to T-Head's aiext mirror (PPU/ML packages only),
-# which lacks generic python packages (pytest-cov, ... -> "No matching
-# distribution"). Route pip to the public PyPI for the test toolchain below AND for
-# setup.sh at CI time (which pip-installs pytest/pyyaml/the plugin). PPU packages
-# (torch/sglang/...) are already preinstalled in the base, so they are never refetched.
+# Route pip to public PyPI for the test toolchain below and for setup.sh at CI
+# time.  Runtime-owned PPU packages are protected by the canonical empty-mode
+# image's resolver constraints; this legacy tooling layer does not install SGLang.
 # Use the official PyPI (reachable directly or via the build host's HTTP proxy) rather
 # than a China mirror -- tuna 403s wheel downloads from some build networks.
 ENV PIP_INDEX_URL=https://pypi.org/simple
 
-# Drop T-Head's stale plugin copy so our editable install (setup.sh) is authoritative.
-# FlagCX/FlagGems source trees under /sgl-workspace are kept (FLAGCX_PATH points there).
-RUN pip uninstall -y sglang_fl 2>/dev/null || true && \
-    rm -rf /sgl-workspace/sglang-plugin-FL && \
-    pip cache purge
-
-# Test & dev tools (mirrors docker/cuda/containerfile). The base already ships torch /
-# sglang / sgl-kernel / flag_gems / flagcx / flashinfer / triton, so only the test
-# toolchain is added here.
+# Test and development tools only.  This file is not the SGLang 0.5.18 image.
 RUN pip install --no-cache-dir \
         pytest \
         pytest-cov \
@@ -97,18 +76,5 @@ RUN HF_HUB_OFFLINE=0 python -c "from huggingface_hub import hf_hub_download as d
     'ShareGPT_V3_unfiltered_cleaned_split.json', repo_type='dataset'))"
 ENV HF_HUB_OFFLINE=1
 ENV TRANSFORMERS_OFFLINE=1
-
-# Enable the plugin's FlagCX communication layer by default. The T-Head base
-# image already contains the vendor-built FlagCX v0.13.0 source tree and
-# libflagcx.so; bake its source-tree path into the CI image so PlatformFL selects
-# FlagCX instead of silently defaulting to NCCL.
-ENV FLAGCX_PATH=/sgl-workspace/FlagCX \
-    SGLANG_FL_DIST_BACKEND=flagcx
-
-# Fail the image build if the preinstalled FlagCX tree is incomplete or its
-# shared library cannot be loaded with the PPU runtime bundled in the base image.
-RUN test -f "${FLAGCX_PATH}/build/lib/libflagcx.so" && \
-    test -f "${FLAGCX_PATH}/plugin/interservice/flagcx_wrapper.py" && \
-    PYTHONPATH="${FLAGCX_PATH}" python -c "import os; from plugin.interservice.flagcx_wrapper import FLAGCXLibrary; path = os.path.join(os.environ['FLAGCX_PATH'], 'build', 'lib', 'libflagcx.so'); FLAGCXLibrary(path); print(f'FlagCX loaded from {path}')"
 
 WORKDIR /workspace

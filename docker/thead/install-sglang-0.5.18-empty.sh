@@ -2,15 +2,16 @@
 # Install SGLang 0.5.18 (empty / srt_empty mode) plus sglang-plugin-FL on top of a
 # T-Head PPU base environment, without replacing the vendor stack.
 #
-# The base (T-Head PPU release / 0.5.11 empty image) provides the vendor builds that
-# cannot come from PyPI: PPU torch, FlagTree (ships the `triton` module), sgl-kernel
-# ppu build, FlagGems, FlagCX. This script:
+# The operations runtime provides the platform-owned builds: PPU torch, FlagTree
+# (which supplies the active `triton` module), FlagGems and compatible
+# torchvision/torchaudio. This script:
 #   1. captures their installed versions as pip constraints (and forbids a standalone
 #      `triton` distribution, which would overwrite FlagTree's compiler),
 #   2. installs SGLang 0.5.18 from source with the torch-free `srt_empty` extra,
 #   3. installs xgrammar 0.2.1 with --no-deps (its metadata requires `triton`),
 #   4. installs the plugin (editable) without touching dependencies,
-#   5. checks that the vendor stack is unchanged and the plugin activates as thead.
+#   5. checks that the runtime-owned stack is unchanged and the plugin activates as
+#      thead when the remaining platform requirements are present.
 #
 # Used by docker/thead/empty-0.5.18.containerfile; also runnable by hand, e.g. in a
 # venv cloned from the base site-packages.
@@ -34,7 +35,7 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 # Vendor packages that must keep their installed builds.
-VENDOR_PKGS=(torch torchvision torchaudio torchcodec flagtree sglang-kernel
+VENDOR_PKGS=(torch torchvision torchaudio torchcodec flagtree flag_gems
              cuda-python cuda-bindings apache-tvm-ffi torch_memory_saver)
 
 echo "=== [1/5] Capture vendor stack constraints ($PYTHON)"
@@ -52,7 +53,7 @@ for p in pkgs:
 lines.append("triton<0")
 open(out, "w").write("\n".join(lines) + "\n")
 open(snap, "w").write("\n".join(found) + "\n")
-for name in ("torch", "flagtree", "sglang-kernel"):
+for name in ("torch", "torchvision", "torchaudio", "flagtree", "flag_gems"):
     if not any(f.lower().startswith(name + "==") for f in found):
         sys.exit(f"base environment is missing vendor package {name}")
 print("\n".join(found))
