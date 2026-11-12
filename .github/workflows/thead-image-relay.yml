@@ -1,0 +1,77 @@
+# Temporary in-country image relay. Do not merge into any product branch.
+# The US-hosted build runner cannot push to harbor.baai.ac.cn/flagos-dev (the
+# upload stalls for hours), while the flagcicd-810e runner (T-Head DinD) pushes
+# to the same registry in seconds.  This workflow builds the product
+# Containerfile on that runner and pushes under the same tag.  It only runs on
+# this probe branch and uses no PPU device.
+name: T-Head runtime CI image relay build
+on:
+  push:
+    branches: [probe/thead-rt163f-relay]
+
+permissions:
+  contents: read
+
+jobs:
+  build-push:
+    runs-on: flagcicd-810e
+    timeout-minutes: 120
+    steps:
+      - name: Check out image source
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+
+      - name: Log in to Harbor
+        env:
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$HARBOR_USERNAME" || { echo "HARBOR_USERNAME secret missing"; exit 1; }
+          test -n "$HARBOR_PASSWORD" || { echo "HARBOR_PASSWORD secret missing"; exit 1; }
+          printf '%s' "$HARBOR_PASSWORD" | docker login harbor.baai.ac.cn \
+            --username "$HARBOR_USERNAME" --password-stdin
+
+      - name: Build and push
+        env:
+          IMAGE: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-runtime-20261112
+          PIP_INDEX_URL: https://mirrors.aliyun.com/pypi/simple
+        run: |
+          set -euo pipefail
+          build() {
+            if docker buildx version >/dev/null 2>&1; then
+              docker buildx build \
+                --file docker/thead/empty-0.5.18.containerfile \
+                --build-arg PIP_INDEX_URL="$PIP_INDEX_URL" \
+                --tag "$IMAGE" --load --provenance=false .
+            else
+              DOCKER_BUILDKIT=1 docker build \
+                -f docker/thead/empty-0.5.18.containerfile \
+                --build-arg PIP_INDEX_URL="$PIP_INDEX_URL" \
+                -t "$IMAGE" .
+            fi
+          }
+          build
+          docker push "$IMAGE"
+
+      - name: Record immutable digest
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect \
+            harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-thead-runtime-20261112 \
+            --format '{{.Manifest.Digest}}')"
+          case "$digest" in sha256:*) ;; *) echo "unexpected digest: $digest" >&2; exit 1;; esac
+          echo "IMAGE_DIGEST=harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@${digest}" | tee -a "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@${digest}" > image-digest.txt
+
+      - name: Upload digest evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: thead-relay-image-digest
+          path: image-digest.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Log out of Harbor
+        if: always()
+        run: docker logout harbor.baai.ac.cn || true
