@@ -35,6 +35,20 @@ ln -sfn lib "$PIP_CUDA_HOME/lib64"
 ln -sfn libcudart.so.13 "$PIP_CUDA_HOME/lib/libcudart.so"
 test -e "$PIP_CUDA_HOME/lib64/libcudart.so" && echo "cu13 lib64 shim in place"
 
+echo "=== Aligning the HF datasets stack to the runtime's numpy 1.26 ==="
+# The runtime pins numpy 1.26.4 (readonly), while the closure's fresh
+# resolution pulled pyarrow 26.0.1 + datasets 5.2.0; every pyarrow >= 21
+# hard-requires numpy >= 2 at import, so sglang.bench_serving dies with
+# "pyarrow requires NumPy 2.0 or newer" (benchmark smoke, run 43401446026).
+# sglang leaves datasets/pyarrow unpinned, so align the whole datasets
+# stack (4.0.0 is the last release whose pyarrow floor is numpy1-era, and
+# it also caps dill/multiprocess) -- all closure additions, none
+# runtime-owned.
+python3 -m pip install --break-system-packages --no-deps \
+    datasets==4.0.0 pyarrow==18.1.0 dill==0.3.8 multiprocess==0.70.16
+python3 -c "import sglang.bench_serving" \
+    && echo "bench_serving import OK on numpy 1.26.4 stack"
+
 echo "=== Activating the standard-closure CUDA toolkit ==="
 # The normal SGLang dependency closure installs a complete pip CUDA toolkit
 # under nvidia/cu13.  The operations Runtime intentionally keeps
