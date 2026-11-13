@@ -225,6 +225,9 @@ jobs:
     uses: ./.github/workflows/_platform_test.yml
     with:
       platform: kunlunxin
+      ci_stage: pr
+      run_e2e: ${{ fromJson(needs.discover.outputs.run_e2e) }}
+      run_benchmark: ${{ fromJson(needs.discover.outputs.run_benchmark) }}
     secrets: inherit
 
   # ============================================================
