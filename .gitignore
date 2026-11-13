@@ -20,3 +20,6 @@ htmlcov/
 
 # Logs
 *.log
+
+# Ascend operator compilation cache
+kernel_meta/

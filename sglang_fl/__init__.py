@@ -776,6 +776,46 @@ def load_plugin():
             _make_dispatch_hook(config),
             HookType.AROUND,
         )
+        # SGLang PR #37228 moved FusedMoE directly onto BaseFusedOp, so the
+        # legacy MultiPlatformOp AROUND hook above no longer sees
+        # UnquantizedFusedMoEMethod. Without this registration the MoE layer
+        # falls through to forward_cpu, which expects a StandardDispatchOutput
+        # and raises AttributeError on the AscendTPDispatchOutput that the NPU
+        # MoE path produces.
+        #
+        # Compatibility baseline: verified against the SGLang branch that carries
+        # sglang.kernels.fused_op.BaseFusedOp (PR #37228). When BaseFusedOp or
+        # forward_npu is absent this is a different upstream layout, so skip the
+        # registration and let the legacy hook above handle it rather than
+        # failing outright.
+        try:
+            from sglang.kernels.fused_op import BaseFusedOp
+            from sglang.srt.layers.quantization.unquant import (
+                UnquantizedFusedMoEMethod,
+            )
+
+            _forward_npu = getattr(
+                UnquantizedFusedMoEMethod, "forward_npu", None
+            )
+            if _forward_npu is None:
+                logger.info(
+                    "UnquantizedFusedMoEMethod has no forward_npu; "
+                    "skipping OOT registration"
+                )
+            else:
+                BaseFusedOp.register_oot_forward(
+                    UnquantizedFusedMoEMethod, _forward_npu, "oot"
+                )
+                logger.info(
+                    "Registered BaseFusedOp OOT NPU forward for "
+                    "UnquantizedFusedMoEMethod"
+                )
+        except ImportError:
+            logger.info(
+                "SGLang BaseFusedOp layout not present; "
+                "relying on the legacy OOT hook"
+            )
+
         # Patch FLA functions to use dispatch mechanism
         from sglang_fl.dispatch.fla_patch import patch_fla_functions
 

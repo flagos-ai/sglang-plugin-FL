@@ -57,6 +57,7 @@ The tables below summarize the current support status of end-to-end verified mod
 |-------|--------|---------|-----------|
 | Qwen3.6-27B | Supported | [Qwen/Qwen3.6-27B](https://huggingface.co/Qwen/Qwen3.6-27B) | [example](./examples/qwen3_6_27b_offline_inference.py) |
 | Qwen3.6-35B-A3B | Supported | [Qwen/Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [example](./examples/qwen3_6_35b_a3b_offline_inference.py) |
+| Xing4.0-29B-A4B | Supported | [FlagRelease/Xing4.0-29B-A4B-BF16-ascend-FlagOS](https://modelscope.cn/models/FlagRelease/Xing4.0-29B-A4B-BF16-ascend-FlagOS) | [example](./examples/xing4_0_29b_a4b_offline_inference.py) |
 
 ### Supported Chips
 
