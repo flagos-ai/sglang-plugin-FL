@@ -3,6 +3,21 @@
 # Install only the checked-out plugin on Huawei Ascend NPU. The versioned CI
 # image owns SGLang, CANN, torch_npu, FlagGems, FlagCX, kernels, and test tools.
 set -euo pipefail
+
+if (( $# > 1 )); then
+  echo "Usage: $0 [FlagTree wheel]" >&2
+  exit 2
+fi
+compiler_args=()
+if (( $# == 1 )); then
+  # This ARM64 wheel targets the CANN 8.5 runtime in the pinned CI image.
+  wheel_sha256=1d0c50f4828accc890a83f150d48fc12893a4ef775e8ea7647d73bca8aae5c53
+  printf '%s  %s\n' "$wheel_sha256" "$1" | sha256sum --check
+  python3 -m pip uninstall -y triton triton-ascend flagtree
+  python3 -m pip install --no-deps --no-index "$1"
+  compiler_args=(--flagtree)
+fi
+
 git config --global --add safe.directory "$(pwd)"
 echo "=== Installing sglang-plugin-FL (Ascend) ==="
 python3 -m pip install --no-deps --no-build-isolation -e .
@@ -16,5 +31,6 @@ python3 .github/scripts/ascend/verify_environment.py \
   --require-ci \
   --require-npu \
   --min-npus 4 \
-  --plugin-root "$(pwd)"
+  --plugin-root "$(pwd)" \
+  "${compiler_args[@]}"
 echo "=== Installation complete ==="

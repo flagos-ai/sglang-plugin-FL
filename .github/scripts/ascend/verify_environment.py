@@ -40,6 +40,9 @@ EXPECTED_CI_DISTRIBUTIONS = {
     "pytest-timeout": "2.4.0",
 }
 
+EXPECTED_FLAGTREE_VERSION = "0.6.0+ascend3.2"
+EXPECTED_FLAGTREE_TRITON = "3.2.0"
+
 EXPECTED_SOURCE_MARKERS = {
     Path("/opt/sglang-0.5.18/.flagos-source-commit"): (
         "sglang",
@@ -102,6 +105,43 @@ def _require_distribution(name: str, expected: str) -> None:
     if actual != expected:
         raise RuntimeError(f"{name} must be {expected}, found {actual}")
     print(f"[ascend-env] {name}={actual}")
+
+
+def _require_flagtree() -> None:
+    _require_distribution("flagtree", EXPECTED_FLAGTREE_VERSION)
+    for name in ("triton", "triton-ascend"):
+        try:
+            version = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            continue
+        raise RuntimeError(f"Standalone {name}=={version} conflicts with FlagTree")
+
+    distribution = metadata.distribution("flagtree")
+    owned_files = {
+        Path(distribution.locate_file(path)).resolve()
+        for path in distribution.files or ()
+    }
+    triton = _require_import("triton")
+    if triton.__version__ != EXPECTED_FLAGTREE_TRITON:
+        raise RuntimeError(
+            f"FlagTree must provide Triton {EXPECTED_FLAGTREE_TRITON}, "
+            f"found {triton.__version__}"
+        )
+    for name in (
+        "triton",
+        "triton._C.libtriton",
+        "triton.language.extra.cann.extension",
+    ):
+        module = _require_import(name) if name != "triton" else triton
+        path = Path(module.__file__).resolve()
+        if path not in owned_files:
+            raise RuntimeError(f"FlagTree does not own the loaded {name} module at {path}")
+        print(f"[ascend-env] FlagTree owns {name}={path}")
+    from triton.language.extra.cann import extension
+
+    if not callable(getattr(extension, "insert_slice", None)):
+        raise RuntimeError("FlagTree is missing CANN insert_slice for sgl-kernel-npu")
+    print(f"[ascend-env] triton-module={triton.__version__} (provided by FlagTree)")
 
 
 def _require_source_markers() -> None:
@@ -577,6 +617,7 @@ def verify(
     require_npu: bool = False,
     min_npus: int = 1,
     plugin_root: str | None = None,
+    flagtree: bool = False,
 ) -> None:
     if sys.version_info[:2] != (3, 11):
         raise RuntimeError(
@@ -584,7 +625,12 @@ def verify(
         )
     print(f"[ascend-env] python={sys.version.split()[0]}")
 
-    for name, expected in EXPECTED_RUNTIME_DISTRIBUTIONS.items():
+    expected_runtime = EXPECTED_RUNTIME_DISTRIBUTIONS.copy()
+    if flagtree:
+        del expected_runtime["triton"]
+        del expected_runtime["triton-ascend"]
+        _require_flagtree()
+    for name, expected in expected_runtime.items():
         _require_distribution(name, expected)
     if require_ci:
         for name, expected in EXPECTED_CI_DISTRIBUTIONS.items():
@@ -631,6 +677,11 @@ def main() -> int:
         default=None,
         help="require sglang_fl to import from this checkout root",
     )
+    parser.add_argument(
+        "--flagtree",
+        action="store_true",
+        help="require FlagTree as the provider of the Ascend Triton compiler",
+    )
     args = parser.parse_args()
     if args.min_npus < 1:
         parser.error("--min-npus must be at least 1")
@@ -639,6 +690,7 @@ def main() -> int:
         require_npu=args.require_npu,
         min_npus=args.min_npus,
         plugin_root=args.plugin_root,
+        flagtree=args.flagtree,
     )
     print("[ascend-env] environment verification passed")
     return 0
