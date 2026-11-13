@@ -72,6 +72,9 @@ python .github/scripts/hygon/enable_flagtree_device_lib_fallback.py
 export ROCM_PATH=/opt/dtk
 if [ -n "${GITHUB_ENV:-}" ]; then
   printf 'ROCM_PATH=%s\n' "$ROCM_PATH" >> "$GITHUB_ENV"
+  # Diagnostic-only bypass for build-infra#1787. Keep the checked-in model
+  # contract on strict HCU attention; only e2e construction sees this switch.
+  printf 'SGLANG_HYGON_DIAGNOSTIC_TRITON_ATTENTION=1\n' >> "$GITHUB_ENV"
 fi
 if [ ! -e /opt/rocm ] && [ ! -L /opt/rocm ]; then
   ln -s /opt/dtk /opt/rocm

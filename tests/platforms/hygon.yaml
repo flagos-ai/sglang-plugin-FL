@@ -20,15 +20,6 @@ tolerance:
 # Keep graph acceptance explicit and use the SGLang 0.5.18 per-phase API.
 # The vendor backend supports standard decode graphs, with prefill eager.
 device_overrides:
-  bw1000:
-    engine_overrides:
-      qwen3_6:
-        # Diagnostic-only bypass for build-infra#1787. The Runtime-provided
-        # FlashAttention silently corrupts head_dim=256 output, so use SGLang's
-        # Triton attention to continue probing unrelated downstream paths.
-        # Restore the strict HCU backend before final acceptance.
-        27b_tp2_hygon:
-          attention_backend: triton
   bw1000_graph:
     engine_overrides:
       qwen3_6:

@@ -264,6 +264,7 @@ class ImageAndSetupTests(unittest.TestCase):
         self.assertIn("export ROCM_PATH=/opt/dtk", source)
         self.assertIn("printf 'ROCM_PATH=%s\\n'", source)
         self.assertIn("/opt/dtk/aillvm/bin/clang-18", source)
+        self.assertIn("SGLANG_HYGON_DIAGNOSTIC_TRITON_ATTENTION=1", source)
 
 
 class WorkflowTests(unittest.TestCase):
