@@ -925,20 +925,34 @@ def activate_platform() -> str | None:
 
 
 def _apply_vendor_early_patches(vendor_name: str) -> None:
-    """Import vendor/<vendor_name>/early.py during platform discovery.
+    """Import optional vendor early patches during platform discovery.
 
-    Platform discovery runs while ``sglang`` itself is being imported, before
-    any ``sglang.srt.layers`` module, in every process. Use this only for
-    patches that must precede SGLang's module-level imports (e.g. import
-    guards); everything else belongs in ``patch.py``.
+    Platform discovery runs before SGLang imports its layers. Only patches
+    required before those imports belong here; other patches belong in
+    patch.py.
     """
     import importlib
     import importlib.util
 
-    module = f"sglang_fl.dispatch.backends.vendor.{vendor_name}.early"
-    if importlib.util.find_spec(module) is None:
+    vendor_package = f"sglang_fl.dispatch.backends.vendor.{vendor_name}"
+    try:
+        if importlib.util.find_spec(vendor_package) is None:
+            return
+    except (ImportError, ModuleNotFoundError):
         return
-    importlib.import_module(module)
+
+    module = f"{vendor_package}.early"
+    try:
+        if importlib.util.find_spec(module) is None:
+            return
+    except (ImportError, ModuleNotFoundError):
+        return
+
+    try:
+        importlib.import_module(module)
+    except Exception:
+        logger.exception("vendor early patch failed to load: %s", module)
+        return
     logger.info("vendor early patch loaded: %s", module)
 
 
