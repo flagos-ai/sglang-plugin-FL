@@ -120,3 +120,9 @@ class FlagOSBackend(Backend):
             num_accepted_tokens,
             use_qk_l2norm_in_kernel,
         )
+
+    def mhc_sinkhorn(self, comb: torch.Tensor, eps: float, repeat: int) -> torch.Tensor:
+        """Apply fused Sinkhorn normalization; see impl/mhc.py for details."""
+        from .impl.mhc import mhc_sinkhorn_flagos
+
+        return mhc_sinkhorn_flagos(comb, eps, repeat)

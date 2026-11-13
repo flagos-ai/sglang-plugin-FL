@@ -88,6 +88,14 @@ def register_builtins(registry) -> None:
             vendor=None,
             priority=BackendPriority.DEFAULT,
         ),
+        OpImpl(
+            op_name="mhc_sinkhorn",
+            impl_id="default.flagos",
+            kind=BackendImplKind.DEFAULT,
+            fn=_bind_is_available(backend.mhc_sinkhorn, is_avail),
+            vendor=None,
+            priority=BackendPriority.DEFAULT,
+        ),
     ]
 
     registry.register_many(impls)
