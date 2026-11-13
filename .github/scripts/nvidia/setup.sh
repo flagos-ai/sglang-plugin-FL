@@ -1,53 +1,26 @@
 #!/bin/bash
 # Copyright (c) 2025 BAAI. All rights reserved.
 # Install sglang-plugin-FL and test dependencies on NVIDIA CUDA.
+#
+# The CI image (docker/cuda/runtime-0.5.18.containerfile) already bakes the
+# aligned closure: CUDA toolchain 13.0.88 matching the runtime's CUDA 13.0
+# headers, the cu13 lib64 layout shim, and the numpy1-era HF datasets stack.
+# Job-time work is limited to what must not live in the image: the triton
+# version swap, the toolkit activation, regression probes, and the
+# ephemeral test runner + plugin.
 set -euo pipefail
 git config --global --add safe.directory "$(pwd)"
-echo "=== Minimal fast-path: swap triton only ==="
-# TEMPORARY: the only functional change from the full-closure image is the
-# triton version — 3.7.1 (from the standard closure) crashes kernel launches
-# (SystemError in triton/backends/nvidia/driver.py). FlagTree provides 3.6.0
-# at /opt/flagtree; installing the same version as a pip wheel prevents the
-# unit-test sys.modules contamination while matching FlagTree's ABI.
-# Everything else (CUDA toolchain, kernel stacks, all packages) stays.
+echo "=== Swapping triton to FlagTree's version ==="
+# The image deliberately keeps the closure's triton 3.7.1: with no pip
+# triton at all, the unit-test sys.modules surgery triggers FlagTree
+# import side effects (KeyError 'sglang'). 3.7.1 itself crashes kernel
+# launches (SystemError in triton/backends/nvidia/driver.py), so swap the
+# pip wheel to 3.6.0 — the exact version /opt/flagtree provides — keeping
+# FlagTree authoritative via PYTHONPATH while matching its ABI.
 python3 -m pip install --no-deps triton==3.6.0
 echo "triton swapped: 3.7.1 -> 3.6.0 (FlagTree-matching version)"
-
-echo "=== Aligning the closure CUDA toolchain to the runtime's CTK headers ==="
-# The operations runtime preinstalls nvidia-cuda-runtime 13.0.96, whose
-# headers own nvidia/cu13/include (CUDART_VERSION 13000). The standard
-# closure added nvcc 13.5.37, and flashinfer's bundled CCCL compares the
-# nvcc MAJOR.MINOR against the headers' (cuda_toolkit.h:41): 13.5 vs 13.0
-# aborts every JIT compile (PR #179 e2e run 43347047055). The runtime's
-# own distributions are readonly, so align the compiler to the 13.0 line
-# instead (13.0.88 matches the runtime's nvrtc/cupti line).
-python3 -m pip install --no-deps \
-    nvidia-cuda-nvcc==13.0.88 nvidia-nvvm==13.0.88 nvidia-cuda-crt==13.0.88
-echo "CUDA toolchain aligned: nvcc/nvvm/crt 13.5.37 -> 13.0.88"
-
-# Standard CUDA layout shim for the JIT link step: flashinfer's ninja link
-# line assumes $CUDA_HOME/lib64 plus an unversioned libcudart.so, while the
-# pip cu13 tree uses lib/ and ships only the versioned libcudart.so.13
-# (run 43389681469: "/usr/bin/ld: cannot find -lcudart"). Purely additive
-# symlinks; no runtime-owned file is touched.
-PIP_CUDA_HOME=/flagos/lib/python3.12/site-packages/nvidia/cu13
-ln -sfn lib "$PIP_CUDA_HOME/lib64"
-ln -sfn libcudart.so.13 "$PIP_CUDA_HOME/lib/libcudart.so"
-test -e "$PIP_CUDA_HOME/lib64/libcudart.so" && echo "cu13 lib64 shim in place"
-
-echo "=== Aligning the HF datasets stack to the runtime's numpy 1.26 ==="
-# The runtime pins numpy 1.26.4 (readonly), while the closure's fresh
-# resolution pulled pyarrow 26.0.1 + datasets 5.2.0; every pyarrow >= 21
-# hard-requires numpy >= 2 at import, so sglang.bench_serving dies with
-# "pyarrow requires NumPy 2.0 or newer" (benchmark smoke, run 43401446026).
-# sglang leaves datasets/pyarrow unpinned, so align the whole datasets
-# stack (4.0.0 is the last release whose pyarrow floor is numpy1-era, and
-# it also caps dill/multiprocess) -- all closure additions, none
-# runtime-owned.
-python3 -m pip install --break-system-packages --no-deps \
-    datasets==4.0.0 pyarrow==18.1.0 dill==0.3.8 multiprocess==0.70.16
 python3 -c "import sglang.bench_serving" \
-    && echo "bench_serving import OK on numpy 1.26.4 stack"
+    && echo "bench_serving import OK on the baked numpy 1.26 stack"
 
 echo "=== Activating the standard-closure CUDA toolkit ==="
 # The normal SGLang dependency closure installs a complete pip CUDA toolkit
@@ -58,7 +31,8 @@ PIP_CUDA_HOME=/flagos/lib/python3.12/site-packages/nvidia/cu13
 for required in \
     "$PIP_CUDA_HOME/bin/nvcc" \
     "$PIP_CUDA_HOME/include/cuda_runtime.h" \
-    "$PIP_CUDA_HOME/include/cuda.h"; do
+    "$PIP_CUDA_HOME/include/cuda.h" \
+    "$PIP_CUDA_HOME/lib64/libcudart.so"; do
     if [ ! -e "$required" ]; then
         echo "required CUDA toolkit artifact is missing: $required" >&2
         exit 1
