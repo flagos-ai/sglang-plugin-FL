@@ -33,7 +33,6 @@ fastapi==0.162.3
 flash-attn-4==4.0.0b38
 flashinfer-python==0.6.17
 frozenlist==1.8.0
-fsspec==2025.3.0
 gguf==0.19.0
 grpcio-health-checking==1.81.2
 grpcio-reflection==1.81.2
