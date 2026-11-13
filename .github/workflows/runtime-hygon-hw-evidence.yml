@@ -1,7 +1,8 @@
-# TEMPORARY hardware evidence probe for the Hygon runtime CI image
-# (PR #180 application-fixed image). DO NOT MERGE — this workflow exists only
-# to run six machine checks on a real HCU runner via a draft PR; it is closed
-# and deleted once the evidence is collected.
+# TEMPORARY hardware probe for the Hygon runtime CI image (PR #180).
+# DO NOT MERGE — exists only to diagnose the functional-stage failures on a
+# real HCU runner: (a) the flagtree triton HSACO "cannot find ROCm device
+# library" compile error, (b) the mtp_attention 256-token numerical mismatch.
+# Closed and deleted once the evidence is collected.
 name: Hygon hardware evidence (temp)
 
 on:
@@ -16,7 +17,7 @@ jobs:
   hw-evidence:
     name: "HCU evidence"
     runs-on: [ci-sglang-plugin-fl-hygon]
-    timeout-minutes: 120
+    timeout-minutes: 60
     container:
       image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:80c06190fccf12a5b84225e467def9ee46293bface24c5d1d5a7b3c6cf7d259a
       volumes:
@@ -43,18 +44,21 @@ jobs:
       run:
         shell: bash
 
+    env:
+      # Mirror the failing CI functional step: the platform yaml env_defaults
+      # that tests/run.py injects around pytest.
+      USE_FLAGGEMS: "1"
+      USE_FLAGTUNE: "0"
+      SGLANG_PLUGINS: sglang_fl
+      FLAGCX_PATH: /sgl-workspace/FlagCX
+      SGLANG_FL_DIST_BACKEND: flagcx
+      SGLANG_PLATFORM: sglang_fl
+
     steps:
-      # No actions/* usage: action resolution on the self-hosted runner goes
-      # through a proxy that is flaky today; every check below is inline.
-      # Mirrors the core assertions of .github/scripts/hygon/check.sh
-      # (device nodes + idle-GPU inventory) without the repo checkout.
       - name: Check device availability
         run: |
           set -euo pipefail
           test -e /dev/kfd
-          test -e /dev/mkfd
-          test -d /dev/dri
-          test -d /opt/hyhal
           python - <<'PY'
           import torch
           n = torch.cuda.device_count()
@@ -63,159 +67,157 @@ jobs:
           for i in range(n):
               free, total = torch.cuda.mem_get_info(i)
               print(f"  visible {i}: {free/total:.0%} free")
-          PY
-
-      - name: Environment and patch evidence
-        run: |
-          unset CUDA_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES
-          python - <<'PY'
-          import importlib.metadata as md
-          import os
-          import sys
-
-          print("PYTHONPATH:", os.environ.get("PYTHONPATH"))
-          print("sys.path:", sys.path)
-
-          # (a) no aiter distribution anywhere in the environment
-          names = sorted({(d.metadata["Name"] or "").lower() for d in md.distributions()})
-          aiter_like = [n for n in names if "aiter" in n]
-          print("distributions total:", len(names))
-          print("aiter-like distributions:", aiter_like)
-          assert not aiter_like, f"aiter distributions present: {aiter_like}"
-
-          # (b) real HCU torch build
-          import torch
-          assert hasattr(torch, "__hcu_version__"), \
-              "torch.__hcu_version__ missing: not the HCU torch build"
-          print("torch:", torch.__version__)
-          print("torch.__hcu_version__:", torch.__hcu_version__)
-          print("device_count:", torch.cuda.device_count())
           print("device 0:", torch.cuda.get_device_name(0))
-
-          # (c) patched modules import without aiter and without sgl_kernel
-          import sglang.srt.layers.quantization.quark.schemes.quark_w4a4_mxfp4
-          import sglang.srt.layers.quantization.quark.schemes.quark_w4a4_mxfp4_moe
-          import sglang.srt.layers.quantization.quark_int4fp8_moe
-          import sglang.srt.layers.attention.triton_backend
-          import sglang.srt.layers.activation
-          import sglang.srt.layers.layernorm
-          import sglang.srt.layers.sampler
-          import sglang.srt.speculative.eagle_utils
-          import sglang_fl.dispatch.backends.vendor.hygon.impl.attention_backend
-          aiter_modules = sorted(m for m in sys.modules if "aiter" in m.lower())
-          print("aiter-ish sys.modules entries:", aiter_modules)
-          assert "aiter" not in sys.modules, "aiter leaked into sys.modules"
-          print("quark modules imported aiter-free: OK")
-
-          # (d) triton identity, full detail
-          import triton
-          print("triton.__version__:", triton.__version__)
-          print("triton.__file__:", triton.__file__)
-          print("triton.__path__:", list(triton.__path__))
-          try:
-              print("triton dist version (metadata):", md.version("triton"))
-          except md.PackageNotFoundError:
-              print("triton dist version (metadata): <no distribution>")
-
-          # (e) every triton path must resolve under /opt/flagtree
-          for p in [triton.__file__, *list(triton.__path__)]:
-              real = os.path.realpath(p)
-              print(f"triton path: {p} -> {real}")
-              assert real.startswith("/opt/flagtree"), \
-                  f"triton path outside /opt/flagtree: {p} -> {real}"
-          print("all triton paths under /opt/flagtree: OK")
           PY
 
-      # No actions/checkout (its resolution on this runner pool is flaky
-      # today); fetch the PR-head tarball directly and put it on PYTHONPATH,
-      # which is all the verifier needs to import sglang_fl.
-      - name: Diagnose libgalaxyhip loading conditions
+      - name: Environment identity
         run: |
           set -euo pipefail
-          echo "=== step env ==="
-          env | grep -E "VISIBLE|AUTOLOAD|LD_LIBRARY" | sort || true
-          echo "=== ldconfig cache ==="
-          ldconfig -p | grep -i galaxy || echo "(not in ld cache)"
-          echo "=== file search ==="
-          find /opt/hyhal /usr/local/hyhal /flagos /opt -name 'libgalaxyhip*' 2>/dev/null | head -5 || true
-          echo "=== bare import ==="
-          python -c "import torch; print('BARE OK', torch.__version__, torch.cuda.device_count())" 2>&1 | tail -3 || true
-          echo "=== import with CUDA_VISIBLE_DEVICES unset ==="
-          env -u CUDA_VISIBLE_DEVICES -u ROCR_VISIBLE_DEVICES python -c "import torch; print('NOMASK OK', torch.cuda.device_count())" 2>&1 | tail -3 || true
-          echo "=== torch libs dir ==="
-          ls /flagos/lib/python3.10/site-packages/torch/lib/ 2>/dev/null | grep -i "galaxy\|hip" | head -5 || true
+          env | sort | grep -iE "FLAG|SGLANG|TRITON|ROCM|HIP|HSA" || true
+          echo "--- triton identity ---"
+          python - <<'PY'
+          import triton
+          print("triton:", triton.__version__, triton.__file__)
+          PY
 
-      - name: Reproduce CI attention_backend import with full traceback
+      # No actions/checkout (resolution on this runner pool is flaky); fetch
+      # the PR head tarball directly. df87350 = the head the failing CI run
+      # 43390763647 executed (same tests, same image digest).
+      - name: Fetch repo head and install plugin
         run: |
           set -euo pipefail
-          work="$RUNNER_TEMP/plugin-repro"
+          work="/__w/sglang-plugin-FL/sglang-plugin-FL"
           rm -rf "$work" && mkdir -p "$work"
           curl -fL --retry 5 --retry-delay 10 \
-            "https://codeload.github.com/lentil1016/sglang-plugin-FL/tar.gz/7ee24c16c55e6283d4722b85500c58a25269de7a" \
-            -o "$work/plugin.tar.gz"
-          mkdir -p "$work/src" && tar -xzf "$work/plugin.tar.gz" --strip-components=1 -C "$work/src"
-          # Register the plugin's entry_points properly (sglang's platform
-          # discovery needs them; a bare PYTHONPATH copy is not enough).
-          pip install --no-deps --no-build-isolation -e "$work/src" >/dev/null
-          export SGLANG_PLATFORM=sglang_fl
-          python - <<'PY'
-          import importlib
-          import sys
-          import traceback
+            "https://codeload.github.com/lentil1016/sglang-plugin-FL/tar.gz/df87350c2916a27b348edbc1d48f5fea01628a69" \
+            -o /tmp/plugin.tar.gz
+          tar -xzf /tmp/plugin.tar.gz --strip-components=1 -C "$work"
+          cd "$work"
+          pip install --no-deps --no-build-isolation -e . >/dev/null
+          pip install -q pytest==9.1.1 pytest-timeout==2.4.0
+          echo "repo ready at $work"
 
-          # Mirror the verifier's import order.
-          importlib.import_module("torch")
-          importlib.import_module("sglang")
-          importlib.import_module("sglang_fl")
-          importlib.import_module("sglang.srt.server_args")
-          importlib.import_module("flag_gems")
-          name = "sglang_fl.dispatch.backends.vendor.hygon.impl.attention_backend"
-          try:
-              importlib.import_module(name)
-              print("IMPORT OK:", name)
-          except BaseException:
-              print("=" * 70)
-              traceback.print_exc()
-              e = sys.exc_info()[1]
-              depth = 0
-              while e is not None and depth < 10:
-                  print(f"--- chain {depth}: {type(e).__name__}: {e}")
-                  e = e.__cause__ or e.__context__
-                  depth += 1
-              print("=" * 70)
-              raise SystemExit(1)
-          PY
-
-      - name: Representative BF16 triton compile on HCU
+      # Reproduce the HSACO failure with a clang wrapper that logs the exact
+      # argv flagtree passes (plus copies of the tempfile inputs) so the
+      # failing command can be replayed verbatim afterwards.
+      - name: Failing op with argv-logging clang wrapper
         run: |
-          unset CUDA_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES
-          # @triton.jit needs inspect.getsource, so the kernel must live in a
-          # real file — heredoc/stdin scripts fail with "should be defined in
-          # a Python file".
-          cat > /tmp/bf16_kernel_test.py <<'PY'
-          import torch
-          import triton
-          import triton.language as tl
+          set -euo pipefail
+          cat > /tmp/clangwrap <<'EOF'
+          #!/bin/bash
+          REAL=/opt/dtk/aillvm/bin/clang-18
+          mkdir -p /tmp/clang-inputs
+          n=$(($(cat /tmp/clang-seq 2>/dev/null || echo 0)+1)); echo "$n" > /tmp/clang-seq
+          { printf 'CMD %d ARGS:' "$n"; printf ' %q' "$@"; echo; } >> /tmp/clang-cmds.log
+          for a in "$@"; do
+            case "$a" in
+              /tmp/*.ll|/tmp/*.s|/tmp/*.amdgcn)
+                cp -f "$a" "/tmp/clang-inputs/$n-$(basename "$a")" 2>/dev/null || true ;;
+            esac
+          done
+          out=$("$REAL" "$@" 2>&1); rc=$?
+          echo "RC $n = $rc" >> /tmp/clang-cmds.log
+          if [ "$rc" -ne 0 ]; then { echo "=== cmd $n ==="; echo "$out"; } >> /tmp/clang-stderr.log; fi
+          exit "$rc"
+          EOF
+          chmod +x /tmp/clangwrap
+          rm -f /tmp/clang-cmds.log /tmp/clang-stderr.log /tmp/clang-seq
+          export TRITON_HIP_CLANG_PATH=/tmp/clangwrap
+          cd /__w/sglang-plugin-FL/sglang-plugin-FL
+          pytest 'tests/functional_tests/ops/test_hygon_mtp_logprobs.py::test_hcu_padding_equivalence_for_real_index_kernels[dtype0-1]' \
+            --timeout=300 -q > /tmp/pytest-baseline.log 2>&1 || echo "pytest rc=$? (expected failure)"
+          tail -20 /tmp/pytest-baseline.log
+          echo "=== captured stderr of failing clang invocations ==="
+          cat /tmp/clang-stderr.log 2>/dev/null | head -20 || echo "(none captured)"
 
-          @triton.jit
-          def add_bf16_kernel(x_ptr, y_ptr, out_ptr, n, BLOCK: tl.constexpr):
-              pid = tl.program_id(axis=0)
-              offs = pid * BLOCK + tl.arange(0, BLOCK)
-              mask = offs < n
-              x = tl.load(x_ptr + offs, mask=mask)
-              y = tl.load(y_ptr + offs, mask=mask)
-              tl.store(out_ptr + offs, x + y, mask=mask)
+      # Replay the first failing clang command four ways to isolate exactly
+      # which missing piece the image needs.
+      - name: Replay failing clang command in four variants
+        run: |
+          set -uo pipefail
+          python - <<'PY'
+          import os
+          import re
+          import shlex
+          import subprocess
 
-          n = 8192
-          x = torch.randn(n, device="cuda", dtype=torch.bfloat16)
-          y = torch.randn(n, device="cuda", dtype=torch.bfloat16)
-          out = torch.empty_like(x)
-          grid = (triton.cdiv(n, 1024),)
-          add_bf16_kernel[grid](x, y, out, n, BLOCK=1024)
-          torch.cuda.synchronize()
-          ref = x.float() + y.float()
-          assert torch.allclose(out.float(), ref, atol=1e-2, rtol=1e-2), \
-              f"BF16 kernel numerics wrong: max diff {(out.float()-ref).abs().max()}"
-          print("BF16 triton kernel compiled + executed on HCU: OK")
+          lines = open("/tmp/clang-cmds.log").read().splitlines()
+          cmds, rcs = {}, {}
+          for ln in lines:
+              m = re.match(r"CMD (\d+) ARGS: (.*)", ln)
+              if m:
+                  cmds[int(m.group(1))] = shlex.split(m.group(2))
+                  continue
+              m = re.match(r"RC (\d+) = (-?\d+)", ln)
+              if m:
+                  rcs[int(m.group(1))] = int(m.group(2))
+          failing = sorted(n for n in cmds if rcs.get(n, 0) != 0)
+          assert failing, "no failing clang invocation captured: " + str(rcs)
+          n = failing[0]
+          args = cmds[n]
+          for i, a in enumerate(args):
+              if a.startswith("/tmp/") and a.endswith((".ll", ".s", ".amdgcn")):
+                  saved = f"/tmp/clang-inputs/{n}-{os.path.basename(a)}"
+                  if os.path.exists(saved):
+                      args[i] = saved
+          args[0] = "/opt/dtk/aillvm/bin/clang-18"
+          print(f"failing cmd [{n}]:", " ".join(args))
+          print("input exists:", {a: os.path.exists(a) for a in args if a.startswith("/tmp/")})
+
+          def run(tag, extra, env_extra=None):
+              env = dict(os.environ)
+              env.update(env_extra or {})
+              r = subprocess.run(args + extra, capture_output=True, text=True, env=env)
+              err = (r.stderr or r.stdout).strip()[:300]
+              print(f"[{tag}] rc={r.returncode} :: {err}")
+
+          run("a-verbatim", [])
+          run("b-device-lib-flag", ["--rocm-device-lib-path=/opt/dtk/amdgcn/bitcode"])
+          run("c-rocm-path-flag", ["--rocm-path=/opt/dtk"])
+          run("d-rocm-path-env", [], {"ROCM_PATH": "/opt/dtk"})
           PY
-          python /tmp/bf16_kernel_test.py
+
+      # Decisive check 1: the same failing test with a clang wrapper that
+      # injects --rocm-device-lib-path into every flagtree invocation.
+      - name: Same test under fix candidate (device-lib injection)
+        run: |
+          set -euo pipefail
+          cat > /tmp/clangfix <<'EOF'
+          #!/bin/bash
+          REAL=/opt/dtk/aillvm/bin/clang-18
+          FIX="--rocm-device-lib-path=/opt/dtk/amdgcn/bitcode"
+          for a in "$@"; do
+            if [ "$a" = "$FIX" ]; then
+              exec "$REAL" "$@"
+            fi
+          done
+          exec "$REAL" "$@" "$FIX"
+          EOF
+          chmod +x /tmp/clangfix
+          export TRITON_HIP_CLANG_PATH=/tmp/clangfix
+          cd /__w/sglang-plugin-FL/sglang-plugin-FL
+          pytest 'tests/functional_tests/ops/test_hygon_mtp_logprobs.py::test_hcu_padding_equivalence_for_real_index_kernels[dtype0-1]' \
+            --timeout=300 -q > /tmp/pytest-fix.log 2>&1 && echo "FIX-CANDIDATE(device-lib): PASS" || echo "FIX-CANDIDATE(device-lib): FAIL rc=$?"
+          tail -8 /tmp/pytest-fix.log
+
+      # Decisive check 2: plain clang-18 + only the vendor env.sh ROCM_PATH —
+      # the cheapest possible image fix if it works.
+      - name: Same test under ROCM_PATH env only
+        run: |
+          set -euo pipefail
+          unset TRITON_HIP_CLANG_PATH
+          export ROCM_PATH=/opt/dtk
+          cd /__w/sglang-plugin-FL/sglang-plugin-FL
+          pytest 'tests/functional_tests/ops/test_hygon_mtp_logprobs.py::test_hcu_padding_equivalence_for_real_index_kernels[dtype0-1]' \
+            --timeout=300 -q > /tmp/pytest-rocmenv.log 2>&1 && echo "FIX-CANDIDATE(ROCM_PATH env): PASS" || echo "FIX-CANDIDATE(ROCM_PATH env): FAIL rc=$?"
+          tail -8 /tmp/pytest-rocmenv.log
+
+      # Second failure class: the 256-token attention mismatch, full detail.
+      - name: Attention numerics full detail
+        run: |
+          set -uo pipefail
+          export TRITON_HIP_CLANG_PATH=/tmp/clangfix
+          cd /__w/sglang-plugin-FL/sglang-plugin-FL
+          pytest 'tests/functional_tests/ops/test_hygon_mtp_attention.py::test_target_verify_chain_matches_dense_reference' \
+            -k "256" --timeout=600 -q -l > /tmp/pytest-attn.log 2>&1 && echo "ATTN-256: PASS" || echo "ATTN-256: FAIL rc=$?"
+          tail -40 /tmp/pytest-attn.log
