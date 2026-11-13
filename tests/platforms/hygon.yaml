@@ -48,7 +48,13 @@ bw1000: &bw1000_profile
   tests: &bw1000_tests
     unit:
       include: "*"
-      exclude: []
+      # The Iluvatar import-shim contract asserts that unknown sgl_kernel/
+      # flashinfer imports fail honestly. The HCU CI image instead installs
+      # a meta-path stub finder that fabricates exactly those modules (HCU
+      # ships no such wheels), so the honesty probes cannot hold on this
+      # lane; the Iluvatar CI lane retains their full coverage.
+      exclude:
+        - platform/test_iluvatar_import_shims.py
     functional:
       include: "*"
       exclude: []
