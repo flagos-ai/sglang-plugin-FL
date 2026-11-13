@@ -80,7 +80,12 @@ def test_documented_policy_and_explicit_override(monkeypatch):
     manager.reset_global_policy()
     try:
         config = utils.get_effective_config()
-        assert config["flagos_blacklist"] == ["count_nonzero", "cumsum", "layer_norm"]
+        assert config["flagos_blacklist"] == [
+            "count_nonzero",
+            "cumsum",
+            "layer_norm",
+            "masked_scatter_",
+        ]
         policy = manager.get_policy()
         assert not policy.is_vendor_allowed("cuda")
         assert policy.per_op_order_dict["gemma_rms_norm"] == ["reference"]
