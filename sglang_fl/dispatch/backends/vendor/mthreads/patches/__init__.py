@@ -1,18 +1,28 @@
 # Copyright 2026 FlagOS Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Model-scoped MThreads compatibility patches."""
+"""MUSA compatibility patches for the MiniMax W8A8 path."""
+
+from importlib import metadata
+import logging
+
+logger = logging.getLogger(__name__)
+
+_MINIMAX_SGLANG_RELEASE = "0.5.18"
+
+
+def _supports_minimax_w8a8(version):
+    return version.split("+", maxsplit=1)[0] == _MINIMAX_SGLANG_RELEASE
 
 
 def require_supported_sglang(version=None):
-    """Reject private-hook installation outside the tested upstream release."""
+    """Reject explicit W8A8 configuration outside the supported release."""
     if version is None:
-        from importlib.metadata import version as distribution_version
-
-        version = distribution_version("sglang")
-    if version != "0.5.18":
+        version = metadata.version("sglang")
+    if not _supports_minimax_w8a8(version):
         raise RuntimeError(
-            f"MUSA MiniMax compatibility requires SGLang 0.5.18, found {version}"
+            f"MUSA MiniMax compatibility requires SGLang {_MINIMAX_SGLANG_RELEASE}, "
+            f"found {version}"
         )
 
 
@@ -29,7 +39,15 @@ def _install_atomically(targets, installers):
 
 def install_minimax_w8a8_support():
     """Install interdependent quantization/pool routing as one transaction."""
-    require_supported_sglang()
+    version = metadata.version("sglang")
+    if not _supports_minimax_w8a8(version):
+        logger.warning(
+            "Skipping MUSA MiniMax W8A8 patches for SGLang %s (requires %s)",
+            version,
+            _MINIMAX_SGLANG_RELEASE,
+        )
+        return
+
     from sglang.kernels.ops.attention.minimax_sparse.prefill import flash_with_topk_idx
     from sglang.kernels.ops.quantization import int8_kernel
     from sglang.srt.mem_cache import kv_cache_configurator

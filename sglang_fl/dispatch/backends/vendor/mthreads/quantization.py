@@ -118,13 +118,13 @@ def _validate_contract(config, value):
 @lru_cache(maxsize=1)
 def get_musa_compressed_tensors_config():
     """Return a vendor configuration through the public platform hook."""
-    from sglang.srt.layers.quantization.compressed_tensors.compressed_tensors import (
-        CompressedTensorsConfig,
-    )
-
     from .patches import require_supported_sglang
 
     require_supported_sglang()
+
+    from sglang.srt.layers.quantization.compressed_tensors.compressed_tensors import (
+        CompressedTensorsConfig,
+    )
 
     class MusaCompressedTensorsConfig(CompressedTensorsConfig):
         @classmethod
