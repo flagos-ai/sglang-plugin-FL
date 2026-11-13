@@ -42,6 +42,9 @@ on:
         required: false
         type: number
         default: 15
+    secrets:
+      FLAGCICD_API_TOKEN:
+        required: false
 
 jobs:
   functional-test:
@@ -83,19 +86,52 @@ jobs:
         run: |
           python tests/run.py \
             --platform ${{ inputs.platform }} \
-            --scope unit
+            --scope unit \
+            -- \
+            --cov=sglang_fl \
+            --cov-report=term-missing \
+            --cov-report=json:coverage-${{ inputs.platform }}.json
 
       - name: Run functional tests
         run: |
           python tests/run.py \
             --platform ${{ inputs.platform }} \
-            --scope functional
+            --scope functional \
+            -- \
+            --cov=sglang_fl \
+            --cov-append \
+            --cov-report=term-missing \
+            --cov-report=json:coverage-${{ inputs.platform }}.json
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        continue-on-error: true
         with:
           name: functional-${{ inputs.platform }}
           path: |
             test-results-${{ inputs.platform }}.xml
             test-results-${{ inputs.platform }}.json
+            coverage-${{ inputs.platform }}.json
+
+      - name: Check FlagCICD authentication
+        id: flagcicd
+        if: ${{ !cancelled() && hashFiles(format('coverage-{0}.json', inputs.platform)) != '' }}
+        env:
+          FLAGCICD_API_TOKEN: ${{ secrets.FLAGCICD_API_TOKEN }}
+        run: |
+          if [ -n "${FLAGCICD_API_TOKEN:-}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::FlagCICD upload skipped: FLAGCICD_API_TOKEN is unavailable (for example, on fork PRs). Reports remain in the artifact."
+            echo "FlagCICD: upload skipped because credentials are unavailable; reports were retained as artifacts." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload combined coverage report to FlagCICD
+        if: steps.flagcicd.outputs.configured == 'true'
+        uses: flagos-ai/FlagOps/actions/post-pytest-report@466de7d164bf6ca3989c0abaeba1c3a62c68a047 # v2
+        continue-on-error: true
+        with:
+          backend_url: 'https://flagcicd.flagos.net/flagcicd/api/v1/cicd/metrics/'
+          api_token: ${{ secrets.FLAGCICD_API_TOKEN }}
+          report_path: 'coverage-${{ inputs.platform }}.json'

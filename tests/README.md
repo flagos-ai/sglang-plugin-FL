@@ -38,6 +38,21 @@ Platform-agnostic test suite for the sglang-plugin-FL project. Functional tests 
   health checks over `sglang.bench_offline_throughput` / `bench_one_batch` /
   `bench_serving`, using `load_format: dummy` so no real weights are needed.
 
+## CI coverage uploads
+
+Unit and functional tests run as separate pytest processes in the same CI job.
+Coverage is a CI-only concern: the workflow passes the pytest-cov options to
+`run.py` through its `--` forwarding, so local runs are unaffected and do not
+require pytest-cov. The functional step alone adds `--cov-append` to add its
+executed lines to the unit-test data and write the combined
+`coverage-<platform>.json` in the checkout.
+
+CI retains that coverage file as a GitHub artifact and uploads it once through
+`flagos-ai/FlagOps/actions/post-pytest-report@v2` when
+`FLAGCICD_API_TOKEN` is available. The uploaded file is coverage.py JSON, not a
+pytest case-outcome report. Fork PRs without the secret explicitly skip the
+service upload, and uploader failures do not change the test result.
+
 ## CI Behavior (GitHub Actions)
 
 Mechanics ported from vllm-plugin-FL [#581](https://github.com/flagos-ai/vllm-plugin-FL/pull/581):
