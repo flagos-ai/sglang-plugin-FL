@@ -25,6 +25,16 @@ python3 -m pip install --no-deps \
     nvidia-cuda-nvcc==13.0.88 nvidia-nvvm==13.0.88 nvidia-cuda-crt==13.0.88
 echo "CUDA toolchain aligned: nvcc/nvvm/crt 13.5.37 -> 13.0.88"
 
+# Standard CUDA layout shim for the JIT link step: flashinfer's ninja link
+# line assumes $CUDA_HOME/lib64 plus an unversioned libcudart.so, while the
+# pip cu13 tree uses lib/ and ships only the versioned libcudart.so.13
+# (run 43389681469: "/usr/bin/ld: cannot find -lcudart"). Purely additive
+# symlinks; no runtime-owned file is touched.
+PIP_CUDA_HOME=/flagos/lib/python3.12/site-packages/nvidia/cu13
+ln -sfn lib "$PIP_CUDA_HOME/lib64"
+ln -sfn libcudart.so.13 "$PIP_CUDA_HOME/lib/libcudart.so"
+test -e "$PIP_CUDA_HOME/lib64/libcudart.so" && echo "cu13 lib64 shim in place"
+
 echo "=== Activating the standard-closure CUDA toolkit ==="
 # The normal SGLang dependency closure installs a complete pip CUDA toolkit
 # under nvidia/cu13.  The operations Runtime intentionally keeps
@@ -78,6 +88,14 @@ printf '%s\n' \
         -o /tmp/sglang-jit-toolchain-probe.o -
 test -s /tmp/sglang-jit-toolchain-probe.o
 echo "CUDA toolkit CCCL-shaped compile smoke passed: $PIP_CUDA_HOME"
+# Link smoke: flashinfer's final ninja step links the .so with
+# -L$CUDA_HOME/lib64 -lcudart (run 43389681469 ld failure). Probe the same
+# resolution; the driver's -lcuda is runner-only and intentionally skipped.
+"$PIP_CUDA_HOME/bin/nvcc" -shared -o /tmp/sglang-jit-toolchain-probe.so \
+    /tmp/sglang-jit-toolchain-probe.o \
+    -L"$PIP_CUDA_HOME/lib64" -lcudart
+test -s /tmp/sglang-jit-toolchain-probe.so
+echo "CUDA toolkit link smoke passed (-lcudart via lib64 shim)"
 echo "=== Installing test runner (ephemeral) ==="
 # The operations-runtime CI image intentionally ships no test packages; the
 # pinned runner installs into the ephemeral job container only, at the same
