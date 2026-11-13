@@ -83,7 +83,7 @@ printf '%s\n' \
     | "$PIP_CUDA_HOME/bin/nvcc" -x cu -std=c++17 \
         -I"$FI_CCCL/cub" -I"$FI_CCCL/libcudacxx/include" -I"$FI_CCCL/thrust" \
         -isystem "$PIP_CUDA_HOME/include" \
-        --expt-relaxed-constexpr \
+        --compiler-options=-fPIC --expt-relaxed-constexpr \
         -gencode=arch=compute_80,code=sm_80 -c \
         -o /tmp/sglang-jit-toolchain-probe.o -
 test -s /tmp/sglang-jit-toolchain-probe.o
