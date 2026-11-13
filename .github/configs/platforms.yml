@@ -1,5 +1,10 @@
 # Platform registry — controls which platforms are tested in CI.
 #
+# PR-scoped disable: this branch verifies only the hygon runtime image;
+# every other platform is disabled to keep their (scarce) hardware runners
+# out of this PR's CI. Restore before merging if this lands after the other
+# runtime-image PRs.
+#
 # Each key under `platforms` must match a config file name in this directory
 # (e.g., "nvidia" -> nvidia.yml, "ascend" -> ascend.yml).
 #
@@ -45,7 +50,7 @@ global_trigger_paths:
 
 platforms:
   nvidia:
-    enabled: true
+    enabled: false
     trigger_paths:
       - sglang_fl/dispatch/config/nvidia.yaml
       - .github/scripts/nvidia/
@@ -58,7 +63,7 @@ platforms:
       - .github/configs/nvidia.yml
       - tests/platforms/nvidia.yaml
   ascend:
-    enabled: true
+    enabled: false
     trigger_paths:
       - sglang_fl/dispatch/config/ascend.yaml
       - .github/scripts/ascend/
@@ -73,7 +78,7 @@ platforms:
       - .github/configs/ascend.yml
       - tests/platforms/ascend.yaml
   musa:
-    enabled: true
+    enabled: false
     trigger_paths:
       - sglang_fl/dispatch/config/musa.yaml
       - .github/scripts/musa/
@@ -86,7 +91,7 @@ platforms:
       - .github/configs/musa.yml
       - tests/platforms/musa.yaml
   iluvatar:
-    enabled: true
+    enabled: false
     trigger_paths:
       - sglang_fl/dispatch/config/iluvatar.yaml
       - .github/scripts/iluvatar/

@@ -21,6 +21,8 @@ from importlib import metadata
 from pathlib import Path
 from types import SimpleNamespace
 
+from packaging.utils import canonicalize_name
+
 
 def _default_plugin_root(script_path: Path) -> Path:
     # The Docker baseline stage copies this script directly into /opt.
@@ -50,6 +52,30 @@ EXPECTED_RELEASES = {
     "flag-gems": "5.4.0.dev0",
 }
 EXPECTED_FLAGTREE = "0.6.1+hcu3.6"
+
+# Operations-runtime image (flagos-runtime-hygon-dtk26.04, digest-pinned in
+# docker/hygon/runtime-0.5.18.containerfile). The runtime ships torch/flagtree/
+# flag-gems/flagcx; the sglang[srt_empty,runtime_common] closure adds the SGLang
+# wheel plus its pure-Python dependency closure (and a standalone triton wheel
+# whose module stays shadowed by FlagTree's /opt/flagtree PYTHONPATH entry).
+RUNTIME_IMAGE_RELEASES = {
+    "sglang": "0.5.18+flagos",
+    "torch": "2.9.0+das.opt1.dtk2604",
+    "flag-gems": "5.4.0",
+}
+RUNTIME_IMAGE_FLAGTREE = "0.7.0+hcu3.6"
+RUNTIME_IMAGE_TRITON_DIST = "3.8.0"
+# Installed into the ephemeral CI job container by setup.sh, pinned with
+# their transitive closure; the operations runtime intentionally ships no
+# test packages. sglang_fl is the editable plugin checkout installed by the
+# standard setup flow.
+JOB_CONTAINER_DISTRIBUTIONS = (
+    "pytest",
+    "pytest-timeout",
+    "iniconfig",
+    "pluggy",
+    "sglang-fl",
+)
 
 
 def _distribution_version(name: str) -> str:
@@ -216,6 +242,93 @@ def _verify_versions(baseline: Path | None) -> None:
             )
         print("[hygon-env] vendor wheel versions match the captured base image")
         _verify_vendor_modules(baseline)
+
+
+def _verify_runtime_image_versions() -> None:
+    """Pin the operations-runtime wheel contract (exact PEP 440 versions)."""
+    for name, expected in RUNTIME_IMAGE_RELEASES.items():
+        actual = _distribution_version(name)
+        if actual != expected:
+            raise RuntimeError(
+                f"operations runtime expects {name}=={expected}, found {actual}"
+            )
+        print(f"[hygon-env] {name}={actual}")
+    actual = _distribution_version("flagtree")
+    if actual != RUNTIME_IMAGE_FLAGTREE:
+        raise RuntimeError(
+            f"operations runtime expects flagtree=={RUNTIME_IMAGE_FLAGTREE}, "
+            f"found {actual}"
+        )
+    print(f"[hygon-env] flagtree={actual}")
+    actual = _distribution_version("triton")
+    if actual != RUNTIME_IMAGE_TRITON_DIST:
+        raise RuntimeError(
+            "the SGLang closure is expected to install the standalone triton "
+            f"wheel {RUNTIME_IMAGE_TRITON_DIST} (shadowed by FlagTree at "
+            f"import time); found {actual}"
+        )
+    print(f"[hygon-env] triton dist={actual} (module resolves via /opt/flagtree)")
+
+
+def _verify_runtime_evidence(evidence: Path) -> None:
+    """Job-time zero-drift check against the image's recorded evidence pack.
+
+    The CI image writes /opt/sglang-ci at build time: the pristine runtime
+    distribution inventory, the reviewed SGLang closure additions, and module
+    provenance. At job time every runtime distribution must still match the
+    recorded inventory, additions beyond it may only be the SGLang closure
+    itself plus the job-time test runner, and the vendor triton module must
+    still resolve under /opt/flagtree (PYTHONPATH precedes site-packages).
+    """
+    try:
+        before = json.loads(
+            (evidence / "runtime-distributions-before.json").read_text("utf-8")
+        )
+        recorded_additions = set(
+            (evidence / "sglang-additions-installed.txt").read_text("utf-8").split()
+        )
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"unreadable runtime evidence pack at {evidence}: {exc}")
+
+    current = {}
+    for dist in metadata.distributions():
+        name = dist.metadata.get("Name")
+        if name:
+            current[canonicalize_name(name)] = dist.version
+
+    drifted = {
+        name: (expected, current.get(name))
+        for name, expected in before.items()
+        if current.get(name) != expected
+    }
+    if drifted:
+        raise RuntimeError(
+            f"runtime distributions drifted from the image evidence: {drifted}"
+        )
+    unexpected = {
+        f"{name}=={version}"
+        for name, version in current.items()
+        if name not in before
+        and f"{name}=={version}" not in recorded_additions
+        and name not in JOB_CONTAINER_DISTRIBUTIONS
+    }
+    if unexpected:
+        raise RuntimeError(
+            f"distributions beyond the reviewed closure appeared: {sorted(unexpected)}"
+        )
+    print(
+        f"[hygon-env] runtime zero-drift verified against the image evidence "
+        f"({len(before)} runtime distributions, "
+        f"{len(recorded_additions)} reviewed closure additions)"
+    )
+
+    spec = importlib.util.find_spec("triton")
+    if spec is None or not spec.origin or not spec.origin.startswith("/opt/flagtree"):
+        found = spec.origin if spec else None
+        raise RuntimeError(
+            f"triton module must resolve under /opt/flagtree, found {found}"
+        )
+    print(f"[hygon-env] triton module authoritative at {spec.origin}")
 
 
 def _verify_plugin_path(plugin_root: Path) -> None:
@@ -452,6 +565,7 @@ def verify(
     *,
     plugin_root: Path = REPO_ROOT,
     baseline: Path | None = None,
+    runtime_evidence: Path | None = None,
     metadata_only: bool = False,
     require_gpu: bool = False,
     min_gpus: int = 1,
@@ -460,13 +574,19 @@ def verify(
         raise RuntimeError("--metadata-only cannot be combined with --require-gpu")
     if min_gpus < 1:
         raise RuntimeError("--min-gpus must be at least 1")
+    if baseline and runtime_evidence:
+        raise RuntimeError("--baseline and --runtime-evidence are exclusive")
     if sys.version_info[:2] != (3, 10):
         raise RuntimeError(
             f"Python must be 3.10 for the documented Hygon wheels, found "
             f"{sys.version_info.major}.{sys.version_info.minor}"
         )
     print(f"[hygon-env] python={sys.version.split()[0]}")
-    _verify_versions(baseline)
+    if runtime_evidence is not None:
+        _verify_runtime_image_versions()
+        _verify_runtime_evidence(runtime_evidence)
+    else:
+        _verify_versions(baseline)
     _verify_plugin_path(plugin_root)
     if metadata_only:
         print("[hygon-env] metadata checks passed; runtime/GPU checks were not run")
@@ -479,7 +599,11 @@ def verify(
         raise RuntimeError(
             f"FlagTree must provide Triton 3.6, found {getattr(triton, '__version__', None)}"
         )
-    _report_sgl_kernel(torch, _require_import("sgl_kernel"))
+    if runtime_evidence is None:
+        # The legacy dev image ships an empty sgl_kernel wheel and a built
+        # FlagCX tree; the operations runtime ships neither (FlagCX arrives
+        # as a pip wheel and is exercised by the functional/e2e suites).
+        _report_sgl_kernel(torch, _require_import("sgl_kernel"))
     # Import SGLang before the plugin to preserve its discovery lifecycle.
     for name in (
         "sglang",
@@ -493,7 +617,10 @@ def verify(
     _verify_flash_attention()
     _require_import("flag_gems")
     _require_import("sglang_fl.dispatch.backends.vendor.hygon.impl.attention_backend")
-    _verify_flagcx()
+    if runtime_evidence is None:
+        _verify_flagcx()
+    else:
+        _require_import("flagcx")
     if require_gpu:
         _verify_gpu(torch, min_gpus)
     else:
@@ -505,6 +632,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--plugin-root", type=Path, default=REPO_ROOT)
     parser.add_argument("--baseline", type=Path)
+    parser.add_argument(
+        "--runtime-evidence",
+        type=Path,
+        help="verify the operations-runtime image against its /opt/sglang-ci "
+        "evidence pack instead of the legacy vendor baseline",
+    )
     parser.add_argument("--metadata-only", action="store_true")
     parser.add_argument("--require-gpu", action="store_true")
     parser.add_argument("--min-gpus", type=int, default=1)
@@ -525,6 +658,7 @@ def main(argv: list[str] | None = None) -> int:
             verify(
                 plugin_root=args.plugin_root,
                 baseline=args.baseline,
+                runtime_evidence=args.runtime_evidence,
                 metadata_only=args.metadata_only,
                 require_gpu=args.require_gpu,
                 min_gpus=args.min_gpus,

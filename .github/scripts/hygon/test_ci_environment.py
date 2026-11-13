@@ -3,22 +3,24 @@
 import importlib.util
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import yaml
-
 from ci_environment import (
     allocation_mask,
     main,
     normalized_environment,
     persist_for_actions,
+    verify_ci_packages,
     verify_image_metadata,
 )
+from enable_flagtree_device_lib_fallback import MARKER, enable_fallback
+from enable_sglang_scalar_fallback import ORIGINAL, PATCHED, patch_source
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS = Path(__file__).resolve().parent
@@ -154,6 +156,47 @@ class AllocationTests(unittest.TestCase):
 
 
 class ImageAndSetupTests(unittest.TestCase):
+    def test_device_library_fallback_is_exact_and_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            compiler = root / "compiler_hcu.py"
+            device_lib = root / "bitcode"
+            device_lib.mkdir()
+            for name in ("ocml.bc", "ockl.bc"):
+                (device_lib / name).touch()
+            compiler.write_text(
+                "def clang_args():\n"
+                "        clang_args = ['-O3', '']\n"
+                "        return clang_args\n",
+                encoding="utf-8",
+            )
+            enable_fallback(compiler, device_lib)
+            updated = compiler.read_text(encoding="utf-8")
+            self.assertIn(MARKER, updated)
+            self.assertIn(f"--rocm-device-lib-path={device_lib}", updated)
+            self.assertIn("if arg", updated)
+            enable_fallback(compiler, device_lib)
+            self.assertEqual(compiler.read_text(encoding="utf-8"), updated)
+
+    def test_device_library_fallback_requires_vendor_bitcode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            compiler = root / "compiler_hcu.py"
+            compiler.write_text("        return clang_args\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "directory is absent"):
+                enable_fallback(compiler, root / "missing")
+
+    def test_scalar_fallback_patch_is_exact_and_idempotent(self):
+        source = "prefix\n" + ORIGINAL + "suffix\n"
+        updated, changed = patch_source(source)
+        self.assertTrue(changed)
+        self.assertEqual(updated, "prefix\n" + PATCHED + "suffix\n")
+        self.assertEqual(patch_source(updated), (updated, False))
+
+    def test_scalar_fallback_patch_rejects_unknown_finder(self):
+        with self.assertRaisesRegex(RuntimeError, "reviewed appfix5"):
+            patch_source("class _StubFinder: pass\n")
+
     def test_old_sglang_image_fails_before_dependency_queries(self):
         calls = []
 
@@ -165,14 +208,15 @@ class ImageAndSetupTests(unittest.TestCase):
             verify_image_metadata(version)
         self.assertEqual(calls, ["sglang"])
 
-    def test_expected_image_requires_preinstalled_ci_dependencies(self):
+    def test_expected_image_passes_the_pregate_without_ci_packages(self):
+        # check.sh runs --check-image before setup.sh installs the test
+        # runner, so the sglang gate must not require CI packages.
+        verify_image_metadata(lambda name: "0.5.18+flagos")
+
+    def test_expected_image_requires_ci_packages_after_install(self):
         with self.assertRaisesRegex(RuntimeError, "missing pytest"):
-            verify_image_metadata(
-                lambda name: (
-                    "0.5.18"
-                    if name == "sglang"
-                    else (_ for _ in ()).throw(RuntimeError("missing pytest"))
-                )
+            verify_ci_packages(
+                lambda name: (_ for _ in ()).throw(RuntimeError("missing pytest"))
             )
 
     def test_check_image_failure_cannot_execute_install_command(self):
@@ -200,12 +244,27 @@ class ImageAndSetupTests(unittest.TestCase):
     def test_setup_has_one_dependency_preserving_install(self):
         source = (SCRIPTS / "setup.sh").read_text(encoding="utf-8")
         installs = [line for line in source.splitlines() if "pip install" in line]
-        self.assertEqual(len(installs), 1)
-        self.assertIn("--no-deps --no-build-isolation -e", installs[0])
+        # One pinned job-time test-runner install plus exactly one
+        # dependency-preserving plugin install (--no-deps).
+        self.assertEqual(len(installs), 2)
+        self.assertIn("pytest==9.1.1 pytest-timeout==2.4.0", installs[0])
+        self.assertIn("iniconfig==2.3.1 pluggy==1.7.0", source)
+        self.assertIn("--no-deps --no-build-isolation -e", installs[-1])
+        self.assertIn("--check-ci-packages", source)
         self.assertNotIn("--upgrade", source)
         self.assertNotIn(".[dev]", source)
-        self.assertIn("--baseline", source)
+        self.assertIn("--runtime-evidence", source)
         self.assertIn("--require-gpu --min-gpus 2", source)
+        self.assertGreater(
+            source.index("enable_flagtree_device_lib_fallback.py"),
+            source.index("--require-gpu --min-gpus 2"),
+        )
+        self.assertIn("ln -s /opt/dtk /opt/rocm", source)
+        self.assertIn("/opt/rocm/bin/hipcc --version", source)
+        self.assertIn("export ROCM_PATH=/opt/dtk", source)
+        self.assertIn("printf 'ROCM_PATH=%s\\n'", source)
+        self.assertIn("/opt/dtk/aillvm/bin/clang-18", source)
+        self.assertIn("SGLANG_HYGON_DIAGNOSTIC_TRITON_ATTENTION=1", source)
 
 
 class WorkflowTests(unittest.TestCase):

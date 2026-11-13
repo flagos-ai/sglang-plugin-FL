@@ -9,6 +9,11 @@ flagos_blacklist:
   - count_nonzero
   - cumsum
   - layer_norm
+  # Qwen3.6-VL's text-only path keeps an empty multimodal placeholder and
+  # writes it with masked_scatter_. FlagGems 5.4.0 tries to broadcast the
+  # zero-length mask to a non-empty dimension and raises in expand; native
+  # vendor Torch treats the empty write as the required no-op.
+  - masked_scatter_
 op_backends:
   silu_and_mul: [flagos]
   mrotary_embedding: [flagos]

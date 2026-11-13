@@ -11,6 +11,7 @@ import runpy
 import hashlib
 import io
 import json
+import shutil
 import sys
 import unittest
 from importlib import metadata
@@ -764,6 +765,127 @@ class HygonMTPModelSmokeTests(unittest.TestCase):
             self.assertRaisesRegex(ValueError, "actual HCU Torch"),
         ):
             self.smoke.test_mtp_smoke(monkeypatch)
+
+
+class RuntimeEvidenceTests(unittest.TestCase):
+    """Operations-runtime image contract: /opt/sglang-ci evidence checks."""
+
+    def setUp(self):
+        print_patch = patch("builtins.print")
+        print_patch.start()
+        self.addCleanup(print_patch.stop)
+
+    @staticmethod
+    def _dist(name, version):
+        return SimpleNamespace(metadata={"Name": name}, version=version)
+
+    def test_runtime_image_versions_pin_the_operations_runtime(self):
+        versions = {
+            "sglang": "0.5.18+flagos",
+            "torch": "2.9.0+das.opt1.dtk2604",
+            "flag-gems": "5.4.0",
+            "flagtree": "0.7.0+hcu3.6",
+            "triton": "3.8.0",
+        }
+        with patch.object(
+            verifier.metadata, "version", side_effect=versions.__getitem__
+        ):
+            verifier._verify_runtime_image_versions()
+
+    def test_runtime_image_rejects_replaced_torch(self):
+        versions = {
+            "sglang": "0.5.18+flagos",
+            "torch": "2.10.0+replaced",
+            "flag-gems": "5.4.0",
+        }
+        with patch.object(
+            verifier.metadata, "version", side_effect=versions.__getitem__
+        ):
+            with self.assertRaisesRegex(RuntimeError, "torch"):
+                verifier._verify_runtime_image_versions()
+
+    def _evidence_dir(self, before, additions):
+        import tempfile
+
+        root = Path(tempfile.mkdtemp())
+        (root / "runtime-distributions-before.json").write_text(
+            json.dumps(before), encoding="utf-8"
+        )
+        (root / "sglang-additions-installed.txt").write_text(
+            "\n".join(additions) + "\n", encoding="utf-8"
+        )
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        return root
+
+    def test_zero_drift_evidence_passes_and_asserts_flagtree_triton(self):
+        before = {"torch": "2.9.0+das.opt1.dtk2604", "flag-gems": "5.4.0"}
+        additions = ["triton==3.8.0", "xgrammar==0.2.1"]
+        evidence = self._evidence_dir(before, additions)
+        distributions = [
+            self._dist("torch", "2.9.0+das.opt1.dtk2604"),
+            self._dist("flag-gems", "5.4.0"),
+            self._dist("triton", "3.8.0"),
+            self._dist("xgrammar", "0.2.1"),
+            self._dist("pytest", "9.1.1"),
+            self._dist("iniconfig", "2.3.1"),
+            self._dist("pluggy", "1.7.0"),
+            self._dist("sglang_fl", "0.1.0"),
+        ]
+        spec = SimpleNamespace(origin="/opt/flagtree/triton/__init__.py")
+        with (
+            patch.object(
+                verifier.metadata, "distributions", lambda: iter(distributions)
+            ),
+            patch.object(verifier.importlib.util, "find_spec", return_value=spec),
+        ):
+            verifier._verify_runtime_evidence(evidence)
+
+    def test_runtime_distribution_drift_fails(self):
+        before = {"torch": "2.9.0+das.opt1.dtk2604"}
+        evidence = self._evidence_dir(before, [])
+        distributions = [self._dist("torch", "2.9.0+replaced.dtk")]
+        with patch.object(
+            verifier.metadata, "distributions", lambda: iter(distributions)
+        ):
+            with self.assertRaisesRegex(RuntimeError, "drifted"):
+                verifier._verify_runtime_evidence(evidence)
+
+    def test_unexpected_distribution_beyond_reviewed_closure_fails(self):
+        before = {"torch": "2.9.0+das.opt1.dtk2604"}
+        additions = ["triton==3.8.0"]
+        evidence = self._evidence_dir(before, additions)
+        distributions = [
+            self._dist("torch", "2.9.0+das.opt1.dtk2604"),
+            self._dist("some-extra-package", "1.0"),
+        ]
+        spec = SimpleNamespace(origin="/opt/flagtree/triton/__init__.py")
+        with (
+            patch.object(
+                verifier.metadata, "distributions", lambda: iter(distributions)
+            ),
+            patch.object(verifier.importlib.util, "find_spec", return_value=spec),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "beyond the reviewed closure"):
+                verifier._verify_runtime_evidence(evidence)
+
+    def test_shadowed_flagtree_triton_fails(self):
+        before = {"torch": "2.9.0+das.opt1.dtk2604"}
+        evidence = self._evidence_dir(before, ["triton==3.8.0"])
+        distributions = [
+            self._dist("torch", "2.9.0+das.opt1.dtk2604"),
+            self._dist("triton", "3.8.0"),
+        ]
+        spec = SimpleNamespace(
+            origin="/flagos/lib/python3.10/site-packages/triton/__init__.py"
+        )
+        with (
+            patch.object(
+                verifier.metadata, "distributions", lambda: iter(distributions)
+            ),
+            patch.object(verifier.importlib.util, "find_spec", return_value=spec),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "/opt/flagtree"):
+                verifier._verify_runtime_evidence(evidence)
 
 
 if __name__ == "__main__":
