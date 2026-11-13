@@ -21,8 +21,8 @@ cryptography==50.0.2
 cuda-core==1.2.2
 cuda-python==13.5.0
 cuda-tile==1.6.0rc5
-datasets==5.2.0
-dill==0.4.1
+datasets==4.0.0
+dill==0.3.8
 diskcache==5.6.3
 distro==1.9.0
 docstring-parser==0.18.0
@@ -33,6 +33,7 @@ fastapi==0.162.3
 flash-attn-4==4.0.0b38
 flashinfer-python==0.6.17
 frozenlist==1.8.0
+fsspec==2025.3.0
 gguf==0.19.0
 grpcio-health-checking==1.81.2
 grpcio-reflection==1.81.2
@@ -69,7 +70,7 @@ modelscope-hub==0.7.1
 modelscope==1.40.3
 msgspec==0.22.0
 multidict==7.2.1
-multiprocess==0.70.19
+multiprocess==0.70.16
 nccl4py==0.6.0
 nest-asyncio==1.6.0
 numba==0.65.1
@@ -104,7 +105,7 @@ psutil==7.2.2
 ptyprocess==0.7.0
 pure-eval==0.2.4
 py-spy==0.4.3
-pyarrow==26.0.1
+pyarrow==18.1.0
 pybase64==1.5.1
 pycountry==26.2.16
 pycparser==3.12
