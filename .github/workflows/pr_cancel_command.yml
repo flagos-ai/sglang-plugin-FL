@@ -1,0 +1,105 @@
+# Handler for /cancel slash command.
+# Cancels all in-progress CI runs for the PR head commit.
+# Authorized users: PR author or collaborators with triage/write/maintain/admin.
+# Ported from vllm-plugin-FL #581.
+name: PR /cancel Command
+
+on:
+  repository_dispatch:
+    types: [cancel-command]
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr-cancel-${{ github.event.client_payload.github.payload.comment.id }}
+  cancel-in-progress: false
+
+jobs:
+  cancel-ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check commenter authorization
+        id: auth
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMENTER: ${{ github.event.client_payload.github.actor }}
+          PR_URL: ${{ github.event.client_payload.pull_request.url }}
+        run: |
+          set -euo pipefail
+          pr_author=$(gh api "$PR_URL" --jq '.user.login')
+          if [ "$COMMENTER" = "$pr_author" ]; then
+            echo "authorized=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          perm=$(gh api "repos/${{ github.repository }}/collaborators/$COMMENTER/permission" --jq '.permission' 2>/dev/null || echo "none")
+          if echo "$perm" | grep -qE '^(admin|write|maintain|triage)$'; then
+            echo "authorized=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::error::$COMMENTER is not authorized (need PR author or triage+)"
+          echo "denied=true" >> "$GITHUB_OUTPUT"
+          exit 1
+
+      - name: React to comment (ack)
+        if: always() && steps.auth.outputs.authorized == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X POST \
+            repos/${{ github.repository }}/issues/comments/${{ github.event.client_payload.github.payload.comment.id }}/reactions \
+            -f content='eyes'
+
+      - name: Cancel running workflow runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.client_payload.pull_request.url }}
+        run: |
+          set -euo pipefail
+          head_sha=$(gh api "$PR_URL" --jq '.head.sha')
+          run_ids=$(gh run list --repo "${{ github.repository }}" \
+            --commit "$head_sha" --limit 30 --json databaseId,status \
+            --jq '.[] | select(.status == "in_progress" or .status == "queued" or .status == "requested") | .databaseId')
+          if [ -z "$run_ids" ]; then
+            echo "::error::No in-progress workflow run found for head SHA $head_sha."
+            exit 1
+          fi
+          cancel_ok=0
+          cancel_failed=0
+          for id in $run_ids; do
+            echo "Cancelling run $id"
+            if gh run cancel "$id" --repo "${{ github.repository }}"; then
+              cancel_ok=$((cancel_ok + 1))
+            else
+              cancel_failed=$((cancel_failed + 1))
+              echo "::error::failed to cancel run $id"
+            fi
+          done
+          echo "cancel_ok=$cancel_ok" >> "$GITHUB_ENV"
+          echo "cancel_failed=$cancel_failed" >> "$GITHUB_ENV"
+          if [ "$cancel_failed" -gt 0 ]; then
+            echo "::error::$cancel_failed run(s) could not be cancelled."
+            exit 1
+          fi
+
+      - name: Report result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.client_payload.github.payload.issue.number }}
+          COMMENTER: ${{ github.event.client_payload.github.actor }}
+        run: |
+          if [ "${{ steps.auth.outputs.denied }}" = "true" ]; then
+            body="⛔ @$COMMENTER is not authorized (PR author or collaborators only)."
+          elif [ "${{ job.status }}" = "success" ]; then
+            body="🛑 Cancelled ${cancel_ok:-0} CI run(s) for this PR (requested by @$COMMENTER)."
+            if [ "${cancel_failed:-0}" -gt 0 ]; then
+              body="$body ⚠️ ${cancel_failed} run(s) could NOT be cancelled (see workflow log)."
+            fi
+          else
+            body="❌ Failed to cancel CI (requested by @$COMMENTER). See [workflow log](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
+          fi
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body "$body"

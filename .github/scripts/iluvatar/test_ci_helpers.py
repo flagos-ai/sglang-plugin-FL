@@ -62,7 +62,7 @@ class TestCiEvidence(unittest.TestCase):
 
 
 class TestIdleAllocation(unittest.TestCase):
-    inventory = "index, memory.used [MiB], memory.total [MiB]\n0, 24170 MiB, 32768 MiB\n3, 0 MiB, 32768 MiB\n7, 32 MiB, 32768 MiB\n"
+    inventory = "index, memory.used [MiB], memory.total [MiB]\n0, 24170 MiB, 32768 MiB\n3, 0 MiB, 32768 MiB\n7, 1024 MiB, 32768 MiB\n"
 
     def test_only_explicit_idle_devices_are_accepted(self):
         checked = idle.check_inventory(self.inventory, "3,7")
@@ -109,6 +109,12 @@ class TestConfiguredResources(unittest.TestCase):
         )
 
     @staticmethod
+    def workflow_inputs(workflow):
+        # PyYAML 1.1 parses the unquoted GitHub Actions `on` key as True.
+        trigger = workflow.get("on", workflow.get(True))
+        return trigger["workflow_call"]["inputs"]
+
+    @staticmethod
     def commands(workflow):
         return [
             str(step["run"])
@@ -119,9 +125,10 @@ class TestConfiguredResources(unittest.TestCase):
 
     def test_automatic_full_resources_match_the_configured_pool(self):
         resolved = resources.resolve_resources(self.config)
+        self.assertNotIn("concurrency_group", self.config)
         self.assertEqual(
             json.loads(resolved["runner_labels"]),
-            ["iluvatar-cicd-vllm-plugin"],
+            ["flagcicd-iluvatar-dood-sglang518"],
         )
         self.assertEqual(resolved["cuda_visible_devices"], "0,1,2,3")
         self.assertTrue(
@@ -186,42 +193,55 @@ class TestConfiguredResources(unittest.TestCase):
             with self.subTest(overrides=overrides), self.assertRaises(ValueError):
                 resources.resolve_resources(self.config, overrides=overrides)
 
-    def test_main_ci_routes_only_iluvatar_to_its_dedicated_workflow(self):
+    def test_main_ci_routes_all_hardware_through_the_shared_workflow(self):
         registry = self.yaml.safe_load(
             (self.repo / ".github/configs/platforms.yml").read_text(encoding="utf8")
         )
         workflow = self.workflow("ci.yml")
         self.assertIs(registry["platforms"]["iluvatar"]["enabled"], True)
-        job = workflow["jobs"]["test-iluvatar"]
-        self.assertEqual(job["uses"], "./.github/workflows/_iluvatar_test.yml")
-        self.assertEqual(job["with"]["platform"], "iluvatar")
-        for platform in ("cuda", "ascend", "musa", "thead"):
-            with self.subTest(platform=platform):
-                other = workflow["jobs"][f"test-{platform}"]
-                self.assertEqual(
-                    other["uses"], "./.github/workflows/_platform_test.yml"
-                )
-                self.assertEqual(other["with"]["platform"], platform)
-
-    def test_shared_workflows_keep_existing_platform_test_entrypoints(self):
-        platform = self.workflow("_platform_test.yml")
-        for scope, filename in (
-            ("unit", "_unit_test.yml"),
-            ("functional", "_functional_test.yml"),
-            ("e2e", "_e2e_test.yml"),
-            ("benchmark", "_benchmark_test.yml"),
+        for platform in (
+            "nvidia",
+            "ascend",
+            "musa",
+            "thead",
+            "hygon",
+            "iluvatar",
         ):
-            with self.subTest(scope=scope):
+            with self.subTest(platform=platform):
+                job = workflow["jobs"][f"test-{platform}"]
+                self.assertEqual(job["uses"], "./.github/workflows/_platform_test.yml")
+                self.assertEqual(job["with"]["platform"], platform)
+        self.assertIn("iluvatar-cpu-contracts", workflow["jobs"])
+
+    def test_shared_workflows_select_a_configured_compatible_test_driver(self):
+        platform = self.workflow("_platform_test.yml")
+        for job_name, filename, scopes in (
+            ("functional", "_functional_test.yml", ("unit", "functional")),
+            ("e2e", "_e2e_test.yml", ("e2e",)),
+            ("benchmark", "_benchmark_test.yml", ("benchmark",)),
+        ):
+            with self.subTest(job=job_name):
                 self.assertEqual(
-                    platform["jobs"][scope]["uses"], f"./.github/workflows/{filename}"
+                    platform["jobs"][job_name]["uses"],
+                    f"./.github/workflows/{filename}",
                 )
-                commands = self.commands(self.workflow(filename))
-                runners = [command for command in commands if "tests/run.py" in command]
-                self.assertEqual(len(runners), 1)
-                self.assertIn("--platform ${{ inputs.platform }}", runners[0])
-                self.assertIn(f"--scope {scope}", runners[0])
-                self.assertFalse(
-                    any(".github/scripts/iluvatar/" in command for command in commands)
+                stage = self.workflow(filename)
+                inputs = self.workflow_inputs(stage)
+                self.assertEqual(inputs["test_driver"]["default"], "tests/run.py")
+                commands = self.commands(stage)
+                runners = [
+                    command for command in commands if '"$TEST_DRIVER"' in command
+                ]
+                self.assertEqual(len(runners), len(scopes))
+                for scope in scopes:
+                    runner = next(
+                        command for command in runners if f"--scope {scope}" in command
+                    )
+                    self.assertIn("--platform ${{ inputs.platform }}", runner)
+                self.assertEqual(
+                    platform["jobs"][job_name]["with"]["test_driver"],
+                    "${{ fromJson(needs.setup.outputs.config).test_driver "
+                    "|| 'tests/run.py' }}",
                 )
         self.assertFalse(
             any(
@@ -230,97 +250,102 @@ class TestConfiguredResources(unittest.TestCase):
             )
         )
 
-    def test_iluvatar_orchestrator_runs_every_stage_through_its_own_workflow(self):
-        workflow = self.workflow("_iluvatar_test.yml")
-        stages = {
-            name: job
-            for name, job in workflow["jobs"].items()
-            if job.get("uses") == "./.github/workflows/_iluvatar_stage_test.yml"
-        }
-        self.assertEqual(set(stages), {"unit", "functional", "e2e", "benchmark"})
+    def test_iluvatar_config_preserves_strict_acceptance_in_shared_workflow(self):
         self.assertEqual(
-            len({job["with"]["concurrency_group"] for job in stages.values()}), 1
+            self.config["test_driver"], ".github/scripts/iluvatar/run_tests.py"
         )
-        for scope, predecessor in (
-            ("unit", "setup"),
-            ("functional", "unit"),
-            ("e2e", "functional"),
-            ("benchmark", "e2e"),
-        ):
-            with self.subTest(scope=scope):
-                self.assertEqual(stages[scope]["with"]["scope"], scope)
-                needs = stages[scope]["needs"]
-                self.assertIn(predecessor, [needs] if isinstance(needs, str) else needs)
-        self.assertEqual(stages["e2e"]["strategy"]["max-parallel"], 1)
-        self.assertEqual(set(stages["e2e"]["strategy"]["matrix"]), {"test"})
-        for name in ("task", "device", "cases"):
-            self.assertEqual(
-                stages["e2e"]["with"][name], f"${{{{ matrix.test.{name} }}}}"
-            )
-        setup = workflow["jobs"]["setup"]
-        commands = [str(step.get("run", "")) for step in setup["steps"]]
-        matrix = [command for command in commands if "generate_matrix.py" in command]
-        self.assertEqual(len(matrix), 1)
-        self.assertIn("--platform iluvatar", matrix[0])
-        self.assertNotIn("--changed-files", matrix[0])
-        resource_steps = [
-            step
-            for step in setup["steps"]
-            if "scripts/iluvatar/resolve_ci_resources.py" in str(step.get("run", ""))
-        ]
-        self.assertEqual(len(resource_steps), 1)
-        self.assertEqual(resource_steps[0]["env"]["ACCEPTANCE_SCOPE"], "full")
+        self.assertEqual(self.config["test_timeout"], 180)
+        self.assertEqual(self.config["test_artifact_path"], "artifacts/iluvatar/")
+        self.assertIs(self.config["test_artifact_required"], True)
+        self.assertEqual(self.config["e2e_max_parallel"], 1)
+        platform = self.workflow("_platform_test.yml")
+        matrix_command = platform["jobs"]["setup"]["steps"][-1]["run"]
+        self.assertIn("--ci-stage ${{ inputs.ci_stage }}", matrix_command)
+        for job_name in ("functional", "e2e", "benchmark"):
+            with self.subTest(job=job_name):
+                values = platform["jobs"][job_name]["with"]
+                self.assertIn(".test_driver", values["test_driver"])
+                self.assertIn(".test_timeout", str(values["timeout"]))
+                self.assertIn(".test_artifact_path", values["test_artifact_path"])
+                self.assertIn(
+                    ".test_artifact_required", values["test_artifact_required"]
+                )
+        self.assertIn(
+            ".e2e_max_parallel",
+            str(platform["jobs"]["e2e"]["strategy"]["max-parallel"]),
+        )
+        self.assertFalse((self.repo / ".github/workflows/_iluvatar_test.yml").exists())
+        self.assertFalse(
+            (self.repo / ".github/workflows/_iluvatar_stage_test.yml").exists()
+        )
+        matrix_path = self.repo / ".github/scripts/generate_matrix.py"
+        spec = importlib.util.spec_from_file_location(
+            "_iluvatar_matrix_contract", matrix_path
+        )
+        matrix_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(matrix_module)
+        manifest = self.yaml.safe_load(
+            (self.repo / "tests/platforms/iluvatar.yaml").read_text(encoding="utf8")
+        )
+        for stage in ("pr", "nightly", "weekly"):
+            with self.subTest(stage=stage):
+                matrix = matrix_module.build_e2e_matrix(
+                    manifest,
+                    matrix_module.get_device_sections(manifest),
+                    manifest["unsupported_features"],
+                    ci_stage=stage,
+                )
+                self.assertEqual(len(matrix), 3)
+                self.assertEqual(
+                    {entry["task"] for entry in matrix},
+                    {"inference", "concurrent", "serving"},
+                )
+                self.assertTrue(all(entry["device"] == "bi_v150" for entry in matrix))
+                self.assertTrue(all(json.loads(entry["cases"]) for entry in matrix))
 
-    def test_iluvatar_stage_checks_setup_runs_driver_and_uploads_separate_evidence(
-        self,
-    ):
-        workflow = self.workflow("_iluvatar_stage_test.yml")
-        stage = workflow["jobs"]["stage"]
-        steps = stage["steps"]
-        commands = [str(step.get("run", "")) for step in steps]
-        check = commands.index("bash .github/scripts/iluvatar/check.sh")
-        setup = commands.index("bash .github/scripts/iluvatar/setup.sh")
-        drivers = [
-            index
-            for index, command in enumerate(commands)
-            if ".github/scripts/iluvatar/run_tests.py" in command
-        ]
-        self.assertEqual(len(drivers), 1)
-        driver = drivers[0]
-        self.assertTrue(
-            any(
-                str(step.get("uses", "")).startswith("actions/checkout@")
-                for step in steps[:check]
-            )
-        )
-        self.assertLess(check, setup)
-        self.assertLess(setup, driver)
-        for index in (check, setup, driver):
-            self.assertFalse(steps[index].get("continue-on-error", False))
-        self.assertIn("--platform iluvatar", commands[driver])
-        for name in ("scope", "task", "device", "cases"):
-            self.assertEqual(
-                stage["env"][f"ILUVATAR_{name.upper()}"], f"${{{{ inputs.{name} }}}}"
-            )
-            self.assertIn(f'"$ILUVATAR_{name.upper()}"', commands[driver])
-        self.assertNotIn("${{", commands[driver])
-        self.assertIn('"${args[@]}"', commands[driver])
-        self.assertIs(stage["concurrency"]["cancel-in-progress"], False)
-        self.assertEqual(
-            stage["concurrency"]["group"], "${{ inputs.concurrency_group }}"
-        )
-        uploads = [
-            step
-            for step in steps
-            if str(step.get("uses", "")).startswith("actions/upload-artifact@")
-        ]
-        self.assertEqual(len(uploads), 1)
-        upload = uploads[0]
-        self.assertEqual(upload["if"], "always()")
-        self.assertEqual(upload["with"]["path"], "artifacts/iluvatar/")
-        self.assertEqual(upload["with"]["if-no-files-found"], "error")
-        for name in ("scope", "device", "task"):
-            self.assertIn(f"inputs.{name}", upload["with"]["name"])
+    def test_shared_stages_check_setup_run_and_upload_platform_evidence(self):
+        for filename in (
+            "_functional_test.yml",
+            "_e2e_test.yml",
+            "_benchmark_test.yml",
+        ):
+            with self.subTest(filename=filename):
+                workflow = self.workflow(filename)
+                stage = next(iter(workflow["jobs"].values()))
+                steps = stage["steps"]
+                commands = [str(step.get("run", "")) for step in steps]
+                check = commands.index(
+                    "bash .github/scripts/${{ inputs.platform }}/check.sh"
+                )
+                setup = commands.index(
+                    "bash .github/scripts/${{ inputs.platform }}/setup.sh"
+                )
+                drivers = [
+                    index
+                    for index, command in enumerate(commands)
+                    if 'python "$TEST_DRIVER"' in command
+                ]
+                self.assertLess(check, setup)
+                self.assertTrue(drivers)
+                for driver in drivers:
+                    self.assertLess(setup, driver)
+                    self.assertEqual(
+                        steps[driver]["env"]["TEST_DRIVER"],
+                        "${{ inputs.test_driver }}",
+                    )
+                upload = next(
+                    step
+                    for step in steps
+                    if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+                )
+                self.assertIn(
+                    "${{ inputs.test_artifact_path }}", upload["with"]["path"]
+                )
+                self.assertIn(
+                    "test_artifact_required", upload["with"]["if-no-files-found"]
+                )
+        manual = self.workflow("iluvatar-gpu.yml")["jobs"]["gpu-contracts"]
+        self.assertNotIn("concurrency", manual)
 
     def test_driver_keeps_correctness_counts_and_original_benchmark_entries(self):
         spec = importlib.util.spec_from_file_location(
