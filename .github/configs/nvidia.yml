@@ -3,9 +3,19 @@
 
 platform: nvidia
 
-# Docker image built from docker/cuda/containerfile. Keep the SGLang version in
-# the tag so an old 0.5.11 image cannot be mistaken for the 0.5.18 CI runtime.
-ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl:0.2.0-cuda-sglang0.5.18-ci
+# Docker image: SGLang 0.5.18 standard wheel on the immutable operations
+# runtime (flagos-runtime-nvidia-cuda13.3), built by
+# docker/cuda/runtime-0.5.18.containerfile. Published tag:
+# nv-0.5.18-runtime-bake1; digest-pinned. This bake aligns the closure
+# CUDA toolchain to the runtime's CUDA 13.0 headers (nvcc/nvvm/crt
+# 13.0.88), adds the cu13 lib64 layout shim, and pins the numpy1-era
+# HF datasets stack -- all validated end-to-end on A100 (run 43415134759)
+# before the fast-path equivalents were removed from setup.sh.
+# The operations-runtime image is ~20 GB; a cold runner spends most of an
+# hour pulling it, so all platform stages get 180 minutes.
+test_timeout: 180
+
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:367e5242a9858ca7e1d9ff3ce807100032fb8fdab3dcb08fce7756fa24640b43
 
 # Runner labels for this hardware
 runner_labels:
