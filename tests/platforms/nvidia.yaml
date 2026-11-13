@@ -86,12 +86,12 @@ a100:
       # serving core); nightly adds the concurrent smoke; weekly falls
       # back to nightly when no weekly key is defined.
       # Each case points to tests/models/<model>/<case>.yaml.
+      # TEMPORARY PR #179 proof: run the smallest case that reaches the
+      # SGLang/FlashInfer CUDA JIT path. Restore the full PR matrix after the
+      # Runtime + standard-closure toolkit contract is demonstrated.
       pr:
-        inference:
-          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
         serving:
           qwen3: ["4b_tp2"]
-          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
       nightly:
         concurrent:
           qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
