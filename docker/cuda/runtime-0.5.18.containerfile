@@ -5,21 +5,19 @@
 #     upgraded, downgraded, replaced, or removed. The resolver must only ADD
 #     the SGLang dependency closure. Any planned change to an existing
 #     distribution fails the build.
-#   * NVIDIA installs the normal sglang==0.5.18 wheel plus a version-locked
-#     minimal dependency set (authorized deviation from the wheel's full
-#     standard closure): the closure's standalone triton wheel and CUDA
-#     toolchain/kernel stacks are excluded, because the runtime's FlagTree
-#     ships a COMPLETE triton tree at /opt/flagtree (verified: without any
-#     pip triton, `import triton.compiler` resolves there) and the mixed
-#     FlagTree-top/pip-bottom triton crashes kernel launches (SystemError in
-#     triton/backends/nvidia/driver.py). This mirrors the configuration the
-#     previous CI image proved green: no standalone triton at all. The
-#     runtime's own torch/CUDA/NCCL/FlagTree/FlagGems/FlagCX distributions
-#     are never touched; nothing is uninstalled or replaced.
-#   * Known runtime baseline finding, kept on record and NOT caused by this
-#     install: `torch 2.13.0+cu130 requires triton, which is not installed`.
-#     The runtime provides the triton module out-of-band (invisible to pip);
-#     nothing in this build may shadow it.
+#   * NVIDIA installs the normal sglang==0.5.18 wheel and its complete,
+#     version-locked standard dependency closure. Its CUDA compiler, CRT,
+#     NVVM, and CCCL are pinned to CUDA 13.0 to match the Runtime's CUDA 13.0
+#     headers and torch 2.13.0+cu130. Triton 3.7.1 stays in the image to
+#     satisfy torch's exact metadata requirement; the ephemeral GPU job swaps
+#     this application-added distribution to 3.6.0 because 3.7.1 mixed with
+#     FlagTree's Triton 3.6 code crashed kernel launches. The Runtime's own
+#     torch/CUDA/NCCL/FlagTree/FlagGems/FlagCX distributions are never touched.
+#   * Raw-Runtime baseline finding, kept on record: torch's distribution
+#     requires Triton while the Runtime provides the module out-of-band under
+#     /opt/flagtree. The image preserves standard-closure Triton 3.7.1 for
+#     metadata consistency; CI changes only that added distribution in its
+#     disposable test container.
 #   * No sglang-plugin-FL source in this image; CI installs the plugin from
 #     the PR checkout via the standard setup flow.
 #
@@ -181,11 +179,9 @@ print(json.dumps(provenance, indent=2, sort_keys=True))
 PY
 
 # --- Lock gate: the install list must not touch any runtime distribution --
-# Installing with --no-deps from a version-locked list (authorized deviation
-# from the wheel's standard closure: the closure's standalone triton and CUDA
-# toolchain wheels are excluded because the runtime's FlagTree triton tree is
-# complete and authoritative; see the PR description). This gate statically
-# proves the lock cannot replace a runtime distribution.
+# Installing with --no-deps from the reviewed, version-locked standard closure
+# (with the documented CUDA 13.0 toolchain constraints). This gate statically
+# proves the lock cannot replace a Runtime distribution.
 RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
     && "$PYTHON_BIN" - <<'PY'
 import json
@@ -233,6 +229,52 @@ RUN --mount=type=cache,target=/tmp/pip-cache \
          sleep 20; \
        done \
     && [ "$install_rc" -eq 0 ]
+
+# The standard closure owns the CUDA development toolkit used by SGLang and
+# FlashInfer JIT. Keep the operations Runtime's /usr/local/cuda tree immutable
+# and activate the complete pip toolkit as one coherent root instead of
+# linking a lone nvcc binary into Runtime-owned paths.
+ENV CUDA_HOME=/flagos/lib/python3.12/site-packages/nvidia/cu13 \
+    CUDA_PATH=/flagos/lib/python3.12/site-packages/nvidia/cu13
+ENV PATH="${CUDA_HOME}/bin:${PATH}" \
+    LD_LIBRARY_PATH="${CUDA_HOME}/lib:${LD_LIBRARY_PATH}"
+
+# Standard CUDA layout shim for the JIT link step: FlashInfer's ninja link
+# line assumes $CUDA_HOME/lib64 plus an unversioned libcudart.so, while the
+# pip cu13 tree uses lib/ and ships only the versioned libcudart.so.13
+# ("ld: cannot find -lcudart", run 43389681469). Purely additive symlinks;
+# no runtime-owned file is touched.
+RUN ln -sfn lib "${CUDA_HOME}/lib64" \
+    && ln -sfn libcudart.so.13 "${CUDA_HOME}/lib/libcudart.so" \
+    && test -e "${CUDA_HOME}/lib64/libcudart.so"
+
+# A GPU-less build can still prove the full JIT contract: the CCCL version
+# gate that aborted e2e compiles (cuda_toolkit.h compares the nvcc
+# MAJOR.MINOR against the headers' CUDART_VERSION) and the -lcudart link
+# resolution through the shim above.
+RUN test -x "${CUDA_HOME}/bin/nvcc" \
+    && test -f "${CUDA_HOME}/include/cuda_runtime.h" \
+    && test -f "${CUDA_HOME}/include/cuda.h" \
+    && FI_CCCL=/flagos/lib/python3.12/site-packages/flashinfer/data/cccl \
+    && test -d "$FI_CCCL/libcudacxx" \
+    && "${CUDA_HOME}/bin/nvcc" --version \
+    && printf '%s\n' \
+         '#include <cuda/std/__cccl/cuda_toolkit.h>' \
+         '#include <cub/util_type.cuh>' \
+         '__global__ void probe_kernel() {}' \
+         'int main() { return 0; }' \
+       | "${CUDA_HOME}/bin/nvcc" -x cu -std=c++17 \
+           -I"$FI_CCCL/cub" -I"$FI_CCCL/libcudacxx/include" -I"$FI_CCCL/thrust" \
+           -isystem "${CUDA_HOME}/include" \
+           --compiler-options=-fPIC --expt-relaxed-constexpr \
+           -gencode=arch=compute_80,code=sm_80 -c \
+           -o /tmp/sglang-jit-toolchain-probe.o - \
+    && test -s /tmp/sglang-jit-toolchain-probe.o \
+    && "${CUDA_HOME}/bin/nvcc" -shared -o /tmp/sglang-jit-toolchain-probe.so \
+           /tmp/sglang-jit-toolchain-probe.o \
+           -L"${CUDA_HOME}/lib64" -lcudart \
+    && test -s /tmp/sglang-jit-toolchain-probe.so \
+    && rm -f /tmp/sglang-jit-toolchain-probe.o /tmp/sglang-jit-toolchain-probe.so
 
 # --- Volatile verification (cheap layers, tuned without re-downloading) ------
 # 1. Every runtime distribution survives with the exact same version and the
@@ -335,26 +377,29 @@ PY
 
 # 2. pip check: only violations NEW relative to the runtime baseline fail the
 #    build; the runtime's own pre-existing findings stay on record.
+#    One documented waiver: the runtime owns fsspec (2026.9.0, readonly) while
+#    the numpy1-era datasets 4.0.0 pins its metadata cap at fsspec<=2025.3.0.
+#    The conflict is metadata-only -- import and sglang.bench_serving are
+#    verified against the runtime fsspec -- so this exact line is waived into
+#    the evidence file instead of failing the build.
 RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
     && { "$PYTHON_BIN" -m pip check > /opt/sglang-ci/runtime-pip-check-after.txt 2>&1; \
          printf '%s\n' "$?" > /opt/sglang-ci/runtime-pip-check-after.exitcode; true; } \
     && grep -v '^No broken requirements found\.$' /opt/sglang-ci/runtime-pip-check-baseline.txt | sort -u > /tmp/pip-check-baseline.lines \
     && grep -v '^No broken requirements found\.$' /opt/sglang-ci/runtime-pip-check-after.txt | sort -u > /tmp/pip-check-after.lines \
-    && comm -13 /tmp/pip-check-baseline.lines /tmp/pip-check-after.lines > /tmp/pip-check-raw-new.lines \
-    && grep -v '^xgrammar.*requires triton' /tmp/pip-check-raw-new.lines > /opt/sglang-ci/pip-check-new-violations.txt \
-    && echo 'NOTE (authorized deviation): xgrammar declares a standalone triton' \
-         'dependency that is intentionally not installed; FlagTree provides the' \
-         'complete triton tree via /opt/flagtree.' \
-    && if [ -s /opt/sglang-ci/pip-check-new-violations.txt ]; then \
+    && comm -13 /tmp/pip-check-baseline.lines /tmp/pip-check-after.lines > /opt/sglang-ci/pip-check-new-violations.txt \
+    && { grep -vF 'datasets 4.0.0 has requirement fsspec[http]<=2025.3.0,>=2023.1.0, but you have fsspec 2026.9.0.' \
+         /opt/sglang-ci/pip-check-new-violations.txt > /tmp/pip-check-blocking.txt || true; } \
+    && if [ -s /tmp/pip-check-blocking.txt ]; then \
          echo 'FATAL: new pip check violations introduced by the SGLang install:'; \
-         cat /opt/sglang-ci/pip-check-new-violations.txt; \
+         cat /tmp/pip-check-blocking.txt; \
          exit 1; \
        fi \
-    && echo 'pip check: no unexpected new violations (baseline preserved)'
+    && echo 'pip check: no unexpected new violations (baseline preserved; documented fsspec cap waiver on record)'
 
 # 3. Module provenance: every vendor module must still resolve to the exact
-#    same origin. One narrow, loudly-reported exception: the SGLang closure
-#    pulls a standalone triton wheel (xgrammar dependency) into site-packages,
+#    same origin. The SGLang closure adds standalone Triton 3.7.1 (xgrammar
+#    and humming-kernels dependency) to site-packages,
 #    while the runtime's authoritative triton module lives in the /opt/flagtree
 #    volume, which Docker only populates at container start (VOLUME copy-up),
 #    never during build RUN steps. At container start PYTHONPATH=/opt/flagtree
