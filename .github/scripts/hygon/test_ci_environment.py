@@ -259,6 +259,8 @@ class ImageAndSetupTests(unittest.TestCase):
             source.index("enable_flagtree_device_lib_fallback.py"),
             source.index("--require-gpu --min-gpus 2"),
         )
+        self.assertIn("ln -s /opt/dtk /opt/rocm", source)
+        self.assertIn("/opt/rocm/bin/hipcc --version", source)
 
 
 class WorkflowTests(unittest.TestCase):

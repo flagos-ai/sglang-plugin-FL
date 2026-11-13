@@ -62,3 +62,15 @@ python .github/scripts/hygon/ci_environment.py -- \
 # untouched Runtime-owned FlagTree files. Remove this rewrite when the Runtime
 # digest provides a working JIT path.
 python .github/scripts/hygon/enable_flagtree_device_lib_fallback.py
+# SGLang 0.5.18's HIP JIT builder uses the conventional ROCm prefix for both
+# hipcc and headers. DTK provides the complete compatible tree at /opt/dtk but
+# the Runtime has no /opt/rocm alias. Keep this as a diagnostic-only link while
+# checking for failures beyond the Runtime/application prefix mismatch.
+if [ ! -e /opt/rocm ] && [ ! -L /opt/rocm ]; then
+  ln -s /opt/dtk /opt/rocm
+fi
+if [ "$(readlink -f /opt/rocm)" != "$(readlink -f /opt/dtk)" ]; then
+  echo "::error::/opt/rocm exists but does not resolve to the DTK SDK" >&2
+  exit 1
+fi
+/opt/rocm/bin/hipcc --version | head -n 1
