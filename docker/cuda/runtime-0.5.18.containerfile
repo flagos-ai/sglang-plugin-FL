@@ -388,8 +388,8 @@ RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
     && grep -v '^No broken requirements found\.$' /opt/sglang-ci/runtime-pip-check-baseline.txt | sort -u > /tmp/pip-check-baseline.lines \
     && grep -v '^No broken requirements found\.$' /opt/sglang-ci/runtime-pip-check-after.txt | sort -u > /tmp/pip-check-after.lines \
     && comm -13 /tmp/pip-check-baseline.lines /tmp/pip-check-after.lines > /opt/sglang-ci/pip-check-new-violations.txt \
-    && grep -vF 'datasets 4.0.0 has requirement fsspec[http]<=2025.3.0,>=2023.1.0, but you have fsspec 2026.9.0.' \
-         /opt/sglang-ci/pip-check-new-violations.txt > /tmp/pip-check-blocking.txt \
+    && { grep -vF 'datasets 4.0.0 has requirement fsspec[http]<=2025.3.0,>=2023.1.0, but you have fsspec 2026.9.0.' \
+         /opt/sglang-ci/pip-check-new-violations.txt > /tmp/pip-check-blocking.txt || true; } \
     && if [ -s /tmp/pip-check-blocking.txt ]; then \
          echo 'FATAL: new pip check violations introduced by the SGLang install:'; \
          cat /tmp/pip-check-blocking.txt; \
