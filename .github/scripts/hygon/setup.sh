@@ -24,10 +24,35 @@ python .github/scripts/hygon/ci_environment.py --check-ci-packages
 # own distributions must never move.
 python .github/scripts/hygon/ci_environment.py --check-image -- \
   python -m pip install --no-deps --no-build-isolation -e "$PLUGIN_ROOT"
+# Temporary fast-path validation for the appfix5 image: its broad import
+# finder must not fabricate sgl_kernel.scalar_type, because SGLang already
+# provides the correct ImportError fallback for this optional NVIDIA module.
+# Once hardware validation passes, this exception is baked into the image and
+# this job-time rewrite is removed.
+python .github/scripts/hygon/enable_sglang_scalar_fallback.py
 export PYTHONPATH="$PLUGIN_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 if [ -n "${GITHUB_ENV:-}" ]; then
   printf 'PYTHONPATH=%s\n' "$PYTHONPATH" >> "$GITHUB_ENV"
 fi
+python .github/scripts/hygon/ci_environment.py -- python - <<'PY'
+import importlib
+
+try:
+    importlib.import_module("sgl_kernel.scalar_type")
+except ModuleNotFoundError as error:
+    assert error.name == "sgl_kernel.scalar_type", error
+else:
+    raise AssertionError("sgl_kernel.scalar_type must remain absent on HCU")
+
+from sglang.srt.layers.quantization.utils import get_scalar_types
+
+_, scalar_types = get_scalar_types()
+assert scalar_types.uint4b8 == "uint4b8", scalar_types.uint4b8
+importlib.import_module(
+    "sglang_fl.dispatch.backends.vendor.hygon.impl.attention_backend"
+)
+print("[hygon-ci] SGLang scalar fallback and Hygon attention import passed")
+PY
 python .github/scripts/hygon/ci_environment.py -- \
   python .github/scripts/hygon/verify_environment.py \
     --plugin-root "$PLUGIN_ROOT" --runtime-evidence "$EVIDENCE" \

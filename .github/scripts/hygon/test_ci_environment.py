@@ -20,6 +20,7 @@ from ci_environment import (
     verify_ci_packages,
     verify_image_metadata,
 )
+from enable_sglang_scalar_fallback import ORIGINAL, PATCHED, patch_source
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS = Path(__file__).resolve().parent
@@ -155,6 +156,17 @@ class AllocationTests(unittest.TestCase):
 
 
 class ImageAndSetupTests(unittest.TestCase):
+    def test_scalar_fallback_patch_is_exact_and_idempotent(self):
+        source = "prefix\n" + ORIGINAL + "suffix\n"
+        updated, changed = patch_source(source)
+        self.assertTrue(changed)
+        self.assertEqual(updated, "prefix\n" + PATCHED + "suffix\n")
+        self.assertEqual(patch_source(updated), (updated, False))
+
+    def test_scalar_fallback_patch_rejects_unknown_finder(self):
+        with self.assertRaisesRegex(RuntimeError, "reviewed appfix5"):
+            patch_source("class _StubFinder: pass\n")
+
     def test_old_sglang_image_fails_before_dependency_queries(self):
         calls = []
 
