@@ -350,6 +350,7 @@ def apply_musa_patches() -> None:
 
     from .triton_compat import patch_triton_pdl_symbols
     from .lifecycle import apply_musa_lifecycle_patches
+    from .patches import install_minimax_w8a8_support
 
     patch_triton_pdl_symbols()
     _patch_gdn_packed_decode_precision()
@@ -359,6 +360,7 @@ def apply_musa_patches() -> None:
     _patch_multimodal_mask()
     _patch_fp32_tp_all_reduce()
     apply_musa_lifecycle_patches()
+    install_minimax_w8a8_support()
     _patches_applied = True
     logger.info("All MUSA PP patches applied successfully")
 
