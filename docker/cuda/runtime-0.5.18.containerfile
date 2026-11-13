@@ -239,21 +239,42 @@ ENV CUDA_HOME=/flagos/lib/python3.12/site-packages/nvidia/cu13 \
 ENV PATH="${CUDA_HOME}/bin:${PATH}" \
     LD_LIBRARY_PATH="${CUDA_HOME}/lib:${LD_LIBRARY_PATH}"
 
-# A GPU-less build can still prove that nvcc, headers and companion tools form
-# a usable toolkit by compiling a real sm80 CUDA object.
+# Standard CUDA layout shim for the JIT link step: FlashInfer's ninja link
+# line assumes $CUDA_HOME/lib64 plus an unversioned libcudart.so, while the
+# pip cu13 tree uses lib/ and ships only the versioned libcudart.so.13
+# ("ld: cannot find -lcudart", run 43389681469). Purely additive symlinks;
+# no runtime-owned file is touched.
+RUN ln -sfn lib "${CUDA_HOME}/lib64" \
+    && ln -sfn libcudart.so.13 "${CUDA_HOME}/lib/libcudart.so" \
+    && test -e "${CUDA_HOME}/lib64/libcudart.so"
+
+# A GPU-less build can still prove the full JIT contract: the CCCL version
+# gate that aborted e2e compiles (cuda_toolkit.h compares the nvcc
+# MAJOR.MINOR against the headers' CUDART_VERSION) and the -lcudart link
+# resolution through the shim above.
 RUN test -x "${CUDA_HOME}/bin/nvcc" \
     && test -f "${CUDA_HOME}/include/cuda_runtime.h" \
     && test -f "${CUDA_HOME}/include/cuda.h" \
+    && FI_CCCL=/flagos/lib/python3.12/site-packages/flashinfer/data/cccl \
+    && test -d "$FI_CCCL/libcudacxx" \
     && "${CUDA_HOME}/bin/nvcc" --version \
     && printf '%s\n' \
-         '#include <cuda_runtime.h>' \
+         '#include <cuda/std/__cccl/cuda_toolkit.h>' \
+         '#include <cub/util_type.cuh>' \
          '__global__ void probe_kernel() {}' \
          'int main() { return 0; }' \
        | "${CUDA_HOME}/bin/nvcc" -x cu -std=c++17 \
+           -I"$FI_CCCL/cub" -I"$FI_CCCL/libcudacxx/include" -I"$FI_CCCL/thrust" \
+           -isystem "${CUDA_HOME}/include" \
+           --compiler-options=-fPIC --expt-relaxed-constexpr \
            -gencode=arch=compute_80,code=sm_80 -c \
            -o /tmp/sglang-jit-toolchain-probe.o - \
     && test -s /tmp/sglang-jit-toolchain-probe.o \
-    && rm /tmp/sglang-jit-toolchain-probe.o
+    && "${CUDA_HOME}/bin/nvcc" -shared -o /tmp/sglang-jit-toolchain-probe.so \
+           /tmp/sglang-jit-toolchain-probe.o \
+           -L"${CUDA_HOME}/lib64" -lcudart \
+    && test -s /tmp/sglang-jit-toolchain-probe.so \
+    && rm -f /tmp/sglang-jit-toolchain-probe.o /tmp/sglang-jit-toolchain-probe.so
 
 # --- Volatile verification (cheap layers, tuned without re-downloading) ------
 # 1. Every runtime distribution survives with the exact same version and the
