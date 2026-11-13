@@ -45,6 +45,65 @@ import torch
 _SOFTPLUS_THRESHOLD = 20.0
 
 
+def _fla_chunk_size() -> int:
+    """The chunk granularity of the klx chunk kernel (FLA CHUNK_SIZE)."""
+    try:
+        from sglang.kernels.ops.attention.fla.chunk_delta_h import (
+            CHUNK_SIZE as _FLA_CHUNK_SIZE,
+        )
+
+        return int(_FLA_CHUNK_SIZE)
+    except Exception:
+        return 64
+
+
+def _mamba_cache_chunk_size(fallback: int) -> int:
+    """SGLang's mamba state-checkpoint granularity (max(chunk, page_size))."""
+    try:
+        from sglang.srt.runtime_context import mamba_cache_chunk_size
+
+        return int(mamba_cache_chunk_size())
+    except Exception:
+        return fallback
+
+
+def _select_state_checkpoints(
+    hk: torch.Tensor, cu_seqlens: torch.Tensor, state_dtype: torch.dtype
+) -> torch.Tensor:
+    """Turn the kernel's per-chunk states into SGLang's checkpoint tensor.
+
+    ``hk`` is ``[sum(ceil(L_i / fla_chunk)), HV, K, V]``: request i owns a block
+    of ``ceil(L_i / fla_chunk)`` rows whose row 0 is the *incoming* state and
+    row j is the state after j chunks (the state after the final chunk is
+    returned separately as ``final_state``).  SGLang's
+    ``_init_track_ssm_indices`` walks a flat list where request i owns
+    ``ceil(L_i / cache_chunk)`` entries indexed from its block start, and reads
+    the state after ``L_i // cache_chunk`` chunks for an unaligned prefix.
+
+    Returns ``[1, total_checkpoints, HV, V, K]`` (SGLang's V,K state layout).
+    """
+    fla_chunk = _fla_chunk_size()
+    cache_chunk = max(fla_chunk, _mamba_cache_chunk_size(fla_chunk))
+    step = max(1, cache_chunk // fla_chunk)
+
+    lens = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
+    keep = []
+    row = 0
+    for length in lens:
+        num_chunks = (int(length) + fla_chunk - 1) // fla_chunk
+        num_cache_states = (int(length) + cache_chunk - 1) // cache_chunk
+        for k in range(1, num_cache_states + 1):
+            # Clamp to the last available row: the read index SGLang uses for an
+            # unaligned prefix (floor(L / chunk)) is always within the block.
+            keep.append(row + min(k * step, num_chunks - 1))
+        row += num_chunks
+    if not keep:
+        return hk.new_empty((1, 0) + hk.shape[1:]).transpose(-1, -2)
+    idx = torch.tensor(keep, dtype=torch.long, device=hk.device)
+    # [N, HV, K, V] -> [1, N, HV, V, K]
+    return hk.index_select(0, idx).transpose(-1, -2).unsqueeze(0).to(state_dtype)
+
+
 def chunk_gated_delta_rule_kunlunxin(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -132,7 +191,17 @@ def chunk_gated_delta_rule_kunlunxin(
         final = ht.transpose(-1, -2).to(initial_state.dtype)
         initial_state.index_copy_(0, idx, final)
 
-    return o, None, None
+    # The klx chunk kernel also returns the state after every chunk
+    # (res[2] = [sum(ceil(L_i / chunk) + 1), HV, K, V], row 0 being the incoming
+    # state).  SGLang's radix-cache mamba tracking consumes those as `h`; without
+    # them `_track_mamba_state_extend` trips `assert h is not None` whenever a
+    # prefix is not chunk-aligned.
+    if len(res) > 2 and res[2] is not None:
+        h = _select_state_checkpoints(res[2], cu, state_dtype)
+    else:
+        h = None
+
+    return o, None, h
 
 
 def fused_recurrent_gated_delta_rule_packed_decode_kunlunxin(

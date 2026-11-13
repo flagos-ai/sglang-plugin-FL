@@ -53,6 +53,8 @@ So we replace both functions with kunlunxin-native wrappers:
     (``is_ncw=False``); see ``_kunlun_causal_conv1d_update``. (The xfla package's
     ``causal_conv1d_update`` is a pure-python ref that drops conv_state_indices,
     so decode stays on the klx kernel.)
+
+sglang 0.5.18+: the causal_conv1d_triton module was moved to sglang.kernels.ops.mamba
 """
 
 import itertools
@@ -86,7 +88,8 @@ def _kunlun_causal_conv1d_fn(
     ``conv_states`` as ``(num_cache_lines, dim, state_len)`` NCW; we transpose
     both into NWC for the kernel, then transpose the output / updated state back.
     """
-    from sglang.srt.layers.attention.mamba.causal_conv1d_triton import PAD_SLOT_ID
+    # sglang 0.5.18+: the causal_conv1d_triton module was moved to sglang.kernels.ops.mamba
+    from sglang.kernels.ops.mamba.causal_conv1d_triton import PAD_SLOT_ID
 
     # Deferred, kunlunxin-local side-effect import (registers the xfla xpu ops).
     import fla_xpu_ops
@@ -193,7 +196,8 @@ def _kunlun_causal_conv1d_update(
     buffer, then squeeze it back. The kernel updates ``x`` and ``conv_state`` in
     place and we return ``x`` (SGLang consumes the return value).
     """
-    from sglang.srt.layers.attention.mamba.causal_conv1d_triton import PAD_SLOT_ID
+    # sglang 0.5.18+: the causal_conv1d_triton module was moved to sglang.kernels.ops.mamba
+    from sglang.kernels.ops.mamba.causal_conv1d_triton import PAD_SLOT_ID
 
     # Deferred, kunlunxin-local side-effect import (registers torch.ops.sgl_kernel.*).
     import sgl_kernel  # noqa: F401
@@ -274,7 +278,8 @@ def patch_causal_conv1d():
 
     import sys
 
-    from sglang.srt.layers.attention.mamba import causal_conv1d_triton
+    # sglang 0.5.18+: the causal_conv1d_triton module was moved to sglang.kernels.ops.mamba
+    from sglang.kernels.ops.mamba import causal_conv1d_triton
 
     causal_conv1d_triton.causal_conv1d_fn = _kunlun_causal_conv1d_fn
     causal_conv1d_triton.causal_conv1d_update = _kunlun_causal_conv1d_update

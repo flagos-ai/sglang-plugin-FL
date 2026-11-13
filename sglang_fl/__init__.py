@@ -51,6 +51,7 @@ Environment variables:
   SGLANG_FL_DISPATCH_DEBUG=1|0        Verbose operator selection logging
   SGLANG_FL_LOG_LEVEL=DEBUG|INFO|...  Dispatch module log level
   SGLANG_FL_CONFIG=<path>             YAML config file (overrides platform defaults)
+  SGLANG_FL_SKIP_VERSION_CHECK=1|0    Skip the vendor image dependency guard (default: 0)
   SGLANG_FL_DIST_BACKEND=nccl|hccl|flagcx   Override distributed backend
   FLAGCX_PATH=<path>                         If set, default to flagcx backend
   SGLANG_FL_DISAGG_FLAGCX=1|0         Register FlagCX PD-disagg backend (default: 1)
@@ -916,7 +917,43 @@ def activate_platform() -> str | None:
         info.vendor_name,
         info.device_type,
     )
+    # Vendor ``early.py`` runs here, still before any ``sglang.srt.layers``
+    # module: it holds only patches that must precede SGLang's module-level
+    # imports (import guards); everything else belongs in ``patch.py``.
+    _apply_vendor_early_patches(info.vendor_name)
     return "sglang_fl.platform:PlatformFL"
+
+
+def _apply_vendor_early_patches(vendor_name: str) -> None:
+    """Import optional vendor early patches during platform discovery.
+
+    Platform discovery runs before SGLang imports its layers. Only patches
+    required before those imports belong here; other patches belong in
+    patch.py.
+    """
+    import importlib
+    import importlib.util
+
+    vendor_package = f"sglang_fl.dispatch.backends.vendor.{vendor_name}"
+    try:
+        if importlib.util.find_spec(vendor_package) is None:
+            return
+    except (ImportError, ModuleNotFoundError):
+        return
+
+    module = f"{vendor_package}.early"
+    try:
+        if importlib.util.find_spec(module) is None:
+            return
+    except (ImportError, ModuleNotFoundError):
+        return
+
+    try:
+        importlib.import_module(module)
+    except Exception:
+        logger.exception("vendor early patch failed to load: %s", module)
+        return
+    logger.info("vendor early patch loaded: %s", module)
 
 
 # ─── General Plugin entry point ──────────────────────────────────────────────

@@ -176,3 +176,13 @@ jobs:
       ci_stage: nightly
       branch: ${{ inputs.branch }}
     secrets: inherit
+
+  test-kunlunxin:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'kunlunxin')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: kunlunxin
+      ci_stage: nightly
+      branch: ${{ inputs.branch }}
+    secrets: inherit

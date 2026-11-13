@@ -23,7 +23,7 @@ Adapted from vllm-plugin-FL's PyFlagcxCommunicator pattern:
 Requirements:
   - FLAGCX_PATH env var pointing to FlagCX installation
   - libflagcx.so built at $FLAGCX_PATH/build/lib/
-  - FlagCX Python wrapper at $FLAGCX_PATH/plugin/interservice/flagcx_wrapper.py
+  - FlagCX Python API (flagcx.api), or legacy plugin.interservice.flagcx_wrapper
 
 Usage:
   SGLANG_FL_DIST_BACKEND=flagcx FLAGCX_PATH=/path/to/FlagCX \
@@ -35,11 +35,23 @@ import ctypes
 import logging
 import os
 import sys
+from importlib import import_module
+from importlib.machinery import PathFinder
+from importlib.util import find_spec
 
 import torch
 import torch.distributed as dist
 
 logger = logging.getLogger(__name__)
+
+
+def _import_flagcx_api():
+    """Prefer the packaged API, retaining the legacy source-tree layout."""
+    spec = find_spec("flagcx")
+    if spec is not None and spec.submodule_search_locations is not None:
+        if PathFinder.find_spec("flagcx.api", spec.submodule_search_locations) is not None:
+            return import_module("flagcx.api")
+    return import_module("plugin.interservice.flagcx_wrapper")
 
 
 def _import_flagcx_wrapper():
@@ -56,22 +68,14 @@ def _import_flagcx_wrapper():
     if flagcx_path not in sys.path:
         sys.path.append(flagcx_path)
 
-    from plugin.interservice.flagcx_wrapper import (
-        FLAGCXLibrary,
-        buffer_type,
-        flagcxComm_t,
-        flagcxDataTypeEnum,
-        flagcxRedOpTypeEnum,
-        flagcxUniqueId,
-    )
-
+    api = _import_flagcx_api()
     return (
-        FLAGCXLibrary,
-        buffer_type,
-        flagcxComm_t,
-        flagcxDataTypeEnum,
-        flagcxRedOpTypeEnum,
-        flagcxUniqueId,
+        api.FLAGCXLibrary,
+        api.buffer_type,
+        api.flagcxComm_t,
+        api.flagcxDataTypeEnum,
+        api.flagcxRedOpTypeEnum,
+        api.flagcxUniqueId,
     )
 
 
@@ -220,8 +224,7 @@ class FlagCXCommunicator:
         cached = self._stream_cache.get(handle)
         if cached is not None:
             return cached
-        from plugin.interservice.flagcx_wrapper import flagcxStream_t
-        new_stream = flagcxStream_t()
+        new_stream = _import_flagcx_api().flagcxStream_t()
         self.flagcx.FLAGCX_CHECK(
             self.flagcx.devHandle.contents.streamCopy(
                 ctypes.byref(new_stream),

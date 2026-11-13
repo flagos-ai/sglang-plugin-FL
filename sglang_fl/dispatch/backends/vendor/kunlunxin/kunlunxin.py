@@ -43,12 +43,15 @@ class KunlunxinBackend(Backend):
     def is_available(self) -> bool:
         if KunlunxinBackend._available is None:
             try:
-                import torch_xmlir
-
-                KunlunxinBackend._available = (
-                    torch_xmlir.xpu.is_available()
-                    and torch_xmlir.get_xpu_version() == "KL3"
-                )
+                # First, check if there is an xpu environment, and then verify whether it is a KL3 environment
+                if not hasattr(torch, "xpu"):
+                    KunlunxinBackend._available = False
+                else:
+                    import torch_xmlir
+                    KunlunxinBackend._available = (
+                        torch_xmlir.xpu.is_available()
+                        and torch_xmlir.get_xpu_version() == "KL3"
+                    )
             except Exception:
                 KunlunxinBackend._available = False
         return KunlunxinBackend._available
