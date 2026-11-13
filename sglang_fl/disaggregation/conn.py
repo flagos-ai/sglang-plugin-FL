@@ -1060,7 +1060,10 @@ class FlagcxKVManager(CommonKVManager):
                         )
                         or rc
                     )
-            elif st in (StateType.SWA, StateType.NSA):
+            elif st in (
+                StateType.SWA,
+                getattr(StateType, "DSA", None) or getattr(StateType, "NSA"),
+            ):
                 if (
                     target_rank_registration_info is not None
                     and not self.is_mla_backend
