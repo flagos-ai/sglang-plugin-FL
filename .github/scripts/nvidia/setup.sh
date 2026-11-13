@@ -13,6 +13,18 @@ echo "=== Minimal fast-path: swap triton only ==="
 python3 -m pip install --no-deps triton==3.6.0
 echo "triton swapped: 3.7.1 -> 3.6.0 (FlagTree-matching version)"
 
+echo "=== Aligning the closure CUDA toolchain to the runtime's CTK headers ==="
+# The operations runtime preinstalls nvidia-cuda-runtime 13.0.96, whose
+# headers own nvidia/cu13/include (CUDART_VERSION 13000). The standard
+# closure added nvcc 13.5.37, and flashinfer's bundled CCCL compares the
+# nvcc MAJOR.MINOR against the headers' (cuda_toolkit.h:41): 13.5 vs 13.0
+# aborts every JIT compile (PR #179 e2e run 43347047055). The runtime's
+# own distributions are readonly, so align the compiler to the 13.0 line
+# instead (13.0.88 matches the runtime's nvrtc/cupti line).
+python3 -m pip install --no-deps \
+    nvidia-cuda-nvcc==13.0.88 nvidia-nvvm==13.0.88 nvidia-cuda-crt==13.0.88
+echo "CUDA toolchain aligned: nvcc/nvvm/crt 13.5.37 -> 13.0.88"
+
 echo "=== Activating the standard-closure CUDA toolkit ==="
 # The normal SGLang dependency closure installs a complete pip CUDA toolkit
 # under nvidia/cu13.  The operations Runtime intentionally keeps
@@ -48,15 +60,24 @@ if [ -n "${GITHUB_PATH:-}" ]; then
 fi
 
 "$PIP_CUDA_HOME/bin/nvcc" --version
+# Probe with the exact compile shape that failed in e2e: flashinfer's
+# bundled CCCL gates on nvcc MAJOR.MINOR == the headers' CUDART_VERSION
+# (cuda_toolkit.h:41). A plain cuda_runtime.h compile passes even when
+# that gate would abort, so exercise the CCCL path directly.
+FI_CCCL=/flagos/lib/python3.12/site-packages/flashinfer/data/cccl
 printf '%s\n' \
-    '#include <cuda_runtime.h>' \
+    '#include <cuda/std/__cccl/cuda_toolkit.h>' \
+    '#include <cub/util_type.cuh>' \
     '__global__ void probe_kernel() {}' \
     'int main() { return 0; }' \
     | "$PIP_CUDA_HOME/bin/nvcc" -x cu -std=c++17 \
+        -I"$FI_CCCL/cub" -I"$FI_CCCL/libcudacxx/include" -I"$FI_CCCL/thrust" \
+        -isystem "$PIP_CUDA_HOME/include" \
+        --expt-relaxed-constexpr \
         -gencode=arch=compute_80,code=sm_80 -c \
         -o /tmp/sglang-jit-toolchain-probe.o -
 test -s /tmp/sglang-jit-toolchain-probe.o
-echo "CUDA toolkit compile smoke passed: $PIP_CUDA_HOME"
+echo "CUDA toolkit CCCL-shaped compile smoke passed: $PIP_CUDA_HOME"
 echo "=== Installing test runner (ephemeral) ==="
 # The operations-runtime CI image intentionally ships no test packages; the
 # pinned runner installs into the ephemeral job container only, at the same

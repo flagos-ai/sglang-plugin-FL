@@ -72,6 +72,20 @@ def verify(
             raise RuntimeError(
                 f"triton must be 3.6.0 (FlagTree's version); found {standalone_triton}"
             )
+        # Post-setup: the closure's nvcc 13.5.37 mismatches the runtime's
+        # CUDA 13.0 headers (nvidia-cuda-runtime 13.0.96 owns cu13/include)
+        # and flashinfer's CCCL gate aborts JIT compiles. setup.sh realigns
+        # the compiler to the runtime's 13.0 line.
+        for ctk_pkg in ("nvidia-cuda-nvcc", "nvidia-nvvm", "nvidia-cuda-crt"):
+            try:
+                ctk_version = metadata.version(ctk_pkg)
+            except metadata.PackageNotFoundError:
+                raise RuntimeError(f"required distribution is missing: {ctk_pkg}")
+            if ctk_version != "13.0.88":
+                raise RuntimeError(
+                    f"{ctk_pkg} must be 13.0.88 (runtime's CTK header line); "
+                    f"found {ctk_version}"
+                )
     # FlagTree's triton module must be what resolves (PYTHONPATH=/opt/flagtree
     # precedes site-packages at container start; find_spec resolves without
     # executing device libraries).
