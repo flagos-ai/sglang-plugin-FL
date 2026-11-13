@@ -57,3 +57,8 @@ python .github/scripts/hygon/ci_environment.py -- \
   python .github/scripts/hygon/verify_environment.py \
     --plugin-root "$PLUGIN_ROOT" --runtime-evidence "$EVIDENCE" \
     --require-gpu --min-gpus 2
+# Diagnostic-only unblocker for build-infra#1786. Apply it after the runtime
+# evidence check above so the verifier still proves that the image contains the
+# untouched Runtime-owned FlagTree files. Remove this rewrite when the Runtime
+# digest provides a working JIT path.
+python .github/scripts/hygon/enable_flagtree_device_lib_fallback.py

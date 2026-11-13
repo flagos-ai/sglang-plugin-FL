@@ -3,15 +3,14 @@
 import importlib.util
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import yaml
-
 from ci_environment import (
     allocation_mask,
     main,
@@ -20,6 +19,7 @@ from ci_environment import (
     verify_ci_packages,
     verify_image_metadata,
 )
+from enable_flagtree_device_lib_fallback import MARKER, enable_fallback
 from enable_sglang_scalar_fallback import ORIGINAL, PATCHED, patch_source
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -156,6 +156,36 @@ class AllocationTests(unittest.TestCase):
 
 
 class ImageAndSetupTests(unittest.TestCase):
+    def test_device_library_fallback_is_exact_and_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            compiler = root / "compiler_hcu.py"
+            device_lib = root / "bitcode"
+            device_lib.mkdir()
+            for name in ("ocml.bc", "ockl.bc"):
+                (device_lib / name).touch()
+            compiler.write_text(
+                "def clang_args():\n"
+                "        clang_args = ['-O3', '']\n"
+                "        return clang_args\n",
+                encoding="utf-8",
+            )
+            enable_fallback(compiler, device_lib)
+            updated = compiler.read_text(encoding="utf-8")
+            self.assertIn(MARKER, updated)
+            self.assertIn(f"--rocm-device-lib-path={device_lib}", updated)
+            self.assertIn("if arg", updated)
+            enable_fallback(compiler, device_lib)
+            self.assertEqual(compiler.read_text(encoding="utf-8"), updated)
+
+    def test_device_library_fallback_requires_vendor_bitcode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            compiler = root / "compiler_hcu.py"
+            compiler.write_text("        return clang_args\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "directory is absent"):
+                enable_fallback(compiler, root / "missing")
+
     def test_scalar_fallback_patch_is_exact_and_idempotent(self):
         source = "prefix\n" + ORIGINAL + "suffix\n"
         updated, changed = patch_source(source)
@@ -225,6 +255,10 @@ class ImageAndSetupTests(unittest.TestCase):
         self.assertNotIn(".[dev]", source)
         self.assertIn("--runtime-evidence", source)
         self.assertIn("--require-gpu --min-gpus 2", source)
+        self.assertGreater(
+            source.index("enable_flagtree_device_lib_fallback.py"),
+            source.index("--require-gpu --min-gpus 2"),
+        )
 
 
 class WorkflowTests(unittest.TestCase):
