@@ -66,6 +66,13 @@ python .github/scripts/hygon/enable_flagtree_device_lib_fallback.py
 # hipcc and headers. DTK provides the complete compatible tree at /opt/dtk but
 # the Runtime has no /opt/rocm alias. Keep this as a diagnostic-only link while
 # checking for failures beyond the Runtime/application prefix mismatch.
+# Actions' later test step does not source the Runtime's bash profile. Persist
+# the real DTK prefix so FlagTree keeps selecting its HCU clang 18 under
+# /opt/dtk/aillvm instead of following the compatibility link to clang 17.
+export ROCM_PATH=/opt/dtk
+if [ -n "${GITHUB_ENV:-}" ]; then
+  printf 'ROCM_PATH=%s\n' "$ROCM_PATH" >> "$GITHUB_ENV"
+fi
 if [ ! -e /opt/rocm ] && [ ! -L /opt/rocm ]; then
   ln -s /opt/dtk /opt/rocm
 fi

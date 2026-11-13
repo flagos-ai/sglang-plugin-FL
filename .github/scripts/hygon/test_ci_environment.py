@@ -267,6 +267,8 @@ class ImageAndSetupTests(unittest.TestCase):
         )
         self.assertIn("ln -s /opt/dtk /opt/rocm", source)
         self.assertIn("/opt/rocm/bin/hipcc --version", source)
+        self.assertIn("export ROCM_PATH=/opt/dtk", source)
+        self.assertIn("printf 'ROCM_PATH=%s\\n'", source)
 
 
 class WorkflowTests(unittest.TestCase):
