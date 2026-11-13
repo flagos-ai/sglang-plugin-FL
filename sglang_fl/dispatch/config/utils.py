@@ -67,7 +67,11 @@ def get_platform_name() -> str:
         if hasattr(torch, "__hcu_version__") and torch.cuda.is_available():
             return "hygon"
         if hasattr(torch, "xpu") and torch.cuda.is_available():
-            return "kunlunxin"
+            try:
+                import torch_xmlir  # Kunlunxin exclusive package
+                return "kunlunxin"
+            except ImportError:
+                pass
         if torch.cuda.is_available():
             return "nvidia"
     except ImportError:
