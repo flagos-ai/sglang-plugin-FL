@@ -80,4 +80,15 @@ if [ "$(readlink -f /opt/rocm)" != "$(readlink -f /opt/dtk)" ]; then
   echo "::error::/opt/rocm exists but does not resolve to the DTK SDK" >&2
   exit 1
 fi
+python - <<'PY'
+from pathlib import Path
+
+from triton.backends.hcu.compiler_hcu import HIPBackend
+
+expected = Path("/opt/dtk/aillvm/bin/clang-18")
+actual = Path(HIPBackend.path_to_rocm_clang())
+if actual != expected:
+    raise RuntimeError(f"FlagTree selected {actual}, expected HCU compiler {expected}")
+print(f"[hygon-ci] FlagTree HCU compiler: {actual}")
+PY
 /opt/rocm/bin/hipcc --version | head -n 1

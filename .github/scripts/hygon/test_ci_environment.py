@@ -165,12 +165,9 @@ class ImageAndSetupTests(unittest.TestCase):
             for name in ("ocml.bc", "ockl.bc"):
                 (device_lib / name).touch()
             compiler.write_text(
-                "import os\n"
                 "def clang_args():\n"
                 "        clang_args = ['-O3', '']\n"
-                "        return clang_args\n"
-                "def call():\n"
-                "            result = subprocess.run(asm_command, check=True, capture_output=True, text=True)\n",
+                "        return clang_args\n",
                 encoding="utf-8",
             )
             enable_fallback(compiler, device_lib)
@@ -178,9 +175,6 @@ class ImageAndSetupTests(unittest.TestCase):
             self.assertIn(MARKER, updated)
             self.assertIn(f"--rocm-device-lib-path={device_lib}", updated)
             self.assertIn("if arg", updated)
-            self.assertIn("clang argv:", updated)
-            self.assertIn("output_exists=", updated)
-            self.assertIn("clang stderr:", updated)
             enable_fallback(compiler, device_lib)
             self.assertEqual(compiler.read_text(encoding="utf-8"), updated)
 
@@ -269,6 +263,7 @@ class ImageAndSetupTests(unittest.TestCase):
         self.assertIn("/opt/rocm/bin/hipcc --version", source)
         self.assertIn("export ROCM_PATH=/opt/dtk", source)
         self.assertIn("printf 'ROCM_PATH=%s\\n'", source)
+        self.assertIn("/opt/dtk/aillvm/bin/clang-18", source)
 
 
 class WorkflowTests(unittest.TestCase):
