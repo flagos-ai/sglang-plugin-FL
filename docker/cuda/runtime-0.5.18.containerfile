@@ -6,20 +6,18 @@
 #     the SGLang dependency closure. Any planned change to an existing
 #     distribution fails the build.
 #   * NVIDIA installs the normal sglang==0.5.18 wheel and its complete,
-#     version-locked standard dependency closure. The sole compatibility pin
-#     is standalone triton==3.6.0: the resolver-selected 3.7.1 mixed with the
-#     Runtime's FlagTree 3.6 code and crashed kernel launches in
-#     triton/backends/nvidia/driver.py. Removing standalone Triton entirely
-#     caused suite-level module contamination, while pip Triton 3.6.0 passed
-#     the functional suite and matches FlagTree's version. CUDA JIT packages
-#     from the standard closure remain present. The Runtime's own torch/CUDA/
-#     NCCL/FlagTree/FlagGems/FlagCX distributions are never touched; nothing
-#     is uninstalled or replaced.
+#     version-locked standard dependency closure. Its CUDA compiler, CRT,
+#     NVVM, and CCCL are pinned to CUDA 13.0 to match the Runtime's CUDA 13.0
+#     headers and torch 2.13.0+cu130. Triton 3.7.1 stays in the image to
+#     satisfy torch's exact metadata requirement; the ephemeral GPU job swaps
+#     this application-added distribution to 3.6.0 because 3.7.1 mixed with
+#     FlagTree's Triton 3.6 code crashed kernel launches. The Runtime's own
+#     torch/CUDA/NCCL/FlagTree/FlagGems/FlagCX distributions are never touched.
 #   * Raw-Runtime baseline finding, kept on record: torch's distribution
 #     requires Triton while the Runtime provides the module out-of-band under
-#     /opt/flagtree. The compatible 3.6.0 distribution added by the SGLang
-#     closure satisfies that metadata requirement; /opt/flagtree remains the
-#     authoritative import origin.
+#     /opt/flagtree. The image preserves standard-closure Triton 3.7.1 for
+#     metadata consistency; CI changes only that added distribution in its
+#     disposable test container.
 #   * No sglang-plugin-FL source in this image; CI installs the plugin from
 #     the PR checkout via the standard setup flow.
 #
@@ -182,8 +180,8 @@ PY
 
 # --- Lock gate: the install list must not touch any runtime distribution --
 # Installing with --no-deps from the reviewed, version-locked standard closure
-# (with the documented Triton compatibility pin). This gate statically proves
-# the lock cannot replace a Runtime distribution.
+# (with the documented CUDA 13.0 toolchain constraints). This gate statically
+# proves the lock cannot replace a Runtime distribution.
 RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
     && "$PYTHON_BIN" - <<'PY'
 import json
@@ -372,8 +370,8 @@ RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
     && echo 'pip check: no unexpected new violations (baseline preserved)'
 
 # 3. Module provenance: every vendor module must still resolve to the exact
-#    same origin. The SGLang closure adds a compatible standalone Triton 3.6
-#    distribution (xgrammar and humming-kernels dependency) to site-packages,
+#    same origin. The SGLang closure adds standalone Triton 3.7.1 (xgrammar
+#    and humming-kernels dependency) to site-packages,
 #    while the runtime's authoritative triton module lives in the /opt/flagtree
 #    volume, which Docker only populates at container start (VOLUME copy-up),
 #    never during build RUN steps. At container start PYTHONPATH=/opt/flagtree
