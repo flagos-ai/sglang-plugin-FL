@@ -170,7 +170,7 @@ class TestOpManagerCall:
 
         assert result == "flagos_silu"
 
-    def test_call_with_fallback(self, populated_manager):
+    def test_call_with_fallback(self, populated_manager, monkeypatch, tmp_path):
         """When strict=False and primary fails, falls back to next."""
         registry = OpRegistry()
         manager = OpManager(registry=registry)
@@ -207,12 +207,15 @@ class TestOpManagerCall:
         )
 
         policy = SelectionPolicy.from_dict(strict=False)
+        log_path = tmp_path / "dispatch.log"
+        monkeypatch.setenv("SGLANG_FL_DISPATCH_LOG", str(log_path))
 
         with policy_context(policy):
             result = manager.call("test_op")
             assert result == "fallback_result"
             assert call_count["primary"] == 1
             assert call_count["fallback"] == 1
+        assert "test_op → reference.pytorch" in log_path.read_text()
 
     def test_call_strict_mode_raises_original_error(self):
         """When strict=True, raise the primary error without trying fallback."""
