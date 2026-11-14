@@ -84,10 +84,45 @@ class FlagOSBackend(Backend):
             expert_location_dispatch_info=expert_location_dispatch_info,
         )
 
+    def fused_moe(self, obj, layer, dispatch_output):
+        from .impl.fused_moe import fused_moe_flagos
+
+        return fused_moe_flagos(obj, layer, dispatch_output)
+
     def mrotary_embedding(self, obj, positions, query, key):
         from .impl.mrotary_embedding import mrotary_embedding_flagos
 
         return mrotary_embedding_flagos(obj, positions, query, key)
+
+    def chunk_gated_delta_rule(
+        self,
+        q,
+        k,
+        v,
+        g,
+        beta,
+        scale,
+        initial_state=None,
+        initial_state_indices=None,
+        cu_seqlens=None,
+        head_first=False,
+        use_qk_l2norm_in_kernel=False,
+    ):
+        from .impl.fla import chunk_gated_delta_rule_flagos
+
+        return chunk_gated_delta_rule_flagos(
+            q,
+            k,
+            v,
+            g,
+            beta,
+            scale,
+            initial_state,
+            initial_state_indices,
+            cu_seqlens,
+            head_first,
+            use_qk_l2norm_in_kernel,
+        )
 
     def fused_recurrent_gated_delta_rule(
         self,
@@ -118,5 +153,35 @@ class FlagOSBackend(Backend):
             cu_seqlens,
             ssm_state_indices,
             num_accepted_tokens,
+            use_qk_l2norm_in_kernel,
+        )
+
+    def fused_recurrent_gated_delta_rule_packed_decode(
+        self,
+        mixed_qkv,
+        a,
+        b,
+        A_log,
+        dt_bias,
+        scale,
+        initial_state,
+        out,
+        ssm_state_indices,
+        use_qk_l2norm_in_kernel=False,
+    ):
+        from .impl.fla import (
+            fused_recurrent_gated_delta_rule_packed_decode_flagos,
+        )
+
+        return fused_recurrent_gated_delta_rule_packed_decode_flagos(
+            mixed_qkv,
+            a,
+            b,
+            A_log,
+            dt_bias,
+            scale,
+            initial_state,
+            out,
+            ssm_state_indices,
             use_qk_l2norm_in_kernel,
         )
