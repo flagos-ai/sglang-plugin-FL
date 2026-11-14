@@ -555,6 +555,7 @@ def run_master(args):
         "--disable-cuda-graph",
         "--disable-piecewise-cuda-graph",
         "--trust-remote-code",
+        "--watchdog-timeout", "3600",
         *_PLATFORM_SERVER_ARGS,
     ]
     if ATTENTION_BACKEND:
@@ -663,6 +664,7 @@ def run_worker(args):
         "--disable-cuda-graph",
         "--disable-piecewise-cuda-graph",
         "--trust-remote-code",
+        "--watchdog-timeout", "3600",
         *_PLATFORM_SERVER_ARGS,
     ]
     if ATTENTION_BACKEND:

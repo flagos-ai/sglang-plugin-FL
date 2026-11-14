@@ -367,6 +367,21 @@ def _setup_flaggems(config: dict = None):
         logger.info("FlagGems disabled (USE_FLAGGEMS=0)")
         return
 
+    import warnings
+
+    # Kunlun FlagGems Triton kernels emit noisy UserWarnings on every launch
+    # (tl `and`/`or`, tracemalloc). Keep Graph/ops on; suppress the spam only.
+    warnings.filterwarnings(
+        "ignore",
+        message=r"Logical operators 'and' and 'or' are deprecated.*",
+        category=UserWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r"Enable tracemalloc to get the object allocation traceback",
+        category=UserWarning,
+    )
+
     import flag_gems
 
     # Whitelist/blacklist: env > YAML config
