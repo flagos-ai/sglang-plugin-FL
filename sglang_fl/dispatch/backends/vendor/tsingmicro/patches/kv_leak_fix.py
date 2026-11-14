@@ -21,10 +21,15 @@ _log = patch_logger("kv_leak_fix")
 
 _patched = False
 _ENABLED_KEY = "SGLANG_KVLEAK_FIX"
-# write_cache_indices lives in sglang.srt.mem_cache.common; replace it lazily
-# once sglang itself imports that module, to avoid pulling the serving stack
-# at import time (the v3 lesson).
-_COMMON_MODULE = "sglang.srt.mem_cache.common"
+# write_cache_indices lives in sglang.srt.mem_cache.allocation (0.5.18) or
+# sglang.srt.mem_cache.common (0.5.11); replace it lazily once sglang itself
+# imports the owning module, to avoid pulling the serving stack at import
+# time (the v3 lesson).  The caller (alloc_for_extend) resolves the name from
+# its own module globals, so the owning module is the one to patch.
+_WRITE_INDICES_MODULES = (
+    "sglang.srt.mem_cache.allocation",
+    "sglang.srt.mem_cache.common",
+)
 
 
 def _enabled() -> bool:
@@ -75,9 +80,23 @@ def _apply_write_indices_wrap() -> None:
     Idempotent.  Applied lazily via _install_post_import_wrap — not at
     patch() time — to avoid importing the serving stack too early.
     """
-    from sglang.srt.mem_cache import common
+    target = None
+    for name in _WRITE_INDICES_MODULES:
+        mod = sys.modules.get(name)
+        fn = getattr(mod, "write_cache_indices", None) if mod is not None else None
+        # Only the defining module counts (or an already-installed fallback).
+        if callable(fn) and (
+            getattr(fn, "__module__", None) == name
+            or getattr(fn, "_kvleak_fallback", False)
+        ):
+            target = mod
+            break
+    if target is None:
+        # Called after a candidate module loaded but it does not own the function
+        # (e.g. 0.5.18 common.py); the next candidate's hook will retry.
+        return
 
-    if getattr(common.write_cache_indices, "_kvleak_fallback", False):
+    if getattr(target.write_cache_indices, "_kvleak_fallback", False):
         return
 
     def _fallback_write_cache_indices(
@@ -112,8 +131,19 @@ def _apply_write_indices_wrap() -> None:
             pt += extend_len
 
     _fallback_write_cache_indices._kvleak_fallback = True
-    common.write_cache_indices = _fallback_write_cache_indices
-    _log.applied("forced non-Triton write_cache_indices (txda Triton prefix-write bypass)")
+    target.write_cache_indices = _fallback_write_cache_indices
+    _log.applied(
+        "forced non-Triton %s.write_cache_indices (txda Triton prefix-write bypass)",
+        target.__name__,
+    )
+
+
+def _safe_write_indices_wrap() -> None:
+    """Post-import callback: never let a patch failure break sglang's own import."""
+    try:
+        _apply_write_indices_wrap()
+    except Exception as exc:  # noqa: BLE001
+        _log.failed("write_cache_indices wrap failed: %s", exc)
 
 
 class _PostImportLoader(importlib.abc.Loader):
@@ -174,7 +204,15 @@ def _install_post_import_wrap(module_name, callback) -> None:
 # ─── 2) Anti-pollution + safety net: rewrite the ChunkCache.cache_finished_req release segment ───
 
 
-def _safe_cache_finished_req(self, req, is_insert=True):
+def _kv_allocated_len(req) -> int:
+    """kv_allocated_len lives on Req in 0.5.11 and on Req.kv (ReqKvInfo) in 0.5.18."""
+    if hasattr(req, "kv_allocated_len"):
+        return req.kv_allocated_len
+    kv = getattr(req, "kv", None)
+    return getattr(kv, "kv_allocated_len", 0) if kv is not None else 0
+
+
+def _safe_cache_finished_req(self, req, is_insert=True, *, kv_len_to_handle=None):
     """Release-side hardening (retained from v2/v3).
 
     (1) Free only real pages (index > 0): a 0 is an "accounted-as-allocated
@@ -184,9 +222,18 @@ def _safe_cache_finished_req(self, req, is_insert=True):
     pages (the reset_for_retract zeroing path), free them so the leak closes
     instead of growing.
     """
-    kv_committed_len = req.pop_committed_kv_cache()
     row = self.req_to_token_pool.req_to_token[req.req_pool_idx]
-    kv_indices = row[:kv_committed_len]
+    if kv_len_to_handle is None:
+        # SGLang 0.5.11: the cache pops the committed length and frees [0, commit).
+        kv_committed_len = req.pop_committed_kv_cache()
+        kv_indices = row[:kv_committed_len]
+    else:
+        # SGLang 0.5.18: release_kv_cache() passes the length; the protected
+        # prefix [0, cache_protected_len) is not this req's to free, and the
+        # over-allocated tail is released by the caller afterwards.
+        start = getattr(req, "cache_protected_len", 0) or 0
+        kv_indices = row[start:kv_len_to_handle]
+        kv_committed_len = int(kv_indices.shape[0])
     # Page indices start at 1 (allocator's free_pages = arange(1, size+1)),
     # so the >0 test is exactly "real page" — no false hits.
     mask = kv_indices > 0
@@ -206,7 +253,7 @@ def _safe_cache_finished_req(self, req, is_insert=True):
         )
 
     # Safety net (v1): commit=0/alloc=0 but the row still holds pages.
-    if req.kv_committed_len == 0 and req.kv_allocated_len == 0:
+    if req.kv_committed_len == 0 and _kv_allocated_len(req) == 0:
         owned = _owned_pages(self, req)
         if owned > 0:
             row = self.req_to_token_pool.req_to_token[req.req_pool_idx]
@@ -255,4 +302,5 @@ def patch() -> None:
     )
 
     # ---- 0) Root cause (v4): force write_cache_indices onto torch fallback (deferred until common is imported) ----
-    _install_post_import_wrap(_COMMON_MODULE, _apply_write_indices_wrap)
+    for name in _WRITE_INDICES_MODULES:
+        _install_post_import_wrap(name, _safe_write_indices_wrap)

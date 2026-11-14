@@ -5,8 +5,8 @@
 Qwen3.5/3.6 GatedDeltaNet reaches the gated norm through the *module-level*
 name ``sglang.srt.models.qwen3_5.RMSNormGated``::
 
-    # qwen3_5.py:42
-    from sglang.srt.layers.attention.fla.layernorm_gated import RMSNorm as RMSNormGated
+    # qwen3_5.py (0.5.18; 0.5.11 used sglang.srt.layers.attention.fla.layernorm_gated)
+    from sglang.kernels.ops.attention.fla.layernorm_gated import RMSNorm as RMSNormGated
 
     # qwen3_5.py:233 (GatedDeltaNet.__init__)
     self.norm = RMSNormGated(self.head_v_dim, eps=..., group_size=None,
@@ -30,6 +30,7 @@ The wrapper only logs and then calls the original ``forward``; numerics are
 untouched.  Off by default: set ``SGLANG_FL_GDN_NORM=1`` to enable.
 """
 
+import importlib
 import os
 
 from sglang_fl.dispatch.backends.vendor.tsingmicro.patches._logger import patch_logger
@@ -79,10 +80,20 @@ def patch() -> None:
         _log.skipped("disabled (set %s=1 to enable)", _ENABLED_KEY)
         return
 
-    try:
-        from sglang.srt.layers.attention.fla import layernorm_gated as lg
-    except Exception as exc:  # noqa: BLE001
-        _log.failed("cannot import layernorm_gated: %s", exc)
+    lg = None
+    errors = []
+    # SGLang 0.5.18 moved the FLA kernels to sglang.kernels.ops; 0.5.11 path kept as fallback.
+    for mod in (
+        "sglang.kernels.ops.attention.fla.layernorm_gated",
+        "sglang.srt.layers.attention.fla.layernorm_gated",
+    ):
+        try:
+            lg = importlib.import_module(mod)
+            break
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{mod}: {exc}")
+    if lg is None:
+        _log.failed("cannot import layernorm_gated: %s", "; ".join(errors))
         return
 
     cls = lg.RMSNorm

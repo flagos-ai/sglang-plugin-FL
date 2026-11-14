@@ -33,6 +33,14 @@ _log = patch_logger("model_runner")
 _patched = False
 
 
+def _tp_rank(runner) -> int:
+    """tp_rank is on ModelRunner in SGLang 0.5.11 and on ModelRunner.ps in 0.5.18."""
+    rank = getattr(runner, "tp_rank", None)
+    if rank is None:
+        rank = getattr(getattr(runner, "ps", None), "tp_rank", 0)
+    return rank
+
+
 def _is_enabled() -> bool:
     """Check whether FL timer is enabled via environment variable."""
     return (
@@ -100,7 +108,7 @@ def patch() -> None:
 
     @functools.wraps(_orig_forward)
     def _patched_forward(self, forward_batch, *args, **kwargs):
-        if not getattr(self, "_fl_timer_enabled", False) or self.tp_rank != 0:
+        if not getattr(self, "_fl_timer_enabled", False) or _tp_rank(self) != 0:
             return _orig_forward(self, forward_batch, *args, **kwargs)
 
         # Iteration counter — ModelRunner.forward() increments
@@ -125,7 +133,7 @@ def patch() -> None:
         _log.info(
             "[SGLANG_FL_TIMER] iter=%s tp_rank=%s mode=%s seq_len=%s time=%.4fms",
             iter_num,
-            self.tp_rank,
+            _tp_rank(self),
             mode,
             num_tokens,
             elapsed_ms,
