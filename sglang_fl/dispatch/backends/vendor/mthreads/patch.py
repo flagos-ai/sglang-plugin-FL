@@ -243,6 +243,33 @@ def _patch_fp32_tp_all_reduce() -> None:
     logger.info("MUSA FP32 TP all-reduce patches applied")
 
 
+def _register_dsa_indexer_forward() -> None:
+    """Register the existing Triton-capable Indexer path for MUSA.
+
+    Indexer subclasses BaseFusedOp directly, so the legacy MultiPlatformOp
+    dispatch hook does not cover it. Register through the public OOT API.
+    """
+    try:
+        from sglang.kernels.fused_op import BaseFusedOp
+        from sglang.srt.layers.attention.dsa.dsa_indexer import Indexer
+    except Exception as e:
+        logger.warning("MUSA DSA indexer registration skipped: %s", e)
+        return
+
+    BaseFusedOp.register_oot_forward(Indexer, Indexer.forward_cuda, "oot")
+    logger.info("MUSA DSA Indexer OOT forward registered")
+
+    try:
+        from sglang.srt.layers.attention.dsa.dsa_indexer_kpool import IndexerKPool
+    except ModuleNotFoundError:
+        logger.info("MUSA DSA IndexerKPool is unavailable in this SGLang source")
+    else:
+        BaseFusedOp.register_oot_forward(
+            IndexerKPool, IndexerKPool.forward_cuda, "oot"
+        )
+        logger.info("MUSA DSA IndexerKPool OOT forward registered")
+
+
 def apply_musa_patches() -> None:
     global _patches_applied
     if _patches_applied:
@@ -252,6 +279,7 @@ def apply_musa_patches() -> None:
     _patch_pp_launch_batch_add_sync()
     _patch_multimodal_mask()
     _patch_fp32_tp_all_reduce()
+    _register_dsa_indexer_forward()
     _patches_applied = True
     logger.info("All MUSA PP patches applied successfully")
 
