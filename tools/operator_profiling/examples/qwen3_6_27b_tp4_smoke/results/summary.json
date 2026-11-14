@@ -1,0 +1,422 @@
+{
+  "compute_kernel_event_count": 25280,
+  "compute_kernel_time_us": 127834.14,
+  "dispatch": {
+    "logical_call_count": 5780,
+    "operators": [
+      {
+        "dispatch_impl_id": "vendor.cuda",
+        "dispatch_impl_kind": "vendor",
+        "dispatch_operator_name": "chunk_gated_delta_rule",
+        "dispatch_runtime_source_category": "third_party",
+        "dispatch_runtime_source_library": "sglang",
+        "dispatch_vendor": "cuda",
+        "logical_call_count": 192,
+        "percent_of_all_compute": "4.945%",
+        "physical_kernel_event_count": 2360,
+        "physical_kernel_time_us": 6321.538
+      },
+      {
+        "dispatch_impl_id": "vendor.cuda",
+        "dispatch_impl_kind": "vendor",
+        "dispatch_operator_name": "fused_recurrent_gated_delta_rule_packed_decode",
+        "dispatch_runtime_source_category": "third_party",
+        "dispatch_runtime_source_library": "sglang",
+        "dispatch_vendor": "cuda",
+        "logical_call_count": 768,
+        "percent_of_all_compute": "3.072%",
+        "physical_kernel_event_count": 768,
+        "physical_kernel_time_us": 3926.625
+      },
+      {
+        "dispatch_impl_id": "vendor.cuda",
+        "dispatch_impl_kind": "vendor",
+        "dispatch_operator_name": "gemma_rms_norm",
+        "dispatch_runtime_source_category": "third_party",
+        "dispatch_runtime_source_library": "sglang",
+        "dispatch_vendor": "cuda",
+        "logical_call_count": 3220,
+        "percent_of_all_compute": "6.537%",
+        "physical_kernel_event_count": 3220,
+        "physical_kernel_time_us": 8356.024
+      },
+      {
+        "dispatch_impl_id": "vendor.cuda",
+        "dispatch_impl_kind": "vendor",
+        "dispatch_operator_name": "mrotary_embedding",
+        "dispatch_runtime_source_category": "third_party",
+        "dispatch_runtime_source_library": "sglang",
+        "dispatch_vendor": "cuda",
+        "logical_call_count": 320,
+        "percent_of_all_compute": "0.382%",
+        "physical_kernel_event_count": 320,
+        "physical_kernel_time_us": 488.261
+      },
+      {
+        "dispatch_impl_id": "vendor.cuda",
+        "dispatch_impl_kind": "vendor",
+        "dispatch_operator_name": "silu_and_mul",
+        "dispatch_runtime_source_category": "third_party",
+        "dispatch_runtime_source_library": "sglang",
+        "dispatch_vendor": "cuda",
+        "logical_call_count": 1280,
+        "percent_of_all_compute": "1.536%",
+        "physical_kernel_event_count": 1280,
+        "physical_kernel_time_us": 1963.842
+      }
+    ],
+    "physical_kernel_event_count": 7948,
+    "selected_impl_ids": [
+      "vendor.cuda"
+    ],
+    "selected_impl_kinds": [
+      "vendor"
+    ]
+  },
+  "excluded_event_count_by_reason": {
+    "communication": 2600,
+    "gpu_memcpy": 172,
+    "gpu_memset": 40
+  },
+  "excluded_time_us_by_reason": {
+    "communication": 1581027.115,
+    "gpu_memcpy": 323.936,
+    "gpu_memset": 34.721
+  },
+  "execution_origin_event_count": {
+    "eager": 25260,
+    "torch_compile": 20
+  },
+  "execution_origin_time_us": {
+    "eager": 127815.963,
+    "torch_compile": 18.177
+  },
+  "files": {
+    "kernel_details_report.csv": {
+      "path": "kernel_details_report.csv",
+      "row_count": 130,
+      "sha256": "6caf68c47bcdf5ee30d3c41e5215b36197d0072e122936ce4ec885351d1d88ef"
+    },
+    "operator_list.csv": {
+      "path": "operator_list.csv",
+      "row_count": 79,
+      "sha256": "ec7d3ddd707bf6524fc4221967a87ed5d82b529e4d80be815283891ddc303579"
+    }
+  },
+  "mapping_event_count_by_status": {
+    "native_marker_operator_shape_matched": 6116,
+    "operator_shape_matched": 19164
+  },
+  "mapping_time_us_by_status": {
+    "native_marker_operator_shape_matched": 18578.242,
+    "operator_shape_matched": 109255.898
+  },
+  "metadata": {
+    "adaptation": {
+      "layer1_flaggems": false,
+      "layer2_flagos_implementations": false,
+      "layer2_plugin_dispatch": true,
+      "layer2_reference_fallback": false,
+      "layer2_sglang_framework_fallback": true,
+      "layer2_vendor_preferred": true,
+      "layer3_platform_runtime": true,
+      "vendor_patches": true
+    },
+    "cli": {
+      "attention_backend": "triton",
+      "chunked_prefill_size": 8192,
+      "concurrency": 2,
+      "input_tokens": [
+        16
+      ],
+      "length_overflow_policy": "truncate_input",
+      "mem_fraction_static": 0.8,
+      "model_path": "/models/Qwen3.6-27B",
+      "output_dir": "tools/operator_profiling/runs/smoke",
+      "output_tokens": 4,
+      "random_seed": 0,
+      "require_validated_versions": true,
+      "tp_size": 4
+    },
+    "cuda_device_count": 4,
+    "cuda_device_names": [
+      "NVIDIA H20-3e",
+      "NVIDIA H20-3e",
+      "NVIDIA H20-3e",
+      "NVIDIA H20-3e"
+    ],
+    "flagtree_version": "0.6.2a1",
+    "hostname": "example-host",
+    "profile_mode": "platform_profile",
+    "python_version": "3.12.3",
+    "server": {
+      "attention_backend": "triton",
+      "chunked_prefill_size": 8192,
+      "context_length": null,
+      "disable_cuda_graph": true,
+      "disable_piecewise_cuda_graph": true,
+      "disable_radix_cache": true,
+      "enable_torch_compile": false,
+      "max_req_input_len": 262138,
+      "max_running_requests": 2,
+      "model_path": "/models/Qwen3.6-27B",
+      "random_seed": 0,
+      "tp_size": 4
+    },
+    "sglang_fl_version": "0.1.0",
+    "sglang_version": "0.0.0",
+    "torch_version": "2.11.0+cu130",
+    "workload": {
+      "actual_input_tokens": 16,
+      "actual_output_tokens": 4,
+      "concurrency": 2,
+      "input_tokens_per_second": 39.63507476703063,
+      "input_truncated": false,
+      "length_overflow_policy": "truncate_input",
+      "model_max_context": 262144,
+      "output_tokens_per_second": 9.908768691757658,
+      "profile_id": "sglang-fl-eager-input_16_actual_16_output_4_concurrency_2",
+      "profiled_output_sha256": "61bf77d9fabf0807711c3fc294ecea7f748b23dd6d665cbf42f83e66bf2cae53",
+      "profiled_output_token_prefixes": [
+        [
+          3300,
+          264,
+          1560,
+          310
+        ],
+        [
+          3300,
+          264,
+          1560,
+          310
+        ]
+      ],
+      "profiled_wall_time_seconds": 0.8073657029308379,
+      "requested_input_tokens": 16,
+      "requested_output_tokens": 4,
+      "reserved_tokens": 6,
+      "total_input_tokens": 32,
+      "total_output_tokens": 8,
+      "truncated_token_count": 0,
+      "warmup_included": false,
+      "warmup_output_sha256": "61bf77d9fabf0807711c3fc294ecea7f748b23dd6d665cbf42f83e66bf2cae53",
+      "warmup_seconds": 3.9240792212076485
+    }
+  },
+  "per_rank": {
+    "0": {
+      "compute_kernel_event_count": 6320,
+      "compute_kernel_time_us": 31973.482,
+      "runtime_kernel_event_count": 6970,
+      "runtime_kernel_time_us": 665082.307,
+      "source_category_event_count": {
+        "third_party": 772,
+        "torch_aten": 3556,
+        "torch_fused": 5,
+        "vendor": 1987
+      },
+      "source_category_time_us": {
+        "third_party": 1911.145,
+        "torch_aten": 24786.848,
+        "torch_fused": 4.769,
+        "vendor": 5270.72
+      },
+      "source_category_unique_operator_count": {
+        "third_party": 14,
+        "torch_aten": 20,
+        "torch_fused": 1,
+        "vendor": 17
+      },
+      "unique_stable_kernel_names": 57
+    },
+    "1": {
+      "compute_kernel_event_count": 6320,
+      "compute_kernel_time_us": 31978.717,
+      "runtime_kernel_event_count": 6970,
+      "runtime_kernel_time_us": 156129.445,
+      "source_category_event_count": {
+        "third_party": 772,
+        "torch_aten": 3556,
+        "torch_fused": 5,
+        "vendor": 1987
+      },
+      "source_category_time_us": {
+        "third_party": 1904.768,
+        "torch_aten": 24806.994,
+        "torch_fused": 4.577,
+        "vendor": 5262.378
+      },
+      "source_category_unique_operator_count": {
+        "third_party": 14,
+        "torch_aten": 20,
+        "torch_fused": 1,
+        "vendor": 17
+      },
+      "unique_stable_kernel_names": 57
+    },
+    "2": {
+      "compute_kernel_event_count": 6320,
+      "compute_kernel_time_us": 32024.399,
+      "runtime_kernel_event_count": 6970,
+      "runtime_kernel_time_us": 742002.429,
+      "source_category_event_count": {
+        "third_party": 772,
+        "torch_aten": 3556,
+        "torch_fused": 5,
+        "vendor": 1987
+      },
+      "source_category_time_us": {
+        "third_party": 1910.628,
+        "torch_aten": 24816.827,
+        "torch_fused": 4.512,
+        "vendor": 5292.432
+      },
+      "source_category_unique_operator_count": {
+        "third_party": 14,
+        "torch_aten": 20,
+        "torch_fused": 1,
+        "vendor": 17
+      },
+      "unique_stable_kernel_names": 57
+    },
+    "3": {
+      "compute_kernel_event_count": 6320,
+      "compute_kernel_time_us": 31857.542,
+      "runtime_kernel_event_count": 6970,
+      "runtime_kernel_time_us": 145647.074,
+      "source_category_event_count": {
+        "third_party": 772,
+        "torch_aten": 3556,
+        "torch_fused": 5,
+        "vendor": 1987
+      },
+      "source_category_time_us": {
+        "third_party": 1896.976,
+        "torch_aten": 24725.487,
+        "torch_fused": 4.319,
+        "vendor": 5230.76
+      },
+      "source_category_unique_operator_count": {
+        "third_party": 14,
+        "torch_aten": 20,
+        "torch_fused": 1,
+        "vendor": 17
+      },
+      "unique_stable_kernel_names": 57
+    }
+  },
+  "ranks": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "report_type": "operator_inventory",
+  "schema_version": 1,
+  "scope": {
+    "excluded_gpu_activity": [
+      "communication",
+      "gpu_memcpy",
+      "gpu_memset"
+    ],
+    "execution_mode": "eager",
+    "execution_origins": [
+      "eager",
+      "torch_compile"
+    ],
+    "global_torch_compile_enabled": false,
+    "included_operator_kinds": [
+      "aten",
+      "fused"
+    ],
+    "inventory_source_policy": "four_source_categories",
+    "profile_mode": "platform_profile",
+    "purpose": "operator API, kernel, shape, frequency, and device-time inventory",
+    "rank_aggregation": "operator_and_shape_union; event_count_and_time_sum",
+    "report_type": "operator_inventory",
+    "source_categories": [
+      "third_party",
+      "vendor",
+      "torch_aten",
+      "torch_fused"
+    ],
+    "time_denominator": "sum_of_included_compute_kernel_durations",
+    "vendor_classification": "an included kernel inside an executed plugin VENDOR OpImpl scope is vendor; the adapter's delegate is reported separately",
+    "warmup_included": false
+  },
+  "source_category_event_count": {
+    "third_party": 3088,
+    "torch_aten": 14224,
+    "torch_fused": 20,
+    "vendor": 7948
+  },
+  "source_category_percent_of_all_compute": {
+    "third_party": "5.964%",
+    "torch_aten": "77.551%",
+    "torch_fused": "0.014%",
+    "vendor": "16.472%"
+  },
+  "source_category_time_us": {
+    "third_party": 7623.517,
+    "torch_aten": 99136.156,
+    "torch_fused": 18.177,
+    "vendor": 21056.29
+  },
+  "source_category_unique_operator_count": {
+    "third_party": 14,
+    "torch_aten": 20,
+    "torch_fused": 1,
+    "vendor": 17
+  },
+  "source_library_event_count": {
+    "cuda": 7948,
+    "flashinfer": 20,
+    "pytorch": 14224,
+    "sgl_kernel": 320,
+    "sglang": 1788,
+    "torchinductor": 20,
+    "upstream_unknown": 960
+  },
+  "source_library_time_us": {
+    "cuda": 21056.29,
+    "flashinfer": 27.873,
+    "pytorch": 99136.156,
+    "sgl_kernel": 350.844,
+    "sglang": 5779.459,
+    "torchinductor": 18.177,
+    "upstream_unknown": 1465.341
+  },
+  "source_report_validation": {
+    "excluded_activity_absent_from_csv": true,
+    "operator_ids_are_contiguous": true,
+    "operator_relations_cover_kernel_time": true,
+    "operator_source_categories_valid": true,
+    "physical_kernel_events_counted_once": true,
+    "shape_time_duration_matches": true,
+    "shape_time_event_count_matches": true,
+    "source_category_event_count_matches": true,
+    "source_category_time_matches": true
+  },
+  "torch_compile": {
+    "detection": "torch profiler cpu_op metadata: kernel_hash + kernel_backend + kernel_file under torchinductor",
+    "inventory_policy": "included_as_torch_fused",
+    "kernel_event_count": 20,
+    "kernel_time_us": 18.177,
+    "percent_of_all_compute": "0.014%",
+    "unique_stable_kernel_names": 1
+  },
+  "unique_stable_kernel_names": 57,
+  "validation": {
+    "all_details_have_operator_provenance": true,
+    "all_shape_fields_are_json_or_null": true,
+    "all_source_categories_are_valid": true,
+    "kernel_details_are_not_empty": true,
+    "kernel_event_count_is_conserved": true,
+    "kernel_time_is_conserved": true,
+    "operator_list_is_not_empty": true,
+    "platform_profile_configuration_is_valid": true,
+    "source_category_event_count_is_conserved": true,
+    "source_category_time_is_conserved": true,
+    "source_report_passed": true
+  }
+}

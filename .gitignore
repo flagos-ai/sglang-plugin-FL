@@ -20,3 +20,10 @@ htmlcov/
 
 # Logs
 *.log
+
+# Local operator-profiling artifacts (kept in the workspace, not committed)
+tools/operator_profiling/runs/
+# Legacy experimental artifacts
+tools/operator_profiling/coverage_runs/
+tools/operator_profiling/samples/
+tools/operator_profiling/materials/

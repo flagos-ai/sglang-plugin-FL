@@ -100,6 +100,7 @@ class TestOpImpl:
     def test_is_available_with_checker_true(self):
         def fn(x):
             return x
+
         fn._is_available = lambda: True
         impl = OpImpl(
             op_name="silu_and_mul",
@@ -112,6 +113,7 @@ class TestOpImpl:
     def test_is_available_with_checker_false(self):
         def fn(x):
             return x
+
         fn._is_available = lambda: False
         impl = OpImpl(
             op_name="silu_and_mul",
@@ -124,6 +126,7 @@ class TestOpImpl:
     def test_is_available_handles_exception(self):
         def fn(x):
             return x
+
         fn._is_available = lambda: 1 / 0
         impl = OpImpl(
             op_name="silu_and_mul",
@@ -155,6 +158,29 @@ class TestOpImpl:
         )
         assert "float16" in impl.supported_dtypes
         assert "float32" not in impl.supported_dtypes
+
+    def test_runtime_source_requires_library(self):
+        with pytest.raises(ValueError, match="runtime_source_library is required"):
+            OpImpl(
+                op_name="silu_and_mul",
+                impl_id="vendor.cuda",
+                kind=BackendImplKind.VENDOR,
+                fn=lambda x: x,
+                vendor="cuda",
+                runtime_source_category="third_party",
+            )
+
+    def test_runtime_source_rejects_unknown_category(self):
+        with pytest.raises(ValueError, match="Unsupported runtime_source_category"):
+            OpImpl(
+                op_name="silu_and_mul",
+                impl_id="vendor.cuda",
+                kind=BackendImplKind.VENDOR,
+                fn=lambda x: x,
+                vendor="cuda",
+                runtime_source_category="unverified",
+                runtime_source_library="unknown",
+            )
 
 
 class TestMatchToken:

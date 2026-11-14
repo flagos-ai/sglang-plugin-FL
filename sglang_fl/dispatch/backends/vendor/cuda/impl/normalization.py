@@ -47,6 +47,4 @@ def rms_norm_cuda(
         sgl_fused_add_rms_norm(x, residual, weight, epsilon)
         return x, residual
     else:
-        out = torch.empty_like(x)
-        sgl_rms_norm(out, x, weight, epsilon)
-        return out
+        return sgl_rms_norm(x, weight, epsilon)

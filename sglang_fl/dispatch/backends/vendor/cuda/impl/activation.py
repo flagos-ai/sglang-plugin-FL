@@ -34,5 +34,7 @@ def silu_and_mul_cuda(obj, x: torch.Tensor) -> torch.Tensor:
 
     d = x.shape[-1] // 2
     out = torch.empty(*x.shape[:-1], d, dtype=x.dtype, device=x.device)
-    sgl_silu_and_mul(out, x)
+    # sgl-kernel 0.5.11 follows the same input-first contract used by
+    # ``SiluAndMul.forward_cuda``: silu_and_mul(input, out).
+    sgl_silu_and_mul(x, out)
     return out
