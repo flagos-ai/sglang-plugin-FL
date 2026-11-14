@@ -25,3 +25,8 @@ flagos_blacklist:
   - _unique2
   - unique_dim
   - unique_consecutive
+  - index
+  - to_copy
+  - copy_
+  - mul
+  - sort

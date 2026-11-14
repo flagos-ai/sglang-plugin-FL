@@ -127,3 +127,8 @@ class ReferenceBackend(Backend):
         from .impl.mrotary_embedding import mrotary_embedding_torch
 
         return mrotary_embedding_torch(obj, positions, query, key)
+
+    def fused_moe(self, obj, layer, dispatch_output):
+        from .impl.fused_moe import fused_moe_torch
+
+        return fused_moe_torch(obj, layer, dispatch_output)
