@@ -15,6 +15,12 @@
 # SGLang-FL Dispatch Configuration for Ascend NPU
 prefer: flagos
 
+# Prefer torch_npu's fused SwiGLU on Ascend for Qwen3.6 decode and prefill.
+# Real TP=2 shapes ([M, 17408] and [M, 512]) showed exact output and lower
+# latency than the current FlagGems implementation.
+op_backends:
+  silu_and_mul: [vendor, flagos, reference]
+
 # FlagGems tag: v5.3.0 (host image docker/ascend/containerfile builds v5.3.0)
 #
 # ADDITIVE over the #55 baseline (origin/main flagos_blacklist): every op main
@@ -28,6 +34,9 @@ prefer: flagos
 # conv1d was already in main's list (it stays); it is needed because the flag_gems
 # triton conv1d/conv2d autotuner crashes (aicore exception) on Qwen3.6-35B-A3B
 # causal_conv1d shapes.
+# sum_dim is used by the Qwen3.6 causal-conv fallback once per GDN layer.  The
+# native Ascend reduction is faster than the FlagGems generic reduction for its
+# small-last-dimension shapes, so keep this ATen op out of FlagGems by default.
 flagos_blacklist:
   - full_like
   - index_copy_
@@ -41,6 +50,7 @@ flagos_blacklist:
   - index
   - add_
   - conv1d
+  - sum_dim
   - floor_divide
   - true_divide_
   - addmm
