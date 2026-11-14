@@ -127,3 +127,68 @@ class ReferenceBackend(Backend):
         from .impl.mrotary_embedding import mrotary_embedding_torch
 
         return mrotary_embedding_torch(obj, positions, query, key)
+
+    def chunk_gated_delta_rule(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+        scale: float = None,
+        initial_state: torch.Tensor = None,
+        initial_state_indices: torch.Tensor = None,
+        cu_seqlens: Optional[torch.LongTensor] = None,
+        head_first: bool = False,
+        use_qk_l2norm_in_kernel: bool = False,
+    ):
+        from .impl.fla_chunk import chunk_gated_delta_rule_torch
+
+        return chunk_gated_delta_rule_torch(
+            q,
+            k,
+            v,
+            g,
+            beta,
+            scale,
+            initial_state,
+            initial_state_indices,
+            cu_seqlens,
+            head_first,
+            use_qk_l2norm_in_kernel,
+        )
+
+    def fused_recurrent_gated_delta_rule_packed_decode(
+        self,
+        mixed_qkv: torch.Tensor,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        A_log: torch.Tensor,
+        dt_bias: torch.Tensor,
+        scale: float,
+        initial_state: torch.Tensor,
+        out: torch.Tensor,
+        ssm_state_indices: torch.Tensor,
+        use_qk_l2norm_in_kernel: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        from .impl.fla_packed_decode import (
+            fused_recurrent_gated_delta_rule_packed_decode_torch,
+        )
+
+        return fused_recurrent_gated_delta_rule_packed_decode_torch(
+            mixed_qkv,
+            a,
+            b,
+            A_log,
+            dt_bias,
+            scale,
+            initial_state,
+            out,
+            ssm_state_indices,
+            use_qk_l2norm_in_kernel,
+        )
+
+    def fused_moe(self, obj, layer, dispatch_output):
+        from .impl.fused_moe import fused_moe_torch
+
+        return fused_moe_torch(obj, layer, dispatch_output)
