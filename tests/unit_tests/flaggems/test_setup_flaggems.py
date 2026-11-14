@@ -212,6 +212,71 @@ def test_flaggems_record_installs_aten_only_filter(
         logger.handlers = old_handlers
 
 
+def test_flaggems_record_bridges_underscored_vendor_logger(
+    sglang_fl_module,
+    fake_flag_gems,
+) -> None:
+    logger = logging.getLogger("flag_gems")
+    vendor_logger = logging.getLogger("_ascend.ops")
+    handler = logging.StreamHandler()
+    handler._flaggems_owned = True
+    old_handlers = list(logger.handlers)
+    old_vendor_handlers = list(vendor_logger.handlers)
+    old_vendor_propagate = vendor_logger.propagate
+
+    def embedding():
+        pass
+
+    embedding.__module__ = "_ascend.ops.embedding"
+    fake_flag_gems.current_work_registrar = type(
+        "Registrar", (), {"config": [("embedding", embedding)]}
+    )()
+    logger.handlers = [handler]
+    vendor_logger.handlers = []
+    try:
+        config = {
+            "flaggems_record": True,
+            "flaggems_log_path": "",
+            "flagos_blacklist": [],
+        }
+        sglang_fl_module._setup_flaggems(config)
+        sglang_fl_module._setup_flaggems(config)
+
+        assert vendor_logger.handlers == [handler]
+        assert vendor_logger.propagate is False
+        assert len(handler.filters) == 1
+    finally:
+        logger.handlers = old_handlers
+        vendor_logger.handlers = old_vendor_handlers
+        vendor_logger.propagate = old_vendor_propagate
+
+
+def test_vendor_logger_is_unchanged_without_owned_handlers(
+    sglang_fl_module,
+    fake_flag_gems,
+) -> None:
+    vendor_logger = logging.getLogger("_ascend.ops")
+    old_handlers = list(vendor_logger.handlers)
+    old_propagate = vendor_logger.propagate
+
+    def embedding():
+        pass
+
+    embedding.__module__ = "_ascend.ops.embedding"
+    fake_flag_gems.current_work_registrar = type(
+        "Registrar", (), {"config": [("embedding", embedding)]}
+    )()
+    try:
+        assert sglang_fl_module._bridge_flaggems_vendor_loggers(
+            fake_flag_gems, []
+        ) == set()
+        assert vendor_logger.handlers == old_handlers
+        assert vendor_logger.propagate is old_propagate
+    finally:
+        vendor_logger.handlers = old_handlers
+        vendor_logger.propagate = old_propagate
+
+
 def test_yaml_flagos_blacklist_is_default_when_env_blacklist_absent(
     sglang_fl_module,
     fake_flag_gems,
