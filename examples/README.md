@@ -12,6 +12,7 @@ usable in CI pipelines.
 |--------|-------|-------------|-----|
 | `qwen3_6_35b_a3b_offline_inference.py` | Qwen3.6-35B-A3B | MoE (256 experts) | 1 |
 | `qwen3_6_27b_offline_inference.py` | Qwen3.6-27B | Dense (hybrid attention) | 1 |
+| `xing4_29b_a4b_mthreads_tp4.sh` | Xing4.0-29B-A4B | MoE + mHC | 4 |
 
 ## Usage
 

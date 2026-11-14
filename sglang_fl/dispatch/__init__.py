@@ -14,6 +14,8 @@
 
 # Dispatch module public API — aligned with vllm-plugin-FL.
 
+from typing import Optional
+
 from .types import OpImpl, BackendImplKind, BackendPriority, match_token
 from .registry import OpRegistry, OpRegistrySnapshot
 from .policy import (
@@ -51,6 +53,11 @@ def call_op(op_name: str, *args, **kwargs):
     return get_default_manager().call(op_name, *args, **kwargs)
 
 
+def call_op_selected(op_name: str, *args, **kwargs):
+    """Resolve and execute once without retrying after computation starts."""
+    return get_default_manager().call_selected(op_name, *args, **kwargs)
+
+
 def resolve_op(op_name: str):
     """
     Convenience function to resolve an operator through the default manager.
@@ -62,6 +69,11 @@ def resolve_op(op_name: str):
         Callable implementation function
     """
     return get_default_manager().resolve(op_name)
+
+
+def get_dispatch_stats(op_name: Optional[str] = None):
+    """Return OpManager counters for all operators or one named operator."""
+    return get_default_manager().get_stats(op_name)
 
 
 __all__ = [
@@ -92,5 +104,7 @@ __all__ = [
     "get_logger",
     "set_log_level",
     "call_op",
+    "call_op_selected",
     "resolve_op",
+    "get_dispatch_stats",
 ]

@@ -57,6 +57,22 @@ def register_builtins(registry) -> None:
             priority=BackendPriority.DEFAULT,
         ),
         OpImpl(
+            op_name="mhc_pre",
+            impl_id="default.flagos",
+            kind=BackendImplKind.DEFAULT,
+            fn=_bind_is_available(backend.mhc_pre, is_avail),
+            vendor=None,
+            priority=BackendPriority.DEFAULT,
+        ),
+        OpImpl(
+            op_name="mhc_post",
+            impl_id="default.flagos",
+            kind=BackendImplKind.DEFAULT,
+            fn=_bind_is_available(backend.mhc_post, is_avail),
+            vendor=None,
+            priority=BackendPriority.DEFAULT,
+        ),
+        OpImpl(
             op_name="rotary_embedding",
             impl_id="default.flagos",
             kind=BackendImplKind.DEFAULT,

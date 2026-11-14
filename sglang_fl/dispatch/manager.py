@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 import threading
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Optional, Set, Tuple
 
 from .registry import OpRegistry
 from .policy import SelectionPolicy, get_policy
@@ -60,6 +60,7 @@ class OpManager:
         self._dispatch_cache: Dict[Tuple[str, str, int], Callable] = {}
         self._called_ops: Dict[str, str] = {}
         self._failed_impls: Dict[str, Set[str]] = {}
+        self._selected_call_stats: Dict[str, Dict[str, Any]] = {}
 
         try:
             os.register_at_fork(after_in_child=self._reset_after_fork)
@@ -78,6 +79,7 @@ class OpManager:
             self._dispatch_cache.clear()
             self._called_ops.clear()
             self._failed_impls.clear()
+            self._selected_call_stats.clear()
 
     def bump_policy_epoch(self) -> None:
         with self._lock:
@@ -326,6 +328,56 @@ class OpManager:
         raise RuntimeError(
             f"All implementations failed for op='{op_name}'. Last error: {last_error}"
         ) from last_error
+
+    def call_selected(self, op_name: str, *args, **kwargs):
+        """Resolve once, execute once, and record the selected implementation.
+
+        This entry point is for operators that may launch asynchronous kernels
+        or otherwise begin computation before raising. Runtime failures are
+        propagated without attempting another implementation.
+        """
+        fn = self.resolve(op_name)
+        impl_id = self._get_impl_id_for_fn(op_name, fn)
+        self._log_first_call(op_name, impl_id, mode="selected-no-retry")
+        with self._lock:
+            stats = self._selected_call_stats.setdefault(
+                op_name,
+                {"calls": 0, "successes": 0, "failures": 0, "implementations": {}},
+            )
+            stats["calls"] += 1
+            impl_stats = stats["implementations"].setdefault(
+                impl_id, {"attempts": 0, "successes": 0, "failures": 0}
+            )
+            impl_stats["attempts"] += 1
+        try:
+            result = fn(*args, **kwargs)
+        except Exception:
+            with self._lock:
+                stats["failures"] += 1
+                impl_stats["failures"] += 1
+            raise
+        with self._lock:
+            stats["successes"] += 1
+            impl_stats["successes"] += 1
+        return result
+
+    def get_selected_call_stats(self, op_name: Optional[str] = None) -> Dict[str, Any]:
+        """Return a copy of no-retry dispatch statistics."""
+        with self._lock:
+            names = [op_name] if op_name is not None else sorted(self._selected_call_stats)
+            return {
+                name: {
+                    "calls": stats["calls"],
+                    "successes": stats["successes"],
+                    "failures": stats["failures"],
+                    "implementations": {
+                        impl_id: dict(counters)
+                        for impl_id, counters in stats["implementations"].items()
+                    },
+                }
+                for name in names
+                if (stats := self._selected_call_stats.get(name)) is not None
+            }
 
     def _get_impl_id_for_fn(self, op_name: str, fn: Callable) -> str:
         snap = self._registry.snapshot()

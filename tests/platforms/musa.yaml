@@ -94,12 +94,15 @@ s5000:
       nightly:
         concurrent:
           qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+          xing4: ["29b_a4b_tp4"]
         inference:
           qwen3: ["4b_tp2", "06b_tp1"]
           qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+          xing4: ["29b_a4b_tp4"]
         serving:
           qwen3: ["4b_tp2"]
           qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+          xing4: ["29b_a4b_tp4"]
 
 
     functional:

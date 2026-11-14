@@ -26,6 +26,7 @@ from sglang_fl.dispatch.bridge.rotary_embedding import rotary_embedding_bridge
 from sglang_fl.dispatch.bridge.mrotary_embedding import mrotary_embedding_bridge
 from sglang_fl.dispatch.bridge.topk import topk_bridge
 from sglang_fl.dispatch.bridge.fused_moe import fused_moe_bridge
+from sglang_fl.dispatch.bridge.mhc import mhc_post_bridge, mhc_pre_bridge
 from sglang_fl.dispatch.bridge.fla_chunk import chunk_gated_delta_rule_bridge
 from sglang_fl.dispatch.bridge.fla_fused_recurrent import (
     fused_recurrent_gated_delta_rule_bridge,
@@ -42,6 +43,8 @@ __all__ = [
     "mrotary_embedding_bridge",
     "topk_bridge",
     "fused_moe_bridge",
+    "mhc_pre_bridge",
+    "mhc_post_bridge",
     "chunk_gated_delta_rule_bridge",
     "fused_recurrent_gated_delta_rule_bridge",
     "fused_recurrent_gated_delta_rule_packed_decode_bridge",
