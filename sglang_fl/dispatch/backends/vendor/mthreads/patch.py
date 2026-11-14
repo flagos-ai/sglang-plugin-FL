@@ -243,6 +243,32 @@ def _patch_fp32_tp_all_reduce() -> None:
     logger.info("MUSA FP32 TP all-reduce patches applied")
 
 
+def _patch_adjust_embedding_length() -> None:
+    """Work around MUSA native reduce (sum) out-of-bounds read.
+
+    On MUSA under high memory pressure, ``mask.sum()`` (muDNN Reduce::Run)
+    intermittently reads out of bounds, returning a garbage count (e.g. 27892)
+    or crashing with ``err 98 = invalid device function``.
+
+    The original function only uses ``mask.sum().item()``, so passing it a CPU
+    copy of the mask moves the reduction to the (correct) CPU path.
+    """
+    try:
+        from sglang.srt.managers import mm_utils
+    except Exception as e:
+        logger.warning("MUSA adjust_embedding_length patch skipped: %s", e)
+        return
+
+    orig = mm_utils._adjust_embedding_length
+
+    @wraps(orig)
+    def _adjust_embedding_length_cpu_sum(embedding, mask, logger):
+        return orig(embedding, mask.cpu(), logger)
+
+    mm_utils._adjust_embedding_length = _adjust_embedding_length_cpu_sum
+    logger.info("MUSA adjust_embedding_length CPU sum patch applied")
+
+
 def apply_musa_patches() -> None:
     global _patches_applied
     if _patches_applied:
@@ -251,6 +277,7 @@ def apply_musa_patches() -> None:
     _patch_pp_send_recv_order()
     _patch_pp_launch_batch_add_sync()
     _patch_multimodal_mask()
+    _patch_adjust_embedding_length()
     _patch_fp32_tp_all_reduce()
     _patches_applied = True
     logger.info("All MUSA PP patches applied successfully")
