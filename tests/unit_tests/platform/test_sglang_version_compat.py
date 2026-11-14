@@ -47,6 +47,43 @@ def test_nvidia_uses_sglang_cuda_piecewise_backend() -> None:
     assert platform.get_piecewise_backend_cls() is CUDAPiecewiseBackend
 
 
+def _record_torch_device(monkeypatch):
+    """Replace platform.torch.device with a recorder (no device type needs to
+    be registered in the test environment)."""
+    import sglang_fl.platform as platform_mod
+
+    calls = []
+
+    def fake_device(*args):
+        calls.append(args)
+        return ("torch.device",) + args
+
+    monkeypatch.setattr(platform_mod.torch, "device", fake_device)
+    return calls
+
+
+def test_tsingmicro_get_device_without_rank_returns_type_string(monkeypatch) -> None:
+    # SGLang's utils.common.get_device() falls back to
+    # current_platform.get_device(None) and calls .split(":") on the result.
+    calls = _record_torch_device(monkeypatch)
+    platform = _platform("tsingmicro", "txda")
+    assert platform.get_device(None) == "txda"
+    assert calls == []
+    assert platform.get_device(3) == ("torch.device", "txda", 3)
+
+
+@pytest.mark.parametrize(
+    ("vendor", "device_type"),
+    [("nvidia", "cuda"), ("ascend", "npu"), ("mthreads", "musa"), ("hygon", "cuda")],
+)
+def test_other_vendors_get_device_unchanged(monkeypatch, vendor: str, device_type: str) -> None:
+    calls = _record_torch_device(monkeypatch)
+    platform = _platform(vendor, device_type)
+    assert platform.get_device(None) == ("torch.device", device_type, None)
+    assert platform.get_device(1) == ("torch.device", device_type, 1)
+    assert calls == [(device_type, None), (device_type, 1)]
+
+
 @pytest.mark.parametrize(
     ("vendor", "device_type"),
     [("ascend", "npu"), ("mthreads", "musa")],

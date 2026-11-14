@@ -208,6 +208,15 @@ class PlatformFL(SRTPlatform):
     # ------------------------------------------------------------------
 
     def get_device(self, local_rank: int) -> torch.device:
+        # SGLang's ``utils.common.get_device()`` (no device id) falls back to
+        # ``current_platform.get_device(None)`` and expects a device-type
+        # *string* ("txda"); ServerArgs then calls ``.split(":")`` on it. This
+        # is reached on TsingMicro when ``--device`` is not given (e.g.
+        # ``python -m sglang.bench_offline_throughput``). Temporary,
+        # tsingmicro-only fix; every other vendor and every rank-based call
+        # keep returning a torch.device.
+        if local_rank is None and self._vendor_name == "tsingmicro":
+            return self._device_type
         return torch.device(self._device_type, local_rank)
 
     def set_device(self, device: torch.device) -> None:
