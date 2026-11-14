@@ -3,6 +3,7 @@
 These replace direct edits to sglang source that were previously required on
 Huawei NPU:
   - scheduler_pp: PP send/recv ordering + stream syncs (HCCL deadlock fix)
+  - base_fused_op: register the native NPU MoE path for OOT dispatch
   - attention_registry: defer CUDA-only linear-attn backend imports on NPU
   - qwen_vl_processor: transformers-version-compatible Qwen-VL preprocess
 """
@@ -10,6 +11,7 @@ Huawei NPU:
 import logging
 
 from .patches.attention_registry import patch_attn_backend_wrapper
+from .patches.base_fused_op import patch_unquantized_fused_moe
 from .patches.qwen_vl_processor import patch_qwen_vl_processor
 from .patches.scheduler_pp import (
     patch_pp_launch_batch_sync,
@@ -29,6 +31,7 @@ def apply_ascend_patches() -> None:
 
     patch_pp_send_recv_order()
     patch_pp_launch_batch_sync()
+    patch_unquantized_fused_moe()
     patch_attn_backend_wrapper()
     patch_qwen_vl_processor()
 
