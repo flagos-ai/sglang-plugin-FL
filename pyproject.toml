@@ -13,12 +13,12 @@
 # limitations under the License.
 
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=64", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "sglang_fl"
-version = "0.1.0"
+dynamic = ["version"]
 description = "SGLang OOT Plugin — FlagGems-based multi-chip adaptation"
 requires-python = ">=3.8"
 dependencies = [
@@ -37,6 +37,10 @@ include = ["sglang_fl*"]
 
 [tool.setuptools.package-data]
 "sglang_fl.dispatch.config" = ["*.yaml"]
+
+[tool.setuptools_scm]
+# Wheel version must carry the git sha so the app Containerfile can pin the
+# exact plugin commit (see exp/0.5.18 wheel pipeline).
 
 [tool.ruff]
 # Folders excluded from lint + format. These hold pre-existing issues that are
