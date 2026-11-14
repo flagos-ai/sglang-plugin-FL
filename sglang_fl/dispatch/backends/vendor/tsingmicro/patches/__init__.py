@@ -22,6 +22,8 @@ Patches applied:
   scheduler_pp_mixin –  PP send/recv even/odd ordering for txda (same as XPU)
   qwen3_asr_config – Default AutoConfig.register exist_ok=True to tolerate
                     transformers 5.15+ built-in qwen3_asr registration
+  vocab_embedding – Keep VocabParallelEmbedding on the torch path on txda
+                    (SGLang 0.5.18 Triton embedding: wrong rows for out-of-shard ids)
   triton_load_watch – Disable SGLang 0.5.18 CUDA-only Triton kernel-load
                     diagnostics (crash on txda device properties)
   gdn_norm        – Pin GatedDeltaNet's gated RMSNorm to
@@ -71,11 +73,13 @@ def apply_all_txda_patches() -> None:
         gdn_norm,
         scheduler_pp_mixin,
         triton_load_watch,
+        vocab_embedding,
     )
 
     dist_init.patch()
     fused_moe.patch()  # includes former unquant patch
     scheduler_pp_mixin.patch()
+    vocab_embedding.patch()  # 0.5.18 Triton embedding returns non-zero rows for out-of-shard ids on txda
     triton_load_watch.patch()  # 0.5.18 CUDA-only kernel-load hook crashes on txda
     gdn_norm.patch()  # pin GDN gated norm to fla.layernorm_gated.RMSNorm
 
