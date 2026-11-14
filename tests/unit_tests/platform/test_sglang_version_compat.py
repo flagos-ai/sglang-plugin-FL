@@ -39,7 +39,14 @@ def test_nvidia_uses_cuda_fused_op_fallback_key() -> None:
 
 
 def test_nvidia_uses_sglang_cuda_piecewise_backend() -> None:
-    from sglang.srt.compilation.cuda_piecewise_backend import CUDAPiecewiseBackend
+    try:
+        from sglang.srt.compilation.cuda_piecewise_backend import (
+            CUDAPiecewiseBackend,
+        )
+    except NotImplementedError as exc:
+        # SGLang's weak_ref_tensor module refuses to import on hosts without
+        # CUDA/XPU/NPU (e.g. TsingMicro TXDA CI runners).
+        pytest.skip(f"CUDA piecewise backend not importable on this host: {exc}")
 
     platform = _platform("nvidia", "cuda")
 
