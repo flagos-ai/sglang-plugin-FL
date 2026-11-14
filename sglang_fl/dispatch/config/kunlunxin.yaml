@@ -31,6 +31,8 @@ prefer: flagos
 # Everything else uses FlagGems. Verified 27B/35B-A3B offline+concurrent text+VL pass.
 # Override per-run with env SGLANG_FL_FLAGOS_BLACKLIST if needed.
 flagos_blacklist:
+  - index_select
+  - index
   - cat
   - floor_divide
   - sub
