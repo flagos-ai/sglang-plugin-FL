@@ -1,0 +1,67 @@
+# Qwen3.6-35B-A3B on TsingMicro TX8110, TP=8 (one full 8-card group).
+# The engine values match the validated examples/qwen3_6_35b_a3b_*.py txda
+# settings; device/dtype/radix-cache/attention backends come from the plugin's
+# TXDA server-arg defaults (vendor/tsingmicro/runtime_config.py).
+llm:
+  model: "/models/Qwen3.6-35B-A3B"
+  tp_size: 8
+  pp_size: 1
+  context_length: 8192
+  chunked_prefill_size: 512
+  mem_fraction_static: 0.60
+  disable_cuda_graph: true
+  cuda_graph_backend_prefill: disabled
+  trust_remote_code: true
+  disable_custom_all_reduce: true
+
+generate:
+  prompts:
+    - text: "How many states are there in the United States?"
+      expected: "50"
+    - text: "The capital of France is"
+      expected: "Paris"
+  sampling:
+    max_new_tokens: 10
+    temperature: 0.0
+  vl:
+    sampling:
+      max_new_tokens: 64
+      temperature: 0.0
+    cases:
+      - image: "examples/test_images/red_square.jpg"
+        question: "What color is shown in this image? Answer with one word."
+        expected: ["red"]
+      - image: "examples/test_images/cat.jpg"
+        question: "What animal is in this image? Answer with one word."
+        expected: ["cat"]
+      - image: "examples/test_images/stop_sign.png"
+        question: "What is the color of this sign? Answer with one word."
+        expected: ["red"]
+      - image: "examples/test_images/digit_seven.png"
+        question: "What digit is shown in this image? Answer with one digit."
+        expected: ["7"]
+
+serve:
+  served_model_name: "qwen"
+  # TXDA cold start (weight load + first Triton compilations) takes several
+  # minutes; 10 s polling x 180 = 30 min.
+  startup_retries: 180
+  endpoints: ["chat"]
+  stream: false
+  max_tokens: 64
+  chat_messages:
+    - role: "user"
+      content: "Introduce yourself,please"
+  sampling:
+    temperature: 0.0
+
+concurrent:
+  modes: ["text", "vl", "mixed"]
+  concurrent_n: 16
+  sampling:
+    text:
+      max_new_tokens: 256
+      temperature: 0.0
+    vl:
+      max_new_tokens: 64
+      temperature: 0.0

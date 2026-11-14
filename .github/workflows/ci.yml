@@ -230,6 +230,17 @@ jobs:
       run_benchmark: ${{ fromJson(needs.discover.outputs.run_benchmark) }}
     secrets: inherit
 
+  test-tsingmicro:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'tsingmicro')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: tsingmicro
+      ci_stage: pr
+      run_e2e: ${{ fromJson(needs.discover.outputs.run_e2e) }}
+      run_benchmark: ${{ fromJson(needs.discover.outputs.run_benchmark) }}
+    secrets: inherit
+
   # ============================================================
   # ci-gate — single aggregate status check (branch-protection
   # candidate; ported from vllm-plugin-FL #581).
@@ -255,6 +266,7 @@ jobs:
       - test-iluvatar
       - test-hygon
       - test-kunlunxin
+      - test-tsingmicro
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -272,6 +284,7 @@ jobs:
           ILUVATAR_RESULT:  ${{ needs.test-iluvatar.result }}
           HYGON_RESULT:     ${{ needs.test-hygon.result }}
           KUNLUNXIN_RESULT: ${{ needs.test-kunlunxin.result }}
+          TSINGMICRO_RESULT: ${{ needs.test-tsingmicro.result }}
         run: |
           set -euo pipefail
 
@@ -308,6 +321,7 @@ jobs:
           check_optional "test-iluvatar" "$ILUVATAR_RESULT"
           check_optional "test-hygon"   "$HYGON_RESULT"
           check_optional "test-kunlunxin" "$KUNLUNXIN_RESULT"
+          check_optional "test-tsingmicro" "$TSINGMICRO_RESULT"
 
           if [ $fail -ne 0 ]; then
             echo "ci-gate: FAILED"

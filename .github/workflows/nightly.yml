@@ -186,3 +186,13 @@ jobs:
       ci_stage: nightly
       branch: ${{ inputs.branch }}
     secrets: inherit
+
+  test-tsingmicro:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'tsingmicro')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: tsingmicro
+      ci_stage: nightly
+      branch: ${{ inputs.branch }}
+    secrets: inherit

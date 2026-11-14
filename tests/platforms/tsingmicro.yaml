@@ -1,0 +1,92 @@
+# TsingMicro TX8110 (TXDA) Platform Configuration — SGLang 0.5.18 empty runtime.
+#
+# Image: docker/tsingmicro/empty-0.5.18.containerfile (single system Python env).
+# All model cases use TP=8, i.e. one full 8-card group; .github/scripts/
+# tsingmicro/check.sh selects a healthy idle group and exports
+# TXDA_VISIBLE_DEVICES before tests start.
+#
+# Server-arg defaults (device=txda, bf16, radix cache off, triton_attn vision
+# attention, PIL image processor, 3600 s watchdog) and env defaults
+# (PRECISION_MODE, SGLANG_FL_GDN_NORM) come from the plugin itself; the
+# FlagGems blacklist lives in sglang_fl/dispatch/config/tsingmicro.yaml.
+# Only test-run settings are kept here.
+
+# ---- Platform-level settings ------------------------------------------------
+platform: tsingmicro
+vendor: tsingmicro
+
+device_types:
+  tx8110:
+    memory_gb: 64
+    tags: [txda, bf16]
+
+engine_overrides: {}
+
+tolerance:
+  inference:
+    default: {rtol: 1e-3, atol: 1e-3}
+    bfloat16: {rtol: 1e-3, atol: 1e-3}
+
+device_overrides: {}
+
+# CUDA-only kernel packages are not installed in the TXDA empty image.
+unsupported_features: [flashinfer, flash_attn]
+
+# Run e2e cases one at a time, without DeviceScheduler pinning. Every case is
+# TP8 and check.sh already pins the job to one healthy idle 8-card group via
+# TXDA_VISIBLE_DEVICES; the hosts are shared, and a second engine on cards
+# outside that group is exactly what the card protection must prevent.
+e2e_serial: true
+
+env_defaults:
+  SGLANG_PLUGINS: sglang_fl
+  USE_FLAGGEMS: '1'
+  # Validated communication path (single node and TP8/PP2 cross node).
+  SGLANG_FL_DIST_BACKEND: flagcx
+  # TXDA requests can queue / run far longer than SGLang's defaults during a
+  # cold-cache run; never time requests out inside a test.
+  SGLANG_REQ_WAITING_TIMEOUT: '-1'
+  SGLANG_REQ_RUNNING_TIMEOUT: '-1'
+
+# ---- Device-specific test configurations ------------------------------------
+tx8110:
+  name: tx8110
+  tests:
+    unit:
+      include: '*'
+      exclude: []
+
+    functional:
+      include: '*'
+      exclude: []
+
+    e2e:
+      # Stage-keyed (vllm-plugin-FL #581): PRs run inference + serving;
+      # nightly adds the concurrent smoke.
+      pr:
+        inference: &txda_model_cases
+          qwen3_6: [35b_a3b_tp8_txda, 27b_tp8_txda]
+        serving: *txda_model_cases
+      nightly:
+        inference: *txda_model_cases
+        concurrent: *txda_model_cases
+        serving: *txda_model_cases
+
+    # Dummy-weight smoke of the SGLang benchmark entrypoints. No small Qwen3
+    # checkpoint is staged on the TXDA hosts, so reuse the 27B case (its config
+    # only; weights are not loaded with load_format=dummy).
+    # latency (sglang.bench_one_batch) is skipped for now: its dummy-weight init
+    # calls torch.Generator(device=<txda param>), which torch_txda rejects
+    # ("Expected a 'cpu' device type for generator but found 'txda'").
+    # TODO: add latency to nightly once dummy weight init is fixed for txda.
+    benchmark:
+      pr: &txda_benchmark
+        enabled: true
+        types: [serve]
+        model: qwen3_6
+        case: 27b_tp8_txda
+        tp_size: 8
+        require_cases: true
+      nightly:
+        <<: *txda_benchmark
+        types: [throughput, serve]

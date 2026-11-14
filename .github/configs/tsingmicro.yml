@@ -1,0 +1,49 @@
+# TsingMicro TX8110 (TXDA) Hardware Configuration
+# CI/CD settings for TsingMicro TXDA testing (SGLang 0.5.18 empty runtime).
+
+platform: tsingmicro
+
+# Docker image for this hardware: docker/tsingmicro/empty-0.5.18.containerfile
+# (--target ci). Single system Python environment with SGLang 0.5.18.
+# TODO: replace with the published Harbor digest once the image is pushed;
+# the platform stays disabled in platforms.yml until then.
+ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl:0.5.18-tsingmicro-ci
+
+# Runner labels for this hardware (runner host not provisioned yet).
+runner_labels:
+  - ci-sglang-plugin-fl-tsingmicro
+
+# Shared platform-workflow settings (read by _platform_test.yml).
+# One job-level timeout for functional / e2e / benchmark: every run compiles
+# the Triton/FlagGems kernels from scratch, and a cold TP8 concurrent case
+# alone took ~16 min in local validation.
+test_timeout: 240
+# All cases are TP8 on the one 8-card group chosen by check.sh: run the e2e
+# matrix one job at a time.
+e2e_max_parallel: 1
+
+# Container volumes (hardware-specific paths).
+# Test model cases reference /models/<model>; on the TXDA hosts the model
+# store is /mnt/nvme_data/models. Read-only: tests never write model files.
+# No Triton/FlagGems cache volume: every run compiles from scratch.
+container_volumes:
+  - /mnt/nvme_data/models:/models:ro
+
+# Container options.
+# TXDA device access: the driver exposes per-chip nodes under /dev/accel and a
+# manager node /dev/accel_drv_mgr. Passing these with --device is sufficient
+# (verified: tsm_smi sees all 32 chips and torch.txda is available) --
+# no --privileged and no /dev or /sys bind mounts, same pattern as Hygon's
+# --device /dev/kfd ... .
+# --user root: setup.sh pip-installs the checkout into the system Python.
+# --init: tini as PID 1 reaps orphaned SGLang TP scheduler processes.
+container_options: >-
+  --hostname sglang-plugin-fl
+  --ipc=host
+  --shm-size=64g
+  --ulimit memlock=-1
+  --ulimit stack=67108864
+  --user root
+  --init
+  --device /dev/accel
+  --device /dev/accel_drv_mgr
