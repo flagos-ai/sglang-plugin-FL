@@ -68,6 +68,12 @@ def patch_fla_functions():
 
         return _originals
 
+    except ModuleNotFoundError as e:
+        if e.name and e.name.startswith("sglang.srt.layers.attention.fla"):
+            logger.info("SGLang FLA modules are absent; skipping optional FLA patches")
+            return None
+        logger.error(f"Failed to patch FLA functions: {e}")
+        return None
     except Exception as e:
         logger.error(f"Failed to patch FLA functions: {e}")
         return None
