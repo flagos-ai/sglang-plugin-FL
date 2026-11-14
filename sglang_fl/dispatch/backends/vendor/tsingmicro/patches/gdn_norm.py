@@ -27,7 +27,7 @@ This patch keeps it the only implementation GDN can reach:
    line per call (for "is it really called per layer per step" checks).
 
 The wrapper only logs and then calls the original ``forward``; numerics are
-untouched.  Off by default: set ``SGLANG_FL_GDN_NORM=1`` to enable.
+untouched.  On by default on txda: set ``SGLANG_FL_GDN_NORM=0`` to disable.
 """
 
 import importlib
@@ -47,7 +47,10 @@ _ENABLED_KEY = "SGLANG_FL_GDN_NORM"
 
 
 def _enabled() -> bool:
-    return os.getenv(_ENABLED_KEY, "0").lower() in ("1", "true", "yes", "on")
+    # On by default: this patch is only applied on txda, and every validated
+    # Qwen3.6 configuration runs with it (cold-cache 35B runs hung on-device
+    # without it). Set SGLANG_FL_GDN_NORM=0 to disable.
+    return os.getenv(_ENABLED_KEY, "1").lower() in ("1", "true", "yes", "on")
 
 
 def _forward(self, x, z=None):

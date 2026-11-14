@@ -27,7 +27,7 @@ Patches applied:
   triton_load_watch – Disable SGLang 0.5.18 CUDA-only Triton kernel-load
                     diagnostics (crash on txda device properties)
   gdn_norm        – Pin GatedDeltaNet's gated RMSNorm to
-                    fla.layernorm_gated.RMSNorm (SGLANG_FL_GDN_NORM, default 0)
+                    fla.layernorm_gated.RMSNorm (SGLANG_FL_GDN_NORM, default 1)
 
 Note: attention kernel routing (extend and decode to the flag_gems
 ``_tsingmicro`` kernels) lives in ``impl/attention_backend.py``, not here --
@@ -45,6 +45,29 @@ from sglang_fl.dispatch.backends.vendor.tsingmicro.patches._logger import patch_
 from sglang_fl.dispatch.backends.vendor.tsingmicro.patches._utils import is_txda as is_txda_available
 
 _log = patch_logger("patches")
+
+
+# Process-wide knobs read by the TXDA Triton backend (FlagTree) at kernel
+# compile time. Set here, during plugin load, so every process -- including
+# SGLang's spawned schedulers, which load the plugin again -- inherits them
+# before its first compilation. Existing values are never overridden.
+_TXDA_ENV_DEFAULTS = {
+    # FlagTree tsingmicro precision mode (0/1/2); the validated Qwen3.6
+    # configuration uses 2. See triton/backends/tsingmicro/precision.py.
+    "PRECISION_MODE": "2",
+}
+
+
+def _apply_txda_env_defaults() -> None:
+    import os
+
+    applied = []
+    for key, value in _TXDA_ENV_DEFAULTS.items():
+        if key not in os.environ:
+            os.environ[key] = value
+            applied.append(f"{key}={value}")
+    if applied:
+        _log.applied("txda env defaults: %s", ", ".join(applied))
 
 
 def apply_all_txda_patches() -> None:
@@ -66,6 +89,8 @@ def apply_all_txda_patches() -> None:
     if not is_txda_available():
         _log.skipped("txda not available — txda-specific patches skipped")
         return
+
+    _apply_txda_env_defaults()
 
     from sglang_fl.dispatch.backends.vendor.tsingmicro.patches import (
         dist_init,

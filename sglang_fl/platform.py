@@ -448,6 +448,12 @@ class PlatformFL(SRTPlatform):
             )
 
             apply_musa_runtime_defaults(server_args)
+        if self._vendor_name == "tsingmicro":
+            from sglang_fl.dispatch.backends.vendor.tsingmicro.runtime_config import (
+                apply_tsingmicro_runtime_defaults,
+            )
+
+            apply_tsingmicro_runtime_defaults(server_args)
         if self._vendor_name == "kunlunxin":
             server_args.mm_attention_backend = "sdpa"
             server_args.disable_cuda_graph = False

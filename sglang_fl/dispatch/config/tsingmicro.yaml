@@ -1,5 +1,37 @@
 # SGLang-FL Dispatch Configuration for tsingmicro (TXDA) platform
+# Validated with SGLang 0.5.18, FlagTree 0.7.1a1+tsingmicro3.6, runtime/CCL
+# 0.30279.6 (Qwen3.6-27B / 35B-A3B, TP8 single node and TP8/PP2 cross node).
+#
+# Operator-level policy only. Server-argument defaults (device, dtype, radix
+# cache, attention backends, ...) live in
+# sglang_fl/dispatch/backends/vendor/tsingmicro/runtime_config.py.
 prefer: flagos
+
+# ATen ops kept on native torch_txda instead of FlagGems.
+# This is the list every validated TXDA run used; it was previously passed
+# only via SGLANG_FL_FLAGOS_BLACKLIST in the launch scripts (that env var still
+# overrides this list completely).
+#   lt/ge/eq/ne/le (+ scalar / in-place forms), copy_: carried over unchanged
+#            from the validated launch scripts (TODO: record per-op reason).
+#   cat, cat_out: a cold-cache 35B-A3B run without them (and without
+#            TRITON_PIPELINE=0 / SGLANG_FL_GDN_NORM=1) hung on-device with
+#            "AP Kernel Run Timeout"; with all three it passes.
+flagos_blacklist:
+  - lt_scalar
+  - lt
+  - lt_scalar_
+  - lt_
+  - ge_scalar
+  - ge
+  - eq_scalar
+  - eq
+  - ne_scalar
+  - ne
+  - le_scalar
+  - le
+  - copy_
+  - cat
+  - cat_out
 
 # Per-operator backend selection order.
 # Tokens: vendor (platform-native), flagos (FlagGems/Triton), reference (pure PyTorch)
