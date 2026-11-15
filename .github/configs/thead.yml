@@ -3,15 +3,16 @@
 
 platform: thead
 
-# Docker image for this hardware (tag: 0.5.18-thead-runtime-20261112)
+# Docker image for this hardware (tag: 0.5.18-thead-runtime-20261113)
 # SGLang 0.5.18 empty mode on the operations runtime
-# flagos-runtime-thead-ppu2.1.0@sha256:163faf04..., built from
+# flagos-runtime-thead-ppu2.1.0@sha256:7837256c... (republished tag 2.3.0 with
+# CUDA-13 vendor wheels, build-infra #1773), built from
 # docker/thead/empty-0.5.18.containerfile (full runtime-distribution freeze,
 # additions lock, final-layer closed-set verification; build evidence:
-# https://github.com/lentil1016/sglang-plugin-FL/actions/runs/43247784661).
+# https://github.com/lentil1016/sglang-plugin-FL/actions/runs/43456277659).
 # The same image is published for users, so the HF offline switches are off in
 # the image and enabled for CI via container_options below.
-ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:275e56438e23ae03a440c5060a8a21b8a39935c99afc51dbcba7c241cda3a3e0
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:caedf941195b5dd16d565601e985a33354bb2fbb9f71093b902e52add3c3b83f
 
 # Runner labels for this hardware
 runner_labels:
