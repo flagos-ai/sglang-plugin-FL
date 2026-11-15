@@ -57,19 +57,17 @@ bw1000: &bw1000_profile
         - platform/test_iluvatar_import_shims.py
     functional:
       include: "*"
-      # Temporary runtime-migration unblockers. Keep the remaining functional
-      # suite and all model-level E2E coverage active while the platform stack
-      # owners investigate the isolated vendor-component failures:
-      # - build-infra#1786: FlagTree JIT cannot discover the DTK device libs;
-      # - build-infra#1787: paged varlen FlashAttention head_dim=256 numerics.
-      # Remove both exclusions before final acceptance of the runtime image.
+      # The mtp_attention numerics stay excluded while the platform stack
+      # owners investigate the isolated vendor-component failure tracked as
+      # build-infra#1787 (paged varlen FlashAttention head_dim=256). The
+      # mtp_logprobs suite is active again: build-infra#1786 (FlagTree JIT
+      # cannot discover the DTK device libs) is fixed by the baked clang
+      # wrapper in the runtime image, and this suite is its regression gate.
       exclude:
-        - ops/test_hygon_mtp_logprobs.py
         - ops/test_hygon_mtp_attention.py
     e2e:
-      # Diagnostic scope while build-infra#1786 is bypassed at job time: use
-      # one representative eager model to reach the first post-JIT behavior
-      # without spending scarce BW1000 runner time on equivalent failures.
+      # Diagnostic scope: use one representative eager model to keep the
+      # scarce BW1000 runner time bounded while the runtime image migrates.
       # Restore the full PR matrix before final acceptance.
       pr:
         inference:

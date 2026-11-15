@@ -24,12 +24,6 @@ python .github/scripts/hygon/ci_environment.py --check-ci-packages
 # own distributions must never move.
 python .github/scripts/hygon/ci_environment.py --check-image -- \
   python -m pip install --no-deps --no-build-isolation -e "$PLUGIN_ROOT"
-# Temporary fast-path validation for the appfix5 image: its broad import
-# finder must not fabricate sgl_kernel.scalar_type, because SGLang already
-# provides the correct ImportError fallback for this optional NVIDIA module.
-# Once hardware validation passes, this exception is baked into the image and
-# this job-time rewrite is removed.
-python .github/scripts/hygon/enable_sglang_scalar_fallback.py
 export PYTHONPATH="$PLUGIN_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 if [ -n "${GITHUB_ENV:-}" ]; then
   printf 'PYTHONPATH=%s\n' "$PYTHONPATH" >> "$GITHUB_ENV"
@@ -57,41 +51,28 @@ python .github/scripts/hygon/ci_environment.py -- \
   python .github/scripts/hygon/verify_environment.py \
     --plugin-root "$PLUGIN_ROOT" --runtime-evidence "$EVIDENCE" \
     --require-gpu --min-gpus 2
-# Diagnostic-only unblocker for build-infra#1786. Apply it after the runtime
-# evidence check above so the verifier still proves that the image contains the
-# untouched Runtime-owned FlagTree files. Remove this rewrite when the Runtime
-# digest provides a working JIT path.
-python .github/scripts/hygon/enable_flagtree_device_lib_fallback.py
-# SGLang 0.5.18's HIP JIT builder uses the conventional ROCm prefix for both
-# hipcc and headers. DTK provides the complete compatible tree at /opt/dtk but
-# the Runtime has no /opt/rocm alias. Keep this as a diagnostic-only link while
-# checking for failures beyond the Runtime/application prefix mismatch.
-# Actions' later test step does not source the Runtime's bash profile. Persist
-# the real DTK prefix so FlagTree keeps selecting its HCU clang 18 under
-# /opt/dtk/aillvm instead of following the compatibility link to clang 17.
-export ROCM_PATH=/opt/dtk
+# Diagnostic-only bypass for build-infra#1787. Keep the checked-in model
+# contract on strict HCU attention; only e2e construction sees this switch.
 if [ -n "${GITHUB_ENV:-}" ]; then
-  printf 'ROCM_PATH=%s\n' "$ROCM_PATH" >> "$GITHUB_ENV"
-  # Diagnostic-only bypass for build-infra#1787. Keep the checked-in model
-  # contract on strict HCU attention; only e2e construction sees this switch.
   printf 'SGLANG_HYGON_DIAGNOSTIC_TRITON_ATTENTION=1\n' >> "$GITHUB_ENV"
 fi
-if [ ! -e /opt/rocm ] && [ ! -L /opt/rocm ]; then
-  ln -s /opt/dtk /opt/rocm
-fi
+# The image bakes the DTK prefix contract (ROCM_PATH, the /opt/rocm alias and
+# the FlagTree clang wrapper, see the containerfile); this job only verifies it.
 if [ "$(readlink -f /opt/rocm)" != "$(readlink -f /opt/dtk)" ]; then
-  echo "::error::/opt/rocm exists but does not resolve to the DTK SDK" >&2
+  echo "::error::/opt/rocm is missing or does not resolve to the DTK SDK" >&2
   exit 1
 fi
 python - <<'PY'
+import os
 from pathlib import Path
 
 from triton.backends.hcu.compiler_hcu import HIPBackend
 
-expected = Path("/opt/dtk/aillvm/bin/clang-18")
 actual = Path(HIPBackend.path_to_rocm_clang())
+expected = Path(os.environ["TRITON_HIP_CLANG_PATH"])
 if actual != expected:
-    raise RuntimeError(f"FlagTree selected {actual}, expected HCU compiler {expected}")
-print(f"[hygon-ci] FlagTree HCU compiler: {actual}")
+    raise RuntimeError(f"FlagTree selected {actual}, expected the baked wrapper {expected}")
+resolved = Path("/opt/dtk/aillvm/bin/clang-18")
+print(f"[hygon-ci] FlagTree HCU compiler: {actual} -> {resolved}")
 PY
 /opt/rocm/bin/hipcc --version | head -n 1

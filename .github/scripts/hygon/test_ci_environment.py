@@ -19,8 +19,6 @@ from ci_environment import (
     verify_ci_packages,
     verify_image_metadata,
 )
-from enable_flagtree_device_lib_fallback import MARKER, enable_fallback
-from enable_sglang_scalar_fallback import ORIGINAL, PATCHED, patch_source
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS = Path(__file__).resolve().parent
@@ -156,47 +154,6 @@ class AllocationTests(unittest.TestCase):
 
 
 class ImageAndSetupTests(unittest.TestCase):
-    def test_device_library_fallback_is_exact_and_idempotent(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            compiler = root / "compiler_hcu.py"
-            device_lib = root / "bitcode"
-            device_lib.mkdir()
-            for name in ("ocml.bc", "ockl.bc"):
-                (device_lib / name).touch()
-            compiler.write_text(
-                "def clang_args():\n"
-                "        clang_args = ['-O3', '']\n"
-                "        return clang_args\n",
-                encoding="utf-8",
-            )
-            enable_fallback(compiler, device_lib)
-            updated = compiler.read_text(encoding="utf-8")
-            self.assertIn(MARKER, updated)
-            self.assertIn(f"--rocm-device-lib-path={device_lib}", updated)
-            self.assertIn("if arg", updated)
-            enable_fallback(compiler, device_lib)
-            self.assertEqual(compiler.read_text(encoding="utf-8"), updated)
-
-    def test_device_library_fallback_requires_vendor_bitcode(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            compiler = root / "compiler_hcu.py"
-            compiler.write_text("        return clang_args\n", encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "directory is absent"):
-                enable_fallback(compiler, root / "missing")
-
-    def test_scalar_fallback_patch_is_exact_and_idempotent(self):
-        source = "prefix\n" + ORIGINAL + "suffix\n"
-        updated, changed = patch_source(source)
-        self.assertTrue(changed)
-        self.assertEqual(updated, "prefix\n" + PATCHED + "suffix\n")
-        self.assertEqual(patch_source(updated), (updated, False))
-
-    def test_scalar_fallback_patch_rejects_unknown_finder(self):
-        with self.assertRaisesRegex(RuntimeError, "reviewed appfix5"):
-            patch_source("class _StubFinder: pass\n")
-
     def test_old_sglang_image_fails_before_dependency_queries(self):
         calls = []
 
@@ -255,14 +212,13 @@ class ImageAndSetupTests(unittest.TestCase):
         self.assertNotIn(".[dev]", source)
         self.assertIn("--runtime-evidence", source)
         self.assertIn("--require-gpu --min-gpus 2", source)
-        self.assertGreater(
-            source.index("enable_flagtree_device_lib_fallback.py"),
-            source.index("--require-gpu --min-gpus 2"),
-        )
-        self.assertIn("ln -s /opt/dtk /opt/rocm", source)
+        # The DTK prefix contract (ROCM_PATH, /opt/rocm, the clang wrapper) is
+        # baked into the image; the job only verifies it and never rewrites.
+        self.assertNotIn("enable_flagtree_device_lib_fallback.py", source)
+        self.assertNotIn("enable_sglang_scalar_fallback.py", source)
+        self.assertIn("TRITON_HIP_CLANG_PATH", source)
         self.assertIn("/opt/rocm/bin/hipcc --version", source)
-        self.assertIn("export ROCM_PATH=/opt/dtk", source)
-        self.assertIn("printf 'ROCM_PATH=%s\\n'", source)
+        self.assertIn("readlink -f /opt/rocm", source)
         self.assertIn("/opt/dtk/aillvm/bin/clang-18", source)
         self.assertIn("SGLANG_HYGON_DIAGNOSTIC_TRITON_ATTENTION=1", source)
 

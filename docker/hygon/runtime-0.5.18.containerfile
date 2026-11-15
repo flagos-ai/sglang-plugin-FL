@@ -385,6 +385,12 @@ RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
        '' \
        'class _StubFinder:' \
        '    def find_spec(self, fullname, path=None, target=None):' \
+       '        # scalar_type is optional in SGLang and has its own ImportError' \
+       '        # fallback.  Pretending it exists changes scalar_types into a' \
+       '        # generic stub function and breaks import-time attribute access' \
+       '        # (uint4b8), so this finder must never fabricate it.' \
+       '        if fullname == "sgl_kernel.scalar_type":' \
+       '            return None' \
        '        if fullname.split(".")[0] not in _STUB_ROOTS:' \
        '            return None' \
        '        return importlib.util.spec_from_loader(fullname, _StubLoader())' \
@@ -424,6 +430,66 @@ ENV SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1
 # on another).  The paths are image-internal (plus the hyhal bind mounts), so
 # baking them here makes the image self-sufficient and host-independent.
 ENV LD_LIBRARY_PATH=/opt/dtk/dcc/gcvm/lib:/opt/dtk/hip/lib:/opt/dtk/llvm/lib:/opt/dtk/lib:/opt/dtk/lib64:/opt/hyhal/lib:/opt/hyhal/lib64:/opt/dtk/dushmem/lib:/opt/dtk/opencl/lib:/opt/dtk/.hyhal/rocm_smi/lib:/opt/dtk/.hyhal/lib:/opt/dtk/.hyhal/lib64
+
+# The DTK prefix convention: SGLang 0.5.18's HIP JIT builder looks for hipcc
+# and headers under the conventional ROCm prefix, and FlagTree's hcu backend
+# derives its HCU clang-18 selection (aillvm, not the clang-17 compatibility
+# tree) from ROCM_PATH. The base image ships the complete DTK tree at
+# /opt/dtk but no /opt/rocm alias and no ROCM_PATH, so bake both here —
+# plain ENV (not a bash-profile export) so test steps that never source a
+# profile still inherit it.
+ENV ROCM_PATH=/opt/dtk
+RUN if [ ! -e /opt/rocm ] && [ ! -L /opt/rocm ]; then ln -s /opt/dtk /opt/rocm; fi \
+    && test "$(readlink -f /opt/rocm)" = "$(readlink -f /opt/dtk)"
+
+# build-infra#1786: FlagTree 0.7.0's hcu backend asks clang to discover the
+# DTK device libraries on its own and that discovery fails on the BW1000
+# runner ("cannot find ROCm device library") even with ROCM_PATH set. Fix at
+# the seam FlagTree documents for this (TRITON_HIP_CLANG_PATH): a baked
+# wrapper around the real aillvm clang-18 that drops empty disabled-option
+# strings and appends the explicit device-library path. Runtime-owned
+# /opt/flagtree files stay untouched.
+RUN mkdir -p /opt/hcu-clang \
+    && printf '%s\n' \
+       '#!/bin/bash' \
+       '# Hygon CI: explicit DTK device-library path for FlagTree JIT.' \
+       'REAL=/opt/dtk/aillvm/bin/clang-18' \
+       'FIX=--rocm-device-lib-path=/opt/dtk/dcc/dccgcn/bitcode' \
+       'args=()' \
+       'found=0' \
+       'for a in "$@"; do' \
+       '  [ -n "$a" ] || continue' \
+       '  [ "$a" = "$FIX" ] && found=1' \
+       '  args+=("$a")' \
+       'done' \
+       'if [ "$found" -eq 0 ]; then args+=("$FIX"); fi' \
+       'exec "$REAL" "${args[@]}"' \
+       > /opt/hcu-clang/clang-18-device-libs \
+    && chmod +x /opt/hcu-clang/clang-18-device-libs \
+    && test -f /opt/dtk/dcc/dccgcn/bitcode/ocml.bc \
+    && test -f /opt/dtk/dcc/dccgcn/bitcode/ockl.bc \
+    && /opt/dtk/aillvm/bin/clang-18 --version | head -n 1
+ENV TRITON_HIP_CLANG_PATH=/opt/hcu-clang/clang-18-device-libs
+
+# Prove the wrapper end-to-end on the GPU-less builder: the flagtree-style
+# two-step compile (LLIR -> asm -> hsaco) against a kernel that references an
+# OCML device-library symbol must succeed through the wrapper.
+RUN cat > /tmp/hcu-device-lib-check.ll <<'EOF'
+declare float @__ocml_fabs_f32(float)
+define amdgpu_kernel void @k(float addrspace(1)* %p) {
+entry:
+  %v = load float, float addrspace(1)* %p
+  %r = call float @__ocml_fabs_f32(float %v)
+  store float %r, float addrspace(1)* %p
+  ret void
+}
+EOF
+RUN /opt/dtk/aillvm/bin/clang-18 -target amdgcn-amd-amdhsa -mcpu=gfx936:xnack- -O3 \
+       /tmp/hcu-device-lib-check.ll -S -o /tmp/hcu-device-lib-check.s \
+    && /opt/hcu-clang/clang-18-device-libs -target amdgcn-amd-amdhsa -mcpu=gfx936:xnack- -O3 \
+       /tmp/hcu-device-lib-check.s -x assembler -o /tmp/hcu-device-lib-check.hsaco \
+    && test -s /tmp/hcu-device-lib-check.hsaco \
+    && echo "wrapper hsaco compile through DTK device libraries: OK"
 
 # --- Volatile verification (cheap layers, tuned without re-downloading) ------
 # 1. Every runtime distribution survives with the exact same version and the
