@@ -27,11 +27,6 @@ _PATCHES = (
         "torchvision_image",
         "patch_torchvision_decode_jpeg_cuda_to_cpu",
     ),
-    (
-        "flashinfer_backend_classes",
-        "flashinfer_backend",
-        "patch_flashinfer_backend_classes",
-    ),
     ("sampler", "sampler", "patch_sampler"),
     ("pynccl_wrapper", "pynccl_wrapper", "patch_pynccl_wrapper"),
     ("fused_moe", "fused_moe", "patch_fused_moe_functions"),
@@ -49,7 +44,6 @@ _PATCHES = (
 # The sampler patch only changes the flashinfer sampling branch.
 _PATCH_REQUIRES = {
     "flashinfer_utils_comm_backend": "flashinfer",
-    "flashinfer_backend_classes": "flashinfer",
     "sampler": "flashinfer",
     "sgl_kernel_cutlass_scaled_mm_alias": "sgl_kernel",
 }

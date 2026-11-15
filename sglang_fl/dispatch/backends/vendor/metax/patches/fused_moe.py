@@ -61,9 +61,14 @@ def moe_sum_reduce_triton_metax(
     output: torch.Tensor,
     routed_scaling_factor: float,
 ) -> None:
-    from sglang.srt.layers.moe.moe_runner.triton_utils.fused_moe_triton_kernels import (
-        moe_sum_reduce_triton,
-    )
+    try:  # SGLang >= 0.5.16
+        from sglang.kernels.ops.moe.fused_moe_triton_kernels import (
+            moe_sum_reduce_triton,
+        )
+    except ImportError:  # SGLang <= 0.5.15
+        from sglang.srt.layers.moe.moe_runner.triton_utils.fused_moe_triton_kernels import (
+            moe_sum_reduce_triton,
+        )
 
     return moe_sum_reduce_triton(input, output, routed_scaling_factor)
 

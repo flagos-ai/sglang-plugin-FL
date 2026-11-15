@@ -157,7 +157,7 @@ elif _is_hcu:
     ]
 elif _is_maca:
     _PLATFORM_SERVER_ARGS = [
-        "--attention-backend", "flashinfer",
+        "--attention-backend", "triton",
         "--chunked-prefill-size", "4096",
         "--disable-radix-cache",
     ]

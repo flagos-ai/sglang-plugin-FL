@@ -135,7 +135,7 @@ elif _is_hcu:
     }
 elif _is_maca:
     _extra_engine_kwargs = {
-        "attention_backend": "flashinfer",
+        "attention_backend": "triton",
         "chunked_prefill_size": 4096,
         "disable_radix_cache": True,
         "trust_remote_code": True,
