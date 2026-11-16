@@ -50,19 +50,26 @@ bi_v150:
       include: '*'
       exclude: []
     e2e:
-      inference:
-        qwen3_6: [27b_tp4_nograph, 35b_a3b_tp4_nograph]
-      concurrent:
-        qwen3_6: [27b_tp4_nograph, 35b_a3b_tp4_nograph]
-      serving:
-        qwen3_6: [27b_tp4_nograph, 35b_a3b_tp4_nograph]
+      # Iluvatar keeps its complete three-task acceptance in both automatic
+      # tiers; weekly falls back to nightly through the shared runner.
+      pr:
+        inference: &iluvatar_cases
+          qwen3_6: [27b_tp4_nograph, 35b_a3b_tp4_nograph]
+        concurrent: *iluvatar_cases
+        serving: *iluvatar_cases
+      nightly:
+        inference: *iluvatar_cases
+        concurrent: *iluvatar_cases
+        serving: *iluvatar_cases
     benchmark:
       # Reuse all three shared smoke workloads and their original assertions.
       # Bind their model fixture to the existing mounted 27B model, including
       # TP4 for the serving template which otherwise hard-codes TP1.
-      enabled: true
-      smoke: [throughput, latency, serve]
-      model: qwen3_6
-      case: 27b_tp4_nograph
-      tp_size: 4
-      require_cases: true
+      pr: &iluvatar_benchmarks
+        enabled: true
+        types: [throughput, latency, serve]
+        model: qwen3_6
+        case: 27b_tp4_nograph
+        tp_size: 4
+        require_cases: true
+      nightly: *iluvatar_benchmarks

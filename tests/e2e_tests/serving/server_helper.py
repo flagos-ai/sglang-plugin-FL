@@ -40,14 +40,23 @@ _NO_PROXY = {"http": None, "https": None}
 def _get_free_port() -> int:
     # SGLang derives an internal gRPC port from the HTTP port. Keep the HTTP
     # port low enough so derived ports stay within the valid 1-65535 range.
-    for port in range(30000, 55536):
+    # Parallel e2e cases race on the probe-then-bind window: two cases
+    # scanning from the same base can both pick the same "free" port before
+    # either server binds it. The device scheduler injects FL_TEST_PORT_BASE
+    # (30000 + first_slot * 50) so co-scheduled cases scan disjoint ranges;
+    # the scan still skips ports held by anything else.
+    base = int(os.environ.get("FL_TEST_PORT_BASE", "30000"))
+    # Scan a bounded 50-port window per case (bases are spaced 50 apart by
+    # the scheduler), so co-scheduled cases never wander into each other's
+    # range; the scan still skips ports held inside the window.
+    for port in range(base, base + 50):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             try:
                 sock.bind(("127.0.0.1", port))
             except OSError:
                 continue
             return port
-    raise RuntimeError("No free port found in range 30000-55535")
+    raise RuntimeError(f"No free port found in range {base}-{base + 49}")
 
 
 def _append_no_proxy(env: dict[str, str]) -> dict[str, str]:
@@ -194,9 +203,8 @@ class SGLangServer:
         if self._log_file is None:
             return ""
         self._log_file.flush()
-        return Path(self._log_file.name).read_text(
-            encoding="utf-8", errors="replace"
-        )
+        return Path(self._log_file.name).read_text(encoding="utf-8", errors="replace")
+
     def _fail_with_logs(self, message: str) -> None:
         logs = ""
         log_path = ""
@@ -213,4 +221,3 @@ class SGLangServer:
         pytest.fail(
             f"{message}.{extra}\nLogs ({len(logs)} chars, showing tail):\n{tail}"
         )
-

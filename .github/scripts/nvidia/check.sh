@@ -10,5 +10,5 @@ else
 fi
 # The current CUDA E2E matrix contains TP=4 cases, so fail early when a runner
 # exposes too few GPUs rather than timing out during model launch.
-python3 .github/scripts/cuda/verify_environment.py \
+python3 .github/scripts/nvidia/verify_environment.py \
     --require-gpu --require-ci --min-gpus 4

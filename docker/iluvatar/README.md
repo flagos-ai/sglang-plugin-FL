@@ -200,21 +200,25 @@ harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:8cc9b2ecd0b99f200eadde5bc13e556
 主 `CI` workflow 自动调用 `Iluvatar compatibility (CPU)`，在 GitHub 托管
 runner 上构建导入兼容包并执行 CPU 合约和 CI 守卫测试。该作业不代表硬件验收。
 
-主 CI 只新增天数专属入口：
-`.github/configs/platforms.yml` 启用天数，`ci.yml` 的 `test-iluvatar` 调用
-`_iluvatar_test.yml`，复用现有配置加载器读取 `.github/configs/iluvatar.yml`，
+`.github/configs/platforms.yml` 启用天数，`ci.yml` 的 `test-iluvatar` 和其他
+硬件一样调用共享 `_platform_test.yml`，读取 `.github/configs/iluvatar.yml`
 依次调度 unit、functional、E2E 和 benchmark。标准 `container_volumes` 和
 `container_options` 直接携带模型只读挂载、CoreX 驱动库、GPU 0–3 及运行环境。
 资源参考现有 vLLM main 天数配置；runner 标签只使用
-`iluvatar-cicd-vllm-plugin`。天数 E2E 矩阵固定串行；配置中的 `test_timeout` 和
-`concurrency_group` 控制冷启动超时及同一 runner 池的阶段互斥。
+`iluvatar-cicd-vllm-plugin`。天数配置通过 `test_driver` 保留严格验收入口，
+并通过 `test_timeout`、`e2e_max_parallel` 以及平台清单中的完整 PR/nightly
+矩阵保留 180 分钟超时、串行 E2E 和完整验收；共享 workflow 的 `needs` 控制
+阶段顺序。硬件请求直接交给 runner 池排队；
+不要为该池添加跨 PR 共用的 GitHub concurrency group，因为 GitHub 每组只保留
+一个 pending job，新请求会取消较早的 pending 请求。
 
-天数专属 `_iluvatar_stage_test.yml` 调用 `.github/scripts/iluvatar/check.sh` 和 `setup.sh`，严格检查
-显式分配的真实 CoreX 设备，仅安装当前 checkout 和显式导入兼容包，并保留
-vendor Torch、FlagTree 和原有 CoreX Python 路径。两个后端 profile 都执行完整
-运行环境与路由预检，后续默认 profile 仍为 vendor。
+共享阶段模板按照统一平台约定调用 `.github/scripts/iluvatar/check.sh` 和
+`setup.sh`，严格检查显式分配的真实 CoreX 设备，仅安装当前 checkout 和显式
+导入兼容包，并保留 vendor Torch、FlagTree 和原有 CoreX Python 路径。两个后端
+profile 都执行完整运行环境与路由预检，后续默认 profile 仍为 vendor。
 
-天数专属工作流直接调用 `.github/scripts/iluvatar/run_tests.py`；现有其他 backend 的工作流和测试入口保持基线内容：
+共享阶段模板根据天数配置调用 `.github/scripts/iluvatar/run_tests.py`；其他
+backend 未配置 `test_driver` 时仍默认调用 `tests/run.py`：
 
 - unit 执行托管 CPU 合约中的同组用例，GPU 项明确 deselect；至少 148 项执行且零跳过。
 - functional 单独执行 30 项数值与 graph 合约和 1 项真实 CoreX PDL 编译探针。
