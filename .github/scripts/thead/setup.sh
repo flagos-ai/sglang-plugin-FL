@@ -103,7 +103,10 @@ for lib in "$site"/torchvision/lib/_C*.so* \
 done
 echo "--- libcudart.so.12 resolution:"
 ldconfig -p 2>/dev/null | grep -i "libcudart" || echo "  ldconfig: no libcudart entries"
-found="$(ldconfig -p 2>/dev/null | grep -i "libcudart.so.12" | head -1 | awk '{print $NF}')"
+# `|| true` inside the substitution: an empty grep match must not kill the
+# script under `set -euo pipefail` (killed the first D6 hardware run when the
+# runtime shipped only libcudart.so.13 — nothing matched .so.12).
+found="$(ldconfig -p 2>/dev/null | { grep -i "libcudart.so.12" || true; } | head -1 | awk '{print $NF}')"
 if [ -n "$found" ]; then
   echo "  resolved: $found"
   case "$found" in
