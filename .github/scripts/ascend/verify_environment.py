@@ -328,15 +328,19 @@ def _require_deep_ep_layout() -> None:
     print(f"[ascend-env] deep-ep-extension={extension} -> {extension.resolve()}")
 
 
-def _require_causal_conv1d_abi(torch: object) -> None:
+def _require_causal_conv1d_abi(torch: object, *, cann921: bool = False) -> None:
     try:
         schema = str(torch.ops.npu.causal_conv1d.default._schema)
     except (AttributeError, RuntimeError) as exc:
         raise RuntimeError("npu::causal_conv1d is not registered") from exc
-    if schema != EXPECTED_CAUSAL_CONV1D_SCHEMA:
+    expected = EXPECTED_CAUSAL_CONV1D_SCHEMA
+    if cann921:
+        # The newer native build explicitly annotates the state mutation.
+        expected = expected.replace("Tensor conv_states", "Tensor(a!) conv_states")
+    if schema != expected:
         raise RuntimeError(
             "npu::causal_conv1d ABI mismatch: "
-            f"expected {EXPECTED_CAUSAL_CONV1D_SCHEMA}, found {schema}"
+            f"expected {expected}, found {schema}"
         )
     print(f"[ascend-env] causal-conv1d-schema={schema}")
 
@@ -591,7 +595,7 @@ def _require_npu(min_npus: int, flagcx_library: Path, *, cann921: bool) -> None:
 
     for module_name in REQUIRED_NPU_KERNEL_MODULES:
         _require_import(module_name)
-    _require_causal_conv1d_abi(torch)
+    _require_causal_conv1d_abi(torch, cann921=cann921)
     from sglang.srt.plugins import load_plugins
 
     load_plugins()

@@ -495,7 +495,7 @@ def test_ascend_request_pool_fallback_is_runtime_and_module_local(
     assert allocation.support_triton is patched
 
 
-def test_ascend_gdn_prefill_batches_only_matching_legacy_gating(monkeypatch) -> None:
+def test_ascend_gdn_layout_adapts_exact_native_abi(monkeypatch) -> None:
     import torch
 
     from sglang_fl.dispatch.backends.vendor.ascend.patches import gdn_prefill
@@ -503,27 +503,51 @@ def test_ascend_gdn_prefill_batches_only_matching_legacy_gating(monkeypatch) -> 
     versions = {"sglang": "0.5.18", "sgl-kernel-npu": "2026.6.1"}
     monkeypatch.setattr(gdn_prefill.metadata, "version", versions.__getitem__)
     calls = []
+    selected_states = []
     expected = object()
 
     def native_chunk(q, k, v, g, beta, **kwargs):
         calls.append((g, beta, kwargs))
         return expected
 
-    gdn_triton = SimpleNamespace(chunk_gated_delta_rule=native_chunk)
+    class TritonGDNKernel:
+        def extend(self, q, k, v, g, beta, *, ssm_states, cache_indices):
+            selected = ssm_states[cache_indices].contiguous()
+            selected_states.append(selected)
+            return expected, selected + 1, selected.unsqueeze(0) + 2
+
+        def decode(self, q, k, v, a, b, *, ssm_states, cache_indices):
+            # Mirror the native kernel's contiguous-input guard and V,K
+            # indexing. Updates must still reach the original physical pool.
+            ssm_states = ssm_states.contiguous()
+            ssm_states[cache_indices, :, 1, 0] += 1
+            return expected
+
+    original_extend = TritonGDNKernel.extend
+    original_decode = TritonGDNKernel.decode
+    gdn_triton = SimpleNamespace(
+        chunk_gated_delta_rule=native_chunk, TritonGDNKernel=TritonGDNKernel
+    )
     native_module = SimpleNamespace(chunk_gated_delta_rule_npu=native_chunk)
     modules = {
         gdn_prefill._GDN_TRITON_MODULE: gdn_triton,
         gdn_prefill._NATIVE_CHUNK_MODULE: native_module,
     }
     monkeypatch.setattr(gdn_prefill.importlib, "import_module", modules.__getitem__)
-    assert gdn_prefill.patch_gdn_prefill_gating_layout() is False
+    assert gdn_prefill.patch_gdn_layout() is False
     assert gdn_triton.chunk_gated_delta_rule is native_chunk
+    assert TritonGDNKernel.extend is original_extend
+    assert TritonGDNKernel.decode is original_decode
 
     versions["sgl-kernel-npu"] = "2026.9.0"
-    assert gdn_prefill.patch_gdn_prefill_gating_layout() is True
+    assert gdn_prefill.patch_gdn_layout() is True
     wrapped = gdn_triton.chunk_gated_delta_rule
-    assert gdn_prefill.patch_gdn_prefill_gating_layout() is True
+    wrapped_extend = TritonGDNKernel.extend
+    wrapped_decode = TritonGDNKernel.decode
+    assert gdn_prefill.patch_gdn_layout() is True
     assert gdn_triton.chunk_gated_delta_rule is wrapped
+    assert TritonGDNKernel.extend is wrapped_extend
+    assert TritonGDNKernel.decode is wrapped_decode
     assert native_module.chunk_gated_delta_rule_npu is native_chunk
 
     value = torch.empty(1, 3, 2, 4)
@@ -546,9 +570,35 @@ def test_ascend_gdn_prefill_batches_only_matching_legacy_gating(monkeypatch) -> 
         assert calls[-1][0] is gates
         assert calls[-1][1] is weights
 
+    key = torch.empty(1, 3, 2, 3)
+    pool = torch.arange(5 * 2 * 4 * 3).reshape(5, 2, 4, 3)
+    cache_indices = torch.tensor([3, 1])
+    kernel = TritonGDNKernel()
+    expected_chunk_state = pool[cache_indices].transpose(-1, -2)
+    for states in (pool, pool.transpose(-1, -2)):
+        out, state, h = kernel.extend(
+            key, key, value, g, beta, ssm_states=states, cache_indices=cache_indices
+        )
+        expected_state = states[cache_indices]
+        assert out is expected
+        torch.testing.assert_close(selected_states[-1], expected_chunk_state)
+        torch.testing.assert_close(state, expected_state + 1)
+        torch.testing.assert_close(h, expected_state.unsqueeze(0) + 2)
 
+    expected_pool = pool.clone()
+    expected_pool[cache_indices, :, 1, 0] += 2
+    for states in (pool, pool.transpose(-1, -2)):
+        out = kernel.decode(
+            key, key, value, g, beta, ssm_states=states, cache_indices=cache_indices
+        )
+        assert out is expected
+    torch.testing.assert_close(pool, expected_pool)
+
+
+@pytest.mark.parametrize("native_vk_state", [False, True])
 def test_ascend_gdn_target_verify_replays_decode_and_commits_snapshots(
     monkeypatch,
+    native_vk_state,
 ) -> None:
     import torch
 
@@ -684,13 +734,17 @@ def test_ascend_gdn_target_verify_replays_decode_and_commits_snapshots(
         mixed_qkv,
         torch.zeros(4, 1),
         torch.zeros(4, 1),
+        native_vk_state=native_vk_state,
     )
 
     assert output.flatten().tolist() == [11.0, 13.0, 23.0, 27.0]
     assert all(call.tolist() == [0, 1, 2] for call in conv_calls)
     assert all(call.tolist() == [0, 1, 2] for call in decode_calls)
     assert decode_state_contiguity == [True, True]
-    assert torch.equal(decode_initial_states[0], initial_ssm[0, cache_indices])
+    expected_decode_state = initial_ssm[0, cache_indices]
+    if native_vk_state:
+        expected_decode_state = expected_decode_state.transpose(-1, -2)
+    torch.testing.assert_close(decode_initial_states[0], expected_decode_state)
     assert intermediate_ssm_all[0, 0, :, 0, 0, 0].tolist() == [11.0, 13.0]
     assert intermediate_ssm_all[0, 1, :, 0, 0, 0].tolist() == [23.0, 27.0]
     assert torch.equal(ssm_all, initial_ssm)

@@ -14,7 +14,7 @@ These replace the compatibility edits still required on Huawei NPU:
   - logsumexp: split logprob top-k into SGLang's ordinary row normalizer and
     PyTorch top-k because CANN 8.5 cannot compile the fused kernel on 910C
   - req_to_token_pool: use the PyTorch writer on FlagTree 0.7.0 / CANN 9.2.1
-  - gdn_prefill: adapt gating inputs to the sgl-kernel-npu 2026.9.0 chunk ABI
+  - gdn_prefill: adapt gating and state layouts to the sgl-kernel-npu 2026.9.0 ABI
 
 SGLang v0.5.18 already contains the current NPU attention-wrapper and Qwen-VL
 processor implementations. Keeping the old plugin replacements would discard
@@ -25,7 +25,7 @@ import logging
 
 from .patches.logsumexp import patch_logsumexp_topk_fallback
 from .patches.linear import patch_unquantized_linear_mm
-from .patches.gdn_prefill import patch_gdn_prefill_gating_layout
+from .patches.gdn_prefill import patch_gdn_layout
 from .patches.gdn_target_verify import patch_gdn_target_verify
 from .patches.scheduler_pp import (
     patch_pp_launch_batch_sync,
@@ -53,7 +53,7 @@ def apply_ascend_patches() -> None:
     patch_unquantized_linear_mm()
     patch_qwen35_pp_rotary_cache()
     patch_mamba_state_update_multibuffer()
-    patch_gdn_prefill_gating_layout()
+    patch_gdn_layout()
     patch_gdn_target_verify()
     patch_logsumexp_topk_fallback()
     patch_request_pool_write_fallback()
