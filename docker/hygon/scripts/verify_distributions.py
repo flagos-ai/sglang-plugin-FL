@@ -41,9 +41,7 @@ failed = False
 (evidence / "sglang-additions-installed.txt").write_text(
     "\n".join(f"{name}=={after[name]}" for name in added) + "\n"
 )
-planned = set(
-    (evidence / "sglang-resolver-additions.txt").read_text().split()
-)
+planned = set((evidence / "sglang-resolver-additions.txt").read_text().split())
 installed = set(f"{name}=={after[name]}" for name in added)
 print(f"{len(added)} distributions added; runtime baseline size {len(before)}")
 if installed != planned:

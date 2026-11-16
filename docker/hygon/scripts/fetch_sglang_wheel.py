@@ -20,7 +20,10 @@ dest.parent.mkdir(parents=True, exist_ok=True)
 last_error = None
 for attempt in range(1, 6):
     try:
-        with urllib.request.urlopen(url, timeout=300) as response, open(dest, "wb") as out:
+        with (
+            urllib.request.urlopen(url, timeout=300) as response,
+            open(dest, "wb") as out,
+        ):
             while True:
                 chunk = response.read(1 << 20)
                 if not chunk:

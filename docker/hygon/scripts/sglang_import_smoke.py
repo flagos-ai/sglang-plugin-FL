@@ -17,6 +17,7 @@ import traceback
 
 try:
     import sglang
+
     print("SMOKE-PASS sglang", md.version("sglang"), "imported from", sglang.__file__)
 except BaseException:  # noqa: BLE001 - classify below
     text = traceback.format_exc()
@@ -31,5 +32,7 @@ except BaseException:  # noqa: BLE001 - classify below
         raise SystemExit(
             "sglang import failed for reasons other than missing device libraries"
         )
-    print("SMOKE-TOLERATED sglang import blocked by device libraries only "
-          "(expected on a GPU-less builder)")
+    print(
+        "SMOKE-TOLERATED sglang import blocked by device libraries only "
+        "(expected on a GPU-less builder)"
+    )

@@ -56,6 +56,7 @@ with (evidence / "site-files-before.sha256").open("w") as f:
         f.write(f"{digest}  {relative}\n")
 print(f"site-packages baseline: {len(manifest)} files hashed under {purelib}")
 
+
 def probe_module(module):
     # find_spec resolves without executing the module: no device libraries
     # are touched, so the probe is meaningful on a GPU-less builder.
@@ -63,6 +64,7 @@ def probe_module(module):
     if spec is None or spec.origin is None:
         return {"found": False}
     return {"found": True, "origin": spec.origin}
+
 
 flagtree = Path("/opt/flagtree")
 provenance = {

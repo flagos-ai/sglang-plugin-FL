@@ -3,8 +3,12 @@
 def _unavailable(name):
     def _raise(*args, **kwargs):
         raise RuntimeError(
-            f"sgl_kernel.{name} is a stub: HCU ships no sgl_kernel wheel")
+            f"sgl_kernel.{name} is a stub: HCU ships no sgl_kernel wheel"
+        )
+
     return _raise
+
+
 def __getattr__(name):
     if name.startswith("__"):
         raise AttributeError(name)

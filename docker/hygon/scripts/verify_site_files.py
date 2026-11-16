@@ -28,12 +28,16 @@ for relative, expected in baseline.items():
     elif hashlib.sha256(path.read_bytes()).hexdigest() != expected:
         changed.append(relative)
 if missing or changed:
-    print(f"FATAL: site-packages baseline drifted: {len(missing)} missing, "
-          f"{len(changed)} content-changed")
+    print(
+        f"FATAL: site-packages baseline drifted: {len(missing)} missing, "
+        f"{len(changed)} content-changed"
+    )
     for item in missing[:20]:
         print(f"  - missing: {item}")
     for item in changed[:20]:
         print(f"  ! changed: {item}")
     sys.exit(1)
-print(f"site-packages file baseline unchanged "
-      f"({len(baseline)} files re-hashed identical)")
+print(
+    f"site-packages file baseline unchanged "
+    f"({len(baseline)} files re-hashed identical)"
+)

@@ -32,8 +32,10 @@ for item in report.get("install", []):
     name = canonicalize_name(metadata.get("name", ""))
     version = metadata.get("version", "")
     if name in EXTERNAL_PLATFORM_COMPONENTS:
-        print(f"  ~ {name}=={version} is an external platform component "
-              "(provided by the runtime; removed after install)")
+        print(
+            f"  ~ {name}=={version} is an external platform component "
+            "(provided by the runtime; removed after install)"
+        )
         continue
     if name not in before:
         additions.append((name, version))
@@ -45,22 +47,30 @@ for item in report.get("install", []):
 (evidence / "sglang-resolver-additions.txt").write_text(
     "\n".join(f"{name}=={version}" for name, version in sorted(additions)) + "\n"
 )
-print(f"resolver plans {len(additions)} new distributions "
-      "(recorded in sglang-resolver-additions.txt)")
+print(
+    f"resolver plans {len(additions)} new distributions "
+    "(recorded in sglang-resolver-additions.txt)"
+)
 for name, version in sorted(additions):
     print(f"  + {name}=={version}")
 
 failed = False
 if same_version:
     failed = True
-    print("FATAL: resolver plans to reinstall runtime distributions "
-          "(same version) - explicit review required:", flush=True)
+    print(
+        "FATAL: resolver plans to reinstall runtime distributions "
+        "(same version) - explicit review required:",
+        flush=True,
+    )
     for name, version in sorted(same_version):
         print(f"  = {name}=={version}")
 if conflicts:
     failed = True
-    print("FATAL: resolver plans to replace runtime distributions "
-          "with different versions:", flush=True)
+    print(
+        "FATAL: resolver plans to replace runtime distributions "
+        "with different versions:",
+        flush=True,
+    )
     for name, old, new in sorted(conflicts):
         print(f"  ! {name}: runtime={old} planned={new}")
 if failed:

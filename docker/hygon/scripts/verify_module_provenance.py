@@ -23,11 +23,13 @@ if not os.environ.get("PYTHONPATH"):
 
 evidence = Path("/opt/sglang-ci")
 
+
 def probe_module(module):
     spec = importlib.util.find_spec(module)
     if spec is None or spec.origin is None:
         return {"found": False}
     return {"found": True, "origin": spec.origin}
+
 
 after = {
     module: probe_module(module)
@@ -52,6 +54,8 @@ if changed:
     print("--- recorded build context ---")
     print(json.dumps(context, indent=2, sort_keys=True))
     sys.exit(1)
-print("module provenance unchanged under container-start resolution order "
-      "(triton resolves via /opt/flagtree before site-packages):")
+print(
+    "module provenance unchanged under container-start resolution order "
+    "(triton resolves via /opt/flagtree before site-packages):"
+)
 print(json.dumps(after, indent=2, sort_keys=True))

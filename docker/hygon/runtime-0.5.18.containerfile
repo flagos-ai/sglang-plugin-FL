@@ -14,7 +14,9 @@
 #     only declares it under runtime-common. No hand-picked packages.
 #   * No sglang-plugin-FL source in this image; CI installs the plugin from
 #     the PR checkout via the standard setup flow.
-#   * Build logic lives in docker/hygon/scripts/ (reviewable, lintable);
+#   * Build logic lives in docker/hygon/scripts/ (reviewable, lintable,
+#     black-formatted) and runs through BuildKit bind mounts, so the scripts
+#     never enter the image;
 #     this file is orchestration only. Verification gates stay in the build
 #     so a drifting image fails before it can be pushed, and the volatile
 #     gates are layered after the heavy install so tuning them reuses the
@@ -63,24 +65,19 @@ WORKDIR /opt/sglang-ci
 # drift across indexes cannot change the closure; the dry-run gate still
 # verifies zero runtime replacements on top of it.
 COPY docker/hygon/runtime-0.5.18.additions.lock /opt/sglang-ci/sglang-additions.lock
-# Stable build-side scripts (wheel fetch, baseline capture, resolver gate).
-COPY docker/hygon/scripts/fetch_sglang_wheel.py \
-     docker/hygon/scripts/capture_runtime_baseline.py \
-     docker/hygon/scripts/validate_resolver_plan.py \
-     /opt/sglang-ci/scripts/
 
 # --- Stable, slow: fetch and SHA256-verify the SGLang wheel ------------------
-RUN python /opt/sglang-ci/scripts/fetch_sglang_wheel.py
+RUN --mount=type=bind,target=/ctx python /ctx/docker/hygon/scripts/fetch_sglang_wheel.py
 
 # --- Stable: capture the pre-install runtime state ---------------------------
 # Canonicalized distribution inventory, exact constraints for the resolver,
 # the runtime's own pip check result (kept as the baseline so pre-existing
 # runtime findings are not attributed to SGLang), the file-level
 # site-packages baseline, and module-level provenance for the vendor stack.
-RUN python -m pip freeze --all | sort > /opt/sglang-ci/runtime-freeze-before.txt \
+RUN --mount=type=bind,target=/ctx python -m pip freeze --all | sort > /opt/sglang-ci/runtime-freeze-before.txt \
     && { python -m pip check > /opt/sglang-ci/runtime-pip-check-baseline.txt 2>&1; \
          printf '%s\n' "$?" > /opt/sglang-ci/runtime-pip-check-baseline.exitcode; true; } \
-    && python /opt/sglang-ci/scripts/capture_runtime_baseline.py
+    && python /ctx/docker/hygon/scripts/capture_runtime_baseline.py
 
 # --- Resolver gate: dry-run with report before touching site-packages --------
 # Any runtime distribution in the install plan fails the build: a different
@@ -88,6 +85,7 @@ RUN python -m pip freeze --all | sort > /opt/sglang-ci/runtime-freeze-before.txt
 # explicit review. New (absent) distributions are the SGLang closure; they are
 # recorded for review but allowed.
 RUN --mount=type=cache,target=/tmp/pip-cache \
+    --mount=type=bind,target=/ctx \
     dry_run_rc=1 \
     && for attempt in 1 2 3 4 5 6 7 8; do \
          if python -m pip install \
@@ -110,7 +108,7 @@ RUN --mount=type=cache,target=/tmp/pip-cache \
          sleep 20; \
        done \
     && [ "$dry_run_rc" -eq 0 ] \
-    && python /opt/sglang-ci/scripts/validate_resolver_plan.py
+    && python /ctx/docker/hygon/scripts/validate_resolver_plan.py
 
 # --- Stable, slow: the real install ------------------------------------------
 # Same constraints and indexes as the reviewed dry-run plan. The standalone
@@ -248,28 +246,21 @@ ENV TRITON_HIP_CLANG_PATH=/opt/hcu-clang/clang-18-device-libs
 # Prove the wrapper end-to-end on the GPU-less builder: the flagtree-style
 # two-step compile (LLIR -> asm -> hsaco) against a kernel that references an
 # OCML device-library symbol must succeed through the wrapper.
-COPY docker/hygon/scripts/hcu-device-lib-check.ll /opt/sglang-ci/scripts/
-RUN /opt/dtk/aillvm/bin/clang-18 -target amdgcn-amd-amdhsa -mcpu=gfx936:xnack- -O3 \
-       /opt/sglang-ci/scripts/hcu-device-lib-check.ll -S -o /tmp/hcu-device-lib-check.s \
+RUN --mount=type=bind,target=/ctx /opt/dtk/aillvm/bin/clang-18 -target amdgcn-amd-amdhsa -mcpu=gfx936:xnack- -O3 \
+       /ctx/docker/hygon/scripts/hcu-device-lib-check.ll -S -o /tmp/hcu-device-lib-check.s \
     && /opt/hcu-clang/clang-18-device-libs -target amdgcn-amd-amdhsa -mcpu=gfx936:xnack- -O3 \
        /tmp/hcu-device-lib-check.s -x assembler -o /tmp/hcu-device-lib-check.hsaco \
     && test -s /tmp/hcu-device-lib-check.hsaco \
     && echo "wrapper hsaco compile through DTK device libraries: OK"
 
 # --- Volatile verification (cheap layers, tuned without re-downloading) ------
-COPY docker/hygon/scripts/verify_distributions.py \
-     docker/hygon/scripts/verify_site_files.py \
-     docker/hygon/scripts/verify_module_provenance.py \
-     docker/hygon/scripts/sglang_import_smoke.py \
-     /opt/sglang-ci/scripts/
-
 # 1. Every runtime distribution survives with the exact same version and the
 #    installed additions match the reviewed resolver plan.
-RUN python /opt/sglang-ci/scripts/verify_distributions.py
+RUN --mount=type=bind,target=/ctx python /ctx/docker/hygon/scripts/verify_distributions.py
 
 # 1b. File-level zero-drift: every baseline site-packages file must still
 #     exist with the identical SHA256 (catches in-place overwrites).
-RUN python /opt/sglang-ci/scripts/verify_site_files.py
+RUN --mount=type=bind,target=/ctx python /ctx/docker/hygon/scripts/verify_site_files.py
 
 # 2. pip check: only violations NEW relative to the runtime baseline fail the
 #    build; the runtime's own pre-existing findings stay on record. One
@@ -292,7 +283,7 @@ RUN { python -m pip check > /opt/sglang-ci/runtime-pip-check-after.txt 2>&1; \
 
 # 3. Module provenance: every vendor module must still resolve to the exact
 #    same origin (see the script docstring for the one recorded exception).
-RUN python /opt/sglang-ci/scripts/verify_module_provenance.py
+RUN --mount=type=bind,target=/ctx python /ctx/docker/hygon/scripts/verify_module_provenance.py
 
 # 3b. Triton resolution: with the standalone wheel gone and PYTHONPATH baked,
 #     every entrypoint style must resolve the same FlagTree tree. Exercise
@@ -303,7 +294,7 @@ RUN python -c 'import triton; p = triton.__file__; assert p and p.startswith("/o
 
 # 4. Import smoke check for sglang itself (sentinel-classified; the script
 #    docstring explains why the verdict comes from the log, not the exit code).
-RUN python /opt/sglang-ci/scripts/sglang_import_smoke.py > /tmp/sglang-import-smoke.log 2>&1 || true
+RUN --mount=type=bind,target=/ctx python /ctx/docker/hygon/scripts/sglang_import_smoke.py > /tmp/sglang-import-smoke.log 2>&1 || true
 RUN cat /tmp/sglang-import-smoke.log \
     && grep -qE "SMOKE-PASS|SMOKE-TOLERATED|no ROCm-capable device is detected" \
        /tmp/sglang-import-smoke.log

@@ -3,8 +3,12 @@
 def _unavailable(name):
     def _raise(*args, **kwargs):
         raise RuntimeError(
-            f"flashinfer.{name} is a stub: HCU ships no flashinfer wheel")
+            f"flashinfer.{name} is a stub: HCU ships no flashinfer wheel"
+        )
+
     return _raise
+
+
 def __getattr__(name):
     if name.startswith("__"):
         raise AttributeError(name)
