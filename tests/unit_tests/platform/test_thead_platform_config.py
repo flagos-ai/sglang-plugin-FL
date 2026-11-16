@@ -11,7 +11,8 @@ from sglang_fl.dispatch.config import utils
 
 @pytest.fixture
 def cuda_like(monkeypatch):
-    for attr in ("txda", "npu", "musa", "gcu", "corex"):
+    # Every torch marker get_platform_name() checks before its CUDA branch.
+    for attr in ("txda", "npu", "musa", "gcu", "corex", "__hcu_version__"):
         monkeypatch.delattr(torch, attr, raising=False)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
 

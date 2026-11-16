@@ -13,7 +13,9 @@ import pytest
 from sglang_fl.dispatch.backends.vendor.thead import import_guard as guard
 
 ROOTS = list(guard._PACKAGES)
-_REAL_INSTALLED = guard._installed  # the fixture stubs it out; one test needs the real one
+_REAL_INSTALLED = (
+    guard._installed
+)  # the fixture stubs it out; one test needs the real one
 
 
 @pytest.fixture
@@ -125,7 +127,10 @@ def test_activate_platform_runs_vendor_early_hook(monkeypatch):
 
     seen = []
     monkeypatch.setattr(
-        importlib.util, "find_spec", lambda name: object() if name.endswith(".early") else None
+        importlib.util,
+        "find_spec",
+        # The vendor package and its early module both resolve.
+        lambda name: object() if name.startswith("sglang_fl.dispatch") else None,
     )
     monkeypatch.setattr(importlib, "import_module", lambda name: seen.append(name))
     sglang_fl._apply_vendor_early_patches("thead")
@@ -140,3 +145,36 @@ def test_vendor_without_early_module_is_skipped(monkeypatch):
     monkeypatch.setattr(importlib, "import_module", lambda name: called.append(name))
     sglang_fl._apply_vendor_early_patches("nvidia")
     assert called == []
+
+
+@pytest.mark.parametrize("vendor", ["nvidia", "no_such_vendor"])
+def test_vendor_without_vendor_package_is_skipped(monkeypatch, vendor):
+    # Real import machinery: find_spec raises ModuleNotFoundError (not None) when
+    # vendor/<vendor>/ itself is missing, which is the case for nvidia (vendor/cuda/).
+    import sglang_fl
+
+    called = []
+    real_import = importlib.import_module
+
+    def tracking_import(name, *args, **kwargs):
+        if name.endswith(".early"):
+            called.append(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", tracking_import)
+    sglang_fl._apply_vendor_early_patches(vendor)
+    assert called == []
+
+
+# nvidia has no vendor/ package; ascend has one but no early.py.
+@pytest.mark.parametrize("vendor", ["nvidia", "ascend"])
+def test_activate_platform_succeeds_without_vendor_early_module(monkeypatch, vendor):
+    import sglang_fl
+    from sglang_fl import utils as fl_utils
+
+    monkeypatch.setattr(
+        fl_utils,
+        "get_device_info",
+        lambda: types.SimpleNamespace(vendor_name=vendor, device_type="test"),
+    )
+    assert sglang_fl.activate_platform() == "sglang_fl.platform:PlatformFL"
