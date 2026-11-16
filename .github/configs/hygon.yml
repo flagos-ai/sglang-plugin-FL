@@ -6,7 +6,7 @@ platform: hygon
 # Docker image for this hardware: SGLang 0.5.18+flagos on the immutable
 # operations runtime (flagos-runtime-hygon-dtk26.04), built by
 # docker/hygon/runtime-0.5.18.containerfile. Published tag:
-# 0.5.18-hygon-runtime-ci-20261115-appfix7; digest-pinned. The old development
+# 0.5.18-hygon-runtime-ci-20261116-appfix8; digest-pinned. The old development
 # image (and main's 0.5.5.11-era image) is rejected by setup. This image also
 # carries the HCU compatibility patches applied to the SGLang wheel (see
 # docker/hygon/sglang-v0.5.18-hcu.patch), import-only stubs for the
@@ -20,7 +20,7 @@ platform: hygon
 # hour pulling it, so all platform stages get 180 minutes.
 test_timeout: 180
 
-ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:37c3b430fccf978c49223e76ee7b1047ecde54e8cee3dfdcabeeb6066b681010
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:789e956cea037d8809cfd73315b9c4c03242c7237fb59e03ba2d135574ed3686
 
 # Runner labels for this hardware
 runner_labels:
