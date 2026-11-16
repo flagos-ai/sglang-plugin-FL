@@ -72,19 +72,18 @@ def installed_distributions() -> dict[str, str]:
 
 
 def check_lock_overlap(lock: Path, runtime_names: set[str]) -> None:
-    lock_names = {
-        canonicalize_name(line.split("==")[0]) for line in read_lines(lock)
-    }
+    lock_names = {canonicalize_name(line.split("==")[0]) for line in read_lines(lock)}
     overlap = lock_names & runtime_names
     assert not overlap, (
         f"install lock overlaps runtime distributions: {sorted(overlap)}"
     )
-    print(f"[1/5] lock gate: {len(lock_names)} additions, "
-          f"zero overlap with {len(runtime_names)} runtime distributions")
+    print(
+        f"[1/5] lock gate: {len(lock_names)} additions, "
+        f"zero overlap with {len(runtime_names)} runtime distributions"
+    )
 
 
 def check_freeze(evidence: Path, runtime_names: set[str]) -> None:
-    import importlib.metadata as md
 
     current = installed_distributions()
     missing = sorted(
@@ -112,8 +111,10 @@ def check_site_files(evidence: Path) -> None:
         f"{len(changed)} changed; first missing {missing[:3]}, "
         f"first changed {changed[:3]}"
     )
-    print(f"[3/5] site-packages file baseline unchanged "
-          f"({sum(1 for _ in manifest.open())} files)")
+    print(
+        f"[3/5] site-packages file baseline unchanged "
+        f"({sum(1 for _ in manifest.open())} files)"
+    )
 
 
 def check_pip_check(evidence: Path) -> None:
@@ -121,23 +122,23 @@ def check_pip_check(evidence: Path) -> None:
 
     after = subprocess.run(
         [sys.executable, "-m", "pip", "check"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     ).stdout
     baseline = set(read_lines(evidence / "runtime-0.5.18.pip-check-baseline.txt"))
     current = {line for line in after.splitlines() if line.strip()}
     new = current - baseline - set(PIP_CHECK_WAIVED)
     assert not new, (
-        f"new pip check violations introduced by the SGLang install: "
-        f"{sorted(new)}"
+        f"new pip check violations introduced by the SGLang install: {sorted(new)}"
     )
-    print("[4/5] pip check: no new violations "
-          "(baseline preserved; documented waiver on record)")
+    print(
+        "[4/5] pip check: no new violations "
+        "(baseline preserved; documented waiver on record)"
+    )
 
 
 def check_provenance(evidence: Path) -> None:
-    expected = json.loads(
-        (evidence / "runtime-0.5.18.provenance.json").read_text()
-    )
+    expected = json.loads((evidence / "runtime-0.5.18.provenance.json").read_text())
 
     def probe(module: str) -> dict:
         spec = importlib.util.find_spec(module)
@@ -152,18 +153,24 @@ def check_provenance(evidence: Path) -> None:
         if expected.get(module) != after[module]
     }
     assert not changed, f"vendor module provenance changed: {changed}"
-    print("[5/5] module provenance unchanged "
-          "(triton resolves via /opt/flagtree before site-packages)")
+    print(
+        "[5/5] module provenance unchanged "
+        "(triton resolves via /opt/flagtree before site-packages)"
+    )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--evidence-dir", type=Path, default=Path("/opt/sglang-ci"),
+        "--evidence-dir",
+        type=Path,
+        default=Path("/opt/sglang-ci"),
         help="directory holding the committed runtime reference data",
     )
     parser.add_argument(
-        "--lock", type=Path, default=Path("/opt/sglang-ci/runtime-0.5.18.install.lock"),
+        "--lock",
+        type=Path,
+        default=Path("/opt/sglang-ci/runtime-0.5.18.install.lock"),
         help="the install lock the closure was installed from",
     )
     args = parser.parse_args()
