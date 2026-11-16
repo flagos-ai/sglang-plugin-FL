@@ -7,12 +7,14 @@ platform: nvidia
 # the immutable operations runtime (flagos-runtime-nvidia-cuda13.3),
 # built by docker/cuda/runtime-0.5.18.containerfile. Digest-pinned; the
 # aligned CUDA 13.0 toolchain, the lib64 layout shim, and the numpy1-era
-# datasets stack are baked in and validated end-to-end on A100.
+# datasets stack are baked in; triton comes exclusively from the
+# runtime's compiler slots (/opt/flagtree default, /opt/triton via
+# `compiler triton`) -- the closure installs no pip triton.
 # The operations-runtime image is ~20 GB; a cold runner spends most of an
 # hour pulling it, so all platform stages get 180 minutes.
 test_timeout: 180
 
-ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:367e5242a9858ca7e1d9ff3ce807100032fb8fdab3dcb08fce7756fa24640b43
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:632e684fc5095266f32fca52410b332b790cf0ae0336aba7a3a192c706bdc74c
 
 # Runner labels for this hardware
 runner_labels:
