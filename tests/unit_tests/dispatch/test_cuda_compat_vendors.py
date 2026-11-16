@@ -79,10 +79,7 @@ class TestCudaCompatibleVendors:
 
         with patch("torch.cuda.is_available", return_value=True), patch(
             "torch.cuda.device_count", return_value=1
-        ), patch.dict(
-            "sys.modules",
-            {"sglang.srt.platforms": MagicMock(current_platform=mock_platform)},
-        ):
+        ), patch("sglang.srt.platforms.current_platform", mock_platform):
             CudaBackend._available = None
             backend = CudaBackend()
             assert backend.is_available() is True
@@ -97,10 +94,7 @@ class TestCudaCompatibleVendors:
 
         with patch("torch.cuda.is_available", return_value=True), patch(
             "torch.cuda.device_count", return_value=1
-        ), patch.dict(
-            "sys.modules",
-            {"sglang.srt.platforms": MagicMock(current_platform=mock_platform)},
-        ):
+        ), patch("sglang.srt.platforms.current_platform", mock_platform):
             CudaBackend._available = None
             backend = CudaBackend()
             assert backend.is_available() is False
@@ -159,10 +153,7 @@ class TestCudaCompatibleVendors:
 
         with patch("torch.cuda.is_available", return_value=True), patch(
             "torch.cuda.device_count", return_value=1
-        ), patch.dict(
-            "sys.modules",
-            {"sglang.srt.platforms": MagicMock(current_platform=mock_platform)},
-        ):
+        ), patch("sglang.srt.platforms.current_platform", mock_platform):
             CudaBackend._available = None
 
             registry = OpRegistry()
@@ -225,10 +216,7 @@ class TestCudaCompatibleVendors:
 
         with patch("torch.cuda.is_available", return_value=True), patch(
             "torch.cuda.device_count", return_value=1
-        ), patch.dict(
-            "sys.modules",
-            {"sglang.srt.platforms": MagicMock(current_platform=mock_platform)},
-        ):
+        ), patch("sglang.srt.platforms.current_platform", mock_platform):
             CudaBackend._available = None
 
             # Real registration — same code path as production
@@ -282,10 +270,7 @@ class TestCudaCompatibleVendors:
 
         with patch("torch.cuda.is_available", return_value=True), patch(
             "torch.cuda.device_count", return_value=1
-        ), patch.dict(
-            "sys.modules",
-            {"sglang.srt.platforms": MagicMock(current_platform=mock_platform)},
-        ):
+        ), patch("sglang.srt.platforms.current_platform", mock_platform):
             CudaBackend._available = None
 
             registry = OpRegistry()
