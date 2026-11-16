@@ -1,4 +1,4 @@
-"""Tests for the PPU (thead) import placeholders (flashinfer, deep_gemm)."""
+"""Tests for the PPU (thead) import placeholders."""
 
 import importlib
 import importlib.abc
@@ -47,8 +47,12 @@ def _active(root):
     return guard._active_finder(root) is not None
 
 
-def test_guards_both_packages_and_forces_availability_off(clean):
-    assert guard.install_import_guards() == ["flashinfer", "deep_gemm"]
+def test_guards_missing_packages_and_forces_availability_off(clean):
+    assert guard.install_import_guards() == [
+        "sgl_kernel",
+        "flashinfer",
+        "deep_gemm",
+    ]
     assert os.environ["SGLANG_IS_FLASHINFER_AVAILABLE"] == "false"
     assert os.environ["SGLANG_ENABLE_JIT_DEEPGEMM"] == "false"
 
@@ -56,6 +60,7 @@ def test_guards_both_packages_and_forces_availability_off(clean):
 def test_module_level_import_patterns(clean):
     guard.install_import_guards()
 
+    from sgl_kernel import fp8_scaled_mm
     from flashinfer import bmm_fp8  # noqa: F401  (fp8_utils.py pattern)
     import deep_gemm  # noqa: F401  (dsa_backend.py pattern)
     import deep_gemm.utils.layout  # noqa: F401  (fp8.py pattern)
@@ -66,8 +71,18 @@ def test_module_level_import_patterns(clean):
         pass
 
     assert getattr(sys.modules["deep_gemm"], "__sglang_fl_placeholder__", False)
+    assert getattr(sys.modules["sgl_kernel"], "__sglang_fl_placeholder__", False)
+    with pytest.raises(RuntimeError, match="sgl_kernel is not installed"):
+        fp8_scaled_mm()
     with pytest.raises(RuntimeError, match="deep_gemm is not installed"):
         get_paged_mqa_logits_metadata()
+
+
+def test_sgl_kernel_scalar_type_uses_sglang_fallback(clean):
+    guard.install_import_guards()
+
+    with pytest.raises(ModuleNotFoundError, match="sgl_kernel.scalar_type"):
+        importlib.import_module("sgl_kernel.scalar_type")
 
 
 def test_install_is_idempotent(clean):

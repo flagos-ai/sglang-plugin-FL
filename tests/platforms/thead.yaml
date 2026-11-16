@@ -1,8 +1,10 @@
 # T-Head PPU Platform Configuration (PPU-ZW810E / 真武, CUDA-compatible).
 # Flexible test selection mechanism for T-Head PPU environments.
 #
-# Validated stack: SGLang 0.5.18 empty install (srt_empty) + PPU torch 2.10 / FlagTree /
-# sgl-kernel ppu build. FlagGems DeviceDetector reports vendor=thead, so the plugin
+# Validated stack: SGLang 0.5.18 empty install (srt_empty) + PPU torch 2.10 / FlagTree.
+# The target Qwen3/Qwen3.6 execution paths do not use sgl-kernel; the plugin only
+# guards SGLang's unconditional module-level imports. FlagGems DeviceDetector
+# reports vendor=thead, so the plugin
 # loads sglang_fl/dispatch/config/thead.yaml (FlagGems blacklist, PP memory default) and
 # the vendor/thead patches; the default attention backend is triton (fa3 cannot load on PPU).
 #
@@ -46,6 +48,10 @@ unsupported_features: []
 env_defaults:
   CUDA_DEVICE_MAX_CONNECTIONS: "1"
   NCCL_ALGO: "Ring"
+  # The import-only placeholder intentionally has no sglang-kernel distribution
+  # metadata. SGLang's version gate must not reject it before the platform can
+  # route the validated execution paths to FlagGems/FlagTree.
+  SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK: "1"
 
 # ---- Device-specific test configurations ------------------------------------
 zw810e:

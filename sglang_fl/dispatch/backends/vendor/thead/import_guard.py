@@ -18,6 +18,7 @@ PPU reports ``is_cuda()``, so SGLang 0.5.18 takes its CUDA import paths, and
 some of them import optional NVIDIA packages at module level with no
 availability check:
 
+- ``sgl_kernel``: ``layers/quantization/fp8_utils.py``.
 - ``flashinfer``: ``layers/quantization/fp8_utils.py``.
 - ``deep_gemm``: ``layers/attention/dsa_backend.py``, which the EAGLE/MTP worker
   imports while capturing draft CUDA graphs.
@@ -30,7 +31,8 @@ and forces SGLang's availability switch for it off so no code path selects it.
 Finders are appended to ``sys.meta_path``, so an installed package always wins.
 Installed from ``activate_platform()``, which runs during SGLang's platform
 resolution, before any ``sglang.srt.layers`` module, in every process.
-Per-package opt-out: ``SGLANG_FL_THEAD_FLASHINFER_STUB=0`` /
+Per-package opt-out: ``SGLANG_FL_THEAD_SGL_KERNEL_STUB=0`` /
+``SGLANG_FL_THEAD_FLASHINFER_STUB=0`` /
 ``SGLANG_FL_THEAD_DEEPGEMM_STUB=0``.
 """
 
@@ -45,6 +47,15 @@ logger = logging.getLogger(__name__)
 
 # root package -> (opt-out env var, SGLang env overrides while the placeholder is active)
 _PACKAGES = {
+    # srt_empty does not install sglang-kernel, but SGLang 0.5.18 still has
+    # unconditional module-level imports for symbols such as fp8_scaled_mm.
+    # The validated T-Head Qwen3/Qwen3.6 paths route their executable ops to
+    # FlagGems/FlagTree instead; an attempted call through this placeholder is
+    # therefore a hard error rather than a silent fallback.
+    "sgl_kernel": (
+        "SGLANG_FL_THEAD_SGL_KERNEL_STUB",
+        {},
+    ),
     # is_flashinfer_available() checks find_spec("flashinfer"), which the
     # placeholder satisfies; the env override makes it report False.
     "flashinfer": (
@@ -97,6 +108,12 @@ class _PlaceholderFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 
     def find_spec(self, fullname, path, target=None):
         if fullname != self.root and not fullname.startswith(self.root + "."):
+            return None
+        # SGLang deliberately treats scalar_type as optional and supplies its
+        # own pure-Python fallback when the import raises ImportError.  Do not
+        # make this submodule look present: doing so turns scalar_types into a
+        # generic placeholder and later breaks scalar_types.uint4b8.
+        if self.root == "sgl_kernel" and fullname == "sgl_kernel.scalar_type":
             return None
         return importlib.machinery.ModuleSpec(fullname, self, is_package=True)
 
