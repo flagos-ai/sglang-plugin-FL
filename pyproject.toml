@@ -50,6 +50,10 @@ extend-exclude = [
     "examples",
     "tests",
     "sglang_fl",
+    # PROBE BRANCH ONLY: byte-exact vendored copy of T-Head's PPU sgl_kernel
+    # shim (see .github/scripts/thead/vendor/sgl-kernel-ppu). Never linted:
+    # its content must stay byte-identical to the source image ee1644a0.
+    ".github/scripts/thead/vendor",
 ]
 
 [tool.ruff.lint]
