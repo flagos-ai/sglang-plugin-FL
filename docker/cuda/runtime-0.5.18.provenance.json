@@ -1,0 +1,22 @@
+{
+  "flag_gems": {
+    "found": true,
+    "origin": "/flagos/lib/python3.12/site-packages/flag_gems/__init__.py"
+  },
+  "flagcx": {
+    "found": true,
+    "origin": "/flagos/lib/python3.12/site-packages/flagcx/__init__.py"
+  },
+  "flagtree": {
+    "found": true,
+    "origin": "/opt/flagtree/flagtree/__init__.py"
+  },
+  "torch": {
+    "found": true,
+    "origin": "/flagos/lib/python3.12/site-packages/torch/__init__.py"
+  },
+  "triton": {
+    "found": true,
+    "origin": "/opt/flagtree/triton/__init__.py"
+  }
+}
