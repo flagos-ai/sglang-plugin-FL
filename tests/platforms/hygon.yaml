@@ -57,14 +57,13 @@ bw1000: &bw1000_profile
         - platform/test_iluvatar_import_shims.py
     functional:
       include: "*"
-      # The mtp_attention numerics stay excluded while the platform stack
-      # owners investigate the isolated vendor-component failure tracked as
-      # build-infra#1787 (paged varlen FlashAttention head_dim=256). The
-      # mtp_logprobs suite is active again: build-infra#1786 (FlagTree JIT
-      # cannot discover the DTK device libs) is fixed by the baked clang
-      # wrapper in the runtime image, and this suite is its regression gate.
-      exclude:
-        - ops/test_hygon_mtp_attention.py
+      # No exclusions. build-infra#1786 (FlagTree JIT device-lib discovery)
+      # is fixed by the baked clang wrapper in the runtime image; the
+      # mtp_logprobs suite is its regression gate (10/10 green on appfix7).
+      # The mtp_attention suite runs under the triton attention path that
+      # setup.sh exports, bypassing the vendor FlashAttention defect of
+      # build-infra#1787.
+      exclude: []
     e2e:
       # Diagnostic scope: use one representative eager model to keep the
       # scarce BW1000 runner time bounded while the runtime image migrates.
