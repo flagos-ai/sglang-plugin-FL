@@ -29,6 +29,18 @@ thw = "thw"
 # MUSA / flashinfer C++ header file extension (.muh), e.g. flashinfer/sampling.muh
 muh = "muh"
 
+[files]
+# Machine-generated runtime reference data for the NVIDIA CI image build
+# (docker/cuda/runtime-0.5.18.containerfile). The site-files manifest lists
+# 33k real runtime file paths (torch's nll_loss_nd, FlagGems' convolution_
+# overrideable, ...) and the freeze/baseline quote package metadata; none
+# of it is prose, so spellchecking them only produces false positives.
+extend-exclude = [
+  "docker/cuda/runtime-0.5.18.site-files.sha256",
+  "docker/cuda/runtime-0.5.18.runtime-freeze.txt",
+  "docker/cuda/runtime-0.5.18.pip-check-baseline.txt",
+]
+
 [default.extend-identifiers]
 # Recorded Hygon runtime commit; preserve the exact SHA in validation evidence.
 "8029ba2" = "8029ba2"
