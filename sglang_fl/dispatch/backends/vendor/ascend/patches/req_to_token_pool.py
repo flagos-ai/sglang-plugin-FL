@@ -6,54 +6,13 @@
 from __future__ import annotations
 
 import importlib
-import importlib.util
 import logging
-import os
-from importlib import metadata
-from pathlib import Path
+
+from ..runtime import uses_flagtree_cann921
 
 logger = logging.getLogger(__name__)
 
 _ALLOCATION_MODULE = "sglang.srt.mem_cache.allocation"
-
-
-def _is_affected_runtime() -> bool:
-    try:
-        if metadata.version("sglang") != "0.5.18":
-            return False
-        flagtree = metadata.distribution("flagtree")
-    except metadata.PackageNotFoundError:
-        return False
-    if flagtree.version != "0.7.0+ascend3.5":
-        return False
-
-    triton = importlib.util.find_spec("triton")
-    owned_triton = Path(flagtree.locate_file("triton/__init__.py")).resolve()
-    if (
-        triton is None
-        or triton.origin is None
-        or Path(triton.origin).resolve() != owned_triton
-    ):
-        return False
-
-    toolkit = Path(
-        os.environ.get("ASCEND_HOME_PATH")
-        or os.environ.get("ASCEND_HOME")
-        or os.environ.get("ASCEND_TOOLKIT_HOME")
-        or "/usr/local/Ascend/ascend-toolkit/latest"
-    )
-    for directory in ("aarch64-linux", "arm64-linux", "."):
-        for filename in ("ascend_all_cann_install.info", "ascend_toolkit_install.info"):
-            info = toolkit / directory / filename
-            try:
-                lines = info.read_text(encoding="utf-8", errors="replace").splitlines()
-            except OSError:
-                continue
-            for line in lines:
-                name, separator, value = line.partition("=")
-                if separator and name.strip().lower() == "version":
-                    return value.strip().strip("\"'") == "9.2.1"
-    return False
 
 
 def _request_pool_triton_unavailable(_backend: str) -> bool:
@@ -63,7 +22,7 @@ def _request_pool_triton_unavailable(_backend: str) -> bool:
 def patch_request_pool_write_fallback() -> bool:
     """Select the upstream PyTorch branch of `write_cache_indices`."""
 
-    if not _is_affected_runtime():
+    if not uses_flagtree_cann921():
         return False
     try:
         allocation = importlib.import_module(_ALLOCATION_MODULE)

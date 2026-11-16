@@ -115,6 +115,66 @@ def test_flagos_blacklist_calls_enable_with_unused(
     ]
 
 
+@pytest.mark.parametrize(
+    ("vendor", "version", "affected_runtime", "excluded"),
+    [
+        ("ascend", "5.4.0", True, ["gelu", "lift_fresh", "lift_fresh_copy"]),
+        ("ascend", "5.4.0", False, []),
+        ("ascend", "5.3.0", True, []),
+        ("nvidia", "5.4.0", True, []),
+    ],
+)
+def test_exact_ascend_flaggems_exclusions(
+    monkeypatch,
+    sglang_fl_module,
+    fake_flag_gems,
+    vendor,
+    version,
+    affected_runtime,
+    excluded,
+) -> None:
+    from sglang_fl.dispatch.backends.vendor.ascend import runtime
+
+    fake_flag_gems.vendor_name = vendor
+    fake_flag_gems.__version__ = version
+    monkeypatch.setattr(runtime, "uses_flagtree_cann921", lambda: affected_runtime)
+
+    config = {"flagos_blacklist": ["addmm"]}
+    sglang_fl_module._setup_flaggems(config)
+
+    assert fake_flag_gems.calls[0][0] == "enable"
+    assert fake_flag_gems.calls[0][1]["unused"] == ["addmm", *excluded]
+    assert config["flagos_blacklist"] == ["addmm"]
+
+
+@pytest.mark.parametrize(
+    ("whitelist", "enabled"),
+    [("gelu,lift_fresh,silu", ["silu"]), ("gelu,lift_fresh_copy", [])],
+)
+def test_exact_ascend_flaggems_whitelist_uses_only_supported_ops(
+    monkeypatch,
+    sglang_fl_module,
+    fake_flag_gems,
+    whitelist,
+    enabled,
+) -> None:
+    from sglang_fl.dispatch.backends.vendor.ascend import runtime
+
+    fake_flag_gems.vendor_name = "ascend"
+    fake_flag_gems.__version__ = "5.4.0"
+    monkeypatch.setattr(runtime, "uses_flagtree_cann921", lambda: True)
+    monkeypatch.setenv("SGLANG_FL_FLAGOS_WHITELIST", whitelist)
+
+    sglang_fl_module._setup_flaggems({})
+
+    expected = (
+        [("only_enable", {"include": enabled, "record": False, "once": True})]
+        if enabled
+        else []
+    )
+    assert fake_flag_gems.calls == expected
+
+
 def test_flagos_whitelist_and_blacklist_are_mutually_exclusive(
     monkeypatch,
     sglang_fl_module,

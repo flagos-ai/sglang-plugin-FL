@@ -339,8 +339,7 @@ def _require_causal_conv1d_abi(torch: object, *, cann921: bool = False) -> None:
         expected = expected.replace("Tensor conv_states", "Tensor(a!) conv_states")
     if schema != expected:
         raise RuntimeError(
-            "npu::causal_conv1d ABI mismatch: "
-            f"expected {expected}, found {schema}"
+            f"npu::causal_conv1d ABI mismatch: expected {expected}, found {schema}"
         )
     print(f"[ascend-env] causal-conv1d-schema={schema}")
 

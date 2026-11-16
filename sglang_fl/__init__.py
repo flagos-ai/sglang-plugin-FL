@@ -510,6 +510,26 @@ def _setup_flaggems(config: dict = None):
     if blacklist_str:
         blacklist = _parse_list(blacklist_str)
 
+    if (
+        getattr(flag_gems, "vendor_name", None) == "ascend"
+        and getattr(flag_gems, "__version__", None) == "5.4.0"
+    ):
+        from sglang_fl.dispatch.backends.vendor.ascend.runtime import (
+            uses_flagtree_cann921,
+        )
+
+        if uses_flagtree_cann921():
+            # FlagTree cannot lower gelu_tanh's mixed-type pow. FlagGems
+            # lift_fresh kernels launch a zero grid on empty tensors (#6802).
+            unsupported = ("gelu", "lift_fresh", "lift_fresh_copy")
+            if whitelist:
+                whitelist = [op for op in whitelist if op not in unsupported]
+                if not whitelist:
+                    logger.info("FlagGems: all requested ATen ops require torch_npu")
+                    return
+            else:
+                blacklist = list(dict.fromkeys((*(blacklist or ()), *unsupported)))
+
     fg_kwargs = dict(
         record=record,
         once=_parse_bool(os.environ.get("SGLANG_FLAGGEMS_LOG_ONCE", "1"), default=True),

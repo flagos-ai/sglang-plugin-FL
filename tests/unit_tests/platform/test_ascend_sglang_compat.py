@@ -452,6 +452,7 @@ def test_ascend_request_pool_fallback_is_runtime_and_module_local(
     owns_triton,
     enabled,
 ) -> None:
+    from sglang_fl.dispatch.backends.vendor.ascend import runtime
     from sglang_fl.dispatch.backends.vendor.ascend.patches import req_to_token_pool
 
     toolkit = tmp_path / "cann"
@@ -459,15 +460,15 @@ def test_ascend_request_pool_fallback_is_runtime_and_module_local(
     info.parent.mkdir(parents=True)
     info.write_text(f"version={cann_version}\n", encoding="utf-8")
     monkeypatch.setenv("ASCEND_HOME_PATH", str(toolkit))
-    monkeypatch.setattr(req_to_token_pool.metadata, "version", lambda _: sglang_version)
+    monkeypatch.setattr(runtime.metadata, "version", lambda _: sglang_version)
     flagtree_root = tmp_path / "flagtree"
     flagtree = SimpleNamespace(
         version=flagtree_version, locate_file=lambda path: flagtree_root / path
     )
-    monkeypatch.setattr(req_to_token_pool.metadata, "distribution", lambda _: flagtree)
+    monkeypatch.setattr(runtime.metadata, "distribution", lambda _: flagtree)
     triton_root = flagtree_root if owns_triton else tmp_path / "vendor-triton"
     monkeypatch.setattr(
-        req_to_token_pool.importlib.util,
+        runtime.importlib.util,
         "find_spec",
         lambda _: SimpleNamespace(origin=str(triton_root / "triton/__init__.py")),
     )
