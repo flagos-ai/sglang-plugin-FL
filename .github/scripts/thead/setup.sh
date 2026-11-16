@@ -18,6 +18,24 @@ pip install --no-deps --no-build-isolation -e .
 pip install pytest pytest-timeout pyyaml
 echo "=== Installation complete ==="
 python -c "import importlib.metadata as m, sglang_fl; print('sglang', m.version('sglang'), '| sglang_fl loaded from', sglang_fl.__file__)"
+# PROBE BRANCH ONLY (drop before folding): T-Head's PPU sgl_kernel shim.
+# sglang 0.5.18 imports sgl_kernel unconditionally (fp8_utils.py:176), which
+# kills unit collection and the serving import chain on any image built from
+# the republished runtime (its 24 distributions ship no sgl_kernel; the first
+# green CI image carried this wheel installed by hand - run 43792032691 died
+# without it, and the same shim injected into D6 passes all three import
+# chains).  Vendored byte-for-byte from image ee1644a0 (every file verified
+# against the wheel RECORD; original wheel sha256 per its direct_url.json:
+# d918dd235867b181cfed90908a26d9072dacb2d88255933d40dc6b35b87076fe).  The
+# runtime team is being asked for the official channel/newer build; this
+# vendored copy is the interim unblock for hardware validation only.
+# Installed BEFORE the contract re-verification below so the closed-set
+# check sees it and the ledger records it.
+site="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+cp -r "$(dirname "$0")/vendor/sgl-kernel-ppu/sgl_kernel" "$site/"
+cp -r "$(dirname "$0")/vendor/sgl-kernel-ppu/triton_kernels" "$site/"
+cp -r "$(dirname "$0")/vendor/sgl-kernel-ppu/sglang_kernel-0.4.2.post2+v0.1.0.ppu2.1.0.dist-info" "$site/"
+python -c "import sgl_kernel; from sgl_kernel import fp8_scaled_mm; print('sgl_kernel shim:', sgl_kernel.__version__)"
 # Re-verify the runtime-preservation contract after CI setup: every
 # runtime-owned distribution unchanged, every other distribution covered by the
 # image's additions ledger (+ this setup's own additions, recorded below).
