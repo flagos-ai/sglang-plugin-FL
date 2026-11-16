@@ -85,3 +85,9 @@ def register_builtins(registry: OpRegistry) -> None:
 
     # Auto-discover vendor backends
     _register_vendor_backends(registry)
+
+    # Model-specific metadata qualification stays at the call site; selection
+    # uses the same policy as the other registered operations.
+    from sglang_fl.models.hy_v4.sparse_mla_active_split import register_ops
+
+    register_ops(registry)

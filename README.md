@@ -47,6 +47,62 @@ Chip vendors only need to implement a backend class + `register_ops.py`. The dis
 | Python | 3.12 |
 | CUDA | 13.0 |
 
+## Hy4-preview text and NextN adaptation
+
+Hy4-preview has a draft text adapter for the SGLang 0.5.18 API family. Set
+`SGLANG_HY4_ENABLE=1` before plugin initialization to register its causal model,
+the checkpoint's text-only `HYV4VLForConditionalGeneration` alias, and bundled
+single NextN block. Image and video inputs are rejected. Other models retain
+ordinary plugin registration when this option is unset or `0`.
+
+Install the `hy4` extra in a compatible CUDA installation. It selects SGLang
+0.5.18 and the fixed public Core INT8 API revision recorded in `pyproject.toml`:
+
+```sh
+pip install ".[hy4]"
+```
+
+`HY4_INDEXER_DTYPE=auto|fp8|int8` controls the indexer precision and cache format.
+`auto` keeps FP8 on NVIDIA SM90+ and selects INT8 elsewhere. The INT8 route uses
+Core's public query quantization, cache-store and paged-logits APIs and preserves
+the packed cache layout. Device support still depends on the selected serving
+and attention backends.
+
+Use the [text serving example](./examples/hy4_preview_serve.py) with a checkpoint
+and tensor parallel size appropriate for the available GPU memory:
+
+```sh
+python examples/hy4_preview_serve.py --model-path /models/Hy4-preview \
+    --tp-size 16 --indexer-dtype int8 -- \
+    --nnodes 2 --node-rank 0 --dist-init-addr HOST:PORT
+```
+
+Run the corresponding command with `--node-rank 1` on the second node. The
+example enables model registration, selects DSA and the sink-aware
+`flashmla_sparse` prefill/decode backends, and forwards additional native server
+arguments. It starts a server; it does not benchmark or validate model quality.
+Use the checkpoint's actual quantization configuration. An unquantized MTP
+`eh_proj` must contain genuine BF16 weights and the checkpoint exclusion rule;
+casting quantized weight bytes does not restore that projection.
+
+Native FlashMLA remains the default attention route. The optional active-head
+provider from [FlagGems-sglang #228](https://github.com/flagos-ai/FlagGems-sglang/pull/228)
+uses the existing `OpManager` preference, per-op order and vendor allow/deny
+filters. The `hy4-active-head` extra installs its fixed public revision before
+selection:
+
+```sh
+pip install ".[hy4,hy4-active-head]"
+```
+
+Select `impl:hy4.flaggems` for `sparse_mla_active_split` in the per-op order to
+use the provider. Its scope is SM90, one or four query rows and four active
+heads with the documented cache layout. Unsupported metadata declines before
+launch; selected launch failures propagate. NextN retains native execution and
+the same sink-aware attention contract. The adapter's full-model accuracy,
+multimodal support and serving performance remain unqualified; vLLM's separate
+200k experiments do not qualify this SGLang adapter.
+
 ## Supported Models and Chips
 
 The tables below summarize the current support status of end-to-end verified models and chips.
@@ -55,6 +111,7 @@ The tables below summarize the current support status of end-to-end verified mod
 
 | Model | Status | Weights | Reference |
 |-------|--------|---------|-----------|
+| Hy4-preview | Draft: text and bundled NextN; media unsupported | User-provided checkpoint | [example](./examples/hy4_preview_serve.py) |
 | Qwen3.6-27B | Supported | [Qwen/Qwen3.6-27B](https://huggingface.co/Qwen/Qwen3.6-27B) | [example](./examples/qwen3_6_27b_offline_inference.py) |
 | Qwen3.6-35B-A3B | Supported | [Qwen/Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [example](./examples/qwen3_6_35b_a3b_offline_inference.py) |
 
