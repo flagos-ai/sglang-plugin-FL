@@ -14,6 +14,11 @@
 #     only declares it under runtime-common. No hand-picked packages.
 #   * No sglang-plugin-FL source in this image; CI installs the plugin from
 #     the PR checkout via the standard setup flow.
+#   * Build logic lives in docker/hygon/scripts/ (reviewable, lintable);
+#     this file is orchestration only. Verification gates stay in the build
+#     so a drifting image fails before it can be pushed, and the volatile
+#     gates are layered after the heavy install so tuning them reuses the
+#     downloaded closure.
 #
 # Build from the repository root:
 #   docker build -f docker/hygon/runtime-0.5.18.containerfile \
@@ -47,133 +52,24 @@ WORKDIR /opt/sglang-ci
 # drift across indexes cannot change the closure; the dry-run gate still
 # verifies zero runtime replacements on top of it.
 COPY docker/hygon/runtime-0.5.18.additions.lock /opt/sglang-ci/sglang-additions.lock
+# Stable build-side scripts (wheel fetch, baseline capture, resolver gate).
+COPY docker/hygon/scripts/fetch_sglang_wheel.py \
+     docker/hygon/scripts/capture_runtime_baseline.py \
+     docker/hygon/scripts/validate_resolver_plan.py \
+     /opt/sglang-ci/scripts/
 
 # --- Stable, slow: fetch and SHA256-verify the SGLang wheel ------------------
-# Pure-Python downloader so the build depends only on the runtime's own Python.
-RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
-    && mkdir -p /opt/sglang-ci/wheels \
-    && "$PYTHON_BIN" - <<'PY'
-import hashlib
-import os
-import time
-import urllib.request
-from pathlib import Path
-
-url = os.environ["SGLANG_WHEEL_URL"]
-expected = os.environ["SGLANG_WHEEL_SHA256"]
-dest = Path("/opt/sglang-ci/wheels") / os.environ["SGLANG_WHEEL_NAME"]
-
-last_error = None
-for attempt in range(1, 6):
-    try:
-        with urllib.request.urlopen(url, timeout=300) as response, open(dest, "wb") as out:
-            while True:
-                chunk = response.read(1 << 20)
-                if not chunk:
-                    break
-                out.write(chunk)
-        break
-    except Exception as error:  # noqa: BLE001 - retry any transport failure
-        last_error = error
-        print(f"wheel fetch attempt {attempt} failed: {error!r}; retrying", flush=True)
-        time.sleep(15)
-else:
-    raise SystemExit(f"could not fetch {url}: {last_error!r}")
-
-digest = hashlib.sha256(dest.read_bytes()).hexdigest()
-if digest != expected:
-    raise SystemExit(
-        f"SHA256 mismatch for {dest.name}: expected {expected}, got {digest}"
-    )
-print(f"verified {dest.name} sha256={digest}")
-PY
+RUN python /opt/sglang-ci/scripts/fetch_sglang_wheel.py
 
 # --- Stable: capture the pre-install runtime state ---------------------------
 # Canonicalized distribution inventory, exact constraints for the resolver,
 # the runtime's own pip check result (kept as the baseline so pre-existing
-# runtime findings are not attributed to SGLang), and module-level provenance
-# for the vendor stack. Provenance matters because the runtime provides some
-# modules out-of-band (pip cannot see FlagTree's triton), so a pip-level
-# zero-drift check alone would miss a shadowing install.
-RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
-    && "$PYTHON_BIN" -m pip freeze --all | sort > /opt/sglang-ci/runtime-freeze-before.txt \
-    && { "$PYTHON_BIN" -m pip check > /opt/sglang-ci/runtime-pip-check-baseline.txt 2>&1; \
+# runtime findings are not attributed to SGLang), the file-level
+# site-packages baseline, and module-level provenance for the vendor stack.
+RUN python -m pip freeze --all | sort > /opt/sglang-ci/runtime-freeze-before.txt \
+    && { python -m pip check > /opt/sglang-ci/runtime-pip-check-baseline.txt 2>&1; \
          printf '%s\n' "$?" > /opt/sglang-ci/runtime-pip-check-baseline.exitcode; true; } \
-    && "$PYTHON_BIN" - <<'PY'
-import importlib.metadata as md
-import importlib.util
-import json
-import os
-import sys
-from pathlib import Path
-from packaging.utils import canonicalize_name
-
-# Mirror the runtime's container-start module resolution: PYTHONPATH
-# (/opt/flagtree) precedes site-packages there, while build RUN steps do not
-# inherit that ENV. Same position, same precedence as at container start.
-if not os.environ.get("PYTHONPATH"):
-    sys.path.insert(0, "/opt/flagtree")
-
-evidence = Path("/opt/sglang-ci")
-
-packages = {}
-for dist in md.distributions():
-    name = dist.metadata.get("Name")
-    if name:
-        packages[canonicalize_name(name)] = dist.version
-with (evidence / "runtime-distributions-before.json").open("w") as f:
-    json.dump(packages, f, indent=2, sort_keys=True)
-with (evidence / "runtime-constraints.txt").open("w") as f:
-    for name, version in sorted(packages.items()):
-        f.write(f"{name}=={version}\n")
-
-import hashlib
-import sysconfig
-
-# File-level baseline for the runtime's site-packages: every file's SHA256.
-# The post-install gate requires every baseline file to still exist with the
-# identical hash, so an in-place overwrite by any closure wheel is caught
-# even when pip metadata (or an import origin) stays unchanged.
-purelib = Path(sysconfig.get_paths()["purelib"])
-manifest = {}
-for path in sorted(purelib.rglob("*")):
-    if path.is_file():
-        manifest[str(path.relative_to(purelib))] = hashlib.sha256(
-            path.read_bytes()
-        ).hexdigest()
-with (evidence / "site-files-before.sha256").open("w") as f:
-    for relative, digest in manifest.items():
-        f.write(f"{digest}  {relative}\n")
-print(f"site-packages baseline: {len(manifest)} files hashed under {purelib}")
-
-def probe_module(module):
-    # find_spec resolves without executing the module: no device libraries
-    # are touched, so the probe is meaningful on a GPU-less builder.
-    spec = importlib.util.find_spec(module)
-    if spec is None or spec.origin is None:
-        return {"found": False}
-    return {"found": True, "origin": spec.origin}
-
-flagtree = Path("/opt/flagtree")
-provenance = {
-    "_context": {
-        "pythonpath": os.environ.get("PYTHONPATH"),
-        "flagtree_dir_present": flagtree.is_dir(),
-        "flagtree_entries": (
-            sorted(entry.name for entry in flagtree.iterdir())
-            if flagtree.is_dir()
-            else None
-        ),
-    },
-    **{
-        module: probe_module(module)
-        for module in ("torch", "triton", "flag_gems", "flagcx", "flagtree")
-    },
-}
-with (evidence / "module-provenance-before.json").open("w") as f:
-    json.dump(provenance, f, indent=2, sort_keys=True)
-print(json.dumps(provenance, indent=2, sort_keys=True))
-PY
+    && python /opt/sglang-ci/scripts/capture_runtime_baseline.py
 
 # --- Resolver gate: dry-run with report before touching site-packages --------
 # Any runtime distribution in the install plan fails the build: a different
@@ -181,10 +77,9 @@ PY
 # explicit review. New (absent) distributions are the SGLang closure; they are
 # recorded for review but allowed.
 RUN --mount=type=cache,target=/tmp/pip-cache \
-    export PYTHON_BIN="$(command -v python || command -v python3)" \
-    && dry_run_rc=1 \
+    dry_run_rc=1 \
     && for attempt in 1 2 3 4 5 6 7 8; do \
-         if "$PYTHON_BIN" -m pip install \
+         if python -m pip install \
              --dry-run \
              --timeout 120 \
              --retries 20 \
@@ -204,60 +99,14 @@ RUN --mount=type=cache,target=/tmp/pip-cache \
          sleep 20; \
        done \
     && [ "$dry_run_rc" -eq 0 ] \
-    && "$PYTHON_BIN" - <<'PY'
-import json
-import sys
-from pathlib import Path
-from packaging.utils import canonicalize_name
-
-evidence = Path("/opt/sglang-ci")
-before = json.loads((evidence / "runtime-distributions-before.json").read_text())
-report = json.loads((evidence / "sglang-resolver-plan.json").read_text())
-
-additions, same_version, conflicts = [], [], []
-for item in report.get("install", []):
-    metadata = item.get("metadata", {})
-    name = canonicalize_name(metadata.get("name", ""))
-    version = metadata.get("version", "")
-    if name not in before:
-        additions.append((name, version))
-    elif version == before[name]:
-        same_version.append((name, version))
-    else:
-        conflicts.append((name, before[name], version))
-
-(evidence / "sglang-resolver-additions.txt").write_text(
-    "\n".join(f"{name}=={version}" for name, version in sorted(additions)) + "\n"
-)
-print(f"resolver plans {len(additions)} new distributions "
-      "(recorded in sglang-resolver-additions.txt)")
-for name, version in sorted(additions):
-    print(f"  + {name}=={version}")
-
-failed = False
-if same_version:
-    failed = True
-    print("FATAL: resolver plans to reinstall runtime distributions "
-          "(same version) - explicit review required:", flush=True)
-    for name, version in sorted(same_version):
-        print(f"  = {name}=={version}")
-if conflicts:
-    failed = True
-    print("FATAL: resolver plans to replace runtime distributions "
-          "with different versions:", flush=True)
-    for name, old, new in sorted(conflicts):
-        print(f"  ! {name}: runtime={old} planned={new}")
-if failed:
-    sys.exit(1)
-PY
+    && python /opt/sglang-ci/scripts/validate_resolver_plan.py
 
 # --- Stable, slow: the real install ------------------------------------------
 # Same constraints and indexes as the reviewed dry-run plan.
 RUN --mount=type=cache,target=/tmp/pip-cache \
-    export PYTHON_BIN="$(command -v python || command -v python3)" \
-    && install_rc=1 \
+    install_rc=1 \
     && for attempt in 1 2 3 4 5 6 7 8; do \
-         if "$PYTHON_BIN" -m pip install \
+         if python -m pip install \
              --timeout 120 \
              --retries 20 \
              --cache-dir /tmp/pip-cache \
@@ -286,13 +135,12 @@ RUN --mount=type=cache,target=/tmp/pip-cache \
 # future wheel/source change fail visibly rather than silently shipping an
 # unpatched image.
 COPY docker/hygon/sglang-v0.5.18-hcu.patch /opt/sglang-ci/sglang-v0.5.18-hcu.patch
-RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
-    && PURELIB="$("$PYTHON_BIN" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" \
+RUN PURELIB="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" \
     && cd "$PURELIB" \
     && git apply --check -p2 /opt/sglang-ci/sglang-v0.5.18-hcu.patch \
     && git apply -p2 /opt/sglang-ci/sglang-v0.5.18-hcu.patch \
     && git apply --reverse --check -p2 /opt/sglang-ci/sglang-v0.5.18-hcu.patch \
-    && "$PYTHON_BIN" -m compileall -q \
+    && python -m compileall -q \
          sglang/srt/layers/quantization/quark/schemes/quark_w4a4_mxfp4.py \
          sglang/srt/layers/quantization/quark/schemes/quark_w4a4_mxfp4_moe.py \
          sglang/srt/layers/quantization/quark_int4fp8_moe.py \
@@ -316,94 +164,17 @@ RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
 # iluvatar empty-image import shims.  No dist-info is emitted on purpose:
 # pip/importlib.metadata stay byte-compatible with the reviewed closure, and
 # the engine's wheel-version probe is disabled via ENV below.
-RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
-    && PURELIB="$("$PYTHON_BIN" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" \
+COPY docker/hygon/stubs/ /opt/sglang-ci/stubs/
+RUN PURELIB="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" \
     && mkdir -p "$PURELIB/sgl_kernel/utils" "$PURELIB/flashinfer" \
-    && printf '%s\n' \
-       '# Generated by docker/hygon/runtime-0.5.18.containerfile.' \
-       '# Stub only: every attribute resolves to a callable that raises.' \
-       'def _unavailable(name):' \
-       '    def _raise(*args, **kwargs):' \
-       '        raise RuntimeError(' \
-       '            f"sgl_kernel.{name} is a stub: HCU ships no sgl_kernel wheel")' \
-       '    return _raise' \
-       'def __getattr__(name):' \
-       '    if name.startswith("__"):' \
-       '        raise AttributeError(name)' \
-       '    return _unavailable(name)' \
-       > "$PURELIB/sgl_kernel/__init__.py" \
-    && printf '%s\n' \
-       'def is_arch_support_pdl():' \
-       '    return False' \
-       > "$PURELIB/sgl_kernel/utils/__init__.py" \
-    && printf '%s\n' \
-       '# Generated by docker/hygon/runtime-0.5.18.containerfile.' \
-       '# Stub only: every attribute resolves to a callable that raises.' \
-       'def _unavailable(name):' \
-       '    def _raise(*args, **kwargs):' \
-       '        raise RuntimeError(' \
-       '            f"flashinfer.{name} is a stub: HCU ships no flashinfer wheel")' \
-       '    return _raise' \
-       'def __getattr__(name):' \
-       '    if name.startswith("__"):' \
-       '        raise AttributeError(name)' \
-       '    return _unavailable(name)' \
-       > "$PURELIB/flashinfer/__init__.py" \
-    && printf '%s\n' \
-       '# Generated by docker/hygon/runtime-0.5.18.containerfile.' \
-       '# Serves any sgl_kernel.* / flashinfer.* submodule import with a' \
-       '# module whose attributes raise on call; the file stubs above keep' \
-       '# winning for the packages that exist on disk.' \
-       'import importlib.abc' \
-       'import importlib.util' \
-       'import sys' \
-       'import types' \
-       '' \
-       '_STUB_ROOTS = ("sgl_kernel", "flashinfer")' \
-       '' \
-       'def _unavailable(name):' \
-       '    def _raise(*args, **kwargs):' \
-       '        raise RuntimeError(' \
-       '            f"{name} is a stub: HCU ships no sgl_kernel/flashinfer wheel")' \
-       '    return _raise' \
-       '' \
-       'class _StubLoader(importlib.abc.Loader):' \
-       '    # ModuleType directly: module_from_spec would re-enter this' \
-       '    # create_module and recurse.' \
-       '    def create_module(self, spec):' \
-       '        module = types.ModuleType(spec.name)' \
-       '        module.__path__ = []' \
-       '        def _ga(attr, _n=spec.name):' \
-       '            if attr.startswith("__"):' \
-       '                return None' \
-       '            return _unavailable(f"{_n}.{attr}")' \
-       '        module.__getattr__ = _ga' \
-       '        return module' \
-       '' \
-       '    def exec_module(self, module):' \
-       '        pass' \
-       '' \
-       'class _StubFinder:' \
-       '    def find_spec(self, fullname, path=None, target=None):' \
-       '        # scalar_type is optional in SGLang and has its own ImportError' \
-       '        # fallback.  Pretending it exists changes scalar_types into a' \
-       '        # generic stub function and breaks import-time attribute access' \
-       '        # (uint4b8), so this finder must never fabricate it.' \
-       '        if fullname == "sgl_kernel.scalar_type":' \
-       '            return None' \
-       '        if fullname.split(".")[0] not in _STUB_ROOTS:' \
-       '            return None' \
-       '        return importlib.util.spec_from_loader(fullname, _StubLoader())' \
-       '' \
-       'if not any(type(f).__name__ == "_StubFinder" for f in sys.meta_path):' \
-       '    sys.meta_path.append(_StubFinder())' \
-       > "$PURELIB/_hcu_kernel_stub_finder.py" \
-    && printf '%s\n' 'import _hcu_kernel_stub_finder' \
-       > "$PURELIB/zz-hcu-kernel-stub-hook.pth" \
+    && cp /opt/sglang-ci/stubs/sgl_kernel/__init__.py "$PURELIB/sgl_kernel/__init__.py" \
+    && cp /opt/sglang-ci/stubs/sgl_kernel/utils/__init__.py "$PURELIB/sgl_kernel/utils/__init__.py" \
+    && cp /opt/sglang-ci/stubs/flashinfer/__init__.py "$PURELIB/flashinfer/__init__.py" \
+    && cp /opt/sglang-ci/stubs/_hcu_kernel_stub_finder.py "$PURELIB/_hcu_kernel_stub_finder.py" \
+    && cp /opt/sglang-ci/stubs/zz-hcu-kernel-stub-hook.pth "$PURELIB/zz-hcu-kernel-stub-hook.pth" \
     && echo "stub files written"
 
-RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
-    && "$PYTHON_BIN" - <<'PY'
+RUN python - <<'PY'
 from sgl_kernel.kvcacheio import save_kv_cache
 from flashinfer.sampling import top_k_renorm_prob
 
@@ -449,23 +220,8 @@ RUN if [ ! -e /opt/rocm ] && [ ! -L /opt/rocm ]; then ln -s /opt/dtk /opt/rocm; 
 # wrapper around the real aillvm clang-18 that drops empty disabled-option
 # strings and appends the explicit device-library path. Runtime-owned
 # /opt/flagtree files stay untouched.
-RUN mkdir -p /opt/hcu-clang \
-    && printf '%s\n' \
-       '#!/bin/bash' \
-       '# Hygon CI: explicit DTK device-library path for FlagTree JIT.' \
-       'REAL=/opt/dtk/aillvm/bin/clang-18' \
-       'FIX=--rocm-device-lib-path=/opt/dtk/dcc/dccgcn/bitcode' \
-       'args=()' \
-       'found=0' \
-       'for a in "$@"; do' \
-       '  [ -n "$a" ] || continue' \
-       '  [ "$a" = "$FIX" ] && found=1' \
-       '  args+=("$a")' \
-       'done' \
-       'if [ "$found" -eq 0 ]; then args+=("$FIX"); fi' \
-       'exec "$REAL" "${args[@]}"' \
-       > /opt/hcu-clang/clang-18-device-libs \
-    && chmod +x /opt/hcu-clang/clang-18-device-libs \
+COPY docker/hygon/hcu-clang/clang-18-device-libs /opt/hcu-clang/clang-18-device-libs
+RUN chmod +x /opt/hcu-clang/clang-18-device-libs \
     && test -f /opt/dtk/dcc/dccgcn/bitcode/ocml.bc \
     && test -f /opt/dtk/dcc/dccgcn/bitcode/ockl.bc \
     && /opt/dtk/aillvm/bin/clang-18 --version | head -n 1
@@ -474,124 +230,32 @@ ENV TRITON_HIP_CLANG_PATH=/opt/hcu-clang/clang-18-device-libs
 # Prove the wrapper end-to-end on the GPU-less builder: the flagtree-style
 # two-step compile (LLIR -> asm -> hsaco) against a kernel that references an
 # OCML device-library symbol must succeed through the wrapper.
-RUN cat > /tmp/hcu-device-lib-check.ll <<'EOF'
-declare float @__ocml_fabs_f32(float)
-define amdgpu_kernel void @k(float addrspace(1)* %p) {
-entry:
-  %v = load float, float addrspace(1)* %p
-  %r = call float @__ocml_fabs_f32(float %v)
-  store float %r, float addrspace(1)* %p
-  ret void
-}
-EOF
+COPY docker/hygon/scripts/hcu-device-lib-check.ll /opt/sglang-ci/scripts/
 RUN /opt/dtk/aillvm/bin/clang-18 -target amdgcn-amd-amdhsa -mcpu=gfx936:xnack- -O3 \
-       /tmp/hcu-device-lib-check.ll -S -o /tmp/hcu-device-lib-check.s \
+       /opt/sglang-ci/scripts/hcu-device-lib-check.ll -S -o /tmp/hcu-device-lib-check.s \
     && /opt/hcu-clang/clang-18-device-libs -target amdgcn-amd-amdhsa -mcpu=gfx936:xnack- -O3 \
        /tmp/hcu-device-lib-check.s -x assembler -o /tmp/hcu-device-lib-check.hsaco \
     && test -s /tmp/hcu-device-lib-check.hsaco \
     && echo "wrapper hsaco compile through DTK device libraries: OK"
 
 # --- Volatile verification (cheap layers, tuned without re-downloading) ------
+COPY docker/hygon/scripts/verify_distributions.py \
+     docker/hygon/scripts/verify_site_files.py \
+     docker/hygon/scripts/verify_module_provenance.py \
+     docker/hygon/scripts/sglang_import_smoke.py \
+     /opt/sglang-ci/scripts/
+
 # 1. Every runtime distribution survives with the exact same version and the
 #    installed additions match the reviewed resolver plan.
-RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
-    && "$PYTHON_BIN" - <<'PY'
-import importlib.metadata as md
-import json
-import os
-import sys
-from pathlib import Path
-from packaging.utils import canonicalize_name
-
-# Same container-start resolution mirroring as the baseline probe above:
-# the runtime's flagtree dist-info lives under /opt/flagtree, which is on
-# sys.path via PYTHONPATH at container start.
-if not os.environ.get("PYTHONPATH"):
-    sys.path.insert(0, "/opt/flagtree")
-
-evidence = Path("/opt/sglang-ci")
-before = json.loads((evidence / "runtime-distributions-before.json").read_text())
-after = {}
-for dist in md.distributions():
-    name = dist.metadata.get("Name")
-    if name:
-        after[canonicalize_name(name)] = dist.version
-with (evidence / "runtime-distributions-after.json").open("w") as f:
-    json.dump(after, f, indent=2, sort_keys=True)
-with (evidence / "runtime-freeze-after.txt").open("w") as f:
-    for name in sorted(after):
-        f.write(f"{name}=={after[name]}\n")
-
-drift = {n: (v, after.get(n)) for n, v in before.items() if after.get(n) != v}
-removed = sorted(set(before) - set(after))
-added = sorted(set(after) - set(before))
-failed = False
-(evidence / "sglang-additions-installed.txt").write_text(
-    "\n".join(f"{name}=={after[name]}" for name in added) + "\n"
-)
-planned = set(
-    (evidence / "sglang-resolver-additions.txt").read_text().split()
-)
-installed = set(f"{name}=={after[name]}" for name in added)
-print(f"{len(added)} distributions added; runtime baseline size {len(before)}")
-if installed != planned:
-    failed = True
-    print("FATAL: installed additions differ from the reviewed resolver plan:")
-    for line in sorted(installed - planned):
-        print(f"  + {line}")
-    for line in sorted(planned - installed):
-        print(f"  - {line}")
-if drift:
-    failed = True
-    print("FATAL: runtime distribution versions changed:")
-    for name, (old, new) in sorted(drift.items()):
-        print(f"  ! {name}: {old} -> {new}")
-if removed:
-    failed = True
-    print("FATAL: runtime distributions removed: " + ", ".join(removed))
-sys.exit(1 if failed else 0)
-PY
+RUN python /opt/sglang-ci/scripts/verify_distributions.py
 
 # 1b. File-level zero-drift: every baseline site-packages file must still
 #     exist with the identical SHA256 (catches in-place overwrites).
-RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
-    && "$PYTHON_BIN" - <<'PY'
-import hashlib
-import sysconfig
-import sys
-from pathlib import Path
-
-evidence = Path("/opt/sglang-ci")
-purelib = Path(sysconfig.get_paths()["purelib"])
-baseline = {}
-for line in (evidence / "site-files-before.sha256").read_text().splitlines():
-    digest, relative = line.split("  ", 1)
-    baseline[relative] = digest
-
-missing = []
-changed = []
-for relative, expected in baseline.items():
-    path = purelib / relative
-    if not path.is_file():
-        missing.append(relative)
-    elif hashlib.sha256(path.read_bytes()).hexdigest() != expected:
-        changed.append(relative)
-if missing or changed:
-    print(f"FATAL: site-packages baseline drifted: {len(missing)} missing, "
-          f"{len(changed)} content-changed")
-    for item in missing[:20]:
-        print(f"  - missing: {item}")
-    for item in changed[:20]:
-        print(f"  ! changed: {item}")
-    sys.exit(1)
-print(f"site-packages file baseline unchanged "
-      f"({len(baseline)} files re-hashed identical)")
-PY
+RUN python /opt/sglang-ci/scripts/verify_site_files.py
 
 # 2. pip check: only violations NEW relative to the runtime baseline fail the
 #    build; the runtime's own pre-existing findings stay on record.
-RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
-    && { "$PYTHON_BIN" -m pip check > /opt/sglang-ci/runtime-pip-check-after.txt 2>&1; \
+RUN { python -m pip check > /opt/sglang-ci/runtime-pip-check-after.txt 2>&1; \
          printf '%s\n' "$?" > /opt/sglang-ci/runtime-pip-check-after.exitcode; true; } \
     && grep -v '^No broken requirements found\.$' /opt/sglang-ci/runtime-pip-check-baseline.txt | sort -u > /tmp/pip-check-baseline.lines \
     && grep -v '^No broken requirements found\.$' /opt/sglang-ci/runtime-pip-check-after.txt | sort -u > /tmp/pip-check-after.lines \
@@ -604,94 +268,12 @@ RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
     && echo 'pip check: no new violations (baseline preserved)'
 
 # 3. Module provenance: every vendor module must still resolve to the exact
-#    same origin. One narrow, loudly-reported exception: the SGLang closure
-#    pulls a standalone triton wheel (xgrammar dependency) into site-packages,
-#    while the runtime's authoritative triton module lives in the /opt/flagtree
-#    volume, which Docker only populates at container start (VOLUME copy-up),
-#    never during build RUN steps. At container start PYTHONPATH=/opt/flagtree
-#    still precedes site-packages, so FlagTree's triton keeps winning; the
-#    transition is allowed only under exactly those recorded conditions and
-#    CI job-time checks assert the /opt/flagtree resolution.
-RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
-    && "$PYTHON_BIN" - <<'PY'
-import importlib.util
-import json
-import os
-import sys
-from pathlib import Path
+#    same origin (see the script docstring for the one recorded exception).
+RUN python /opt/sglang-ci/scripts/verify_module_provenance.py
 
-# Same container-start resolution mirroring as the baseline probe above.
-if not os.environ.get("PYTHONPATH"):
-    sys.path.insert(0, "/opt/flagtree")
-
-evidence = Path("/opt/sglang-ci")
-
-def probe_module(module):
-    spec = importlib.util.find_spec(module)
-    if spec is None or spec.origin is None:
-        return {"found": False}
-    return {"found": True, "origin": spec.origin}
-
-after = {
-    module: probe_module(module)
-    for module in ("torch", "triton", "flag_gems", "flagcx", "flagtree")
-}
-with (evidence / "module-provenance-after.json").open("w") as f:
-    json.dump(after, f, indent=2, sort_keys=True)
-
-recorded = json.loads((evidence / "module-provenance-before.json").read_text())
-context = recorded.pop("_context")
-before = recorded
-
-changed = {
-    module: (before.get(module), after.get(module))
-    for module in sorted(set(before) | set(after))
-    if before.get(module) != after.get(module)
-}
-if changed:
-    print("FATAL: vendor module provenance changed across the install:")
-    for module, (was, now) in changed.items():
-        print(f"  ! {module}: {was} -> {now}")
-    print("--- recorded build context ---")
-    print(json.dumps(context, indent=2, sort_keys=True))
-    sys.exit(1)
-print("module provenance unchanged under container-start resolution order "
-      "(triton resolves via /opt/flagtree before site-packages):")
-print(json.dumps(after, indent=2, sort_keys=True))
-PY
-
-# 4. Import smoke check for sglang itself. A GPU-less builder cannot load
-#    device libraries (libgalaxyhip / libcuda / torch device backends), so
-#    those failures are recorded and tolerated; any other failure - notably
-#    a missing pure-Python dependency of the closure - fails the build.
-# With the loader path baked in above, a GPU-less builder can now load the
-# DTK libraries and may abort (SIGABRT, rc=134) inside HIP device init
-# before Python can classify the failure, so the verdict comes from log
-# sentinels instead of the exit code.
-RUN export PYTHON_BIN="$(command -v python || command -v python3)" \
-    && "$PYTHON_BIN" - <<'PY' > /tmp/sglang-import-smoke.log 2>&1 || true
-import importlib.metadata as md
-import traceback
-
-try:
-    import sglang
-    print("SMOKE-PASS sglang", md.version("sglang"), "imported from", sglang.__file__)
-except BaseException:  # noqa: BLE001 - classify below
-    text = traceback.format_exc()
-    print(text)
-    tolerated = (
-        "libgalaxyhip" in text,
-        "libcuda.so" in text,
-        "Failed to load the backend extension" in text,
-        "cannot open shared object file" in text,
-    )
-    if not any(tolerated):
-        raise SystemExit(
-            "sglang import failed for reasons other than missing device libraries"
-        )
-    print("SMOKE-TOLERATED sglang import blocked by device libraries only "
-          "(expected on a GPU-less builder)")
-PY
+# 4. Import smoke check for sglang itself (sentinel-classified; the script
+#    docstring explains why the verdict comes from the log, not the exit code).
+RUN python /opt/sglang-ci/scripts/sglang_import_smoke.py > /tmp/sglang-import-smoke.log 2>&1 || true
 RUN cat /tmp/sglang-import-smoke.log \
     && grep -qE "SMOKE-PASS|SMOKE-TOLERATED|no ROCm-capable device is detected" \
        /tmp/sglang-import-smoke.log
