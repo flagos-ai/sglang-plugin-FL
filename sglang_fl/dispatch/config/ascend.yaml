@@ -63,6 +63,9 @@ flagos_blacklist:
   - true_divide_
   - addmm
   - masked_scatter_
+  # FlagGems 5.4.0 launches a zero grid for empty inputs (FlagGems #6802).
+  - lift_fresh
+  - lift_fresh_copy
 
 # OOT dispatch blacklist (SGLang op class names, not ATen op names): none by
 # default. Keep MRotaryEmbedding enabled so the 0.5.18 acceptance matrix tests
