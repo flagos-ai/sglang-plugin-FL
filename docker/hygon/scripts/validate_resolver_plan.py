@@ -15,6 +15,13 @@ from pathlib import Path
 
 from packaging.utils import canonicalize_name
 
+# External platform components: the resolver plans them (a closure wheel
+# declares them) but the image must not ship them, because the operations
+# runtime provides the real component out-of-band. The install layer removes
+# them right after resolving, and the recorded additions list excludes them
+# so the post-install distribution gate compares like for like.
+EXTERNAL_PLATFORM_COMPONENTS = {"triton"}
+
 evidence = Path("/opt/sglang-ci")
 before = json.loads((evidence / "runtime-distributions-before.json").read_text())
 report = json.loads((evidence / "sglang-resolver-plan.json").read_text())
@@ -24,6 +31,10 @@ for item in report.get("install", []):
     metadata = item.get("metadata", {})
     name = canonicalize_name(metadata.get("name", ""))
     version = metadata.get("version", "")
+    if name in EXTERNAL_PLATFORM_COMPONENTS:
+        print(f"  ~ {name}=={version} is an external platform component "
+              "(provided by the runtime; removed after install)")
+        continue
     if name not in before:
         additions.append((name, version))
     elif version == before[name]:

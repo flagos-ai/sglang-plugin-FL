@@ -56,15 +56,16 @@ EXPECTED_FLAGTREE = "0.6.1+hcu3.6"
 # Operations-runtime image (flagos-runtime-hygon-dtk26.04, digest-pinned in
 # docker/hygon/runtime-0.5.18.containerfile). The runtime ships torch/flagtree/
 # flag-gems/flagcx; the sglang[srt_empty,runtime_common] closure adds the SGLang
-# wheel plus its pure-Python dependency closure (and a standalone triton wheel
-# whose module stays shadowed by FlagTree's /opt/flagtree PYTHONPATH entry).
+# wheel plus its pure-Python dependency closure. The standalone triton wheel
+# that xgrammar declares is an external platform component: removed at image
+# build time, FlagTree's /opt/flagtree (image-level PYTHONPATH) is the only
+# Triton in any entrypoint.
 RUNTIME_IMAGE_RELEASES = {
     "sglang": "0.5.18+flagos",
     "torch": "2.9.0+das.opt1.dtk2604",
     "flag-gems": "5.4.0",
 }
 RUNTIME_IMAGE_FLAGTREE = "0.7.0+hcu3.6"
-RUNTIME_IMAGE_TRITON_DIST = "3.8.0"
 # Installed into the ephemeral CI job container by setup.sh, pinned with
 # their transitive closure; the operations runtime intentionally ships no
 # test packages. sglang_fl is the editable plugin checkout installed by the
@@ -260,14 +261,27 @@ def _verify_runtime_image_versions() -> None:
             f"found {actual}"
         )
     print(f"[hygon-env] flagtree={actual}")
-    actual = _distribution_version("triton")
-    if actual != RUNTIME_IMAGE_TRITON_DIST:
+    # The standalone triton wheel (xgrammar declaration) is an external
+    # platform component: it must NOT be installed; FlagTree is the only
+    # Triton, and the module must resolve from /opt/flagtree in this very
+    # process (setup.sh and the image build gate the other entrypoints).
+    try:
+        actual = metadata.version("triton")
+    except metadata.PackageNotFoundError:
+        actual = None
+    if actual is not None:
         raise RuntimeError(
-            "the SGLang closure is expected to install the standalone triton "
-            f"wheel {RUNTIME_IMAGE_TRITON_DIST} (shadowed by FlagTree at "
-            f"import time); found {actual}"
+            "the standalone triton wheel must stay removed "
+            f"(FlagTree is the only Triton); found {actual}"
         )
-    print(f"[hygon-env] triton dist={actual} (module resolves via /opt/flagtree)")
+    import triton  # noqa: PLC0415 - deliberate entrypoint-style resolution
+
+    if not str(triton.__file__).startswith("/opt/flagtree"):
+        raise RuntimeError(
+            f"triton must resolve via /opt/flagtree in every entrypoint; "
+            f"this process resolved {triton.__file__}"
+        )
+    print(f"[hygon-env] standalone triton absent; module resolves {triton.__file__}")
 
 
 def _verify_runtime_evidence(evidence: Path) -> None:

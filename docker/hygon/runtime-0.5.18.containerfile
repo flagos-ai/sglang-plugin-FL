@@ -28,6 +28,17 @@
 ARG BASE_IMAGE=harbor.baai.ac.cn/flagos-runtime/flagos-runtime-hygon-dtk26.04@sha256:03e598b348e58e7233628394bbefa0ccef26969a091c7e6f2f02835161757f8b
 FROM ${BASE_IMAGE}
 
+# FlagTree (/opt/flagtree) is the runtime's authoritative Triton. The base
+# image exposes it to bash sessions only (BASH_ENV -> /etc/bash_env.sh ->
+# /etc/profile.d/vendor.sh), so the resolved Triton silently depended on the
+# container entrypoint (bash saw FlagTree 3.6, a direct python entrypoint
+# saw the closure's standalone wheel). Bake it as image-level PYTHONPATH so
+# shell, direct python entrypoints and CI jobs all resolve the same
+# /opt/flagtree tree; the standalone triton wheel that xgrammar's
+# declaration pulls in is removed right after the install below (the cuda
+# CI image uses the same convention).
+ENV PYTHONPATH=/opt/flagtree
+
 ARG SGLANG_WHEEL_URL=https://resource.flagos.net/repository/flagos-pypi-hygon/packages/sglang/0.5.18+flagos/sglang-0.5.18+flagos-cp310-cp310-linux_x86_64.whl
 ARG SGLANG_WHEEL_SHA256=1fe8a560353fd15aea7194869f1fd50e1fdbedd8fc1074db52b9a13028756800
 ARG SGLANG_WHEEL_NAME=sglang-0.5.18+flagos-cp310-cp310-linux_x86_64.whl
@@ -102,7 +113,10 @@ RUN --mount=type=cache,target=/tmp/pip-cache \
     && python /opt/sglang-ci/scripts/validate_resolver_plan.py
 
 # --- Stable, slow: the real install ------------------------------------------
-# Same constraints and indexes as the reviewed dry-run plan.
+# Same constraints and indexes as the reviewed dry-run plan. The standalone
+# triton wheel (pulled by xgrammar's declaration) is uninstalled in the SAME
+# layer: FlagTree provides the only Triton, and a later-layer uninstall would
+# still ship the ~893 MB in this layer.
 RUN --mount=type=cache,target=/tmp/pip-cache \
     install_rc=1 \
     && for attempt in 1 2 3 4 5 6 7 8; do \
@@ -123,7 +137,11 @@ RUN --mount=type=cache,target=/tmp/pip-cache \
          echo "install attempt ${attempt} failed (rc=${install_rc}); retrying" >&2; \
          sleep 20; \
        done \
-    && [ "$install_rc" -eq 0 ]
+    && [ "$install_rc" -eq 0 ] \
+    && while python -m pip show triton >/dev/null 2>&1; do \
+         python -m pip uninstall -y triton; \
+       done \
+    && echo "standalone triton wheel removed; FlagTree is the only Triton"
 
 # --- Application compatibility: distinguish HCU from AMD ROCm --------------
 # Keep this after the slow dependency layer so changes to the application-only
@@ -254,22 +272,34 @@ RUN python /opt/sglang-ci/scripts/verify_distributions.py
 RUN python /opt/sglang-ci/scripts/verify_site_files.py
 
 # 2. pip check: only violations NEW relative to the runtime baseline fail the
-#    build; the runtime's own pre-existing findings stay on record.
+#    build; the runtime's own pre-existing findings stay on record. One
+#    declared gap is exempt: xgrammar requires triton, which the runtime
+#    provides out-of-band as FlagTree (pip cannot see it - same convention
+#    as the cuda CI image).
 RUN { python -m pip check > /opt/sglang-ci/runtime-pip-check-after.txt 2>&1; \
          printf '%s\n' "$?" > /opt/sglang-ci/runtime-pip-check-after.exitcode; true; } \
     && grep -v '^No broken requirements found\.$' /opt/sglang-ci/runtime-pip-check-baseline.txt | sort -u > /tmp/pip-check-baseline.lines \
     && grep -v '^No broken requirements found\.$' /opt/sglang-ci/runtime-pip-check-after.txt | sort -u > /tmp/pip-check-after.lines \
-    && comm -13 /tmp/pip-check-baseline.lines /tmp/pip-check-after.lines > /opt/sglang-ci/pip-check-new-violations.txt \
+    && comm -13 /tmp/pip-check-baseline.lines /tmp/pip-check-after.lines \
+       | { grep -v 'requires triton, which is not installed' || true; } \
+       > /opt/sglang-ci/pip-check-new-violations.txt \
     && if [ -s /opt/sglang-ci/pip-check-new-violations.txt ]; then \
          echo 'FATAL: new pip check violations introduced by the SGLang install:'; \
          cat /opt/sglang-ci/pip-check-new-violations.txt; \
          exit 1; \
        fi \
-    && echo 'pip check: no new violations (baseline preserved)'
+    && echo 'pip check: no new violations (baseline preserved; xgrammar->triton provided by FlagTree)'
 
 # 3. Module provenance: every vendor module must still resolve to the exact
 #    same origin (see the script docstring for the one recorded exception).
 RUN python /opt/sglang-ci/scripts/verify_module_provenance.py
+
+# 3b. Triton resolution: with the standalone wheel gone and PYTHONPATH baked,
+#     every entrypoint style must resolve the same FlagTree tree. Exercise
+#     the plain RUN shell, an explicit bash, and a python -c child process.
+RUN python -c 'import triton; p = triton.__file__; assert p and p.startswith("/opt/flagtree"), p; print("triton (sh):", p)' \
+    && bash -c 'python -c "import triton; assert triton.__file__.startswith(\"/opt/flagtree\"), triton.__file__; print(\"triton (bash):\", triton.__file__)"' \
+    && python -c 'import importlib.metadata as md; names=[(d.metadata["Name"] or "").lower() for d in md.distributions()]; assert "triton" not in names, "standalone triton distribution still installed"; print("standalone triton distribution absent: OK")'
 
 # 4. Import smoke check for sglang itself (sentinel-classified; the script
 #    docstring explains why the verdict comes from the log, not the exit code).

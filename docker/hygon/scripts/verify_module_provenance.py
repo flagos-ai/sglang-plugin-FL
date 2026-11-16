@@ -3,12 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Post-install gate 3: vendor module provenance.
 
-Every vendor module must still resolve to the exact same origin. One narrow,
-loudly-reported exception: the SGLang closure pulls a standalone triton wheel
-(xgrammar dependency) into site-packages, while the runtime's authoritative
-triton module lives in the /opt/flagtree volume. At container start
-PYTHONPATH=/opt/flagtree still precedes site-packages, so FlagTree's triton
-keeps winning; CI job-time checks assert the /opt/flagtree resolution.
+Every vendor module must still resolve to the exact same origin. The
+image-level PYTHONPATH=/opt/flagtree makes the runtime's FlagTree tree the
+authoritative resolution in every entrypoint (build steps included), and the
+standalone triton wheel is removed from site-packages at install time, so
+triton consistently resolves under /opt/flagtree before and after the
+closure install; CI job-time checks re-assert that resolution.
 """
 
 import importlib.util
