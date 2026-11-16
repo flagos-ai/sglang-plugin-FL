@@ -63,6 +63,21 @@ with ledger.open("a") as fh:
 print(f"runtime distributions preserved after CI setup: {len(before)}; "
       f"total covered additions: {len(known)}")
 PY
+# PROBE BRANCH ONLY: the current published CI image predates the reviewed
+# pyarrow 25.0.0 pin and contains pyarrow 26.0.1, which cannot import with the
+# Runtime-owned numpy 1.26.4.  Replace only this application-added package so
+# the hardware run validates the import guard without waiting for an image
+# rebuild.  The product Containerfile already resolves and locks 25.0.0.
+pip install --no-deps --force-reinstall "pyarrow==25.0.0"
+python - <<'PY'
+import numpy
+import pyarrow
+
+assert numpy.__version__ == "1.26.4"
+assert pyarrow.__version__ == "25.0.0"
+print("probe application compatibility: numpy", numpy.__version__,
+      "pyarrow", pyarrow.__version__)
+PY
 # Model store inventory: e2e cases resolve /data/models/Qwen/<model> from the
 # host store bind-mounted here; log what is actually visible so a "Model not
 # found" collection failure can be told apart from a wrong mount level.
@@ -76,6 +91,7 @@ ls -la /data/models/Qwen/ 2>&1 || true
 # unit/functional/e2e stages decide.
 echo "=== PPU vendor stack import + linkage check (probe) ==="
 python - <<'PY' || true
+import importlib.metadata as metadata
 import os, sys
 print("LD_LIBRARY_PATH:", os.environ.get("LD_LIBRARY_PATH"))
 print("PYTHONPATH:", os.environ.get("PYTHONPATH"))
@@ -86,6 +102,15 @@ for mod in ("torch", "torchvision", "torchaudio", "triton",
         print(f"import {mod}: OK {getattr(m, '__version__', '?')}")
     except Exception as e:
         print(f"import {mod}: FAILED {e!r}")
+try:
+    metadata.version("sglang-kernel")
+except metadata.PackageNotFoundError:
+    print("sglang-kernel distribution: ABSENT (expected for srt_empty)")
+else:
+    raise RuntimeError("probe unexpectedly installed a real sglang-kernel distribution")
+import sgl_kernel
+assert getattr(sgl_kernel, "__sglang_fl_placeholder__", False)
+print("sgl_kernel import: application placeholder (no executable kernel)")
 try:
     import torch
     print("torch.cuda.is_available:", torch.cuda.is_available())
