@@ -5,14 +5,30 @@
 # The CI image (docker/cuda/runtime-0.5.18.containerfile) ships the
 # operations runtime plus the locked SGLang closure with the aligned CUDA
 # 13.0.88 toolchain and the lib64 layout shim already baked in. Job-time
-# work is limited to what must not live in the image: the triton version
-# swap, the toolkit activation, the JIT regression probes, and the
+# work is limited to what must not live in the image: the compiler-slot
+# activation, the toolkit activation, the JIT regression probes, and the
 # ephemeral test runner + plugin. Triton is not installed by the closure:
 # the runtime ships both compiler slots (/opt/flagtree 3.6.0 default via
 # PYTHONPATH, /opt/triton 3.7.1 via `compiler triton`); the default
 # FlagTree path is what CI runs on.
 set -euo pipefail
 git config --global --add safe.directory "$(pwd)"
+
+echo "=== Activating the runtime's default compiler slot ==="
+# The runtime exposes its Triton compiler slots only through PYTHONPATH,
+# which /etc/profile.d/zz-flagos.sh sets in login shells. GitHub Actions
+# container steps exec non-login shells, bypassing profile.d, and the
+# test step's `python` may be the runner-injected interpreter rather
+# than the image's -- either way the FlagTree triton module would be
+# unreachable (ModuleNotFoundError, run 43828736518). Source the
+# runtime's own activation script and select the default slot.
+source /etc/profile.d/zz-flagos.sh
+compiler flagtree
+echo "compiler slot active: PYTHONPATH=$PYTHONPATH"
+if [ -n "${GITHUB_ENV:-}" ]; then
+    echo "PYTHONPATH=$PYTHONPATH" >> "$GITHUB_ENV"
+fi
+
 echo "=== Activating the standard-closure CUDA toolkit ==="
 # The SGLang closure installs a complete pip CUDA toolkit under nvidia/cu13.
 # The operations Runtime intentionally keeps /usr/local/cuda runtime-only,
