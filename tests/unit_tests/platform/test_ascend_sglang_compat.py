@@ -433,6 +433,120 @@ def test_ascend_mamba_state_update_patch_is_optional(monkeypatch) -> None:
     assert mamba_state_update.patch_mamba_state_update_multibuffer() is False
 
 
+@pytest.mark.parametrize(
+    ("sglang_version", "flagtree_version", "cann_version", "owns_triton", "enabled"),
+    [
+        ("0.5.18", "0.7.0+ascend3.5", "9.2.1", True, True),
+        ("0.5.18", "0.7.0+ascend3.5", "8.5.0", True, False),
+        ("0.5.18", "0.7.1a1+ascend3.5", "9.2.1", True, False),
+        ("0.5.18", "0.7.0+ascend3.5", "9.2.1", False, False),
+        ("0.5.19", "0.7.0+ascend3.5", "9.2.1", True, False),
+    ],
+)
+def test_ascend_request_pool_fallback_is_runtime_and_module_local(
+    monkeypatch,
+    tmp_path,
+    sglang_version,
+    flagtree_version,
+    cann_version,
+    owns_triton,
+    enabled,
+) -> None:
+    from sglang_fl.dispatch.backends.vendor.ascend.patches import req_to_token_pool
+
+    toolkit = tmp_path / "cann"
+    info = toolkit / "aarch64-linux" / "ascend_all_cann_install.info"
+    info.parent.mkdir(parents=True)
+    info.write_text(f"version={cann_version}\n", encoding="utf-8")
+    monkeypatch.setenv("ASCEND_HOME_PATH", str(toolkit))
+    monkeypatch.setattr(req_to_token_pool.metadata, "version", lambda _: sglang_version)
+    flagtree_root = tmp_path / "flagtree"
+    flagtree = SimpleNamespace(
+        version=flagtree_version, locate_file=lambda path: flagtree_root / path
+    )
+    monkeypatch.setattr(req_to_token_pool.metadata, "distribution", lambda _: flagtree)
+    triton_root = flagtree_root if owns_triton else tmp_path / "vendor-triton"
+    monkeypatch.setattr(
+        req_to_token_pool.importlib.util,
+        "find_spec",
+        lambda _: SimpleNamespace(origin=str(triton_root / "triton/__init__.py")),
+    )
+
+    def supports_triton(_backend):
+        return True
+
+    sglang_utils = SimpleNamespace(support_triton=supports_triton)
+    allocation = SimpleNamespace(support_triton=sglang_utils.support_triton)
+    monkeypatch.setattr(
+        req_to_token_pool.importlib,
+        "import_module",
+        lambda name: (
+            allocation
+            if name == req_to_token_pool._ALLOCATION_MODULE
+            else pytest.fail(f"Unexpected import: {name}")
+        ),
+    )
+
+    assert req_to_token_pool.patch_request_pool_write_fallback() is enabled
+    assert allocation.support_triton("ascend") is not enabled
+    assert sglang_utils.support_triton is supports_triton
+    patched = allocation.support_triton
+    assert req_to_token_pool.patch_request_pool_write_fallback() is enabled
+    assert allocation.support_triton is patched
+
+
+def test_ascend_gdn_prefill_batches_only_matching_legacy_gating(monkeypatch) -> None:
+    import torch
+
+    from sglang_fl.dispatch.backends.vendor.ascend.patches import gdn_prefill
+
+    versions = {"sglang": "0.5.18", "sgl-kernel-npu": "2026.6.1"}
+    monkeypatch.setattr(gdn_prefill.metadata, "version", versions.__getitem__)
+    calls = []
+    expected = object()
+
+    def native_chunk(q, k, v, g, beta, **kwargs):
+        calls.append((g, beta, kwargs))
+        return expected
+
+    gdn_triton = SimpleNamespace(chunk_gated_delta_rule=native_chunk)
+    native_module = SimpleNamespace(chunk_gated_delta_rule_npu=native_chunk)
+    modules = {
+        gdn_prefill._GDN_TRITON_MODULE: gdn_triton,
+        gdn_prefill._NATIVE_CHUNK_MODULE: native_module,
+    }
+    monkeypatch.setattr(gdn_prefill.importlib, "import_module", modules.__getitem__)
+    assert gdn_prefill.patch_gdn_prefill_gating_layout() is False
+    assert gdn_triton.chunk_gated_delta_rule is native_chunk
+
+    versions["sgl-kernel-npu"] = "2026.9.0"
+    assert gdn_prefill.patch_gdn_prefill_gating_layout() is True
+    wrapped = gdn_triton.chunk_gated_delta_rule
+    assert gdn_prefill.patch_gdn_prefill_gating_layout() is True
+    assert gdn_triton.chunk_gated_delta_rule is wrapped
+    assert native_module.chunk_gated_delta_rule_npu is native_chunk
+
+    value = torch.empty(1, 3, 2, 4)
+    g = torch.arange(6).reshape(3, 2)
+    beta = g + 1
+    assert (
+        wrapped(q=value, k=value, v=value, g=g, beta=beta, head_first=False) is expected
+    )
+    actual_g, actual_beta, options = calls[-1]
+    torch.testing.assert_close(actual_g, g[None])
+    torch.testing.assert_close(actual_beta, beta[None])
+    assert options == {"head_first": False}
+
+    for gates, weights, head_first in [
+        (g[None], beta[None], False),
+        (g, beta[:, :1], False),
+        (g, beta, True),
+    ]:
+        wrapped(q=value, k=value, v=value, g=gates, beta=weights, head_first=head_first)
+        assert calls[-1][0] is gates
+        assert calls[-1][1] is weights
+
+
 def test_ascend_gdn_target_verify_replays_decode_and_commits_snapshots(
     monkeypatch,
 ) -> None:
