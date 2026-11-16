@@ -3,10 +3,9 @@
 
 platform: ascend
 
-# Published SGLang 0.5.18 ARM64 CI image. The immutable Harbor digest was
-# pulled back and passed the four-card 910C baked-image gate; build provenance
-# and the canonical rebuild recipe are documented in the 0.5.18 usage guide.
-ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:8aee90099504bfdec9a1c0caf484ebff74273eeda4480ff07554138d727de62e
+# SGLang 0.5.18 CI image for Ascend 910C A3 with CANN 9.2.1 and
+# FlagTree 0.7.0+ascend3.5. The recipe is in docker/ascend/cann921-0.5.18.containerfile.
+ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:a27e7d64cbcff51170909b41aa8c744404d500cd4fcbdc18e9105583b502705c
 
 # Runner labels for this hardware
 runner_labels:
