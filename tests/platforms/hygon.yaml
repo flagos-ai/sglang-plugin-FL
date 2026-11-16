@@ -57,13 +57,17 @@ bw1000: &bw1000_profile
         - platform/test_iluvatar_import_shims.py
     functional:
       include: "*"
-      # No exclusions. build-infra#1786 (FlagTree JIT device-lib discovery)
-      # is fixed by the baked clang wrapper in the runtime image; the
-      # mtp_logprobs suite is its regression gate (10/10 green on appfix7).
-      # The mtp_attention suite runs under the triton attention path that
-      # setup.sh exports, bypassing the vendor FlashAttention defect of
-      # build-infra#1787.
-      exclude: []
+      # build-infra#1786 (FlagTree JIT device-lib discovery) is fixed by the
+      # baked clang wrapper in the runtime image; the mtp_logprobs suite is
+      # its regression gate (10/10 green on appfix7 and on the triton-path
+      # experiment run 43830080069). The mtp_attention 256-prefix cases stay
+      # excluded: they call the vendor FlashAttention implementation directly
+      # (build-infra#1787, vendor-wontfix), so the e2e-level
+      # SGLANG_HYGON_DIAGNOSTIC_TRITON_ATTENTION override cannot reach them
+      # (proven by run 43830080069: 2 failed / 54 passed under the switch).
+      # Restoring them needs a dispatch-layer routing decision.
+      exclude:
+        - ops/test_hygon_mtp_attention.py
     e2e:
       # Diagnostic scope: use one representative eager model to keep the
       # scarce BW1000 runner time bounded while the runtime image migrates.
