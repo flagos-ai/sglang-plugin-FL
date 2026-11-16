@@ -46,6 +46,12 @@ unsupported_features: []
 env_defaults:
   CUDA_DEVICE_MAX_CONNECTIONS: "1"
   NCCL_ALGO: "Ring"
+  # T-Head's PPU sgl_kernel shim is 0.4.2.post2-based; sglang 0.5.18 asserts
+  # a >=0.4.6.post1 PyPI version at server startup (assert_pkg_version,
+  # common.py). The green e2e evidence run 42983812528 ran with this env set;
+  # it was lost in the dev/0.5.18 base move. Version-gate skip only - the
+  # kernels themselves are exercised by the unit/functional/e2e stages.
+  SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK: "1"
 
 # ---- Device-specific test configurations ------------------------------------
 zw810e:
