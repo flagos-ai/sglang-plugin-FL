@@ -7,19 +7,12 @@
 # 13.0.88 toolchain and the lib64 layout shim already baked in. Job-time
 # work is limited to what must not live in the image: the triton version
 # swap, the toolkit activation, the JIT regression probes, and the
-# ephemeral test runner + plugin.
+# ephemeral test runner + plugin. Triton is not installed by the closure:
+# the runtime ships both compiler slots (/opt/flagtree 3.6.0 default via
+# PYTHONPATH, /opt/triton 3.7.1 via `compiler triton`); the default
+# FlagTree path is what CI runs on.
 set -euo pipefail
 git config --global --add safe.directory "$(pwd)"
-echo "=== Swapping triton to FlagTree's version ==="
-# The image deliberately keeps the closure's triton 3.7.1: with no pip
-# triton at all, the unit-test sys.modules surgery triggers FlagTree
-# import side effects (KeyError 'sglang'). 3.7.1 itself crashes kernel
-# launches (SystemError in triton/backends/nvidia/driver.py), so swap the
-# pip wheel to 3.6.0 -- the exact version /opt/flagtree provides -- keeping
-# FlagTree authoritative via PYTHONPATH while matching its ABI.
-python3 -m pip install --no-deps triton==3.6.0
-echo "triton swapped: 3.7.1 -> 3.6.0 (FlagTree-matching version)"
-
 echo "=== Activating the standard-closure CUDA toolkit ==="
 # The SGLang closure installs a complete pip CUDA toolkit under nvidia/cu13.
 # The operations Runtime intentionally keeps /usr/local/cuda runtime-only,

@@ -1,4 +1,8 @@
 {
+  "compiler_slots": {
+    "/opt/flagtree/triton": "3.6.0",
+    "/opt/triton/triton": "3.7.1"
+  },
   "flag_gems": {
     "found": true,
     "origin": "/flagos/lib/python3.12/site-packages/flag_gems/__init__.py"

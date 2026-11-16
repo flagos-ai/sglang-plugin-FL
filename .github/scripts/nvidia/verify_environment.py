@@ -59,19 +59,6 @@ def verify(
     if require_ci:
         for name, expected in EXPECTED_CI_DISTRIBUTIONS.items():
             _require_distribution(name, expected)
-        # Post-setup: triton must be 3.6.0 (matching FlagTree's version at
-        # /opt/flagtree). The original 3.7.1 from the standard closure caused
-        # kernel-launch crashes (SystemError in the nvidia driver launcher);
-        # having no pip triton at all triggers FlagTree import side effects
-        # that corrupt sys.modules during test-suite execution.
-        try:
-            standalone_triton = metadata.version("triton")
-        except metadata.PackageNotFoundError:
-            standalone_triton = None
-        if standalone_triton != "3.6.0":
-            raise RuntimeError(
-                f"triton must be 3.6.0 (FlagTree's version); found {standalone_triton}"
-            )
     # FlagTree's triton module must be what resolves (PYTHONPATH=/opt/flagtree
     # precedes site-packages at container start; find_spec resolves without
     # executing device libraries).

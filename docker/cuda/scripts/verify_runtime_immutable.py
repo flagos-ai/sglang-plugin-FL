@@ -36,13 +36,22 @@ from pathlib import Path
 
 from packaging.utils import canonicalize_name
 
-# The runtime owns fsspec (2026.9.0, readonly) while the numpy1-era
-# datasets 4.0.0 pins its metadata cap at fsspec<=2025.3.0. The conflict
-# is metadata-only: import and sglang.bench_serving are verified against
-# the runtime fsspec. Extend this list only with equally reviewed items.
+# Waiver 1: the runtime owns fsspec (2026.9.0, readonly) while the
+# numpy1-era datasets 4.0.0 pins its metadata cap at fsspec<=2025.3.0.
+# The conflict is metadata-only: import and sglang.bench_serving are
+# verified against the runtime fsspec.
+#
+# Waiver 2/3: the runtime provides triton out-of-band as compiler slots
+# (/opt/flagtree 3.6.0 default via PYTHONPATH; /opt/triton 3.7.1 via
+# `compiler triton`). Closure packages declaring a plain `triton`
+# dependency are satisfied at module level by the FlagTree slot and are
+# unsatisfiable at the pip level by design -- the closure must not
+# duplicate a runtime-provided component as a pip wheel.
 PIP_CHECK_WAIVED = (
     "datasets 4.0.0 has requirement fsspec[http]<=2025.3.0,>=2023.1.0, "
     "but you have fsspec 2026.9.0.",
+    "humming-kernels 0.1.10 requires triton, which is not installed.",
+    "xgrammar 0.2.1 requires triton, which is not installed.",
 )
 
 PROVENANCE_MODULES = ("torch", "triton", "flag_gems", "flagcx", "flagtree")

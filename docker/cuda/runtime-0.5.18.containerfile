@@ -14,11 +14,15 @@
 # that static truth, so a lock edit that touches a runtime package fails
 # the build instead of surfacing as a behavioral CI regression.
 #
-# Triton 3.7.1 stays in the image to satisfy torch's metadata requirement;
-# the ephemeral GPU job swaps this added distribution to 3.6.0 (FlagTree's
-# version) in setup.sh, because 3.7.1 mixed with FlagTree's 3.6 code
-# crashes kernel launches. No sglang-plugin-FL source ships in the image;
-# CI installs the plugin from the PR checkout.
+# Triton is not part of the closure: the runtime already provides both
+# compiler slots -- /opt/flagtree (Triton 3.6.0, default via PYTHONPATH)
+# and /opt/triton (Triton 3.7.1, selected with `compiler triton`) -- and
+# reinstalling either as a pip wheel would duplicate a runtime component.
+# torch's Requires-Dist: triton==3.7.1 stays unsatisfied at the pip level
+# exactly as in the raw runtime (see the pip-check baseline); the module
+# resolves to FlagTree's tree under container-start path order. No
+# sglang-plugin-FL source ships in the image; CI installs the plugin from
+# the PR checkout.
 #
 # Build from the repository root:
 #   docker build -f docker/cuda/runtime-0.5.18.containerfile \
