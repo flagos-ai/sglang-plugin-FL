@@ -40,8 +40,29 @@ EXPECTED_CI_DISTRIBUTIONS = {
     "pytest-timeout": "2.4.0",
 }
 
-EXPECTED_FLAGTREE_VERSION = "0.6.0+ascend3.2"
-EXPECTED_FLAGTREE_TRITON = "3.2.0"
+EXPECTED_FLAGTREE_VERSION = "0.7.0+ascend3.5"
+EXPECTED_FLAGTREE_TRITON = "3.5.1"
+EXPECTED_FLAGTREE_SOURCE = (
+    "Source-Commit, https://github.com/flagos-ai/FlagTree/commit/"
+    "2b5b81320c18dbf4008cf6ad14d3c246bd74f7ff"
+)
+EXPECTED_CANN921_DISTRIBUTIONS = {
+    "sglang": "0.5.18",
+    "sglang-fl": "0.1.0",
+    "torch": "2.13.0+cpu",
+    "torch-npu": "2.13.0",
+    "transformers": "5.12.1",
+    "flag-gems": "5.4.0",
+    "flagcx": "0.14.1+cann9.2.1",
+    "cann-shmem": "1.6.0",
+    "xgrammar": "0.2.1",
+    "compressed-tensors": "0.16.0",
+    "sgl-kernel-npu": "2026.9.0",
+    "deep-ep": "1.0.0+d5107fb6.cann.9.2.0.b237",
+    "attentions": "0.2",
+    "custom-ops": "1.0",
+    "torch-memory-saver": "0.0.8",
+}
 
 EXPECTED_SOURCE_MARKERS = {
     Path("/opt/sglang-0.5.18/.flagos-source-commit"): (
@@ -109,16 +130,11 @@ def _require_distribution(name: str, expected: str) -> None:
 
 def _require_flagtree() -> None:
     _require_distribution("flagtree", EXPECTED_FLAGTREE_VERSION)
-    for name in ("triton", "triton-ascend"):
-        try:
-            version = metadata.version(name)
-        except metadata.PackageNotFoundError:
-            continue
-        raise RuntimeError(f"Standalone {name}=={version} conflicts with FlagTree")
-
     distribution = metadata.distribution("flagtree")
+    if EXPECTED_FLAGTREE_SOURCE not in distribution.metadata.get_all("Project-URL", []):
+        raise RuntimeError("FlagTree wheel source commit does not match the CI image")
     owned_files = {
-        Path(distribution.locate_file(path)).resolve()
+        Path(distribution.locate_file(path)).resolve(): path
         for path in distribution.files or ()
     }
     triton = _require_import("triton")
@@ -134,9 +150,21 @@ def _require_flagtree() -> None:
     ):
         module = _require_import(name) if name != "triton" else triton
         path = Path(module.__file__).resolve()
-        if path not in owned_files:
-            raise RuntimeError(f"FlagTree does not own the loaded {name} module at {path}")
-        print(f"[ascend-env] FlagTree owns {name}={path}")
+        entry = owned_files.get(path)
+        if entry is None or not path.is_relative_to("/opt/flagtree"):
+            raise RuntimeError(
+                f"FlagTree does not own the loaded {name} module at {path}"
+            )
+        with path.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").digest()
+        encoded = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+        if (
+            entry.hash is None
+            or entry.hash.mode != "sha256"
+            or entry.hash.value != encoded
+        ):
+            raise RuntimeError(f"FlagTree RECORD digest mismatch for {path}")
+        print(f"[ascend-env] FlagTree owns {name}={path} (RECORD SHA256 verified)")
     from triton.language.extra.cann import extension
 
     if not callable(getattr(extension, "insert_slice", None)):
@@ -144,8 +172,10 @@ def _require_flagtree() -> None:
     print(f"[ascend-env] triton-module={triton.__version__} (provided by FlagTree)")
 
 
-def _require_source_markers() -> None:
+def _require_source_markers(*, cann921: bool) -> None:
     for path, (name, expected) in EXPECTED_SOURCE_MARKERS.items():
+        if cann921 and name != "sglang":
+            continue  # The CANN 9.2.1 image supplies pinned vendor wheels.
         try:
             actual = path.read_text(encoding="utf-8").strip()
         except OSError as exc:
@@ -163,6 +193,7 @@ def _read_cann_version() -> tuple[Path, str]:
     )
     candidates = (
         home / "version.cfg",
+        home / "aarch64-linux" / "ascend_all_cann_install.info",
         home / "aarch64-linux" / "ascend_toolkit_install.info",
     )
     for path in candidates:
@@ -181,10 +212,10 @@ def _read_cann_version() -> tuple[Path, str]:
     )
 
 
-def _require_cann() -> None:
+def _require_cann(expected: str) -> None:
     path, actual = _read_cann_version()
-    if not actual.startswith(CANN_VERSION):
-        raise RuntimeError(f"CANN must be {CANN_VERSION}, found {actual} in {path}")
+    if not actual.startswith(expected):
+        raise RuntimeError(f"CANN must be {expected}, found {actual} in {path}")
     print(f"[ascend-env] CANN={actual} ({path})")
 
 
@@ -430,7 +461,15 @@ def _require_vision_padding_numerics(torch: object) -> None:
     )
 
 
-def _require_flagcx_layout() -> Path:
+def _require_flagcx_layout(*, cann921: bool) -> Path:
+    if cann921:
+        dist = metadata.distribution("flagcx")
+        library = Path(dist.locate_file("flagcx/lib/libflagcx.so"))
+        if not library.is_file():
+            raise RuntimeError(
+                f"required packaged FlagCX library is missing: {library}"
+            )
+        return library
     root = Path(os.environ.get("FLAGCX_PATH", "/opt/FlagCX"))
     library = root / "build" / "lib" / "libflagcx.so"
     wrapper = root / "plugin" / "interservice" / "flagcx_wrapper.py"
@@ -523,9 +562,11 @@ def _require_sglang_import() -> None:
     print(f"[ascend-env] sglang-source={module_path}")
 
 
-def _require_npu(min_npus: int, flagcx_library: Path) -> None:
+def _require_npu(min_npus: int, flagcx_library: Path, *, cann921: bool) -> None:
     torch = _require_import("torch")
     _require_import("torch_npu")
+    if cann921:
+        _require_import("shmem")
     _require_import("torchair")
     _require_import("torchair.configs.compiler_config")
     _require_import(
@@ -561,7 +602,11 @@ def _require_npu(min_npus: int, flagcx_library: Path) -> None:
     _require_vision_padding_numerics(torch)
     flag_gems = _require_import("flag_gems")
     flag_gems_path = Path(flag_gems.__file__).resolve()
-    flag_gems_root = Path("/opt/FlagGems")
+    flag_gems_root = (
+        Path(metadata.distribution("flag-gems").locate_file("flag_gems")).resolve()
+        if cann921
+        else Path("/opt/FlagGems")
+    )
     if (
         flag_gems_path != flag_gems_root
         and flag_gems_root not in flag_gems_path.parents
@@ -617,31 +662,32 @@ def verify(
     require_npu: bool = False,
     min_npus: int = 1,
     plugin_root: str | None = None,
-    flagtree: bool = False,
 ) -> None:
-    if sys.version_info[:2] != (3, 11):
+    cann921 = os.environ.get("SGLANG_FL_ASCEND_CANN921") == "1"
+    python_minor = 12 if cann921 else 11
+    if sys.version_info[:2] != (3, python_minor):
         raise RuntimeError(
-            f"Python must be 3.11, found {sys.version_info.major}.{sys.version_info.minor}"
+            f"Python must be 3.{python_minor}, found {sys.version_info.major}.{sys.version_info.minor}"
         )
     print(f"[ascend-env] python={sys.version.split()[0]}")
 
-    expected_runtime = EXPECTED_RUNTIME_DISTRIBUTIONS.copy()
-    if flagtree:
-        del expected_runtime["triton"]
-        del expected_runtime["triton-ascend"]
-        _require_flagtree()
+    expected_runtime = (
+        EXPECTED_CANN921_DISTRIBUTIONS if cann921 else EXPECTED_RUNTIME_DISTRIBUTIONS
+    )
     for name, expected in expected_runtime.items():
         _require_distribution(name, expected)
     if require_ci:
         for name, expected in EXPECTED_CI_DISTRIBUTIONS.items():
             _require_distribution(name, expected)
 
-    _require_source_markers()
-    _require_cann()
+    _require_source_markers(cann921=cann921)
+    _require_cann("9.2.1" if cann921 else CANN_VERSION)
+    if cann921:
+        _require_flagtree()
     _require_npu_kernel_surface()
     _require_solve_tril_source()
     _require_deep_ep_layout()
-    flagcx_library = _require_flagcx_layout()
+    flagcx_library = _require_flagcx_layout(cann921=cann921)
 
     _require_sglang_import()
     # This import is deliberately safe on driver-less image builders. The full
@@ -651,7 +697,7 @@ def verify(
     _require_plugin(plugin_root)
 
     if require_npu:
-        _require_npu(min_npus, flagcx_library)
+        _require_npu(min_npus, flagcx_library, cann921=cann921)
 
 
 def main() -> int:
@@ -677,11 +723,6 @@ def main() -> int:
         default=None,
         help="require sglang_fl to import from this checkout root",
     )
-    parser.add_argument(
-        "--flagtree",
-        action="store_true",
-        help="require FlagTree as the provider of the Ascend Triton compiler",
-    )
     args = parser.parse_args()
     if args.min_npus < 1:
         parser.error("--min-npus must be at least 1")
@@ -690,7 +731,6 @@ def main() -> int:
         require_npu=args.require_npu,
         min_npus=args.min_npus,
         plugin_root=args.plugin_root,
-        flagtree=args.flagtree,
     )
     print("[ascend-env] environment verification passed")
     return 0
