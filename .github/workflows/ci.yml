@@ -148,6 +148,14 @@ jobs:
           else
             python3 .github/scripts/detect_platforms.py
           fi
+          # TEMPORARY (two-wheel GPU-verify probe PR only; MUST NOT land
+          # in PR #179): overwrite the routed platforms with nvidia alone
+          # so this probe's shared-file diff cannot fan out to the other
+          # platforms' runner pools. platforms.yml stays untouched -- the
+          # hosted iluvatar contract test pins its enabled flags. A later
+          # write to the same GITHUB_OUTPUT key overrides the routed list
+          # printed above.
+          echo 'platforms=["nvidia"]' >> "$GITHUB_OUTPUT"
 
   # ============================================================
   # Jobs 6a-6f: per-platform testing (routed by discover)
