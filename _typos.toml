@@ -35,10 +35,13 @@ muh = "muh"
 # 33k real runtime file paths (torch's nll_loss_nd, FlagGems' convolution_
 # overrideable, ...) and the freeze/baseline quote package metadata; none
 # of it is prose, so spellchecking them only produces false positives.
+# The kunlunxin patched-sglang wheel below carries upstream identifiers
+# verbatim; it is vendor payload, not prose.
 extend-exclude = [
   "docker/cuda/runtime-0.5.18.site-files.sha256",
   "docker/cuda/runtime-0.5.18.runtime-freeze.txt",
   "docker/cuda/runtime-0.5.18.pip-check-baseline.txt",
+  "docker/kunlunxin/sglang-v0.5.18-kunlunxin.patch",
 ]
 
 [default.extend-identifiers]
