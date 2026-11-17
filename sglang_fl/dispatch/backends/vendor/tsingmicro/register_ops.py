@@ -23,89 +23,23 @@ def register_builtins(registry) -> None:
     backend = TxdaBackend()
     is_avail = backend.is_available
 
+    # Ops served by TXDA-specific code. Other ops are left to default.flagos /
+    # reference.torch: the former stubs (silu_and_mul, rms_norm,
+    # rotary_embedding, mrotary_embedding) only raised NotImplementedError,
+    # topk is served by default.flagos, fused_recurrent_gated_delta_rule has no
+    # SGLang 0.5.18 caller, and fused_recurrent_gated_delta_rule_packed_decode
+    # is excluded from FLA dispatch on tsingmicro (SGLang's kernel is called
+    # directly, see sglang_fl.load_plugin).
     impls = [
         OpImpl(
-            op_name="silu_and_mul",
+            op_name=name,
             impl_id="vendor.tsingmicro",
             kind=BackendImplKind.VENDOR,
-            fn=_bind_is_available(backend.silu_and_mul, is_avail),
+            fn=_bind_is_available(getattr(backend, name), is_avail),
             vendor="tsingmicro",
             priority=BackendPriority.VENDOR,
-        ),
-        OpImpl(
-            op_name="rms_norm",
-            impl_id="vendor.tsingmicro",
-            kind=BackendImplKind.VENDOR,
-            fn=_bind_is_available(backend.rms_norm, is_avail),
-            vendor="tsingmicro",
-            priority=BackendPriority.VENDOR,
-        ),
-        OpImpl(
-            op_name="gemma_rms_norm",
-            impl_id="vendor.tsingmicro",
-            kind=BackendImplKind.VENDOR,
-            fn=_bind_is_available(backend.gemma_rms_norm, is_avail),
-            vendor="tsingmicro",
-            priority=BackendPriority.VENDOR,
-        ),
-        OpImpl(
-            op_name="rotary_embedding",
-            impl_id="vendor.tsingmicro",
-            kind=BackendImplKind.VENDOR,
-            fn=_bind_is_available(backend.rotary_embedding, is_avail),
-            vendor="tsingmicro",
-            priority=BackendPriority.VENDOR,
-        ),
-        OpImpl(
-            op_name="topk",
-            impl_id="vendor.tsingmicro",
-            kind=BackendImplKind.VENDOR,
-            fn=_bind_is_available(backend.topk, is_avail),
-            vendor="tsingmicro",
-            priority=BackendPriority.VENDOR,
-        ),
-        OpImpl(
-            op_name="mrotary_embedding",
-            impl_id="vendor.tsingmicro",
-            kind=BackendImplKind.VENDOR,
-            fn=_bind_is_available(backend.mrotary_embedding, is_avail),
-            vendor="tsingmicro",
-            priority=BackendPriority.VENDOR,
-        ),
-        OpImpl(
-            op_name="fused_moe",
-            impl_id="vendor.tsingmicro",
-            kind=BackendImplKind.VENDOR,
-            fn=_bind_is_available(backend.fused_moe, is_avail),
-            vendor="tsingmicro",
-            priority=BackendPriority.VENDOR,
-        ),
-        OpImpl(
-            op_name="chunk_gated_delta_rule",
-            impl_id="vendor.tsingmicro",
-            kind=BackendImplKind.VENDOR,
-            fn=_bind_is_available(backend.chunk_gated_delta_rule, is_avail),
-            vendor="tsingmicro",
-            priority=BackendPriority.VENDOR,
-        ),
-        OpImpl(
-            op_name="fused_recurrent_gated_delta_rule",
-            impl_id="vendor.tsingmicro",
-            kind=BackendImplKind.VENDOR,
-            fn=_bind_is_available(backend.fused_recurrent_gated_delta_rule, is_avail),
-            vendor="tsingmicro",
-            priority=BackendPriority.VENDOR,
-        ),
-        OpImpl(
-            op_name="fused_recurrent_gated_delta_rule_packed_decode",
-            impl_id="vendor.tsingmicro",
-            kind=BackendImplKind.VENDOR,
-            fn=_bind_is_available(
-                backend.fused_recurrent_gated_delta_rule_packed_decode, is_avail
-            ),
-            vendor="tsingmicro",
-            priority=BackendPriority.VENDOR,
-        ),
+        )
+        for name in ("gemma_rms_norm", "fused_moe", "chunk_gated_delta_rule")
     ]
 
     registry.register_many(impls)

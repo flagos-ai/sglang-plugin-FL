@@ -38,9 +38,8 @@ flagos_blacklist:
 # Each op tries candidates left-to-right; falls to the next on failure.
 op_backends:
   silu_and_mul:
-    - reference
-    - vendor       # vendor.tsingmicro – pure PyTorch, safe on TXDA hardware
-    - flagos       # default.flagos – Triton kernel, may not be TXDA-verified
+    - reference    # reference.torch – the validated TXDA path
+    - flagos       # default.flagos – Triton kernel, not validated on TXDA
 
   # GemmaRMSNorm has no flagos registration, so it never reaches default.flagos;
   # vendor.tsingmicro drives the FlagGems _tsingmicro RMSNorm kernels with a
