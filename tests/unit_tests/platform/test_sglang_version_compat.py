@@ -166,6 +166,13 @@ def test_pin_memory_signature_accepts_device() -> None:
     assert platform.is_pin_memory_available("cpu") is False
 
 
+def test_tsingmicro_pin_memory_stays_off() -> None:
+    # torch_txda's pin_memory() does not pin; see PlatformFL.is_pin_memory_available.
+    platform = _platform("tsingmicro", "txda")
+    assert platform.is_pin_memory_available() is False
+    assert platform.is_pin_memory_available("txda") is False
+
+
 @pytest.mark.parametrize(
     ("vendor", "device_type", "torch_backend"),
     [

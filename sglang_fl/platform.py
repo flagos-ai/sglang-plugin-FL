@@ -372,7 +372,11 @@ class PlatformFL(SRTPlatform):
     def is_pin_memory_available(self, device=None) -> bool:
         if device is not None and str(device) == "cpu":
             return False
-        return self._device_type in ("cuda", "npu", "xpu", "musa", "tsingmicro")
+        # TXDA ("txda"; the old entry "tsingmicro" is the vendor name and never
+        # matched): torch_txda's pin_memory() returns an unpinned tensor
+        # (is_pinned() stays False), so SGLang's pinned non_blocking copies
+        # would gain nothing. Keep it off, as in every validated run.
+        return self._device_type in ("cuda", "npu", "xpu", "musa")
 
     def supports_fp8(self) -> bool:
         if self._device_type == "cuda":
