@@ -23,6 +23,7 @@ path) is the same one that makes the real wheel win in CI.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
 import sys
@@ -37,6 +38,28 @@ GUARD_SCRIPT = textwrap.dedent(
     """
     import sys
     from pathlib import Path
+    # Safe-path probe. PYTHONSAFEPATH lands in 3.11; on older
+    # interpreters the cwd prepend cannot be disabled, so we verify the
+    # env carries the flag and report the mechanism as unsupported --
+    # the CI contract target is 3.12, where the strict check applies.
+    import os
+    supported = sys.version_info >= (3, 11)
+    active = supported and bool(sys.path) and sys.path[0] != "" and (
+        os.getcwd() != (sys.path[0] if sys.path else "")
+    )
+    env_flag = os.environ.get("PYTHONSAFEPATH") == "1"
+    if supported and not active:
+        print("wheel mode requires safe-path to be active", file=sys.stderr)
+        sys.exit(2)
+    if not supported and not env_flag:
+        print("wheel mode requires PYTHONSAFEPATH=1 in the env", file=sys.stderr)
+        sys.exit(2)
+    print(
+        "safe-path:",
+        "active" if active else f"unsupported-on-{sys.version_info}",
+        f"(PYTHONSAFEPATH={env_flag})",
+        file=sys.stderr,
+    )
     import sglang_fl
     where = Path(sglang_fl.__file__).resolve()
     checkout = Path(sys.argv[1]).resolve()
@@ -54,10 +77,20 @@ CHILD_SCRIPT = textwrap.dedent(
     import sglang_fl, tests.helper
     parent = f"{sglang_fl.SOURCE}|{tests.helper.LABEL}"
     child = subprocess.run(
-        [sys.executable, "-c", "import sglang_fl; print(sglang_fl.SOURCE)"],
+        [sys.executable, "-c",
+         "import os, sglang_fl, sys; "
+         "print(sglang_fl.SOURCE, "
+         "'active' if (sys.version_info >= (3, 11) and sys.path "
+         "and sys.path[0] not in ('', os.getcwd())) else "
+         "('env' if os.environ.get('PYTHONSAFEPATH') == '1' else 'OFF'))"],
         capture_output=True, text=True,
     )
-    print(parent + "|" + child.stdout.strip())
+    import os
+    if sys.version_info >= (3, 11):
+        own = "active" if sys.path and sys.path[0] not in ("", os.getcwd()) else "OFF"
+    else:
+        own = "env" if os.environ.get("PYTHONSAFEPATH") == "1" else "OFF"
+    print(parent + "|" + own + "|" + child.stdout.strip())
     """
 )
 
@@ -75,14 +108,56 @@ def _write_tests_package(root: Path) -> None:
     (tests / "helper.py").write_text("LABEL = 'helper'\n", encoding="utf-8")
 
 
-def _run(script: str, *, cwd: Path, env_extra: dict[str, str], arg: str | None = None
-         ) -> subprocess.CompletedProcess:
-    env = {**os.environ, **env_extra}
-    env.pop("PYTHONSAFEPATH", None)
+def _run(
+    script: str, *, cwd: Path, env_extra: dict[str, str], arg: str | None = None
+) -> subprocess.CompletedProcess:
+    # Strip any inherited PYTHONSAFEPATH FIRST, then merge the explicit
+    # extras, so a wheel-mode run really starts with safe-path enabled
+    # (and a default-mode run really starts without it).
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONSAFEPATH"}
+    env.update(env_extra)
     cmd = [sys.executable, "-c", script]
     if arg:
         cmd.append(arg)
     return subprocess.run(cmd, cwd=str(cwd), env=env, capture_output=True, text=True)
+
+
+def _load_run_py():
+    spec = importlib.util.spec_from_file_location(
+        "run_py_module",
+        Path(__file__).resolve().parents[3] / "tests" / "run.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # dataclasses looks the module up by name
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestFilterPythonpath:
+    def test_staging_first_triton_kept_checkout_dropped(self, tmp_path):
+        run = _load_run_py()
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        checkout_sub = repo / "sub"
+        checkout_sub.mkdir()
+        existing = os.pathsep.join(
+            [
+                str(tmp_path / "repo"),
+                "/opt/triton",
+                "",
+                str(checkout_sub),
+                "/some/other/lib",
+            ]
+        )
+        kept = run._filter_pythonpath(existing, repo)
+        assert kept == ["/opt/triton", "/some/other/lib"]
+
+    def test_empty_and_whitespace_only_entries_dropped(self, tmp_path):
+        run = _load_run_py()
+        kept = run._filter_pythonpath(
+            f" {os.pathsep} {os.pathsep}/opt/triton{os.pathsep}", tmp_path
+        )
+        assert kept == ["/opt/triton"]
 
 
 def test_default_mode_loads_checkout(tmp_path: Path) -> None:
@@ -120,7 +195,10 @@ def test_wheel_mode_loads_isolated_install_and_keeps_tests_importable(
     result = _run(
         GUARD_SCRIPT,
         cwd=staging,
-        env_extra={"PYTHONPATH": f"{staging}{os.pathsep}{isolated}", "PYTHONSAFEPATH": "1"},
+        env_extra={
+            "PYTHONPATH": f"{staging}{os.pathsep}{isolated}",
+            "PYTHONSAFEPATH": "1",
+        },
         arg=str(checkout),
     )
     assert result.returncode == 0, result.stderr
@@ -146,13 +224,21 @@ def test_wheel_mode_inherits_into_grandchildren(tmp_path: Path) -> None:
     result = _run(
         CHILD_SCRIPT,
         cwd=staging,
-        env_extra={"PYTHONPATH": f"{staging}{os.pathsep}{isolated}", "PYTHONSAFEPATH": "1"},
+        env_extra={
+            "PYTHONPATH": f"{staging}{os.pathsep}{isolated}",
+            "PYTHONSAFEPATH": "1",
+        },
     )
     assert result.returncode == 0, result.stderr
-    parent, helper, grandchild = result.stdout.strip().split("|")
+    parent, helper, parent_safe, grandchild_part = result.stdout.strip().split("|")
+    grandchild, grandchild_safe = grandchild_part.split()
     assert parent == WHEEL_SENTINEL
     assert helper == "helper"
+    assert parent_safe in ("active", "env"), f"child safe-path: {parent_safe}"
     assert grandchild == WHEEL_SENTINEL
+    assert grandchild_safe in ("active", "env"), (
+        f"grandchild safe-path: {grandchild_safe}"
+    )
 
 
 def test_wheel_mode_fails_loudly_when_checkout_wins(tmp_path: Path) -> None:
@@ -170,7 +256,10 @@ def test_wheel_mode_fails_loudly_when_checkout_wins(tmp_path: Path) -> None:
     result = _run(
         GUARD_SCRIPT,
         cwd=staging,
-        env_extra={"PYTHONPATH": f"{staging}{os.pathsep}{checkout}", "PYTHONSAFEPATH": "1"},
+        env_extra={
+            "PYTHONPATH": f"{staging}{os.pathsep}{checkout}",
+            "PYTHONSAFEPATH": "1",
+        },
         arg=str(checkout),
     )
     assert result.returncode != 0, (

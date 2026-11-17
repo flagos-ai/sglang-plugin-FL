@@ -69,23 +69,71 @@ def _wheel_staging_dir() -> Path:
     return _wheel_staging
 
 
+def _filter_pythonpath(existing: str, repo_root: Path) -> list[str]:
+    """Keep PYTHONPATH entries the checkout must not shadow.
+
+    Drops empty entries and anything at or under the repository root (the
+    checkout's sglang_fl must never win over the installed wheel) while
+    preserving legitimate entries such as the Runtime's /opt/triton
+    compiler slot activated by setup.sh.
+    """
+    root = repo_root.resolve()
+    kept: list[str] = []
+    for entry in existing.split(os.pathsep):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            resolved = Path(entry).resolve()
+        except OSError:
+            resolved = Path(entry)
+        if resolved == root or root in resolved.parents:
+            continue
+        kept.append(entry)
+    return kept
+
+
 def _wheel_mode_child_env(base_env: dict[str, str]) -> dict[str, str]:
     staging = _wheel_staging_dir()
     env = dict(base_env)
-    env["PYTHONPATH"] = str(staging)
+    # Prepend the staging dir but keep every legitimate PYTHONPATH entry
+    # (notably /opt/triton from the Runtime's `compiler triton` selection):
+    # the installed plugin's CUDA view and the Triton slot contract depend
+    # on it surviving the test harness.
+    kept = _filter_pythonpath(env.get("PYTHONPATH", ""), _REPO_ROOT)
+    env["PYTHONPATH"] = os.pathsep.join([str(staging), *kept])
     env["PYTHONSAFEPATH"] = "1"
     return env
 
 
+_GUARD_SCRIPT = """
+import sys
+from importlib import metadata
+from pathlib import Path
+
+repo_root = Path(sys.argv[1]).resolve()
+module_file = Path(
+    __import__("sglang_fl", fromlist=["__file__"]).__file__
+).resolve()
+# The authoritative origin is the installed distribution's own root.
+dist_info = Path(metadata.distribution("sglang-fl")._path).resolve().parent
+installed = module_file.is_relative_to(dist_info)
+from_checkout = repo_root == module_file.parent or repo_root in module_file.parents
+if not installed or from_checkout:
+    print(
+        f"installed-wheel mode guard: sglang_fl at {module_file} is not from "
+        f"the installed distribution root {dist_info}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+print(f"sglang_fl from installed distribution at {dist_info}")
+"""
+
+
 def _guard_installed_plugin(env: dict[str, str]) -> None:
-    """Fail loudly if sglang_fl still resolves from the checkout."""
+    """Fail loudly if sglang_fl does not resolve from the installed wheel."""
     guard = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import sglang_fl, sys; sys.exit(0 if 'site-packages' in "
-            "sglang_fl.__file__ else 1)",
-        ],
+        [sys.executable, "-c", _GUARD_SCRIPT, str(_REPO_ROOT)],
         cwd=str(_wheel_staging_dir()),
         env=env,
         capture_output=True,
@@ -93,8 +141,8 @@ def _guard_installed_plugin(env: dict[str, str]) -> None:
     )
     if guard.returncode != 0:
         raise SystemExit(
-            "installed-wheel mode: sglang_fl did not resolve from "
-            f"site-packages in the test environment:\n{guard.stderr}"
+            "installed-wheel mode: the guard rejected the test environment:\n"
+            f"{guard.stderr}{guard.stdout}"
         )
 
 
