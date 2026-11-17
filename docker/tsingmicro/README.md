@@ -47,16 +47,29 @@ docker run -it --network host --ipc=host --shm-size=64g \
 
 ## 默认配置
 
-插件在 TXDA 上自动应用下列设置，启动脚本不需要再传：
+插件在 TXDA 上自动应用下列设置，不需要在启动参数里重复：
 
 - server 参数（`vendor/tsingmicro/runtime_config.py`，只在用户没有显式指定时生效）：
   `device=txda`、`dtype=bfloat16`、关闭 radix cache、`watchdog_timeout=3600`、
   视觉 attention 用 `triton_attn`、图片处理用 PIL。
+- attention backend：`txda_oot`（`sglang_fl/platform.py`）。
 - 环境变量：`PRECISION_MODE=2`（已设置的值不会被覆盖）、`SGLANG_FL_GDN_NORM` 默认开启。
+- `SGLANG_KVLEAK_FIX`（多 chunk prefill 的 KV 页泄漏修复）默认开启，设为 `0` 关闭。
 - FlagGems 黑名单：`sglang_fl/dispatch/config/tsingmicro.yaml` 的 `flagos_blacklist`，
   `SGLANG_FL_FLAGOS_BLACKLIST` 环境变量会整体覆盖它。
 
 与模型相关的参数（`context_length`、`chunked_prefill_size` 等）仍在 examples 和测试用例里。
+
+仍需在环境里设置的：
+
+- `SGLANG_PLUGINS=sglang_fl`、`USE_FLAGGEMS=1`、`SGLANG_FL_DIST_BACKEND=flagcx`（镜像 `ENV` 已设置）。
+- `TXDA_VISIBLE_DEVICES`（见上节）。
+
+`TRITON_PIPELINE=0` 是 FlagTree tsingmicro 的默认行为（只有设为 `1` 才开启流水），不需要设置。
+
+以下开关默认开启，只用于排查问题时关闭：`SGLANG_FL_DECODE_ATTN_FLAGOS`、
+`SGLANG_FL_EXTEND_ATTN_FLAGOS`（attention 走 FlagGems kernel）、`SGLANG_FL_GDN_CHUNK_TXDA`
+（GDN prefill 走 FlagGems chunk kernel）。
 
 ## 环境检查与模型验收
 

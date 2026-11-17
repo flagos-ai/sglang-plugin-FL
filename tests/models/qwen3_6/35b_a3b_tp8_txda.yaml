@@ -1,7 +1,8 @@
 # Qwen3.6-35B-A3B on TsingMicro TX8110, TP=8 (one full 8-card group).
 # The engine values match the validated examples/qwen3_6_35b_a3b_*.py txda
-# settings; device/dtype/radix-cache/attention backends come from the plugin's
-# TXDA server-arg defaults (vendor/tsingmicro/runtime_config.py).
+# settings; device/dtype/radix-cache/vision attention come from the plugin's
+# TXDA server-arg defaults (vendor/tsingmicro/runtime_config.py), the attention
+# backend (txda_oot) from sglang_fl/platform.py.
 llm:
   model: "/models/Qwen3.6-35B-A3B"
   tp_size: 8
