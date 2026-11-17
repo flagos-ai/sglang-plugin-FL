@@ -1,0 +1,68 @@
+# THROWAWAY workflow — populate the musa (S5000) runner model store.
+#
+# This PR exists ONLY to download the 4 Qwen models the musa e2e cases
+# reference onto the musa pool's model store (/data/models/Qwen; the S5000
+# runners mount the host's whole /data, see .github/configs/musa.yml). It is
+# NOT meant to be merged: ci.yml is deleted on this branch so no other
+# platform runs; close the PR once the store is populated ("下完就关").
+# Same recipe as chore/thead-model-download (PR #118) and the
+# ensure_qwen_models.sh stopgap from PR #146.
+#
+# Runs in the same container setup as the musa test jobs (image + /data
+# mount, --user root) but needs no GPU. Eight matrix slots are dispatched
+# concurrently so every online runner in the musa pool gets covered (6
+# distinct runners observed missing models on 2026-11-17; extra slots
+# re-hit covered machines and fast-skip in seconds). The script is
+# idempotent, so failed/re-run jobs resume instead of restarting the
+# ~130 GB transfer.
+name: musa model download
+
+on:
+  push:
+    branches: [chore/musa-model-download]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  download:
+    name: download (musa-${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      # The matrix value is intentionally only a unique job slot; scheduling
+      # still uses the shared label below and GitHub assigns each slot to an
+      # available runner.
+      matrix:
+        runner: [1, 2, 3, 4, 5, 6, 7, 8]
+      max-parallel: 8
+    # NOTE: the musa runners are registered WITHOUT the usual `self-hosted`
+    # label — job labels on past musa e2e runs are exactly
+    # ["ci-sglang-plugin-fl-mthreads"] (unlike e.g. ascend which carries
+    # self-hosted/Linux/ARM64/flagcicd-910c). runs-on must list only this
+    # label or no runner matches.
+    runs-on: ci-sglang-plugin-fl-mthreads
+    timeout-minutes: 300
+    container:
+      image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-musa-ci
+      options: >-
+        --user root
+        -v /data:/data
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Store inventory (before)
+        run: |
+          echo "hostname: $(hostname)"
+          df -h /data || true
+          mount | grep -E " /data(/| )" || echo "note: /data not a distinct mount in this container"
+          ls -la /data/ 2>/dev/null || echo "note: /data listing failed"
+          ls -la /data/models/ 2>/dev/null || echo "note: /data/models missing"
+          ls -la /data/models/Qwen/ 2>/dev/null || echo "note: /data/models/Qwen missing"
+
+      - name: Download models into the musa store
+        run: bash .github/scripts/musa_download_models.sh
+
+      - name: Final listing
+        run: |
+          ls -la /data/models/Qwen/
+          du -sh /data/models/Qwen/* 2>/dev/null || true
