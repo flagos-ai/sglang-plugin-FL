@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.7
-
 # NVIDIA SGLang 0.5.18 CI image.
 #
 # The build context must stage the two reviewed wheel artifacts under
