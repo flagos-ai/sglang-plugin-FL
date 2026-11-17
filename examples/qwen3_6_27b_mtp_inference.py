@@ -61,8 +61,6 @@ if _is_npu:
 
 if _is_txda:
     os.environ.setdefault("SGLANG_FL_TIMER_ENABLE", "1")
-    os.environ.setdefault("SGLANG_REQ_WAITING_TIMEOUT", "-1")
-    os.environ.setdefault("SGLANG_REQ_RUNNING_TIMEOUT", "-1")
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -226,7 +224,6 @@ def _platform_engine_kwargs() -> dict:
             "dtype": "bfloat16",
             "watchdog_timeout": 3600,
             "mm_attention_backend": "triton_attn",
-            "disable_fast_image_processor": True,
             "context_length": 8192,
             "chunked_prefill_size": 256,
         }

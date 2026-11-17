@@ -108,8 +108,6 @@ _is_nvidia = torch.cuda.is_available() and not any(
 
 if _is_txda:
     os.environ.setdefault("SGLANG_FL_TIMER_ENABLE", "1")
-    os.environ.setdefault("SGLANG_REQ_WAITING_TIMEOUT", "-1")
-    os.environ.setdefault("SGLANG_REQ_RUNNING_TIMEOUT", "-1")
 if _is_npu:
     os.environ.setdefault("SGLANG_ENABLE_OVERLAP_PLAN_STREAM", "0")
     os.environ.setdefault("HCCL_BUFFSIZE", "2400")
@@ -636,7 +634,6 @@ def run_master(args):
                 "3600",
                 "--mm-attention-backend",
                 "triton_attn",
-                "--disable-fast-image-processor",
                 "--context-length",
                 "8192",
                 "--chunked-prefill-size",
@@ -754,7 +751,6 @@ def run_worker(args):
                 "3600",
                 "--mm-attention-backend",
                 "triton_attn",
-                "--disable-fast-image-processor",
                 "--context-length",
                 "8192",
                 "--chunked-prefill-size",

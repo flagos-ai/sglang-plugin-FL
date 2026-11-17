@@ -49,8 +49,6 @@ if _is_npu:
 
 if _is_txda:
     os.environ.setdefault("SGLANG_FL_TIMER_ENABLE", "1")
-    os.environ.setdefault("SGLANG_REQ_WAITING_TIMEOUT", "-1")
-    os.environ.setdefault("SGLANG_REQ_RUNNING_TIMEOUT", "-1")
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -82,23 +80,11 @@ elif _is_npu:
         "disable_radix_cache": True,
     }
 elif _is_txda:
-    # ─── Early stub-module injection ─────────────────────────────────────────────
-    try:
-        from sglang_fl.dispatch.backends.vendor.tsingmicro.patches.platform_stubs import (
-            patch as _patch_stubs,
-        )
-
-        _patch_stubs()
-    except Exception:
-        pass
+    # device, dtype, radix cache, watchdog, vision attention and image
+    # processor come from the plugin's TXDA defaults
+    # (sglang_fl/dispatch/backends/vendor/tsingmicro/runtime_config.py).
     _extra_engine_kwargs = {
-        "device": "txda",
-        "dtype": "bfloat16",
         "trust_remote_code": True,
-        "disable_radix_cache": True,
-        "watchdog_timeout": 3600,
-        "mm_attention_backend": "triton_attn",
-        "disable_fast_image_processor": True,
         "context_length": 8192,
         "chunked_prefill_size": 512,
     }
