@@ -66,6 +66,22 @@ def test_import_flagcx_wrapper_rejects_invalid_path(monkeypatch) -> None:
         _import_flagcx_wrapper()
 
 
+def test_legacy_wrapper_keeps_the_original_tuple(monkeypatch) -> None:
+    from sglang_fl.distributed.device_communicators import flagcx as flagcx_mod
+
+    api = _fake_wrapper_api()
+    monkeypatch.setattr(flagcx_mod, "_import_source_flagcx_api", lambda: api)
+
+    assert flagcx_mod._import_flagcx_wrapper() == (
+        api.FLAGCXLibrary,
+        api.buffer_type,
+        api.flagcxComm_t,
+        api.flagcxDataTypeEnum,
+        api.flagcxRedOpTypeEnum,
+        api.flagcxUniqueId,
+    )
+
+
 @pytest.mark.parametrize("use_wheel", [False, True])
 def test_communicator_uses_selected_api_and_library(
     monkeypatch, tmp_path: Path, use_wheel: bool
@@ -82,7 +98,7 @@ def test_communicator_uses_selected_api_and_library(
         expected_library = tmp_path / "wheel" / "flagcx" / "lib" / "libflagcx.so"
     else:
         monkeypatch.setenv("FLAGCX_PATH", str(tmp_path / "source"))
-        monkeypatch.setattr(flagcx_mod, "_import_flagcx_wrapper", lambda: api)
+        monkeypatch.setattr(flagcx_mod, "_import_source_flagcx_api", lambda: api)
         expected_library = tmp_path / "source" / "build" / "lib" / "libflagcx.so"
     monkeypatch.setattr(flagcx_mod.dist, "get_rank", Mock(return_value=0))
     monkeypatch.setattr(flagcx_mod.dist, "get_world_size", Mock(return_value=1))

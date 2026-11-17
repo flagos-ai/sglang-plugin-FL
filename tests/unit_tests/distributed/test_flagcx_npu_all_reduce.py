@@ -346,7 +346,7 @@ def test_constructor_creates_npu_stream_before_eager_warmup(
     monkeypatch.setenv("FLAGCX_PATH", str(tmp_path))
     monkeypatch.setattr(
         flagcx_module,
-        "_import_flagcx_wrapper",
+        "_import_source_flagcx_api",
         lambda: SimpleNamespace(
             FLAGCXLibrary=lambda path: runtime.library,
             buffer_type=lambda ptr=None: ("buffer", ptr),
