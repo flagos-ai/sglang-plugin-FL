@@ -360,18 +360,6 @@ def _make_dispatch_hook(config: dict = None):
 # ─── FlagGems setup ───────────────────────────────────────────────────────────
 
 
-def _maybe_prepare_sunrise_before_flaggems() -> None:
-    """Install Sunrise import-time compatibility before FlagGems registration."""
-    try:
-        import torch
-
-        if not (hasattr(torch, "ptpu") and bool(torch.ptpu.is_available())):
-            return
-    except Exception:
-        return
-    import sglang_fl.dispatch.backends.vendor.sunrise  # noqa: F401
-
-
 def _setup_flaggems(config: dict = None):
     use_fg = _parse_bool(os.environ.get("USE_FLAGGEMS", "1"), default=True)
 
@@ -798,9 +786,6 @@ def load_plugin():
 
     # 0. Build unified config (YAML + env vars)
     config = _build_config()
-
-    # 0.5 Sunrise/PTPU: stub NVIDIA-only sgl_kernel before SGLang imports it.
-    _maybe_prepare_sunrise_before_flaggems()
 
     # 1. FlagGems ATen ops
     _setup_flaggems(config)
