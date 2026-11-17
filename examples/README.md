@@ -99,7 +99,8 @@ tmux capture-pane -t ascend-multinode-examples -p
 ```
 
 The wrapper fixes the topology at `tp_size=4`, `pp_size=2`, `nnodes=2` and
-fails on an unsupported exit. The worker only normalizes the narrowly
+uses `--mem-fraction-static 0.70` on Ascend to leave memory for concurrent
+vision requests. The worker only normalizes the narrowly
 identified SGLang 0.5.18 clean-shutdown path; arbitrary exit code 3 or an
 incomplete scheduler shutdown still fails.
 
