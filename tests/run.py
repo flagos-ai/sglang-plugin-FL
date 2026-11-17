@@ -24,6 +24,7 @@ import itertools
 import json
 import os
 import subprocess
+import tempfile
 import sys
 import threading
 import time
@@ -40,6 +41,61 @@ from tests.utils.device_scheduler import DeviceScheduler
 from tests.utils.device_utils import get_device_count, get_visible_device_env_var
 from tests.utils.model_config import ModelConfig
 from tests.utils.platform_config import PlatformConfig
+
+# ---------------------------------------------------------------------------
+# Installed-wheel test mode (SGLANG_FL_TEST_SOURCE=wheel)
+#
+# CI runs inside a checkout of this repository, and the naive invocation
+# (cwd=repo root + `python -m pytest`, which prepends the CWD) puts the
+# checkout's sglang_fl/ ahead of the wheel in sys.path. In wheel mode the
+# pytest subprocess (and everything it spawns, including SGLang engine
+# workers) runs from a staging directory whose only payload is a `tests`
+# symlink, with PYTHONSAFEPATH disabling the CWD/script-dir prepends and
+# pytest's importlib mode disabling conftest-dir insertion. `tests.*`
+# helpers stay importable through the symlink; sglang_fl can therefore
+# only resolve from site-packages. Default (checkout) mode is unchanged.
+# ---------------------------------------------------------------------------
+
+WHEEL_SOURCE_MODE = os.environ.get("SGLANG_FL_TEST_SOURCE", "checkout") == "wheel"
+_wheel_staging: Path | None = None
+
+
+def _wheel_staging_dir() -> Path:
+    global _wheel_staging
+    if _wheel_staging is None:
+        staging = Path(tempfile.mkdtemp(prefix="fl-wheel-mode."))
+        (staging / "tests").symlink_to(_TESTS_DIR.resolve())
+        _wheel_staging = staging
+    return _wheel_staging
+
+
+def _wheel_mode_child_env(base_env: dict[str, str]) -> dict[str, str]:
+    staging = _wheel_staging_dir()
+    env = dict(base_env)
+    env["PYTHONPATH"] = str(staging)
+    env["PYTHONSAFEPATH"] = "1"
+    return env
+
+
+def _guard_installed_plugin(env: dict[str, str]) -> None:
+    """Fail loudly if sglang_fl still resolves from the checkout."""
+    guard = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sglang_fl, sys; sys.exit(0 if 'site-packages' in "
+            "sglang_fl.__file__ else 1)",
+        ],
+        cwd=str(_wheel_staging_dir()),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if guard.returncode != 0:
+        raise SystemExit(
+            "installed-wheel mode: sglang_fl did not resolve from "
+            f"site-packages in the test environment:\n{guard.stderr}"
+        )
 
 
 def load_structured_config(path: Path) -> dict[str, Any]:
@@ -524,9 +580,15 @@ class TestRunner:
                 parallel path already emits a timestamped START line and
                 replays captured output with a per-case prefix).
         """
-        cmd = [sys.executable, "-m", "pytest", case.pytest_path]
+        pytest_path = case.pytest_path
+        if WHEEL_SOURCE_MODE:
+            # Absolute paths: the child no longer runs from the repo root.
+            pytest_path = str((_REPO_ROOT / case.pytest_path).resolve())
+        cmd = [sys.executable, "-m", "pytest", pytest_path]
         cmd.extend(case.extra_args)
         cmd.extend(self.extra_pytest_args)
+        if WHEEL_SOURCE_MODE and "--import-mode=importlib" not in cmd:
+            cmd.append("--import-mode=importlib")
 
         if not quiet:
             print(f"[run] --- {case.name} ---")
@@ -546,7 +608,12 @@ class TestRunner:
         if extra_env_override:
             env.update(extra_env_override)
 
-        kwargs: dict[str, Any] = {"cwd": str(_REPO_ROOT), "env": env}
+        if WHEEL_SOURCE_MODE:
+            env = _wheel_mode_child_env(env)
+            _guard_installed_plugin(env)
+            kwargs: dict[str, Any] = {"cwd": str(_wheel_staging_dir()), "env": env}
+        else:
+            kwargs: dict[str, Any] = {"cwd": str(_REPO_ROOT), "env": env}
         if quiet:
             kwargs.update(capture_output=True, text=True)
         result = subprocess.run(cmd, **kwargs)
