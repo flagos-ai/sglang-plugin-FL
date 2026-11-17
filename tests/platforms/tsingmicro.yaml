@@ -75,10 +75,8 @@ tx8110:
     # Dummy-weight smoke of the SGLang benchmark entrypoints. No small Qwen3
     # checkpoint is staged on the TXDA hosts, so reuse the 27B case (its config
     # only; weights are not loaded with load_format=dummy).
-    # latency (sglang.bench_one_batch) is skipped for now: its dummy-weight init
-    # calls torch.Generator(device=<txda param>), which torch_txda rejects
-    # ("Expected a 'cpu' device type for generator but found 'txda'").
-    # TODO: add latency to nightly once dummy weight init is fixed for txda.
+    # latency (sglang.bench_one_batch) relies on the txda dummy-weight patch
+    # (vendor/tsingmicro/patches/dummy_weights.py).
     benchmark:
       pr: &txda_benchmark
         enabled: true
@@ -89,4 +87,4 @@ tx8110:
         require_cases: true
       nightly:
         <<: *txda_benchmark
-        types: [throughput, serve]
+        types: [throughput, latency, serve]

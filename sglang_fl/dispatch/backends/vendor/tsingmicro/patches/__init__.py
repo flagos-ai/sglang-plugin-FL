@@ -28,6 +28,8 @@ Patches applied:
                     (SGLang 0.5.18 Triton embedding: wrong rows for out-of-shard ids)
   triton_load_watch – Disable SGLang 0.5.18 CUDA-only Triton kernel-load
                     diagnostics (crash on txda device properties)
+  dummy_weights   – load_format=dummy: draw txda dummy weights on the CPU
+                    (torch_txda uniform_ rejects a txda generator)
   gdn_norm        – Pin GatedDeltaNet's gated RMSNorm to
                     fla.layernorm_gated.RMSNorm (SGLANG_FL_GDN_NORM, default 1)
 
@@ -96,6 +98,7 @@ def apply_all_txda_patches() -> None:
 
     from sglang_fl.dispatch.backends.vendor.tsingmicro.patches import (
         dist_init,
+        dummy_weights,
         fused_moe,
         gdn_norm,
         scheduler_pp_mixin,
@@ -110,6 +113,7 @@ def apply_all_txda_patches() -> None:
     speculative_tree.patch()  # EAGLE/MTP tree build + greedy verify -> SGLang Triton kernels
     vocab_embedding.patch()  # 0.5.18 Triton embedding returns non-zero rows for out-of-shard ids on txda
     triton_load_watch.patch()  # 0.5.18 CUDA-only kernel-load hook crashes on txda
+    dummy_weights.patch()  # load_format=dummy: torch_txda uniform_ rejects a txda generator
     gdn_norm.patch()  # pin GDN gated norm to fla.layernorm_gated.RMSNorm
 
     _log.applied("all txda monkey patches applied")
