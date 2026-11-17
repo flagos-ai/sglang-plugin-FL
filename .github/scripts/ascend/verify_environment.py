@@ -99,7 +99,6 @@ REQUIRED_NPU_KERNEL_MODULES = (
     "sgl_kernel_npu.sample.verify_tree_greedy",
 )
 
-CANN_VERSION = "8.5.0"
 SGLANG_SOURCE_ROOT = Path("/opt/sglang-0.5.18/python/sglang")
 STALE_SGLANG_ROOT = Path("/sgl-workspace/sglang")
 SOLVE_TRIL_RELATIVE_PATH = Path("sgl_kernel_npu/fla/solve_tril.py")
@@ -212,9 +211,9 @@ def _read_cann_version() -> tuple[Path, str]:
     )
 
 
-def _require_cann(expected: str) -> None:
+def _check_cann_version(expected: str | None) -> None:
     path, actual = _read_cann_version()
-    if not actual.startswith(expected):
+    if expected and not re.match(rf"{re.escape(expected)}(?![0-9])", actual):
         raise RuntimeError(f"CANN must be {expected}, found {actual} in {path}")
     print(f"[ascend-env] CANN={actual} ({path})")
 
@@ -665,7 +664,10 @@ def verify(
     require_npu: bool = False,
     min_npus: int = 1,
     plugin_root: str | None = None,
+    expected_cann_version: str | None = None,
 ) -> None:
+    # This image marker selects its wheel layout and ABI checks. The pinned
+    # callers supply the expected toolkit release separately.
     cann921 = os.environ.get("SGLANG_FL_ASCEND_CANN921") == "1"
     python_minor = 12 if cann921 else 11
     if sys.version_info[:2] != (3, python_minor):
@@ -684,7 +686,7 @@ def verify(
             _require_distribution(name, expected)
 
     _require_source_markers(cann921=cann921)
-    _require_cann("9.2.1" if cann921 else CANN_VERSION)
+    _check_cann_version(expected_cann_version)
     if cann921:
         _require_flagtree()
     _require_npu_kernel_surface()
@@ -726,6 +728,11 @@ def main() -> int:
         default=None,
         help="require sglang_fl to import from this checkout root",
     )
+    parser.add_argument(
+        "--expected-cann-version",
+        default=os.environ.get("SGLANG_FL_ASCEND_EXPECTED_CANN"),
+        help="require this toolkit release (default: SGLANG_FL_ASCEND_EXPECTED_CANN)",
+    )
     args = parser.parse_args()
     if args.min_npus < 1:
         parser.error("--min-npus must be at least 1")
@@ -734,6 +741,7 @@ def main() -> int:
         require_npu=args.require_npu,
         min_npus=args.min_npus,
         plugin_root=args.plugin_root,
+        expected_cann_version=args.expected_cann_version,
     )
     print("[ascend-env] environment verification passed")
     return 0

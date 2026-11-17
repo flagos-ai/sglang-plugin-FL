@@ -149,7 +149,7 @@ RUN python3 -m pip uninstall -y sglang-fl >/dev/null 2>&1 || true && \
 COPY .github/scripts/ascend/verify_environment.py /usr/local/bin/verify-sglang-fl-ascend
 RUN chmod 0755 /usr/local/bin/verify-sglang-fl-ascend && \
     TORCH_DEVICE_BACKEND_AUTOLOAD=0 \
-        python3 /usr/local/bin/verify-sglang-fl-ascend
+        python3 /usr/local/bin/verify-sglang-fl-ascend --expected-cann-version 8.5.0
 
 LABEL ai.flagos.sglang.version="${SGLANG_VERSION}" \
       ai.flagos.sglang.revision="${SGLANG_COMMIT}" \
@@ -177,7 +177,7 @@ RUN python3 -m pip install --no-cache-dir \
         pyyaml \
         ruff && \
     TORCH_DEVICE_BACKEND_AUTOLOAD=0 \
-        python3 /usr/local/bin/verify-sglang-fl-ascend --require-ci
+        python3 /usr/local/bin/verify-sglang-fl-ascend --require-ci --expected-cann-version 8.5.0
 
 ENV HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1

@@ -486,6 +486,7 @@ def _setup_flaggems(config: dict = None):
         return
 
     import flag_gems
+    from sglang_fl.dispatch.config.utils import get_flagos_runtime_blacklist
 
     # Whitelist/blacklist: env > YAML config
     if config is not None:
@@ -510,25 +511,21 @@ def _setup_flaggems(config: dict = None):
     if blacklist_str:
         blacklist = _parse_list(blacklist_str)
 
-    if (
-        getattr(flag_gems, "vendor_name", None) == "ascend"
-        and getattr(flag_gems, "__version__", None) == "5.4.0"
-    ):
-        from sglang_fl.dispatch.backends.vendor.ascend.runtime import (
-            uses_flagtree_cann921,
-        )
-
-        if uses_flagtree_cann921():
-            # FlagTree cannot lower gelu_tanh's mixed-type pow. FlagGems
-            # lift_fresh kernels launch a zero grid on empty tensors (#6802).
-            unsupported = ("gelu", "lift_fresh", "lift_fresh_copy")
-            if whitelist:
-                whitelist = [op for op in whitelist if op not in unsupported]
-                if not whitelist:
-                    logger.info("FlagGems: all requested ATen ops require torch_npu")
-                    return
-            else:
-                blacklist = list(dict.fromkeys((*(blacklist or ()), *unsupported)))
+    runtime_blacklist = get_flagos_runtime_blacklist(
+        getattr(flag_gems, "vendor_name", None),
+        getattr(flag_gems, "__version__", None),
+    )
+    if runtime_blacklist:
+        # Runtime exclusions also apply to explicit operator selections.
+        if whitelist:
+            whitelist = [op for op in whitelist if op not in runtime_blacklist]
+            if not whitelist:
+                logger.info(
+                    "FlagGems: runtime blacklist excludes all requested ATen ops"
+                )
+                return
+        else:
+            blacklist = list(dict.fromkeys([*(blacklist or []), *runtime_blacklist]))
 
     fg_kwargs = dict(
         record=record,

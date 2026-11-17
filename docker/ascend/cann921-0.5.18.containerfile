@@ -117,7 +117,8 @@ ENV SGLANG_FL_ASCEND_CANN921=1 \
 
 COPY .github/scripts/ascend/verify_environment.py /usr/local/bin/verify-sglang-fl-ascend
 RUN chmod 0755 /usr/local/bin/verify-sglang-fl-ascend && \
-    TORCH_DEVICE_BACKEND_AUTOLOAD=0 python3 /usr/local/bin/verify-sglang-fl-ascend
+    TORCH_DEVICE_BACKEND_AUTOLOAD=0 \
+        python3 /usr/local/bin/verify-sglang-fl-ascend --expected-cann-version 9.2.1
 
 LABEL ai.flagos.sglang.version="0.5.18" \
       ai.flagos.sglang.revision="$SGLANG_COMMIT" \
@@ -141,7 +142,8 @@ FROM runtime AS ci
 
 RUN python3 -m pip install --no-cache-dir pytest==9.1.1 pytest-timeout==2.4.0 \
         pytest-cov pytest-json-report pytest-metadata pyyaml ruff && \
-    TORCH_DEVICE_BACKEND_AUTOLOAD=0 python3 /usr/local/bin/verify-sglang-fl-ascend --require-ci
+    TORCH_DEVICE_BACKEND_AUTOLOAD=0 \
+        python3 /usr/local/bin/verify-sglang-fl-ascend --require-ci --expected-cann-version 9.2.1
 
 ENV HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1
