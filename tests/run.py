@@ -115,18 +115,21 @@ repo_root = Path(sys.argv[1]).resolve()
 module_file = Path(
     __import__("sglang_fl", fromlist=["__file__"]).__file__
 ).resolve()
-# The authoritative origin is the installed distribution's own root.
-dist_info = Path(metadata.distribution("sglang-fl")._path).resolve().parent
-installed = module_file.is_relative_to(dist_info)
+# The authoritative origin is the installed distribution's own root,
+# resolved through the public locate_file API (no private fields, no
+# site-packages string matching).
+dist = metadata.distribution("sglang-fl")
+distribution_root = Path(dist.locate_file("")).resolve()
+installed = module_file.is_relative_to(distribution_root)
 from_checkout = repo_root == module_file.parent or repo_root in module_file.parents
 if not installed or from_checkout:
     print(
         f"installed-wheel mode guard: sglang_fl at {module_file} is not from "
-        f"the installed distribution root {dist_info}",
+        f"the installed distribution root {distribution_root}",
         file=sys.stderr,
     )
     sys.exit(1)
-print(f"sglang_fl from installed distribution at {dist_info}")
+print(f"sglang_fl from installed distribution at {distribution_root}")
 """
 
 

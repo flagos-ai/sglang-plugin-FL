@@ -13,6 +13,9 @@ through exactly the resolution rules tests/run.py applies:
   pointing at it, PYTHONSAFEPATH=1) loads the package from the isolated
   install location while ``tests.*`` helpers stay importable;
 * grandchildren inherit the installed-wheel resolution;
+* child and grandchild safe-path states are read from the real
+  ``sys.flags.safe_path``; interpreters without the flag (Python < 3.11)
+  only get a clearly-labeled PYTHONSAFEPATH propagation check;
 * if the checkout copy still wins in installed-wheel mode, the guard
   script must exit non-zero instead of silently continuing.
 
@@ -23,75 +26,125 @@ path) is the same one that makes the real wheel win in CI.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import os
 import subprocess
 import sys
 import tempfile
 import textwrap
+import types
 from pathlib import Path
+
+import pytest
 
 CHECKOUT_SENTINEL = "checkout"
 WHEEL_SENTINEL = "wheel"
 
-GUARD_SCRIPT = textwrap.dedent(
+
+def classify_safe_path(safe_path_flag, env_value):
+    """Classify safe-path from the real interpreter flag.
+
+    ``sys.flags.safe_path`` (Python >= 3.11) is authoritative: ``True``
+    passes, ``False`` fails. Inferring from cwd versus ``sys.path[0]``
+    misjudges safe-path as disabled when PYTHONPATH legitimately puts the
+    staging dir (== cwd) first -- the NVIDIA Runtime's 3.12 probe showed
+    ``safe_path=True`` with ``cwd == sys.path[0]``. Older interpreters
+    have no flag to read; there we only verify that ``PYTHONSAFEPATH``
+    propagated and label the report as compatibility-only, never
+    claiming safe-path is actually enabled.
+
+    Returns ``(state, ok)``.
     """
-    import sys
-    from pathlib import Path
-    # Safe-path probe. PYTHONSAFEPATH lands in 3.11; on older
-    # interpreters the cwd prepend cannot be disabled, so we verify the
-    # env carries the flag and report the mechanism as unsupported --
-    # the CI contract target is 3.12, where the strict check applies.
-    import os
-    supported = sys.version_info >= (3, 11)
-    active = supported and bool(sys.path) and sys.path[0] != "" and (
-        os.getcwd() != (sys.path[0] if sys.path else "")
+    if safe_path_flag is not None:
+        # The flag is authoritative regardless of the env; bool() keeps
+        # this correct for int-flagged builds too (0/1 instead of
+        # True/False).
+        if safe_path_flag:
+            return ("flag=true", True)
+        return ("flag=false", False)
+    if env_value == "1":
+        return ("flag unsupported; env propagated", True)
+    return ("flag unsupported; env missing", False)
+
+
+# Standalone copies of classify_safe_path for the subprocess probes below
+# (they run under sys.executable with the wheel-mode env and cannot import
+# this test module). TestSafePathProbeAgreement pins them to the classifier.
+_SAFE_PATH_PROBE = """
+def _safe_path_state():
+    flag = getattr(sys.flags, "safe_path", None)
+    if flag is not None:
+        if flag:
+            return ("flag=true", True)
+        return ("flag=false", False)
+    if os.environ.get("PYTHONSAFEPATH") == "1":
+        return ("flag unsupported; env propagated", True)
+    return ("flag unsupported; env missing", False)
+"""
+
+# The grandchild runs as a bare `python -c` one-liner: the same mapping
+# compressed into a conditional expression. The import header is separate
+# so the agreement test can execute just the classifier against fakes.
+_GRANDCHILD_CLASSIFIER = (
+    "flag = getattr(sys.flags, 'safe_path', None); "
+    "env = os.environ.get('PYTHONSAFEPATH'); "
+    "print(sglang_fl.SOURCE, "
+    "('flag=true' if flag else 'flag=false') if flag is not None else "
+    "('flag unsupported; env propagated' if env == '1' "
+    "else 'flag unsupported; env missing'))"
+)
+_GRANDCHILD_CMD = "import os, sglang_fl, sys; " + _GRANDCHILD_CLASSIFIER
+
+GUARD_SCRIPT = (
+    "import os\n"
+    "import sys\n"
+    "from pathlib import Path\n"
+    + _SAFE_PATH_PROBE
+    + textwrap.dedent(
+        """
+        state, ok = _safe_path_state()
+        if not ok:
+            print(f"wheel mode requires safe-path, got: {state}", file=sys.stderr)
+            sys.exit(2)
+        print(
+            f"safe-path: {state} "
+            f"(PYTHONSAFEPATH={os.environ.get('PYTHONSAFEPATH')})",
+            file=sys.stderr,
+        )
+        import sglang_fl
+        where = Path(sglang_fl.__file__).resolve()
+        checkout = Path(sys.argv[1]).resolve()
+        if checkout in where.parents:
+            print(f"FORBIDDEN: sglang_fl resolved from the checkout: {where}", file=sys.stderr)
+            sys.exit(1)
+        import tests.helper
+        print(sglang_fl.SOURCE, tests.helper.LABEL, where)
+        """
     )
-    env_flag = os.environ.get("PYTHONSAFEPATH") == "1"
-    if supported and not active:
-        print("wheel mode requires safe-path to be active", file=sys.stderr)
-        sys.exit(2)
-    if not supported and not env_flag:
-        print("wheel mode requires PYTHONSAFEPATH=1 in the env", file=sys.stderr)
-        sys.exit(2)
-    print(
-        "safe-path:",
-        "active" if active else f"unsupported-on-{sys.version_info}",
-        f"(PYTHONSAFEPATH={env_flag})",
-        file=sys.stderr,
+)
+
+_CHILD_BODY = textwrap.dedent(
+    """
+    import sglang_fl, tests.helper
+    parent = f"{sglang_fl.SOURCE}|{tests.helper.LABEL}"
+    state, _ok = _safe_path_state()
+    grandchild = subprocess.run(
+        [sys.executable, "-c", GRANDCHILD_CMD],
+        capture_output=True, text=True,
     )
-    import sglang_fl
-    where = Path(sglang_fl.__file__).resolve()
-    checkout = Path(sys.argv[1]).resolve()
-    if checkout in where.parents:
-        print(f"FORBIDDEN: sglang_fl resolved from the checkout: {where}", file=sys.stderr)
-        sys.exit(1)
-    import tests.helper
-    print(sglang_fl.SOURCE, tests.helper.LABEL, where)
+    print(parent + "|" + state + "|" + grandchild.stdout.strip())
     """
 )
 
-CHILD_SCRIPT = textwrap.dedent(
-    """
-    import subprocess, sys
-    import sglang_fl, tests.helper
-    parent = f"{sglang_fl.SOURCE}|{tests.helper.LABEL}"
-    child = subprocess.run(
-        [sys.executable, "-c",
-         "import os, sglang_fl, sys; "
-         "print(sglang_fl.SOURCE, "
-         "'active' if (sys.version_info >= (3, 11) and sys.path "
-         "and sys.path[0] not in ('', os.getcwd())) else "
-         "('env' if os.environ.get('PYTHONSAFEPATH') == '1' else 'OFF'))"],
-        capture_output=True, text=True,
-    )
-    import os
-    if sys.version_info >= (3, 11):
-        own = "active" if sys.path and sys.path[0] not in ("", os.getcwd()) else "OFF"
-    else:
-        own = "env" if os.environ.get("PYTHONSAFEPATH") == "1" else "OFF"
-    print(parent + "|" + own + "|" + child.stdout.strip())
-    """
+CHILD_SCRIPT = (
+    "import os\n"
+    "import subprocess\n"
+    "import sys\n"
+    + _SAFE_PATH_PROBE
+    + f"GRANDCHILD_CMD = {_GRANDCHILD_CMD!r}\n"
+    + _CHILD_BODY
 )
 
 
@@ -160,6 +213,81 @@ class TestFilterPythonpath:
         assert kept == ["/opt/triton"]
 
 
+class TestClassifySafePath:
+    def test_flag_true_passes(self):
+        # Python 3.12 with PYTHONSAFEPATH (or -P): the real flag is True.
+        assert classify_safe_path(True, "1") == ("flag=true", True)
+        # `python -P` enables the flag without the env var.
+        assert classify_safe_path(True, None) == ("flag=true", True)
+
+    def test_flag_false_fails(self):
+        # Python 3.12 without safe-path: the real flag is False and the
+        # check must fail regardless of what the env claims.
+        assert classify_safe_path(False, None) == ("flag=false", False)
+        assert classify_safe_path(False, "1") == ("flag=false", False)
+
+    def test_old_python_env_propagated_is_compatibility_only(self):
+        state, ok = classify_safe_path(None, "1")
+        assert ok
+        # The report must not claim safe-path is enabled on an
+        # interpreter that has no flag to read.
+        assert state == "flag unsupported; env propagated"
+
+    def test_old_python_env_missing_fails(self):
+        assert classify_safe_path(None, None) == (
+            "flag unsupported; env missing",
+            False,
+        )
+        assert classify_safe_path(None, "") == ("flag unsupported; env missing", False)
+
+
+class TestSafePathProbeAgreement:
+    """The standalone subprocess snippets must mirror classify_safe_path."""
+
+    @pytest.mark.parametrize(
+        ("flag", "env"),
+        [
+            (True, "1"),
+            (True, None),
+            (False, None),
+            (False, "1"),
+            ("missing", "1"),
+            ("missing", None),
+            ("missing", ""),
+        ],
+    )
+    def test_probe_and_grandchild_match_classifier(self, flag, env):
+        fake_os = types.SimpleNamespace(
+            environ={} if env is None else {"PYTHONSAFEPATH": env}
+        )
+        flags = (
+            types.SimpleNamespace()
+            if flag == "missing"
+            else (types.SimpleNamespace(safe_path=flag))
+        )
+        fake_sys = types.SimpleNamespace(flags=flags)
+        real_flag = None if flag == "missing" else flag
+
+        namespace: dict = {"os": fake_os, "sys": fake_sys}
+        exec(_SAFE_PATH_PROBE, namespace)  # noqa: S102 - our own constant
+        assert namespace["_safe_path_state"]() == classify_safe_path(real_flag, env)
+
+        # The classifier tail of the grandchild one-liner (without its
+        # import header, which would rebind these fakes to the real
+        # modules) prints "<SOURCE> <state>"; print() resolves sys.stdout
+        # on the real module, so redirect it.
+        namespace = {
+            "os": fake_os,
+            "sys": fake_sys,
+            "sglang_fl": types.SimpleNamespace(SOURCE=WHEEL_SENTINEL),
+        }
+        with contextlib.redirect_stdout(io.StringIO()) as captured:
+            exec(_GRANDCHILD_CLASSIFIER, namespace)  # noqa: S102 - own constant
+        assert captured.getvalue().strip() == (
+            f"{WHEEL_SENTINEL} {classify_safe_path(real_flag, env)[0]}"
+        )
+
+
 def test_default_mode_loads_checkout(tmp_path: Path) -> None:
     checkout = tmp_path / "checkout"
     _write_package(checkout, CHECKOUT_SENTINEL)
@@ -209,6 +337,12 @@ def test_wheel_mode_loads_isolated_install_and_keeps_tests_importable(
     resolved = Path(resolved_path)
     assert resolved.is_relative_to(isolated), resolved
     assert not resolved.is_relative_to(checkout), resolved
+    # The guard reports the real interpreter flag (or, on interpreters
+    # without one, the labeled env-propagation fallback) -- never a
+    # cwd/sys.path[0] guess.
+    expected_state, ok = classify_safe_path(getattr(sys.flags, "safe_path", None), "1")
+    assert ok
+    assert f"safe-path: {expected_state} (PYTHONSAFEPATH=1)" in result.stderr
 
 
 def test_wheel_mode_inherits_into_grandchildren(tmp_path: Path) -> None:
@@ -230,14 +364,21 @@ def test_wheel_mode_inherits_into_grandchildren(tmp_path: Path) -> None:
         },
     )
     assert result.returncode == 0, result.stderr
-    parent, helper, parent_safe, grandchild_part = result.stdout.strip().split("|")
-    grandchild, grandchild_safe = grandchild_part.split()
+    # The "|" delimiters are unambiguous even though the state tokens
+    # themselves contain spaces ("flag unsupported; env propagated").
+    parent, helper, child_state, grandchild_line = result.stdout.strip().split("|")
     assert parent == WHEEL_SENTINEL
     assert helper == "helper"
-    assert parent_safe in ("active", "env"), f"child safe-path: {parent_safe}"
-    assert grandchild == WHEEL_SENTINEL
-    assert grandchild_safe in ("active", "env"), (
-        f"grandchild safe-path: {grandchild_safe}"
+    # Both generations must report the real interpreter flag. The child
+    # runs the same sys.executable as this test process, so the expected
+    # state is exactly what classify_safe_path derives from our own
+    # flags plus the propagated env: strict "flag=true" on >= 3.11, the
+    # labeled env fallback on older interpreters.
+    expected_state, ok = classify_safe_path(getattr(sys.flags, "safe_path", None), "1")
+    assert ok
+    assert child_state == expected_state, f"child safe-path: {child_state}"
+    assert grandchild_line == f"{WHEEL_SENTINEL} {expected_state}", (
+        f"grandchild safe-path: {grandchild_line}"
     )
 
 
@@ -266,3 +407,30 @@ def test_wheel_mode_fails_loudly_when_checkout_wins(tmp_path: Path) -> None:
         "guard silently accepted a checkout resolution:\n" + result.stdout
     )
     assert "FORBIDDEN" in result.stderr
+
+
+def test_wheel_mode_guard_rejects_missing_safe_path(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    _write_package(checkout, CHECKOUT_SENTINEL)
+    _write_tests_package(checkout)
+    isolated = tmp_path / "site"
+    _write_package(isolated, WHEEL_SENTINEL)
+
+    staging = Path(tempfile.mkdtemp(prefix="wheel-mode-test."))
+    (staging / "tests").symlink_to((checkout / "tests").resolve())
+
+    # Wheel-mode env without PYTHONSAFEPATH: on >= 3.11 the real
+    # sys.flags.safe_path reads False ("flag=false"); on older
+    # interpreters the env is the only carrier ("flag unsupported; env
+    # missing"). Either way the guard must refuse before any import.
+    result = _run(
+        GUARD_SCRIPT,
+        cwd=staging,
+        env_extra={"PYTHONPATH": f"{staging}{os.pathsep}{isolated}"},
+        arg=str(checkout),
+    )
+    expected_state, ok = classify_safe_path(getattr(sys.flags, "safe_path", None), None)
+    assert not ok
+    assert result.returncode == 2, result.stderr
+    assert f"wheel mode requires safe-path, got: {expected_state}" in result.stderr
+    assert result.stdout == ""  # refused before importing/reporting anything

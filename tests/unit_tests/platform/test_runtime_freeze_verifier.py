@@ -102,22 +102,30 @@ class TestDiffRuntime:
 class TestPipCheckViolations:
     def test_clean_run_has_no_violations(self, verifier):
         assert (
-            verifier.pip_check_violations(0, "No broken requirements found.\n", set())
+            verifier.pip_check_violations(
+                0, "No broken requirements found.\n", "", set()
+            )
             == set()
         )
 
     def test_baseline_only_problems_pass(self, verifier):
         baseline = {"torch 2.13.0+cu130 requires triton, which is not installed."}
         stdout = "torch 2.13.0+cu130 requires triton, which is not installed.\n"
-        assert verifier.pip_check_violations(1, stdout, baseline) == set()
+        assert verifier.pip_check_violations(1, stdout, "", baseline) == set()
 
     def test_new_problem_fails(self, verifier):
         baseline = {"old problem"}
         stdout = "old problem\nbrand new problem\n"
-        assert verifier.pip_check_violations(1, stdout, baseline) == {
+        assert verifier.pip_check_violations(1, stdout, "", baseline) == {
             "brand new problem"
         }
 
-    def test_crashing_pip_check_raises(self, verifier):
-        with pytest.raises(RuntimeError, match="returncode=2"):
-            verifier.pip_check_violations(2, "anything", set())
+    def test_crashing_pip_check_reports_stdout_and_stderr(self, verifier):
+        with pytest.raises(RuntimeError) as excinfo:
+            verifier.pip_check_violations(
+                2, "partial stdout", "pip internals exploded", set()
+            )
+        message = str(excinfo.value)
+        assert "returncode=2" in message
+        assert "partial stdout" in message
+        assert "pip internals exploded" in message

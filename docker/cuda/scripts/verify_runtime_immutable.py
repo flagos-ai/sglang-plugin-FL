@@ -18,7 +18,8 @@ Checks:
   2. site files          -- every runtime site-packages file keeps its SHA256
   3. pip check           -- returncode-aware comparison against the runtime
      baseline; the success notice is never treated as a violation and a
-     crashing pip check fails loudly (no waiver list)
+     crashing pip check fails loudly with returncode, stdout, and stderr
+     in the report (no waiver list)
   4. compiler slots      -- /opt/flagtree and /opt/triton still carry the
      recorded Triton versions
 
@@ -76,7 +77,9 @@ def diff_runtime(
     return missing, version_changed
 
 
-def pip_check_violations(returncode: int, stdout: str, baseline: set[str]) -> set[str]:
+def pip_check_violations(
+    returncode: int, stdout: str, stderr: str, baseline: set[str]
+) -> set[str]:
     """New pip check violations, or errors when pip check itself failed."""
     if returncode == 0:
         # Clean run: stdout carries the success notice, not violations.
@@ -90,7 +93,7 @@ def pip_check_violations(returncode: int, stdout: str, baseline: set[str]) -> se
         return current - baseline
     raise RuntimeError(
         "pip check itself failed: "
-        f"returncode={returncode} stdout={stdout!r} stderr may follow"
+        f"returncode={returncode} stdout={stdout!r} stderr={stderr!r}"
     )
 
 
@@ -152,7 +155,9 @@ def check_pip_check(evidence: Path) -> None:
         .splitlines()
         if line.strip() and line.strip() != PIP_CHECK_SUCCESS_NOTICE
     }
-    new = pip_check_violations(completed.returncode, completed.stdout, baseline)
+    new = pip_check_violations(
+        completed.returncode, completed.stdout, completed.stderr, baseline
+    )
     assert not new, (
         f"new pip check violations introduced by the two-wheel install: {sorted(new)}"
     )
