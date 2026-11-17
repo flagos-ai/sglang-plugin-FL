@@ -106,13 +106,26 @@ a100:
     # Consumed by tests/run.py --scope functional; include/exclude work like unit.
     functional:
       include: "*"
-      exclude: []
+      # TEMPORARY (two-wheel GPU-verify probe): the pinned stage-2 wheel
+      # predates the kunlunxin vendor code merged into dev/0.5.18 (#155);
+      # its functional ops test imports vendor modules the wheel does not
+      # ship. Drop this exclusion when the product PR rebuilds the wheel
+      # from the rebased source.
+      exclude: ["ops/test_kunlunxin_ops.py"]
 
     unit:
       # Include patterns: "*" for all, or list specific paths.
       include: "*"
       # Exclude patterns: empty list or list paths to exclude.
-      exclude: []
+      # TEMPORARY (two-wheel GPU-verify probe): kunlunxin unit tests added
+      # on dev/0.5.18 (#155) import sglang_fl.dispatch.backends.vendor
+      # .kunlunxin (missing from the pinned stage-2 wheel) and exercise
+      # flagcx._import_flagcx_api (an API that wheel does not carry).
+      # Drop both exclusions when the product PR rebuilds the wheel from
+      # the rebased source.
+      exclude:
+        - kunlunxin
+        - distributed/test_kunlunxin_flagcx_api.py
 
     benchmark:
       # Stage-keyed (vllm-plugin-FL #581): PRs smoke only the serve
