@@ -13,8 +13,14 @@ is_cuda() == False and has no sgl_kernel, so:
   / ..._uniform_func match no branch and return None, so the verify
   batch has no KV write locations.
 
-Bind them to the Triton implementations the CUDA/XPU branches use. Only the greedy verify path
-is covered; non-greedy speculative sampling still needs sgl_kernel.
+Bind them to the Triton implementations the CUDA/XPU branches use.
+
+Non-greedy verification in ``eagle_sample`` imports
+``tree_speculative_sampling_target_only`` / ``top_k_renorm_prob`` /
+``top_p_renorm_prob`` from sgl_kernel unless the platform is CPU / NPU / HIP /
+XPU, which verify every request greedily instead. MetaX follows those
+platforms: with speculative decoding, sampled requests are verified against
+the target argmax, so temperature / top-k / top-p have no effect on them.
 """
 
 from __future__ import annotations
@@ -74,9 +80,54 @@ def patch_speculative_triton() -> None:
 
     module.verify_tree_greedy_func = verify_tree_greedy_func_metax
     patched.append("verify_tree_greedy")
+    patched += _patch_greedy_verify_for_sampling(module)
     patched += _patch_cache_locs()
     _patched = True
     logger.info("patched EAGLE tree kernels for MetaX (triton): %s", ", ".join(patched))
+
+
+# Speculative modules that bind eagle_sample at import time.
+_EAGLE_SAMPLE_IMPORTERS = (
+    "sglang.srt.speculative.eagle_worker_common",
+    "sglang.srt.speculative.ngram_worker",
+)
+
+
+def _patch_greedy_verify_for_sampling(module) -> list:
+    """Verify non-greedy batches greedily, as upstream does on CPU/NPU/HIP/XPU."""
+    import functools
+    import sys
+
+    original = getattr(module, "eagle_sample", None)
+    if original is None:
+        return []
+    warned = False
+
+    @functools.wraps(original)
+    def eagle_sample_metax(verify_input, batch, *args, **kwargs):
+        nonlocal warned
+        info = getattr(batch, "sampling_info", None)
+        if info is None or info.is_all_greedy:
+            return original(verify_input, batch, *args, **kwargs)
+        if not warned:
+            warned = True
+            logger.warning(
+                "MetaX speculative decoding verifies sampled requests greedily "
+                "(no sgl_kernel speculative sampling); temperature/top-k/top-p "
+                "do not apply to them"
+            )
+        info.is_all_greedy = True
+        try:
+            return original(verify_input, batch, *args, **kwargs)
+        finally:
+            info.is_all_greedy = False
+
+    module.eagle_sample = eagle_sample_metax
+    for name in _EAGLE_SAMPLE_IMPORTERS:
+        importer = sys.modules.get(name)
+        if importer is not None and getattr(importer, "eagle_sample", None) is original:
+            importer.eagle_sample = eagle_sample_metax
+    return ["eagle_sample(greedy verify)"]
 
 
 _CACHE_LOCS_MODULE = "sglang.kernels.ops.speculative.cache_locs"

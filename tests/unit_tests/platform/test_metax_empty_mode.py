@@ -188,6 +188,7 @@ _PATCH_TARGETS = {
             "sgl_build_tree_kernel_triton",
             "verify_tree_greedy_triton",
             "verify_tree_greedy_func",
+            "eagle_sample",
         ),
         "sglang.kernels.ops.speculative.cache_locs": (
             "assign_extend_cache_locs",
@@ -317,6 +318,44 @@ class TestMetaxTritonKvSplits:
         # clamped, so max_kv_splits must stay ceil(context_len / 256).
         backend = SimpleNamespace(split_tile_size=256, max_kv_splits=128)
         assert self._policy()(backend, extend_lens) == 128
+
+
+class TestMetaxGreedyVerifyForSampling:
+    def _patch(self, monkeypatch):
+        import sys
+        import types
+
+        from sglang_fl.dispatch.backends.vendor.metax.patches import (
+            speculative_triton,
+        )
+
+        seen = []
+
+        def eagle_sample(verify_input, batch, logits_output, grammar_mask=None):
+            seen.append(batch.sampling_info.is_all_greedy)
+            return "result"
+
+        module = types.SimpleNamespace(eagle_sample=eagle_sample)
+        importer = types.ModuleType("sglang.srt.speculative.ngram_worker")
+        importer.eagle_sample = eagle_sample
+        monkeypatch.setitem(sys.modules, importer.__name__, importer)
+        assert speculative_triton._patch_greedy_verify_for_sampling(module)
+        assert importer.eagle_sample is module.eagle_sample
+        return module.eagle_sample, seen
+
+    def test_sampled_batch_is_verified_greedily_and_restored(self, monkeypatch):
+        eagle_sample, seen = self._patch(monkeypatch)
+        batch = SimpleNamespace(sampling_info=SimpleNamespace(is_all_greedy=False))
+        assert eagle_sample("verify", batch, "logits") == "result"
+        assert seen == [True]
+        assert batch.sampling_info.is_all_greedy is False
+
+    def test_greedy_batch_is_passed_through(self, monkeypatch):
+        eagle_sample, seen = self._patch(monkeypatch)
+        batch = SimpleNamespace(sampling_info=SimpleNamespace(is_all_greedy=True))
+        eagle_sample("verify", batch, "logits", None)
+        assert seen == [True]
+        assert batch.sampling_info.is_all_greedy is True
 
 
 class TestMetaxFlashinferPlaceholder:
