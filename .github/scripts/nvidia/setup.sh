@@ -21,11 +21,23 @@ echo "=== Installing test runner (ephemeral) ==="
 python3 -m pip install --break-system-packages \
     pytest==9.1.1 pytest-timeout==2.4.0
 
-# SGLang and sglang-plugin-FL are real wheels baked into the image. The plugin
-# activates its cache-local CUDA compatibility view inside every Python process
-# before FlashInfer first asks for its JIT toolchain; setup.sh must not patch
-# CUDA_HOME, create symlinks, or replace the installed plugin with an editable
+echo "=== Selecting installed-wheel test mode ==="
+# SGLang and sglang-plugin-FL are real wheels baked into the image. Export
+# the installed-wheel test mode so every later pytest/engine subprocess
+# resolves sglang_fl from site-packages instead of the checkout source
+# tree that CI happens to be running in.
+if [ -n "${GITHUB_ENV:-}" ]; then
+    echo "SGLANG_FL_TEST_SOURCE=wheel" >> "$GITHUB_ENV"
+fi
+export SGLANG_FL_TEST_SOURCE=wheel
+
+# Strict post-setup verification: Triton 3.7.1 from /opt/triton, the plugin
+# loading from site-packages with discoverable entry points, runner
+# versions, and (on the GPU runner) the plugin CUDA view that FlashInfer's
+# JIT must consume. The plugin activates its cache-local CUDA compatibility
+# view inside every Python process; setup.sh must not patch CUDA_HOME,
+# create symlinks, or replace the installed plugin with an editable
 # checkout.
 python3 .github/scripts/nvidia/verify_environment.py \
-    --require-gpu --require-ci --min-gpus 4
+    --phase post-setup --min-gpus 4
 echo "=== Installation complete ==="
