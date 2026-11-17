@@ -69,6 +69,36 @@ def classify_safe_path(safe_path_flag, env_value):
     return ("flag unsupported; env missing", False)
 
 
+def expected_child_safe_path(env_value, child_version=sys.version_info):
+    """Expected safe-path state of a child STARTED with this env.
+
+    The child runs this test's sys.executable, so the interpreter
+    VERSION (stable across processes) decides whether the child has
+    ``sys.flags.safe_path`` -- but the parent's own flag VALUE must
+    never be reused: it reflects the parent's launch conditions. The
+    NVIDIA Runtime 3.12 probe measured a pytest parent at
+    ``safe_path=False`` / ``PYTHONSAFEPATH=None`` while a child started
+    with ``PYTHONSAFEPATH=1`` reads ``safe_path=True``; deriving the
+    expectation from the parent's flag would demand ``flag=false``
+    from a child that correctly reports ``flag=true``.
+
+    Predicts from the child's launch conditions only:
+      * >= 3.11: env "1" -> the child's real flag is True; otherwise
+        False (the env var is what switches the flag on);
+      * <  3.11: no flag to read; labeled env fallback.
+
+    classify_safe_path remains the authority for OBSERVED states -- a
+    real flag of False is rejected even when the env text claims "1".
+    """
+    if child_version >= (3, 11):
+        if env_value == "1":
+            return ("flag=true", True)
+        return ("flag=false", False)
+    if env_value == "1":
+        return ("flag unsupported; env propagated", True)
+    return ("flag unsupported; env missing", False)
+
+
 # Standalone copies of classify_safe_path for the subprocess probes below
 # (they run under sys.executable with the wheel-mode env and cannot import
 # this test module). TestSafePathProbeAgreement pins them to the classifier.
@@ -241,6 +271,42 @@ class TestClassifySafePath:
         assert classify_safe_path(None, "") == ("flag unsupported; env missing", False)
 
 
+class TestExpectedChildSafePath:
+    """Child expectations derive from the child's launch conditions.
+
+    These are pinned for BOTH interpreter generations via the
+    child_version parameter so a 3.9 host still exercises the 3.11+
+    expectations the NVIDIA Runtime CI will actually run.
+    """
+
+    def test_flag_interpreter_with_env_expects_true(self):
+        # Parent/child share only the interpreter version; the child,
+        # started with PYTHONSAFEPATH=1, must read the real flag as True
+        # even when the (envless) parent reads False.
+        assert expected_child_safe_path("1", (3, 12, 13)) == ("flag=true", True)
+        # The prediction must match what the child's own classifier
+        # observes once the env has switched its flag on.
+        assert classify_safe_path(True, "1") == expected_child_safe_path(
+            "1", (3, 12, 13)
+        )
+
+    def test_flag_interpreter_without_env_expects_false(self):
+        assert expected_child_safe_path(None, (3, 12, 13)) == ("flag=false", False)
+        assert expected_child_safe_path("", (3, 12, 13)) == ("flag=false", False)
+
+    def test_old_interpreter_env_propagated(self):
+        assert expected_child_safe_path("1", (3, 9, 6)) == (
+            "flag unsupported; env propagated",
+            True,
+        )
+
+    def test_old_interpreter_env_missing(self):
+        assert expected_child_safe_path(None, (3, 9, 6)) == (
+            "flag unsupported; env missing",
+            False,
+        )
+
+
 class TestSafePathProbeAgreement:
     """The standalone subprocess snippets must mirror classify_safe_path."""
 
@@ -339,8 +405,9 @@ def test_wheel_mode_loads_isolated_install_and_keeps_tests_importable(
     assert not resolved.is_relative_to(checkout), resolved
     # The guard reports the real interpreter flag (or, on interpreters
     # without one, the labeled env-propagation fallback) -- never a
-    # cwd/sys.path[0] guess.
-    expected_state, ok = classify_safe_path(getattr(sys.flags, "safe_path", None), "1")
+    # cwd/sys.path[0] guess. The expectation comes from the CHILD's
+    # launch conditions, not this process's own flags.
+    expected_state, ok = expected_child_safe_path("1")
     assert ok
     assert f"safe-path: {expected_state} (PYTHONSAFEPATH=1)" in result.stderr
 
@@ -369,12 +436,15 @@ def test_wheel_mode_inherits_into_grandchildren(tmp_path: Path) -> None:
     parent, helper, child_state, grandchild_line = result.stdout.strip().split("|")
     assert parent == WHEEL_SENTINEL
     assert helper == "helper"
-    # Both generations must report the real interpreter flag. The child
-    # runs the same sys.executable as this test process, so the expected
-    # state is exactly what classify_safe_path derives from our own
-    # flags plus the propagated env: strict "flag=true" on >= 3.11, the
-    # labeled env fallback on older interpreters.
-    expected_state, ok = classify_safe_path(getattr(sys.flags, "safe_path", None), "1")
+    # Both generations must report the state of THEIR OWN processes.
+    # Sharing sys.executable only guarantees the same interpreter
+    # VERSION -- it says nothing about the flag VALUES: this pytest
+    # parent typically runs without PYTHONSAFEPATH (safe_path=False on
+    # 3.12) while the child, started with the env, reads safe_path=True
+    # (measured on the NVIDIA Runtime 3.12). Expectations therefore
+    # come from the child's launch conditions via
+    # expected_child_safe_path, never from this process's flags.
+    expected_state, ok = expected_child_safe_path("1")
     assert ok
     assert child_state == expected_state, f"child safe-path: {child_state}"
     assert grandchild_line == f"{WHEEL_SENTINEL} {expected_state}", (
@@ -429,7 +499,7 @@ def test_wheel_mode_guard_rejects_missing_safe_path(tmp_path: Path) -> None:
         env_extra={"PYTHONPATH": f"{staging}{os.pathsep}{isolated}"},
         arg=str(checkout),
     )
-    expected_state, ok = classify_safe_path(getattr(sys.flags, "safe_path", None), None)
+    expected_state, ok = expected_child_safe_path(None)
     assert not ok
     assert result.returncode == 2, result.stderr
     assert f"wheel mode requires safe-path, got: {expected_state}" in result.stderr
