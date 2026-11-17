@@ -88,7 +88,7 @@ def apply_all_txda_patches() -> None:
     device_support.patch()   # universal + txda-gated internally
     platform_stubs.patch()   # dummy-module injection for non-CUDA platforms
     model_runner.patch()     # gated by SGLANG_FL_TIMER_ENABLE internally
-    kv_leak_fix.patch()     # hardened release; enable with SGLANG_KVLEAK_FIX=1
+    kv_leak_fix.patch()     # hardened KV release; on by default, SGLANG_KVLEAK_FIX=0 disables
 
     if not is_txda_available():
         _log.skipped("txda not available — txda-specific patches skipped")
