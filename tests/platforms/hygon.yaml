@@ -69,11 +69,14 @@ bw1000: &bw1000_profile
       exclude:
         - ops/test_hygon_mtp_attention.py
     e2e:
-      # Diagnostic scope: use one representative eager model to keep the
-      # scarce BW1000 runner time bounded while the runtime image migrates.
-      # Restore the full PR matrix before final acceptance.
+      # PR acceptance runs the representative eager model through inference
+      # and serving; concurrent/mtp stay in nightly (scheduled workflows only
+      # fire on the default branch) and the graph profile covers the graph
+      # matrix below.
       pr:
         inference:
+          qwen3_6: [27b_tp2_hygon]
+        serving:
           qwen3_6: [27b_tp2_hygon]
       nightly:
         inference: &hcu_model_cases

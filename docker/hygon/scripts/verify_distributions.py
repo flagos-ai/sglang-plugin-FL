@@ -44,9 +44,16 @@ failed = False
 planned = set((evidence / "sglang-resolver-additions.txt").read_text().split())
 installed = set(f"{name}=={after[name]}" for name in added)
 print(f"{len(added)} distributions added; runtime baseline size {len(before)}")
+# Audit artifact: the complete resolved closure, printed in full and written
+# to the evidence pack. This is the reviewable record of what the resolver
+# chose; it is never fed back as a committed input lock.
+print("--- resolved application closure (audit) ---")
+for name in added:
+    print(f"  + {name}=={after[name]}")
+print("--- end closure audit ---")
 if installed != planned:
     failed = True
-    print("FATAL: installed additions differ from the reviewed resolver plan:")
+    print("FATAL: installed additions differ from the resolver plan:")
     for line in sorted(installed - planned):
         print(f"  + {line}")
     for line in sorted(planned - installed):

@@ -60,11 +60,14 @@ ARG PIP_EXTRA_INDEX=https://resource.flagos.net/repository/pypi-proxy/simple
 
 WORKDIR /opt/sglang-ci
 
-# Version lock for every SGLang closure addition (name==version), extracted
-# from the reviewed resolver run. Passed as an extra --constraint so resolver
-# drift across indexes cannot change the closure; the dry-run gate still
-# verifies zero runtime replacements on top of it.
-COPY docker/hygon/runtime-0.5.18.additions.lock /opt/sglang-ci/sglang-additions.lock
+# Application-level constraints: only evidence-backed pins (see the file).
+# The runtime inventory is frozen dynamically at build start and the SGLang
+# wheel pins its own direct requirements, so the closure's transitive
+# resolution stays with the resolver; the dry-run gate verifies zero runtime
+# replacements and the resolved closure is recorded as a build-time audit
+# artifact (/opt/sglang-ci/sglang-additions-installed.txt), never committed
+# back as an input lock.
+COPY docker/hygon/top-level-constraints.txt /opt/sglang-ci/top-level-constraints.txt
 
 # --- Stable, slow: fetch and SHA256-verify the SGLang wheel ------------------
 RUN --mount=type=bind,target=/ctx python /ctx/docker/hygon/scripts/fetch_sglang_wheel.py
@@ -95,7 +98,7 @@ RUN --mount=type=cache,target=/tmp/pip-cache \
              --cache-dir /tmp/pip-cache \
              --report /opt/sglang-ci/sglang-resolver-plan.json \
              --constraint /opt/sglang-ci/runtime-constraints.txt \
-             --constraint /opt/sglang-ci/sglang-additions.lock \
+             --constraint /opt/sglang-ci/top-level-constraints.txt \
              --index-url "$PIP_MAIN_INDEX" \
              --extra-index-url "$PIP_FALLBACK_INDEX" \
              --extra-index-url "$PIP_EXTRA_INDEX" \
@@ -123,7 +126,7 @@ RUN --mount=type=cache,target=/tmp/pip-cache \
              --retries 20 \
              --cache-dir /tmp/pip-cache \
              --constraint /opt/sglang-ci/runtime-constraints.txt \
-             --constraint /opt/sglang-ci/sglang-additions.lock \
+             --constraint /opt/sglang-ci/top-level-constraints.txt \
              --index-url "$PIP_MAIN_INDEX" \
              --extra-index-url "$PIP_FALLBACK_INDEX" \
              --extra-index-url "$PIP_EXTRA_INDEX" \
