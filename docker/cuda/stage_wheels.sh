@@ -57,8 +57,7 @@ else
         "$SGLANG_WHEEL_URL" -o "$sglang_wheel"
 fi
 
-echo "=== Verifying wheel digests ==="
-plugin_sha256="$(shasum -a 256 "$plugin_wheel" | cut -d' ' -f1)"
+echo "=== Verifying the staged SGLang digest ==="
 sglang_sha256="$(shasum -a 256 "$sglang_wheel" | cut -d' ' -f1)"
 if [ "$sglang_sha256" != "$SGLANG_WHEEL_SHA256" ]; then
     echo "FATAL: SGLang wheel SHA256 mismatch: expected $SGLANG_WHEEL_SHA256, got $sglang_sha256" >&2
@@ -69,18 +68,6 @@ echo "=== Acceptance checks on the plugin wheel ==="
 python3 "$repo_root/docker/cuda/scripts/check_plugin_wheel.py" \
     "$plugin_wheel" --repo-root "$repo_root"
 
-echo "=== Cross-checking the Containerfile against the staged wheels ==="
-containerfile="$repo_root/docker/cuda/runtime-0.5.18.containerfile"
-grep -q "artifacts/$(basename "$SGLANG_WHEEL_NAME")" "$containerfile" || {
-    echo "FATAL: Containerfile does not reference $(basename "$SGLANG_WHEEL_NAME")" >&2
-    exit 1
-}
-plugin_base="$(basename "$plugin_wheel")"
-grep -q "artifacts/${plugin_base%%-*}-" "$containerfile" || {
-    echo "FATAL: Containerfile does not reference the $plugin_base artifact" >&2
-    exit 1
-}
-
 echo "=== Assembling the build context ==="
 context="$(mktemp -d "${TMPDIR:-/tmp}/nv-two-wheel-context.XXXXXX")"
 mkdir "$context/artifacts"
@@ -88,12 +75,31 @@ cp "$plugin_wheel" "$context/artifacts/"
 cp "$sglang_wheel" "$context/artifacts/"
 cp "$repo_root/docker/cuda/runtime-0.5.18.containerfile" "$context/Containerfile"
 
+echo "=== Cross-checking the Containerfile against the staged wheels ==="
+containerfile="$context/Containerfile"
+for staged in "$context"/artifacts/*.whl; do
+    base="$(basename "$staged")"
+    grep -q "artifacts/$base" "$containerfile" || {
+        echo "FATAL: Containerfile does not reference artifacts/$base" >&2
+        exit 1
+    }
+done
+
+echo "=== Re-verifying digests inside the context ==="
+# Digests are recomputed on the files the docker build will actually see.
+plugin_sha256="$(shasum -a 256 "$context/artifacts/$(basename "$plugin_wheel")" | cut -d' ' -f1)"
+sglang_sha256="$(shasum -a 256 "$context/artifacts/$SGLANG_WHEEL_NAME" | cut -d' ' -f1)"
+if [ "$sglang_sha256" != "$SGLANG_WHEEL_SHA256" ]; then
+    echo "FATAL: context SGLang wheel SHA256 mismatch: expected $SGLANG_WHEEL_SHA256, got $sglang_sha256" >&2
+    exit 1
+fi
+
 echo
 echo "=== staging record ==="
 echo "source-commit:  $(git -C "$repo_root" rev-parse HEAD)"
-echo "plugin-wheel:   $plugin_wheel"
+echo "plugin-wheel:   $context/artifacts/$(basename "$plugin_wheel")"
 echo "plugin-sha256:  $plugin_sha256   (regenerated per build; not pinned)"
-echo "sglang-wheel:   $sglang_wheel"
+echo "sglang-wheel:   $context/artifacts/$SGLANG_WHEEL_NAME"
 echo "sglang-sha256:  $sglang_sha256"
 echo "build-context:  $context (disposable; contains Containerfile + artifacts/)"
 echo "next step:"
