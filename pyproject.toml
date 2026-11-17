@@ -47,6 +47,11 @@ nvidia = [
     "cuda-pathfinder>=1.8,<2",
     # Compatibility assertion only: the Runtime supplies this distribution.
     "flag-gems==5.4.0",
+    # SGLang's NVIDIA dependency closure leaves Triton unbounded.  The
+    # operations Runtime's NVIDIA contract is Triton 3.7.1; declare that
+    # application-level compatibility requirement in the wheel metadata so a
+    # clean two-wheel install cannot drift to a newer incompatible release.
+    "triton==3.7.1",
 ]
 
 [project.entry-points."sglang.srt.platforms"]
