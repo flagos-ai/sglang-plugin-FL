@@ -31,7 +31,7 @@ keep the Triton kernel (e.g. to re-test after a flagtree fix).
 import os
 
 from sglang_fl.dispatch.backends.vendor.tsingmicro.patches._logger import patch_logger
-from sglang_fl.dispatch.backends.vendor.tsingmicro.patches.kv_leak_fix import (
+from sglang_fl.dispatch.backends.vendor.tsingmicro.patches._utils import (
     _install_post_import_wrap,
 )
 

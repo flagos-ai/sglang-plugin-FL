@@ -8,13 +8,14 @@ pool.  Off by default — set ``SGLANG_KVLEAK_FIX=1`` (optionally
 documents the part of the fix it implements.
 """
 
-import importlib.abc
-import importlib.util
 import logging
 import os
 import sys
 
 from sglang_fl.dispatch.backends.vendor.tsingmicro.patches._logger import patch_logger
+from sglang_fl.dispatch.backends.vendor.tsingmicro.patches._utils import (
+    _install_post_import_wrap,
+)
 
 logger = logging.getLogger(__name__)
 _log = patch_logger("kv_leak_fix")
@@ -144,61 +145,6 @@ def _safe_write_indices_wrap() -> None:
         _apply_write_indices_wrap()
     except Exception as exc:  # noqa: BLE001
         _log.failed("write_cache_indices wrap failed: %s", exc)
-
-
-class _PostImportLoader(importlib.abc.Loader):
-    """Forward to the original loader, then run a callback after the module loads."""
-
-    def __init__(self, inner, callback):
-        self._inner = inner
-        self._callback = callback
-
-    def create_module(self, spec):
-        try:
-            return self._inner.create_module(spec)
-        except AttributeError:
-            return None
-
-    def exec_module(self, module):
-        self._inner.exec_module(module)
-        self._callback()
-
-
-class _PostImportWrapFinder(importlib.abc.MetaPathFinder):
-    """One-shot finder: wrap a target module's loader to run `callback` after import."""
-
-    def __init__(self, target, callback):
-        self._target = target
-        self._callback = callback
-        self._finding = False
-
-    def find_spec(self, fullname, path=None, target=None):
-        if fullname != self._target or self._finding:
-            return None
-        self._finding = True
-        try:
-            spec = importlib.util.find_spec(fullname)
-        finally:
-            self._finding = False
-        if spec is None or spec.loader is None:
-            return None
-        spec.loader = _PostImportLoader(spec.loader, self._callback)
-        return spec
-
-
-def _install_post_import_wrap(module_name, callback) -> None:
-    """Apply `callback` once `module_name` has been imported by sglang itself.
-
-    If the module is already loaded, apply immediately. Otherwise install a
-    meta_path finder that fires the callback right after the module loads.
-    """
-    if module_name in sys.modules:
-        callback()
-        return
-    for f in sys.meta_path:
-        if type(f) is _PostImportWrapFinder and f._target == module_name:
-            return
-    sys.meta_path.insert(0, _PostImportWrapFinder(module_name, callback))
 
 
 # ─── 2) Anti-pollution + safety net: rewrite the ChunkCache.cache_finished_req release segment ───

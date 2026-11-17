@@ -26,7 +26,7 @@ import functools
 import inspect
 
 from sglang_fl.dispatch.backends.vendor.tsingmicro.patches._logger import patch_logger
-from sglang_fl.dispatch.backends.vendor.tsingmicro.patches.kv_leak_fix import (
+from sglang_fl.dispatch.backends.vendor.tsingmicro.patches._utils import (
     _install_post_import_wrap,
 )
 
