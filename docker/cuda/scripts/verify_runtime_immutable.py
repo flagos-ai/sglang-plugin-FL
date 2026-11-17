@@ -72,7 +72,7 @@ def check_site_files(evidence: Path) -> None:
         f"{len(changed)} changed; first missing {missing[:3]}, "
         f"first changed {changed[:3]}"
     )
-    print(f"[2/4] site-packages file baseline unchanged")
+    print("[2/4] site-packages file baseline unchanged")
 
 
 def check_pip_check(evidence: Path) -> None:
@@ -85,8 +85,7 @@ def check_pip_check(evidence: Path) -> None:
     current = {line for line in after.splitlines() if line.strip()}
     new = current - baseline
     assert not new, (
-        f"new pip check violations introduced by the two-wheel install: "
-        f"{sorted(new)}"
+        f"new pip check violations introduced by the two-wheel install: {sorted(new)}"
     )
     print("[3/4] pip check: no new violations versus the runtime baseline")
 

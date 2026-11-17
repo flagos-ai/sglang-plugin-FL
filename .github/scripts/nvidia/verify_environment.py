@@ -102,7 +102,9 @@ def check_triton_slot() -> None:
         or not triton_spec.origin.startswith("/opt/triton")
     ):
         found = triton_spec.origin if triton_spec else None
-        raise RuntimeError(f"triton module must resolve under /opt/triton, found {found}")
+        raise RuntimeError(
+            f"triton module must resolve under /opt/triton, found {found}"
+        )
     print(f"[cuda-env] triton-module authoritative at {triton_spec.origin}")
 
 
@@ -117,7 +119,9 @@ def check_installed_plugin() -> None:
 
     selected = metadata.entry_points()
     for group in PLUGIN_ENTRY_POINT_GROUPS:
-        entries = [ep.value for ep in selected.select(group=group) if ep.name == "sglang_fl"]
+        entries = [
+            ep.value for ep in selected.select(group=group) if ep.name == "sglang_fl"
+        ]
         if not entries:
             raise RuntimeError(f"entry-point group {group!r} has no 'sglang_fl' entry")
         print(f"[cuda-env] entry-point {group} -> {entries[0]}")
@@ -155,10 +159,16 @@ def print_provenance_record() -> None:
     import triton
 
     sglang = importlib.import_module("sglang")
-    print(f"[cuda-env] provenance sglang_fl={metadata.version('sglang-fl')} "
-          f"at {importlib.import_module('sglang_fl').__file__}")
-    print(f"[cuda-env] provenance sglang={metadata.version('sglang')} at {sglang.__file__}")
-    print(f"[cuda-env] provenance triton={metadata.version('triton')} at {triton.__file__}")
+    print(
+        f"[cuda-env] provenance sglang_fl={metadata.version('sglang-fl')} "
+        f"at {importlib.import_module('sglang_fl').__file__}"
+    )
+    print(
+        f"[cuda-env] provenance sglang={metadata.version('sglang')} at {sglang.__file__}"
+    )
+    print(
+        f"[cuda-env] provenance triton={metadata.version('triton')} at {triton.__file__}"
+    )
 
 
 def verify(*, phase: str, min_gpus: int = 1) -> None:
