@@ -34,6 +34,9 @@ nvidia = [
     # lets current SciPy/Pandas metadata move it to NumPy 2 during an otherwise
     # ordinary SGLang install.
     "numpy==1.26.4",
+    # datasets requires pyarrow>=24.  pyarrow 26 requires NumPy 2 at import
+    # time, so keep the newest line compatible with the Runtime-owned NumPy.
+    "pyarrow>=24,<26",
     # SGLang -> humming-kernels[cu13] asks for an unversioned nvcc.  Select the
     # toolkit line already declared by the Runtime's torch 2.13.0+cu130 wheel;
     # the cuda-toolkit extra owns the exact nvcc/nvvm/crt sub-package pins.
