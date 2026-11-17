@@ -28,6 +28,23 @@ dependencies = [
 
 [project.optional-dependencies]
 cuda = ["sglang==0.5.18"]
+nvidia = [
+    "sglang==0.5.18",
+    # The operations Runtime owns NumPy 1.26.4.  Leaving this unconstrained
+    # lets current SciPy/Pandas metadata move it to NumPy 2 during an otherwise
+    # ordinary SGLang install.
+    "numpy==1.26.4",
+    # SGLang -> humming-kernels[cu13] asks for an unversioned nvcc.  Select the
+    # toolkit line already declared by the Runtime's torch 2.13.0+cu130 wheel;
+    # the cuda-toolkit extra owns the exact nvcc/nvvm/crt sub-package pins.
+    "cuda-toolkit[nvcc]==13.0.3",
+    # Used by the plugin to locate the wheel-provided compiler and headers.
+    # Declare it directly instead of relying on CUDA packages to provide it
+    # transitively.
+    "cuda-pathfinder>=1.8,<2",
+    # Compatibility assertion only: the Runtime supplies this distribution.
+    "flag-gems==5.4.0",
+]
 
 [project.entry-points."sglang.srt.platforms"]
 sglang_fl = "sglang_fl:activate_platform"
