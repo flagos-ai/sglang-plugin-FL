@@ -38,6 +38,5 @@ if missing or changed:
         print(f"  ! changed: {item}")
     sys.exit(1)
 print(
-    f"site-packages file baseline unchanged "
-    f"({len(baseline)} files re-hashed identical)"
+    f"site-packages file baseline unchanged ({len(baseline)} files re-hashed identical)"
 )

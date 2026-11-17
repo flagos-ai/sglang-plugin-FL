@@ -274,7 +274,7 @@ def _verify_runtime_image_versions() -> None:
             "the standalone triton wheel must stay removed "
             f"(FlagTree is the only Triton); found {actual}"
         )
-    import triton  # noqa: PLC0415 - deliberate entrypoint-style resolution
+    import triton  # deliberate entrypoint-style resolution check
 
     if not str(triton.__file__).startswith("/opt/flagtree"):
         raise RuntimeError(
