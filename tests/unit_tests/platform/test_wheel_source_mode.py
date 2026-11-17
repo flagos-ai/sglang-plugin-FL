@@ -279,6 +279,44 @@ class TestAbsolutizeIgnoreFlags:
         assert run._absolutize_ignore_flags(list(cmd)) == cmd
 
 
+class TestGuardSeamIsolation:
+    def test_guard_probe_uses_the_real_subprocess_run(self, monkeypatch):
+        # In-process drivers of main() intercept subprocess.run to observe
+        # exactly the case launches (test_iluvatar_benchmark_config pins
+        # one launch per case). The guard's pre-flight probe is an
+        # internal diagnostic and must go through the reference bound at
+        # import time, never through the interceptable module attribute.
+        run = _load_run_py()
+        recorded = []
+
+        def real_run(command, **kwargs):
+            recorded.append((command, kwargs))
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        def unexpected(*args, **kwargs):
+            raise AssertionError(
+                "the guard probe must not ride the intercepted "
+                "subprocess.run seam reserved for case launches"
+            )
+
+        monkeypatch.setattr(run.subprocess, "run", unexpected)
+        monkeypatch.setattr(run, "_REAL_SUBPROCESS_RUN", real_run)
+        run._guard_installed_plugin({"PATH": "/usr/bin"})
+
+        assert len(recorded) == 1
+        command, kwargs = recorded[0]
+        assert command == [
+            run.sys.executable,
+            "-c",
+            run._GUARD_SCRIPT,
+            str(run._REPO_ROOT),
+        ]
+        assert kwargs["cwd"] == str(run._wheel_staging_dir())
+        assert kwargs["env"] == {"PATH": "/usr/bin"}
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+
+
 class TestClassifySafePath:
     def test_flag_true_passes(self):
         # Python 3.12 with PYTHONSAFEPATH (or -P): the real flag is True.

@@ -150,9 +150,16 @@ print(f"sglang_fl from installed distribution at {distribution_root}")
 """
 
 
+# Bound at import, before any test can monkeypatch the module attribute:
+# the guard's pre-flight probe is an internal diagnostic, not a case
+# launch, and in-process drivers of main() intercept ``subprocess.run``
+# to observe exactly the launches the CLI performs.
+_REAL_SUBPROCESS_RUN = subprocess.run
+
+
 def _guard_installed_plugin(env: dict[str, str]) -> None:
     """Fail loudly if sglang_fl does not resolve from the installed wheel."""
-    guard = subprocess.run(
+    guard = _REAL_SUBPROCESS_RUN(
         [sys.executable, "-c", _GUARD_SCRIPT, str(_REPO_ROOT)],
         cwd=str(_wheel_staging_dir()),
         env=env,
