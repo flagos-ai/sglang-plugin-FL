@@ -35,7 +35,6 @@ import ctypes
 import logging
 import os
 import sys
-from functools import lru_cache
 from importlib import import_module
 from importlib.machinery import PathFinder
 from importlib.util import find_spec
@@ -46,17 +45,12 @@ import torch.distributed as dist
 logger = logging.getLogger(__name__)
 
 
-@lru_cache(maxsize=1)
 def _import_flagcx_api():
-    """Resolve the FlagCX API once without initializing the legacy package."""
-    package_spec = find_spec("flagcx")
-    if package_spec is not None:
-        package_paths = package_spec.submodule_search_locations
-        if package_paths is not None:
-            api_spec = PathFinder.find_spec("flagcx.api", package_paths)
-            if api_spec is not None:
-                return import_module("flagcx.api")
-
+    """Prefer the packaged API, retaining the legacy source-tree layout."""
+    spec = find_spec("flagcx")
+    if spec is not None and spec.submodule_search_locations is not None:
+        if PathFinder.find_spec("flagcx.api", spec.submodule_search_locations) is not None:
+            return import_module("flagcx.api")
     return import_module("plugin.interservice.flagcx_wrapper")
 
 

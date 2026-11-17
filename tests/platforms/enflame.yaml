@@ -15,7 +15,7 @@ env_defaults:
   SGLANG_PLATFORM: sglang_fl
   SGLANG_PLUGINS: sglang_fl
   ATTENTION_BACKEND: fa3
-  SGLANG_FL_PER_OP: "silu_and_mul=flagos;mrotary_embedding=reference;topk=reference;gemma_rms_norm=reference;fused_moe=vendor;chunk_gated_delta_rule=vendor;fused_recurrent_gated_delta_rule_packed_decode=vendor"
+  SGLANG_FL_PER_OP: "silu_and_mul=flagos;mrotary_embedding=reference;topk=flagos;gemma_rms_norm=reference;fused_moe=vendor;chunk_gated_delta_rule=vendor;fused_recurrent_gated_delta_rule_packed_decode=vendor"
   TOPS_VISIBLE_DEVICES: "0,1,2,3"
   TORCH_GCU_ENABLE_INT64_AND_UINT64: "1"
   ENABLE_I64_CHECK: "0"
@@ -27,16 +27,24 @@ env_defaults:
 gcu:
   tests:
     e2e:
-      inference:
-        qwen3: [4b_tp2, 06b_tp1]
-        qwen3_6: [27b_tp4_nograph, 35b_a3b_tp4_nograph]
-      concurrent:
-        qwen3_6: [27b_tp4_nograph, 35b_a3b_tp4_nograph]
-      serving:
-        qwen3: [4b_tp2]
-        qwen3_6: [27b_tp4_nograph, 35b_a3b_tp4_nograph]
+      pr:
+        inference: &enflame_inference
+          qwen3: [4b_tp2, 06b_tp1]
+          qwen3_6: [27b_tp4_nograph, 35b_a3b_tp4_nograph]
+        serving: &enflame_serving
+          qwen3: [4b_tp2]
+          qwen3_6: [27b_tp4_nograph, 35b_a3b_tp4_nograph]
+      nightly:
+        inference: *enflame_inference
+        serving: *enflame_serving
+        concurrent:
+          qwen3_6: [27b_tp4_nograph, 35b_a3b_tp4_nograph]
     unit: {include: "*", exclude: []}
     functional: {include: "*", exclude: []}
     benchmark:
-      enabled: true
-      smoke: [throughput, latency, serve]
+      pr:
+        enabled: true
+        types: [serve]
+      nightly:
+        enabled: true
+        types: [throughput, latency, serve]

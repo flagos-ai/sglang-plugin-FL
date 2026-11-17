@@ -10,10 +10,24 @@ so that downstream GitHub Actions jobs can use ``fromJson()`` to fan out.
 Usage (in a workflow step)::
 
     - id: matrix
-      run: python .github/scripts/generate_matrix.py --platform ${{ inputs.platform }}
+      run: |
+        python .github/scripts/generate_matrix.py \
+          --platform ${{ inputs.platform }} \
+          --ci-stage pr     # or nightly / weekly
 
 Outputs:
     e2e  — JSON array of ``{task, device, cases, timeout}`` objects grouped by (task, device).
+
+CI stage semantics (ported from vllm-plugin-FL #581)
+---------------------------------------------------
+pr
+    E2E uses the ``pr`` sub-key of each device's ``tests.e2e`` block.
+    PR cases are the subset declared by each platform YAML.
+    Skips devices with no ``pr`` key defined.
+
+nightly / weekly (default)
+    E2E uses the ``nightly`` key.  ``weekly`` falls back to ``nightly``
+    if no ``weekly`` key is defined in the YAML.
 """
 
 from __future__ import annotations
@@ -73,11 +87,16 @@ def build_e2e_matrix(
     config: dict,
     devices: list[str],
     unsupported: list[str],
+    ci_stage: str = "nightly",
 ) -> list[dict]:
     """End-to-end model tests (inference, serving, concurrent).
 
     These are slow and require model files. Entries are grouped by
     (task, device) so all model/case combos for the same group run in one job.
+
+    The ``e2e`` block in each device's YAML is keyed by CI stage
+    (``pr`` / ``nightly`` / ``weekly``).  In ``weekly`` stage, falls back
+    to ``nightly`` if no ``weekly`` key is defined.
     """
     matrix: list[dict] = []
 
@@ -86,13 +105,25 @@ def build_e2e_matrix(
         tests = device_cfg.get("tests", {})
         e2e = tests.get("e2e", {})
 
-        for task, models in e2e.items():
+        if ci_stage == "pr":
+            # PR stage: read the 'pr' sub-key
+            stage_block = e2e.get("pr", {})
+            if not stage_block:
+                continue
+        else:
+            # nightly/weekly: read the matching stage key; weekly falls
+            # back to nightly
+            stage_block = e2e.get(ci_stage) or e2e.get("nightly", {})
+
+        for task, models in stage_block.items():
             if not isinstance(models, dict):
                 continue
             cases: list[dict[str, str]] = []
             for model, case_list in models.items():
+                # A bare scalar is accepted as a single case (same rule as
+                # the runner's E2eTestConfig.get_cases).
                 if not isinstance(case_list, list):
-                    continue
+                    case_list = [case_list]
                 for case in case_list:
                     full_name = f"{model}/{case}"
                     if any(token in full_name for token in unsupported):
@@ -190,16 +221,26 @@ def main() -> int:
         default=None,
         help="Path to a file listing changed paths (one per line)",
     )
+    parser.add_argument(
+        "--ci-stage",
+        default="nightly",
+        choices=["pr", "nightly", "weekly"],
+        help="CI stage: 'pr' uses the pr subset, 'nightly'/'weekly' use full cases.",
+    )
     args = parser.parse_args()
 
     config = load_platform(args.platform)
     devices = get_device_sections(config)
     unsupported = config.get("unsupported_features", []) or []
 
-    e2e_matrix = build_e2e_matrix(config, devices, unsupported)
+    ci_stage = args.ci_stage
+    e2e_matrix = build_e2e_matrix(config, devices, unsupported, ci_stage=ci_stage)
 
-    # Apply PR smart-skip filtering when changed files are provided
-    if args.changed_files:
+    # Apply PR smart-skip filtering when changed files are provided. No CI
+    # caller currently passes --changed-files (the platform-level diff router
+    # in detect_platforms.py covers PR narrowing); the flag stays available
+    # for local use. In pr stage the filter is skipped regardless.
+    if args.changed_files and ci_stage != "pr":
         changed = load_changed_files(args.changed_files)
         if changed:
             e2e_matrix = filter_e2e_by_changes(e2e_matrix, changed)
@@ -210,6 +251,7 @@ def main() -> int:
 
     # Human-readable summary for CI logs
     print(f"Platform:    {args.platform}")
+    print(f"Stage:       {ci_stage}")
     print(f"Devices:     {devices}")
     print(f"E2E:         {len(e2e_matrix)} job(s)")
     for entry in e2e_matrix:

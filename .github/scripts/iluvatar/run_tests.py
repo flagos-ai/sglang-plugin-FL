@@ -118,6 +118,7 @@ def _e2e_cases(args):
         "iluvatar",
         args.device,
         "e2e",
+        stage=args.stage,
         task=args.task,
         model=args.model,
         case=args.case,
@@ -251,6 +252,8 @@ def run_stage(args) -> None:
                 args.device,
                 "--scope",
                 "benchmark",
+                "--stage",
+                args.stage,
                 "--benchmark",
                 benchmark,
             ]
@@ -269,6 +272,9 @@ def main(argv=None) -> int:
         "--scope", choices=("unit", "functional", "e2e", "benchmark"), required=True
     )
     parser.add_argument("--device", default="bi_v150")
+    parser.add_argument(
+        "--stage", choices=("pr", "nightly", "weekly"), default="nightly"
+    )
     parser.add_argument("--task", choices=("inference", "concurrent", "serving"))
     parser.add_argument("--cases")
     parser.add_argument("--model")

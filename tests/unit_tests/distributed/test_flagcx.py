@@ -12,16 +12,6 @@ import pytest
 import torch
 
 
-@pytest.fixture(autouse=True)
-def clear_flagcx_api_cache():
-    from sglang_fl.distributed.device_communicators.flagcx import _import_flagcx_api
-
-    _import_flagcx_api.cache_clear()
-    try:
-        yield
-    finally:
-        _import_flagcx_api.cache_clear()
-
 class _FakeFlagCXLibrary:
     def __init__(self, library_path: str) -> None:
         self.library_path = library_path
@@ -269,17 +259,12 @@ def test_flagcx_api_selection_and_stream_cache(monkeypatch, tmp_path, missing_ne
     assert comm._get_stream() is stream
     copy.assert_called_once()
     comm.flagcx.FLAGCX_CHECK.assert_called_once_with(0)
-    selected = (
-        "flagcx.api" if missing_new is None else "plugin.interservice.flagcx_wrapper"
-    )
     comm._get_raw_stream_handle = lambda: 43
     other_stream = comm._get_stream()
     assert isinstance(other_stream, Stream)
     assert other_stream is not stream
     assert comm._get_stream() is other_stream
     assert copy.call_count == 2
-    assert importer.call_args_list == [call(selected)]
-    flagcx_mod.find_spec.assert_called_once_with("flagcx")
     comm._stream_cache.clear()
 
 

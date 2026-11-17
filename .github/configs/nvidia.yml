@@ -1,7 +1,7 @@
-# CUDA Hardware Configuration
+# NVIDIA Hardware Configuration
 # This file defines CI/CD settings for NVIDIA GPU testing.
 
-platform: cuda
+platform: nvidia
 
 # Docker image built from docker/cuda/containerfile. Keep the SGLang version in
 # the tag so an old 0.5.11 image cannot be mistaken for the 0.5.18 CI runtime.

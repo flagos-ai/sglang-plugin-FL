@@ -17,6 +17,9 @@ export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-1}"
 export TP_SIZE="${TP_SIZE:-4}"
 export CONCURRENT_N="${CONCURRENT_N:-16}"
 export MAX_TOKENS="${MAX_TOKENS:-256}"
+# Leave enough headroom for CoreX prefill graphs and Triton's fixed 256 MiB
+# autotune benchmark cache on 32 GiB GPUs.
+export MEM_FRACTION_STATIC="${MEM_FRACTION_STATIC:-0.69}"
 export PYTHONUNBUFFERED=1
 for name in TP_SIZE MAX_TOKENS; do
     if ! [[ "${!name}" =~ ^[1-9][0-9]*$ ]]; then

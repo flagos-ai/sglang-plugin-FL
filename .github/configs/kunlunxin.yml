@@ -1,0 +1,38 @@
+# Kunlunxin P800 Hardware Configuration
+# CI/CD settings for Kunlunxin XPU (P800) testing on the SGLang 0.5.18 line.
+#
+# empty/ci containerfiles under docker/kunlunxin/.
+
+platform: kunlunxin
+
+# Placeholder tag — replace with the harbor image published from
+# docker/kunlunxin/ci-0.5.18.containerfile once the build is pushed.
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:f3764ee03d4d6ce3883b952a6ea030792629de74fe785e2775fa9d5f7ca3a7c7
+
+# Placeholder runner label — replace with the real self-hosted pool label.
+runner_labels:
+  - ci-sglang-plugin-fl-kunlunxin
+
+# Model configs under tests/models/** expect /data/models/Qwen/<name>.
+# Adjust the host side to wherever the Kunlunxin runner stores Qwen weights.
+container_volumes:
+  - /data/models:/data/models
+  - /data/models/Qwen:/models
+
+# Kunlunxin FlagOS images typically need privileged + host IPC for XPU device
+# access (same pattern as local docker run in docker/kunlunxin/README.md).
+# --user root: setup.sh must write into the image Python environment.
+# --init: tini reaps orphan TP worker zombies on shutdown.
+container_options: >-
+  --hostname sglang-plugin-fl
+  --privileged
+  --ipc=host
+  --shm-size=64g
+  --ulimit memlock=-1
+  --ulimit stack=67108864
+  --user root
+  --init
+  -e USE_FLAGGEMS=1
+  -e SGLANG_PLUGINS=sglang_fl
+  -e SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1
+  -e SGLANG_FORCE_COARSE_WAR_BARRIER=1
