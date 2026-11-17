@@ -5,8 +5,9 @@
 Auto-imported by ``PlatformFL.init_backend()`` when sglang activates the
 tsingmicro platform.  Importing this module executes the
 ``@register_attention_backend`` decorator below, which inserts the txda
-backend creator into sglang's ``ATTENTION_BACKENDS`` dict.  After that,
-``ModelRunner._get_attention_backend_from_str("txda_oot")`` can resolve it.
+backend creator into sglang's ``ATTENTION_BACKENDS`` dict, where SGLang 0.5.18's
+``attention_backend_setup._build_full_attention_backend_from_str`` resolves
+``attention_backend="txda_oot"`` (the TXDA default, see ``sglang_fl/platform.py``).
 
 To onboard a custom TXDA attention kernel:
   1. Implement the backend in ``impl/attention_backend.py``.
@@ -25,14 +26,14 @@ logger = logging.getLogger(__name__)
 def _create_txda_oot_backend(runner):
     """Creator for 'txda_oot' in sglang's ATTENTION_BACKENDS registry.
 
-    Called by ``ModelRunner._get_attention_backend_from_str`` when
+    Called by SGLang's attention-backend setup when
     ``server_args.attention_backend == "txda_oot"``.
 
     Defer heavy imports (vendor SDK, CUDA-only headers, etc.) to the body
     of this function so the module stays importable on any host.
     """
-    # Route the extend/prefill path to the flaggems _tsingmicro kernel; decode
-    # and metadata are inherited from TritonAttnBackend.
+    # Routes extend/prefill and decode to the flaggems _tsingmicro kernels;
+    # metadata handling is inherited from TritonAttnBackend.
     from sglang_fl.dispatch.backends.vendor.tsingmicro.impl.attention_backend import (
         TxdaAttnBackend,
     )

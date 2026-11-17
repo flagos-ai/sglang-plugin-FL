@@ -14,9 +14,9 @@ inherited.
 The kernels are bound in ``__init__`` (``self._txda_extend_attention_fwd`` /
 ``self.decode_attention_fwd``) rather than monkey-patched onto SGLang's
 modules, so the routing is scoped to this backend and does not depend on
-SGLang's import order.  ``forward_extend`` supports both SGLang 0.5.11 and
-0.5.18 (pool on the backend, KVWriteLoc writes); cases the flaggems extend
-kernel does not model fall back to SGLang's ``forward_extend``.
+SGLang's import order.  ``forward_extend`` follows SGLang 0.5.18's (pool on the
+backend, KVWriteLoc writes); cases the flaggems extend kernel does not model
+fall back to SGLang's ``forward_extend``.
 
 Two behavioural differences from the stock triton backend:
 
@@ -41,8 +41,10 @@ only installed when the installed flaggems op supports the in-kernel scan.
 
 Over-estimating ``prefix_lens`` is silent: the kernel would read physically
 contiguous slots belonging to another request and return plausible but wrong
-logits, with no crash.  Keep the merge step of that scan off flaggems' generic
-``min_dim`` -- see ``_TXDA_EXCLUDED_ATEN_OPS`` in ``sglang_fl/__init__.py``.
+logits, with no crash.  FlagGems' ``_compute_prefix_lens`` therefore merges the
+per-tile minima with its own reduction kernel instead of the generic
+``min_dim`` (no ``_tsingmicro`` specialization); see
+``flag_gems/runtime/backend/_tsingmicro/fused/decode_attention.py``.
 
 When the installed flag_gems predates either op (see
 :mod:`...tsingmicro.flaggems_compat`), or a decode call uses a feature the op
@@ -265,55 +267,36 @@ class TxdaAttnBackend(TritonAttnBackend):
                 "(prefix_lens computed in-kernel)"
             )
 
-    def _kv_pool(self, forward_batch):
-        # SGLang 0.5.18 keeps the pool on the backend (ForwardBatch no longer
-        # carries it); 0.5.11 only has forward_batch.token_to_kv_pool.
-        pool = getattr(self, "token_to_kv_pool", None)
-        return pool if pool is not None else forward_batch.token_to_kv_pool
-
     def _flaggems_extend_unsupported(self, forward_batch, score_mod, aux_tensors):
         """Cases the flag_gems extend kernel does not model -> SGLang's path."""
         if score_mod is not None or aux_tensors is not None:
             return True
-        if getattr(self, "dcp_size", 1) > 1:
+        if self.dcp_size > 1:
             return True
-        if getattr(self, "page_size", 1) > 1:
+        if self.page_size > 1:
             return True
         if (
-            getattr(self, "use_verify_shared_kv", False)
-            or getattr(self, "use_verify_splitkv", False)
+            self.use_verify_shared_kv or self.use_verify_splitkv
         ) and forward_batch.forward_mode.is_target_verify():
             return True
         return False
 
     def _save_kv(self, forward_batch, layer, pool, k, v):
-        """Write k/v to the pool before the kernel, matching the SGLang version."""
-        if hasattr(self, "_set_kv_buffer"):
-            # SGLang 0.5.18: KVWriteLoc + DCP-aware _set_kv_buffer.
-            from sglang.srt.mem_cache.memory_pool import KVWriteLoc
+        """Write k/v to the pool before the kernel (SGLang 0.5.18 KVWriteLoc path)."""
+        from sglang.srt.mem_cache.memory_pool import KVWriteLoc
 
-            loc_info = KVWriteLoc(
-                forward_batch.out_cache_loc,
-                self.forward_metadata.swa_out_cache_loc,
-                full_loc=self.forward_metadata.out_cache_loc_full_physical,
-            )
-            if layer.k_scale is None:
-                self._set_kv_buffer(forward_batch, layer, loc_info, k, v)
-            elif self.use_mla:
-                pool.set_kv_buffer(layer, loc_info, k.clone().div_(layer.k_scale), v)
-            else:
-                self._set_kv_buffer(
-                    forward_batch, layer, loc_info, k.clone(), v.clone(),
-                    layer.k_scale, layer.v_scale,
-                )
-            return
-
-        # SGLang 0.5.11
-        if self.use_mla or layer.k_scale is None:
-            pool.set_kv_buffer(layer, forward_batch.out_cache_loc, k, v)
+        loc_info = KVWriteLoc(
+            forward_batch.out_cache_loc,
+            self.forward_metadata.swa_out_cache_loc,
+            full_loc=self.forward_metadata.out_cache_loc_full_physical,
+        )
+        if layer.k_scale is None:
+            self._set_kv_buffer(forward_batch, layer, loc_info, k, v)
+        elif self.use_mla:
+            pool.set_kv_buffer(layer, loc_info, k.clone().div_(layer.k_scale), v)
         else:
-            pool.set_kv_buffer(
-                layer, forward_batch.out_cache_loc, k.clone(), v.clone(),
+            self._set_kv_buffer(
+                forward_batch, layer, loc_info, k.clone(), v.clone(),
                 layer.k_scale, layer.v_scale,
             )
 
@@ -347,7 +330,7 @@ class TxdaAttnBackend(TritonAttnBackend):
         from sglang.srt.layers.radix_attention import AttentionType
         from sglang.srt.mem_cache.swa_memory_pool import SWAKVPool
 
-        pool = self._kv_pool(forward_batch)
+        pool = self.token_to_kv_pool
 
         # TODO: reuse the buffer across layers
         attn_out = getattr(forward_batch, "_attn_output", None)
@@ -360,11 +343,10 @@ class TxdaAttnBackend(TritonAttnBackend):
 
         if k is None and v is None:
             cache_loc = forward_batch.out_cache_loc
-            translate = getattr(self, "_translate_kv_loc", None)
             if isinstance(pool, SWAKVPool) and pool.layers_mapping[layer.layer_id][1]:
                 cache_loc = pool.translate_loc_from_full_to_swa(cache_loc)
-            elif translate is not None:
-                cache_loc = translate(cache_loc)
+            elif self._translate_kv_loc is not None:
+                cache_loc = self._translate_kv_loc(cache_loc)
             k_buffer, v_buffer = pool.get_kv_buffer(layer.layer_id)
             k = k_buffer[cache_loc]
             v = v_buffer[cache_loc]
