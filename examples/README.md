@@ -174,8 +174,13 @@ Ascend acceptance environment. Useful overrides are:
 | `IMAGE_DIR` | `examples/test_images` |
 | `ASCEND_RT_VISIBLE_DEVICES` | `0,1,2,3` |
 | `SGLANG_FL_DIST_BACKEND` | `flagcx` |
-| `FLAGCX_PATH` | `/opt/FlagCX` |
+| `FLAGCX_PATH` | Unset on the CANN 9.2.1 image. `/opt/FlagCX` on legacy images. |
 | `PYTHON_BIN` | `python3` |
+
+On the CANN 9.2.1 image, leave `FLAGCX_PATH` unset to use the installed
+FlagCX wheel. Set it to a source tree to select that build explicitly.
+Set `SGLANG_FL_DIST_BACKEND=hccl` to run an HCCL validation. An example
+with FlagCX selected fails if its logs show communicator fallback.
 
 Each wrapper writes its command lines, output logs, and environment/package
 manifest to its result directory. A final `PASS` line means every requested
