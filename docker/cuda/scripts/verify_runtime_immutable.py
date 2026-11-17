@@ -71,20 +71,7 @@ def installed_distributions() -> dict[str, str]:
     }
 
 
-def check_lock_overlap(lock: Path, runtime_names: set[str]) -> None:
-    lock_names = {canonicalize_name(line.split("==")[0]) for line in read_lines(lock)}
-    overlap = lock_names & runtime_names
-    assert not overlap, (
-        f"install lock overlaps runtime distributions: {sorted(overlap)}"
-    )
-    print(
-        f"[1/5] lock gate: {len(lock_names)} additions, "
-        f"zero overlap with {len(runtime_names)} runtime distributions"
-    )
-
-
 def check_freeze(evidence: Path, runtime_names: set[str]) -> None:
-
     current = installed_distributions()
     missing = sorted(
         f"{name}=={current.get(name, '<removed>')}"
@@ -92,7 +79,20 @@ def check_freeze(evidence: Path, runtime_names: set[str]) -> None:
         if name not in current
     )
     assert not missing, f"runtime distributions removed: {missing}"
-    print(f"[2/5] runtime freeze preserved ({len(runtime_names)} distributions)")
+    print(f"[1/4] runtime freeze preserved ({len(runtime_names)} distributions)")
+
+
+def write_additions_manifest(evidence: Path, runtime_names: set[str]) -> None:
+    """Audit artifact: every distribution the build added, name==version.
+
+    Generated at build time from the installed state -- it records what the
+    resolver actually shipped, it is not an input to anything."""
+    current = installed_distributions()
+    additions = sorted(
+        f"{name}=={current[name]}" for name in current if name not in runtime_names
+    )
+    (evidence / "sglang-additions.txt").write_text("\n".join(additions) + "\n")
+    print(f"[2/4] additions manifest: {len(additions)} distributions recorded")
 
 
 def check_site_files(evidence: Path) -> None:
@@ -112,7 +112,7 @@ def check_site_files(evidence: Path) -> None:
         f"first changed {changed[:3]}"
     )
     print(
-        f"[3/5] site-packages file baseline unchanged "
+        f"[3/4] site-packages file baseline unchanged "
         f"({sum(1 for _ in manifest.open())} files)"
     )
 
@@ -132,7 +132,7 @@ def check_pip_check(evidence: Path) -> None:
         f"new pip check violations introduced by the SGLang install: {sorted(new)}"
     )
     print(
-        "[4/5] pip check: no new violations "
+        "[4/4] pip check: no new violations "
         "(baseline preserved; documented waiver on record)"
     )
 
@@ -154,7 +154,7 @@ def check_provenance(evidence: Path) -> None:
     }
     assert not changed, f"vendor module provenance changed: {changed}"
     print(
-        "[5/5] module provenance unchanged "
+        "[done] module provenance unchanged "
         "(triton resolves via /opt/flagtree before site-packages)"
     )
 
@@ -187,8 +187,8 @@ def main() -> int:
         for line in read_lines(evidence / "runtime-0.5.18.runtime-freeze.txt")
     }
 
-    check_lock_overlap(args.lock, runtime_names)
     check_freeze(evidence, runtime_names)
+    write_additions_manifest(evidence, runtime_names)
     check_site_files(evidence)
     check_pip_check(evidence)
     check_provenance(evidence)

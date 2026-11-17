@@ -1,0 +1,31 @@
+# Top-level constraints for the SGLang 0.5.18 closure on the NVIDIA
+# operations runtime (docker/cuda/runtime-0.5.18.containerfile).
+#
+# This is NOT a full lock: the sglang 0.5.18 wheel is installed as a
+# checksum-pinned artifact and its declared dependency closure resolves
+# normally, additionally constrained by every runtime distribution
+# (generated at build time from `pip freeze`, local-version lines
+# filtered). This file pins only what the resolver cannot derive on its
+# own.
+#
+# The numpy1-era datasets stack (datasets==4.0.0, pyarrow==18.1.0,
+# dill==0.3.8, multiprocess==0.70.16) is deliberately NOT constrained
+# here: every datasets release that accepts a numpy1-era pyarrow also
+# caps fsspec below the runtime's 2026.9.0, so the resolver can never
+# reconcile that stack with the immutable runtime. The containerfile
+# installs it first, --no-deps from these exact pins (step 1 of the
+# build); the resolver then sees sglang's unversioned `datasets`
+# requirement already satisfied and never walks into the conflict. The
+# residual fsspec mismatch is metadata-only and stays waived at the
+# pip-check gate.
+
+# --- CUDA toolchain on the runtime's 13.0 header line ------------------------
+# The runtime's nvidia-cuda-runtime 13.0.96 owns nvidia/cu13/include
+# (CUDART_VERSION 13000) and is readonly. The closure's CUDA compiler
+# packages float to the latest release (13.5+ today) and flashinfer's
+# bundled CCCL aborts every JIT compile when the nvcc MAJOR.MINOR differs
+# from the headers (cuda_toolkit.h, e2e run 43347047055). Pin the tool
+# packages to the runtime's own 13.0 line (matches its nvrtc/cupti).
+nvidia-cuda-nvcc==13.0.88
+nvidia-nvvm==13.0.88
+nvidia-cuda-crt==13.0.88
