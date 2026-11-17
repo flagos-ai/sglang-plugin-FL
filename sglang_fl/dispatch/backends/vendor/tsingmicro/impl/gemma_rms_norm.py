@@ -46,7 +46,7 @@ import torch
 
 # Cache slot names on the calling GemmaRMSNorm module.
 _CACHE_ATTR = "_fl_gemma_weight_fp32"
-_CACHE_SRC_ATTR = "_fl_gemma_weight_src"
+_CACHE_KEY_ATTR = "_fl_gemma_weight_key"
 
 
 def _gemma_weight_fp32(obj) -> torch.Tensor:
@@ -56,25 +56,24 @@ def _gemma_weight_fp32(obj) -> torch.Tensor:
     kernels accept an fp32 weight alongside bf16 activations, so this keeps the
     exact ``forward_native`` numerics without a per-call cast/allocation.
 
-    sglang maintains ``obj.gemma_weight`` and reassigns it in
-    ``GemmaRMSNorm._weight_loader`` whenever weights are (re)loaded, so its
-    object identity is used as the cache generation marker.  On sglang builds
-    without that attribute the weight is rebuilt on every call, which is always
-    correct but slightly slower.
+    SGLang 0.5.18 keeps ``obj.gemma_weight`` as a registered buffer and
+    refreshes it *in place* in ``GemmaRMSNorm._weight_loader``
+    (``torch.add(param.data, 1.0, out=self.gemma_weight)``) on every weight
+    (re)load, so its identity never changes but its version counter does. The
+    cache is keyed on ``(gemma_weight, gemma_weight._version)``; a reload
+    (``update_weights_from_disk``, weight sync) therefore rebuilds it. Without
+    the buffer the weight is rebuilt on every call: always correct, slower.
     """
     src = getattr(obj, "gemma_weight", None)
+    key = (id(src), src._version) if src is not None else None
     cached = getattr(obj, _CACHE_ATTR, None)
-    if (
-        src is not None
-        and cached is not None
-        and getattr(obj, _CACHE_SRC_ATTR, None) is src
-    ):
+    if key is not None and cached is not None and getattr(obj, _CACHE_KEY_ATTR, None) == key:
         return cached
 
     weight = (obj.weight.float() + 1.0).contiguous()
-    if src is not None:
+    if key is not None:
         obj.__dict__[_CACHE_ATTR] = weight
-        obj.__dict__[_CACHE_SRC_ATTR] = src
+        obj.__dict__[_CACHE_KEY_ATTR] = key
     return weight
 
 
