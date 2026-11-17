@@ -106,6 +106,23 @@ def _wheel_mode_child_env(base_env: dict[str, str]) -> dict[str, str]:
     return env
 
 
+def _absolutize_ignore_flags(cmd: list[str]) -> list[str]:
+    """Absolutize repo-root-relative --ignore/--ignore-glob filters.
+
+    In installed-wheel mode the pytest child runs from the staging dir
+    with an absolute pytest target; the platform config's relative
+    filters would silently match nothing there and every unit/functional
+    exclusion would be lost. Absolute values pass through unchanged
+    (pathlib's ``/`` keeps an absolute right operand). Only the
+    space-separated form is rewritten -- the one this repo's platform
+    configs generate.
+    """
+    for i, arg in enumerate(cmd[:-1]):
+        if arg in ("--ignore", "--ignore-glob"):
+            cmd[i + 1] = str((_REPO_ROOT / cmd[i + 1]).resolve())
+    return cmd
+
+
 _GUARD_SCRIPT = """
 import sys
 from importlib import metadata
@@ -640,6 +657,8 @@ class TestRunner:
         cmd.extend(self.extra_pytest_args)
         if WHEEL_SOURCE_MODE and "--import-mode=importlib" not in cmd:
             cmd.append("--import-mode=importlib")
+        if WHEEL_SOURCE_MODE:
+            cmd = _absolutize_ignore_flags(cmd)
 
         if not quiet:
             print(f"[run] --- {case.name} ---")

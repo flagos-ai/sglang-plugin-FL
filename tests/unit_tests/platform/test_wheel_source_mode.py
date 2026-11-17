@@ -243,6 +243,42 @@ class TestFilterPythonpath:
         assert kept == ["/opt/triton"]
 
 
+class TestAbsolutizeIgnoreFlags:
+    def test_relative_filters_reanchored_to_repo_root(self):
+        run = _load_run_py()
+        cmd = [
+            "python",
+            "-m",
+            "pytest",
+            str(run._REPO_ROOT / "tests" / "unit_tests"),
+            "--ignore",
+            "tests/unit_tests/kunlunxin",
+            "--ignore-glob",
+            "tests/functional_tests/ops/test_*.py",
+            "-q",
+        ]
+        out = run._absolutize_ignore_flags(list(cmd))
+        assert out[5] == str((run._REPO_ROOT / "tests/unit_tests/kunlunxin").resolve())
+        assert out[7] == str(
+            (run._REPO_ROOT / "tests/functional_tests/ops/test_*.py").resolve()
+        )
+        # everything except the filter values is untouched
+        assert [v for i, v in enumerate(out) if i not in (5, 7)] == [
+            v for i, v in enumerate(cmd) if i not in (5, 7)
+        ]
+
+    def test_absolute_filters_and_other_flags_pass_through(self):
+        run = _load_run_py()
+        absolute = "/somewhere/else"
+        cmd = ["python", "-m", "pytest", "x", "--ignore", absolute, "--tb=short"]
+        assert run._absolutize_ignore_flags(list(cmd)) == cmd
+
+    def test_trailing_ignore_without_value_is_left_alone(self):
+        run = _load_run_py()
+        cmd = ["python", "-m", "pytest", "x", "--ignore"]
+        assert run._absolutize_ignore_flags(list(cmd)) == cmd
+
+
 class TestClassifySafePath:
     def test_flag_true_passes(self):
         # Python 3.12 with PYTHONSAFEPATH (or -P): the real flag is True.
