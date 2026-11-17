@@ -27,7 +27,6 @@ _PATCHES = (
         "torchvision_image",
         "patch_torchvision_decode_jpeg_cuda_to_cpu",
     ),
-    ("sampler", "sampler", "patch_sampler"),
     ("pynccl_wrapper", "pynccl_wrapper", "patch_pynccl_wrapper"),
     ("fused_moe", "fused_moe", "patch_fused_moe_functions"),
     ("prefill_attention", "prefill_attention", "patch_prefill_attention"),
@@ -41,10 +40,8 @@ _PATCHES = (
 # Patches that only make sense when the vendor package they modify is installed.
 # In Empty mode (no flashinfer / sgl_kernel) they are skipped instead of failing,
 # and must not create shim modules that make the packages look importable.
-# The sampler patch only changes the flashinfer sampling branch.
 _PATCH_REQUIRES = {
     "flashinfer_utils_comm_backend": "flashinfer",
-    "sampler": "flashinfer",
     "sgl_kernel_cutlass_scaled_mm_alias": "sgl_kernel",
 }
 

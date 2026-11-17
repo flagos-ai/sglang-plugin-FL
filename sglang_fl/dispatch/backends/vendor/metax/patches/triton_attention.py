@@ -199,12 +199,27 @@ def _is_normal_extend(mode) -> bool:
     )
 
 
-def _patch_triton_backend_kv_splits() -> None:
-    """Match the MetaX-tuned SGLang decode kv split policy.
+def metax_max_kv_splits(backend, extend_lens=None) -> int:
+    """Decode ``max_kv_splits`` for ``backend`` under the MetaX policy.
 
-    That build hard-codes ``max_kv_splits = 16`` and, after a normal extend
-    batch, sets it to 16 for long (>256 tokens) and 2 for short extends.
+    The MetaX-tuned SGLang build uses 16 splits, and after a normal extend batch
+    16 for long (>256 tokens) and 2 for short extends. That only holds while
+    ``num_kv_splits`` is clamped to ``max_kv_splits``. With a fixed split tile
+    (``--enable-deterministic-inference`` or ``--triton-attention-split-tile-size``)
+    upstream sets ``num_kv_splits = ceil(seq_len / tile)`` without that clamp and
+    sizes ``max_kv_splits`` to cover the context length; the decode grid and the
+    stage-2 reduction stop at ``max_kv_splits``, so a smaller bound would drop
+    the tail of the KV cache. Keep the upstream bound in that case.
     """
+    if getattr(backend, "split_tile_size", None) is not None:
+        return backend.max_kv_splits
+    if extend_lens:
+        return 16 if max(extend_lens) > 256 else 2
+    return 16
+
+
+def _patch_triton_backend_kv_splits() -> None:
+    """Apply :func:`metax_max_kv_splits` to ``TritonAttnBackend``."""
     from sglang.srt.layers.attention.triton_backend import TritonAttnBackend
 
     orig_init = TritonAttnBackend.__init__
@@ -212,13 +227,13 @@ def _patch_triton_backend_kv_splits() -> None:
 
     def __init__(self, *args, **kwargs):
         orig_init(self, *args, **kwargs)
-        self.max_kv_splits = 16
+        self.max_kv_splits = metax_max_kv_splits(self)
 
     def init_forward_metadata(self, forward_batch):
         if _is_normal_extend(forward_batch.forward_mode):
             lens = forward_batch.extend_seq_lens_cpu
             if lens:
-                self.max_kv_splits = 16 if max(lens) > 256 else 2
+                self.max_kv_splits = metax_max_kv_splits(self, lens)
         return orig_meta(self, forward_batch)
 
     TritonAttnBackend.__init__ = __init__

@@ -36,15 +36,19 @@ def _get_or_create_module(module_name: str, package: str) -> types.ModuleType:
 
 
 def patch_flashinfer_utils_comm_backend() -> None:
-    """Patch flashinfer.comm.mnnvl while preserving flashinfer_utils.
+    """Provide ``flashinfer.comm.mnnvl.CommBackend`` when flashinfer lacks it.
 
-    ``flashinfer_utils`` later subclasses ``CommBackend``, so this symbol cannot
-    be ``None``. We preserve the SGLang module and only provide the placeholder
-    base class that the local source edit would define.
+    SGLang imports ``CommBackend`` from ``flashinfer.comm.mnnvl`` whenever
+    flashinfer is installed (``moe/token_dispatcher/flashinfer_utils.py``) and
+    subclasses it, so a MetaX flashinfer build without ``comm.mnnvl`` breaks
+    that import. Only add the placeholder in that case; a real ``CommBackend``
+    is left untouched.
     """
     flashinfer = _get_or_create_module("flashinfer", "flashinfer")
     comm_module = _get_or_create_module(_FLASHINFER_COMM_MODULE, "flashinfer")
     mnnvl_module = _get_or_create_module(_FLASHINFER_MNNVL_MODULE, "flashinfer.comm")
+    if getattr(mnnvl_module, "CommBackend", None) is not None:
+        return
     setattr(flashinfer, "comm", comm_module)
     setattr(comm_module, "mnnvl", mnnvl_module)
 

@@ -91,7 +91,7 @@ class TestMetaxPatchSkipping:
         called = []
         fake = (
             ("flashinfer_utils_comm_backend", "flashinfer", "patch_x"),
-            ("sampler", "sampler", "patch_y"),
+            ("sgl_kernel_cutlass_scaled_mm_alias", "sgl_kernel", "patch_y"),
             ("triton_attention", "triton_attention", "patch_z"),
         )
 
@@ -105,10 +105,10 @@ class TestMetaxPatchSkipping:
         ):
             with caplog.at_level("INFO"):
                 metax_patch._apply_required_patches()
-        # flashinfer_utils_comm_backend and sampler need flashinfer; only the triton patch runs.
+        # The vendor-package patches are skipped; only the triton patch runs.
         assert called == ["triton_attention"]
         assert "flashinfer_utils_comm_backend(no flashinfer)" in caplog.text
-        assert "sampler(no flashinfer)" in caplog.text
+        assert "sgl_kernel_cutlass_scaled_mm_alias(no sgl_kernel)" in caplog.text
 
     def test_broken_patch_raises_runtime_error(self):
         metax_patch = load_metax_patch()
@@ -236,6 +236,127 @@ class TestMetaxPatchTargets:
                 functools.reduce(getattr, attr.split("."), module)
             except AttributeError:
                 pytest.fail(f"{module_name}.{attr} is missing")
+
+
+    @pytest.mark.parametrize(
+        "submodule",
+        sorted({sub for _, sub, _ in load_metax_patch()._PATCHES}),
+    )
+    def test_every_patch_module_imports(self, submodule):
+        # Covers the vendor-package patches too: they are skipped in Empty mode,
+        # but load (and must import) as soon as flashinfer / sgl_kernel exist.
+        import importlib
+
+        importlib.import_module(
+            f"sglang_fl.dispatch.backends.vendor.metax.patches.{submodule}"
+        )
+
+    def test_sglang_imports_in_metax_sources_resolve(self):
+        """Every ``from sglang... import x`` in vendor/metax resolves on this SGLang.
+
+        Imports inside ``except ImportError`` handlers and ``*_legacy`` helpers
+        are older-SGLang fallbacks and are skipped.
+        """
+        import ast
+        import importlib
+        from pathlib import Path
+
+        metax_dir = Path(load_metax_patch().__file__).parent
+        failures = []
+
+        class Visitor(ast.NodeVisitor):
+            def __init__(self, path):
+                self.path = path
+
+            def visit_FunctionDef(self, node):
+                if not node.name.endswith("_legacy"):
+                    self.generic_visit(node)
+
+            def visit_ExceptHandler(self, node):
+                pass
+
+            def visit_ImportFrom(self, node):
+                if node.level or not (node.module or "").startswith("sglang."):
+                    return
+                try:
+                    module = importlib.import_module(node.module)
+                except ImportError as error:
+                    failures.append(f"{self.path.name}:{node.lineno} {error}")
+                    return
+                for alias in node.names:
+                    if hasattr(module, alias.name):
+                        continue
+                    try:
+                        importlib.import_module(f"{node.module}.{alias.name}")
+                    except ImportError:
+                        failures.append(
+                            f"{self.path.name}:{node.lineno} {node.module}.{alias.name}"
+                        )
+
+        for path in sorted(metax_dir.rglob("*.py")):
+            Visitor(path).visit(ast.parse(path.read_text("utf-8")))
+        assert not failures, failures
+
+
+class TestMetaxTritonKvSplits:
+    def _policy(self):
+        from sglang_fl.dispatch.backends.vendor.metax.patches import triton_attention
+
+        return triton_attention.metax_max_kv_splits
+
+    def test_default_policy(self):
+        policy = self._policy()
+        backend = SimpleNamespace(split_tile_size=None, max_kv_splits=8)
+        assert policy(backend) == 16
+        assert policy(backend, [4096, 12]) == 16
+        assert policy(backend, [256, 12]) == 2
+
+    @pytest.mark.parametrize("extend_lens", [None, [12], [8192]])
+    def test_fixed_split_tile_keeps_upstream_bound(self, extend_lens):
+        # Deterministic decode: num_kv_splits = ceil(seq_len / 256) is not
+        # clamped, so max_kv_splits must stay ceil(context_len / 256).
+        backend = SimpleNamespace(split_tile_size=256, max_kv_splits=128)
+        assert self._policy()(backend, extend_lens) == 128
+
+
+class TestMetaxFlashinferPlaceholder:
+    def _install(self, monkeypatch, mnnvl):
+        import sys
+        import types
+
+        flashinfer = types.ModuleType("flashinfer")
+        comm = types.ModuleType("flashinfer.comm")
+        flashinfer.comm, comm.mnnvl = comm, mnnvl
+        for name, module in (
+            ("flashinfer", flashinfer),
+            ("flashinfer.comm", comm),
+            ("flashinfer.comm.mnnvl", mnnvl),
+        ):
+            monkeypatch.setitem(sys.modules, name, module)
+
+    def test_keeps_real_comm_backend(self, monkeypatch):
+        import types
+
+        from sglang_fl.dispatch.backends.vendor.metax.patches import flashinfer
+
+        class RealCommBackend:
+            pass
+
+        mnnvl = types.ModuleType("flashinfer.comm.mnnvl")
+        mnnvl.CommBackend = RealCommBackend
+        self._install(monkeypatch, mnnvl)
+        flashinfer.patch_flashinfer_utils_comm_backend()
+        assert mnnvl.CommBackend is RealCommBackend
+
+    def test_adds_placeholder_when_missing(self, monkeypatch):
+        import types
+
+        from sglang_fl.dispatch.backends.vendor.metax.patches import flashinfer
+
+        mnnvl = types.ModuleType("flashinfer.comm.mnnvl")
+        self._install(monkeypatch, mnnvl)
+        flashinfer.patch_flashinfer_utils_comm_backend()
+        assert isinstance(mnnvl.CommBackend, type)
 
 
 class TestMetaxPynccl:
