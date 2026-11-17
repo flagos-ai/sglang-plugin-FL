@@ -785,12 +785,34 @@ class RuntimeEvidenceTests(unittest.TestCase):
             "torch": "2.9.0+das.opt1.dtk2604",
             "flag-gems": "5.4.0",
             "flagtree": "0.7.0+hcu3.6",
+        }
+
+        def lookup(name):
+            if name == "triton":
+                # The real image ships no standalone triton distribution.
+                raise verifier.metadata.PackageNotFoundError(name)
+            return versions[name]
+
+        flagtree_spec = SimpleNamespace(origin="/opt/flagtree/triton/__init__.py")
+        with patch.object(verifier.metadata, "version", side_effect=lookup):
+            with patch.object(
+                verifier.importlib.util, "find_spec", return_value=flagtree_spec
+            ):
+                verifier._verify_runtime_image_versions()
+
+    def test_runtime_image_rejects_standalone_triton(self):
+        versions = {
+            "sglang": "0.5.18+flagos",
+            "torch": "2.9.0+das.opt1.dtk2604",
+            "flag-gems": "5.4.0",
+            "flagtree": "0.7.0+hcu3.6",
             "triton": "3.8.0",
         }
         with patch.object(
             verifier.metadata, "version", side_effect=versions.__getitem__
         ):
-            verifier._verify_runtime_image_versions()
+            with self.assertRaisesRegex(RuntimeError, "must stay removed"):
+                verifier._verify_runtime_image_versions()
 
     def test_runtime_image_rejects_replaced_torch(self):
         versions = {

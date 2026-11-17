@@ -274,14 +274,14 @@ def _verify_runtime_image_versions() -> None:
             "the standalone triton wheel must stay removed "
             f"(FlagTree is the only Triton); found {actual}"
         )
-    import triton  # deliberate entrypoint-style resolution check
-
-    if not str(triton.__file__).startswith("/opt/flagtree"):
+    spec = importlib.util.find_spec("triton")
+    resolved = spec.origin if spec is not None else None
+    if not resolved or not resolved.startswith("/opt/flagtree"):
         raise RuntimeError(
             f"triton must resolve via /opt/flagtree in every entrypoint; "
-            f"this process resolved {triton.__file__}"
+            f"this process resolved {resolved}"
         )
-    print(f"[hygon-env] standalone triton absent; module resolves {triton.__file__}")
+    print(f"[hygon-env] standalone triton absent; module resolves {resolved}")
 
 
 def _verify_runtime_evidence(evidence: Path) -> None:
