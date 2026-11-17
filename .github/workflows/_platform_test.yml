@@ -133,7 +133,7 @@ jobs:
     if: inputs.run_e2e && needs.setup.outputs.e2e_matrix != '[]'
     strategy:
       fail-fast: false
-      max-parallel: ${{ fromJson(needs.setup.outputs.config).e2e_max_parallel || ((inputs.platform == 'musa' || inputs.platform == 'ascend' || inputs.platform == 'hygon') && 1 || 256) }}
+      max-parallel: ${{ fromJson(needs.setup.outputs.config).e2e_max_parallel || ((inputs.platform == 'musa' || inputs.platform == 'ascend' || inputs.platform == 'hygon' || inputs.platform == 'kunlunxin') && 1 || 256) }}
       matrix:
         test: ${{ fromJson(needs.setup.outputs.e2e_matrix) }}
     uses: ./.github/workflows/_e2e_test.yml
