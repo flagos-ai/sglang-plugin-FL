@@ -1,27 +1,32 @@
 #!/usr/bin/env python3
 """Post-build runtime-immutability verifier for the NVIDIA CI image.
 
-Runs INSIDE the completed image (docker run --rm <image> --volume
-<evidence>:/evidence:ro --entrypoint python3 <image>
-/evidence/verify_runtime_immutable.py --evidence-dir /evidence), never
-during image construction. All reference data is bind-mounted:
+Runs INSIDE the completed image (docker run --rm --volume
+<docker/cuda>:/evidence:ro --entrypoint python3 <image>
+/evidence/scripts/verify_runtime_immutable.py --evidence-dir /evidence),
+never during image construction. All reference data is bind-mounted:
 
-  runtime-freeze.txt      every runtime distribution (pip freeze --all)
-  site-files.sha256       every runtime site-packages file's SHA256
-  pip-check-baseline.txt  the runtime's own pip check findings
-  provenance.json         compiler slot inventory (flagtree/triton versions)
+  runtime-0.5.18.runtime-freeze.txt      runtime distributions (name==version)
+  runtime-0.5.18.site-files.sha256       runtime site-packages file hashes
+  runtime-0.5.18.pip-check-baseline.txt  the runtime's own pip check findings
+  runtime-0.5.18.provenance.json         compiler slot inventory
 
 Checks:
-  1. distribution freeze -- every runtime distribution survives verbatim
+  1. distribution freeze -- every runtime distribution survives with the
+     exact version string, local versions included (torch==2.13.0+cu130);
+     any upgrade, downgrade, or removal fails
   2. site files          -- every runtime site-packages file keeps its SHA256
-  3. pip check           -- no new violations versus the runtime baseline
-                            (no waiver list; new findings fail loudly)
+  3. pip check           -- returncode-aware comparison against the runtime
+     baseline; the success notice is never treated as a violation and a
+     crashing pip check fails loudly (no waiver list)
   4. compiler slots      -- /opt/flagtree and /opt/triton still carry the
-                            recorded Triton versions
+     recorded Triton versions
 
 It also prints the additions manifest (installed distributions that are not
 runtime distributions) as an audit trail; it is output, never an input.
 """
+
+from __future__ import annotations
 
 import argparse
 import hashlib
@@ -34,9 +39,59 @@ from pathlib import Path
 
 from packaging.utils import canonicalize_name
 
+PIP_CHECK_SUCCESS_NOTICE = "No broken requirements found."
 
-def read_lines(path: Path) -> list[str]:
-    return [line.strip() for line in path.read_text().splitlines() if line.strip()]
+
+def parse_freeze_lines(lines: list[str]) -> dict[str, str]:
+    """Map canonical name -> full version string from ``pip freeze`` lines.
+
+    Local versions are preserved verbatim (``torch==2.13.0+cu130``); lines
+    without an ``==`` (editables, VCS references) are not runtime freeze
+    entries and are skipped.
+    """
+    frozen: dict[str, str] = {}
+    for line in lines:
+        line = line.strip()
+        if not line or "==" not in line:
+            continue
+        name, _, version = line.partition("==")
+        frozen[canonicalize_name(name)] = version
+    return frozen
+
+
+def diff_runtime(
+    baseline: dict[str, str], current: dict[str, str]
+) -> tuple[list[str], list[str]]:
+    """Return (missing, version_changed) against the runtime baseline.
+
+    A runtime distribution appearing with any other version string -- even
+    the same release without its local label -- counts as changed.
+    """
+    missing = sorted(name for name in baseline if name not in current)
+    version_changed = sorted(
+        f"{name}: {baseline[name]} -> {current[name]}"
+        for name in baseline
+        if name in current and current[name] != baseline[name]
+    )
+    return missing, version_changed
+
+
+def pip_check_violations(returncode: int, stdout: str, baseline: set[str]) -> set[str]:
+    """New pip check violations, or errors when pip check itself failed."""
+    if returncode == 0:
+        # Clean run: stdout carries the success notice, not violations.
+        return set()
+    if returncode == 1:
+        current = {
+            line.strip()
+            for line in stdout.splitlines()
+            if line.strip() and line.strip() != PIP_CHECK_SUCCESS_NOTICE
+        }
+        return current - baseline
+    raise RuntimeError(
+        "pip check itself failed: "
+        f"returncode={returncode} stdout={stdout!r} stderr may follow"
+    )
 
 
 def installed_distributions() -> dict[str, str]:
@@ -49,11 +104,20 @@ def installed_distributions() -> dict[str, str]:
     }
 
 
-def check_freeze(evidence: Path, runtime_names: set[str]) -> None:
+def check_freeze(evidence: Path) -> set[str]:
+    baseline = parse_freeze_lines(
+        (evidence / "runtime-0.5.18.runtime-freeze.txt").read_text().splitlines()
+    )
     current = installed_distributions()
-    missing = sorted(name for name in runtime_names if name not in current)
+    missing, version_changed = diff_runtime(baseline, current)
     assert not missing, f"runtime distributions removed: {missing}"
-    print(f"[1/4] runtime freeze preserved ({len(runtime_names)} distributions)")
+    assert not version_changed, (
+        f"runtime distribution versions changed: {version_changed}"
+    )
+    print(
+        f"[1/4] runtime distributions preserved: {len(baseline)} (exact name+version)"
+    )
+    return set(baseline)
 
 
 def check_site_files(evidence: Path) -> None:
@@ -76,14 +140,19 @@ def check_site_files(evidence: Path) -> None:
 
 
 def check_pip_check(evidence: Path) -> None:
-    after = subprocess.run(
+    completed = subprocess.run(
         [sys.executable, "-m", "pip", "check"],
         capture_output=True,
         text=True,
-    ).stdout
-    baseline = set(read_lines(evidence / "runtime-0.5.18.pip-check-baseline.txt"))
-    current = {line for line in after.splitlines() if line.strip()}
-    new = current - baseline
+    )
+    baseline = {
+        line.strip()
+        for line in (evidence / "runtime-0.5.18.pip-check-baseline.txt")
+        .read_text()
+        .splitlines()
+        if line.strip() and line.strip() != PIP_CHECK_SUCCESS_NOTICE
+    }
+    new = pip_check_violations(completed.returncode, completed.stdout, baseline)
     assert not new, (
         f"new pip check violations introduced by the two-wheel install: {sorted(new)}"
     )
@@ -115,7 +184,7 @@ def check_compiler_slots(evidence: Path) -> None:
         print(f"[4/4] {key}: triton {actual} at {init_path.parent}")
 
 
-def report_additions(evidence: Path, runtime_names: set[str]) -> None:
+def report_additions(runtime_names: set[str]) -> None:
     current = installed_distributions()
     additions = sorted(
         f"{name}=={current[name]}" for name in current if name not in runtime_names
@@ -136,19 +205,16 @@ def main() -> int:
     args = parser.parse_args()
     evidence = args.evidence_dir
 
-    runtime_names = {
-        canonicalize_name(line.split("==", 1)[0])
-        for line in read_lines(evidence / "runtime-0.5.18.runtime-freeze.txt")
-        if "==" in line
-    }
-
     try:
-        check_freeze(evidence, runtime_names)
+        runtime_names = check_freeze(evidence)
         check_site_files(evidence)
         check_pip_check(evidence)
         check_compiler_slots(evidence)
-        report_additions(evidence, runtime_names)
+        report_additions(runtime_names)
     except AssertionError as failure:
+        print(f"FATAL: {failure}", file=sys.stderr)
+        return 1
+    except RuntimeError as failure:
         print(f"FATAL: {failure}", file=sys.stderr)
         return 1
     print("runtime immutability verified against the bind-mounted baseline")
