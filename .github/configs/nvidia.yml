@@ -5,7 +5,9 @@ platform: nvidia
 
 # Docker image: SGLang 0.5.18 standard wheel plus its locked closure on
 # the immutable operations runtime (flagos-runtime-nvidia-cuda13.3),
-# built by docker/cuda/runtime-0.5.18.containerfile. Digest-pinned; the
+# built by docker/cuda/runtime-0.5.18.containerfile (top-level
+# resolution: the sglang wheel's METADATA drives the closure, no
+# enumerated lock). Digest-pinned; the
 # aligned CUDA 13.0 toolchain, the lib64 layout shim, and the numpy1-era
 # datasets stack are baked in; triton comes exclusively from the
 # runtime's compiler slots (/opt/flagtree default, /opt/triton via
@@ -14,7 +16,7 @@ platform: nvidia
 # hour pulling it, so all platform stages get 180 minutes.
 test_timeout: 180
 
-ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:632e684fc5095266f32fca52410b332b790cf0ae0336aba7a3a192c706bdc74c
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:18a5fe0eb0d78d7da8511bec0910f8e4c60ea90521ef4659559b9d698ef47d97
 
 # Runner labels for this hardware
 runner_labels:
