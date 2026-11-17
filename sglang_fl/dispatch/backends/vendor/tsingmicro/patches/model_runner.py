@@ -34,11 +34,8 @@ _patched = False
 
 
 def _tp_rank(runner) -> int:
-    """tp_rank is on ModelRunner in SGLang 0.5.11 and on ModelRunner.ps in 0.5.18."""
-    rank = getattr(runner, "tp_rank", None)
-    if rank is None:
-        rank = getattr(getattr(runner, "ps", None), "tp_rank", 0)
-    return rank
+    """SGLang 0.5.18 keeps tp_rank on ModelRunner.ps."""
+    return runner.ps.tp_rank
 
 
 def _is_enabled() -> bool:

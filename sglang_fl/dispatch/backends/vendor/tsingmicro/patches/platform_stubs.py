@@ -96,7 +96,6 @@ _PLATFORM_STUB_MODULES = frozenset(
         "flashinfer.prefill",
         "flashinfer.sampling",
         "flashinfer.utils",
-        "sglang.srt.distributed.device_communicators.pynccl_allocator",
     }
 )
 

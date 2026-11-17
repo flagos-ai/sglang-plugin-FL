@@ -7,17 +7,12 @@ runtime monkey-patching, keeping all txda-specific logic inside the plugin.
 
 Patches applied:
   cuda_alias      – torch.cuda -> txda (torch_txda.transfer_to_txda), first
-  device_support  – torchvision fake-register tolerance, safe CUDA
-                    properties, get_device() txda awareness, inject
-                    is_txda() utility, SUPPORTED_DEVICES txda extension
-  dist_init       – GroupCoordinator device detection, distributed backend
-                    map, init_distributed_environment backend override,
+  device_support  – torchvision fake-register tolerance (CPU torch build)
+  dist_init       – GroupCoordinator device (txda instead of cpu),
                     all_gather_into_tensor txda routing
   per_rank_log    – Redirect scheduler subprocess stdout/stderr to
                     per-rank log files (SGLANG_FL_LOG_DIR)
-  fused_moe       – Patch moe_align_block_size import, disable vllm_ops,
-                    bypass register_custom_op for inplace_fused_experts,
-                    route UnquantizedFusedMoEMethod.apply through dispatch
+  fused_moe       – moe_align_block_size for the Triton MoE runner fallback
   platform_stubs  – Inject stub modules for CUDA-only deps on non-CUDA platforms
   model_runner    – Per-iteration forward() timing (SGLANG_FL_TIMER_ENABLE)
   scheduler_pp_mixin –  PP send/recv even/odd ordering for txda (same as XPU)
@@ -90,8 +85,8 @@ def apply_all_txda_patches() -> None:
     from sglang_fl.dispatch.backends.vendor.tsingmicro.patches import per_rank_log, device_support, platform_stubs, model_runner, qwen3_asr_config, kv_leak_fix
 
     per_rank_log.patch()
-    qwen3_asr_config.patch()  # tolerate transformers 5.15+ built-in qwen3_asr (must run before device_support)
-    device_support.patch()   # universal + txda-gated internally
+    qwen3_asr_config.patch()  # tolerate transformers 5.15+ built-in qwen3_asr (no-op with 0.5.18's pinned 5.12.1)
+    device_support.patch()   # torchvision fake-register tolerance
     platform_stubs.patch()   # dummy-module injection for non-CUDA platforms
     model_runner.patch()     # gated by SGLANG_FL_TIMER_ENABLE internally
     kv_leak_fix.patch()     # hardened KV release; on by default, SGLANG_KVLEAK_FIX=0 disables
@@ -114,7 +109,7 @@ def apply_all_txda_patches() -> None:
     )
 
     dist_init.patch()
-    fused_moe.patch()  # includes former unquant patch
+    fused_moe.patch()  # moe_align_block_size for the Triton MoE fallback
     scheduler_pp_mixin.patch()
     speculative_tree.patch()  # EAGLE/MTP tree build + greedy verify -> SGLang Triton kernels
     vocab_embedding.patch()  # 0.5.18 Triton embedding returns non-zero rows for out-of-shard ids on txda
