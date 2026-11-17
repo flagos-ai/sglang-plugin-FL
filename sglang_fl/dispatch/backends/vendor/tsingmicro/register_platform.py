@@ -38,3 +38,15 @@ def _create_txda_oot_backend(runner):
     )
 
     return TxdaAttnBackend(runner)
+
+
+# Workers that SGLang starts without load_plugins() (sglang.bench_one_batch)
+# load the full plugin before their first ModelConfig; see plugin_bootstrap.py.
+# init_backend runs while ModelRunner is still being imported, so only the
+# wrapper is installed here; loading the plugin waits for the first real
+# model-config call.
+from sglang_fl.dispatch.backends.vendor.tsingmicro.plugin_bootstrap import (  # noqa: E402
+    install_model_config_bootstrap,
+)
+
+install_model_config_bootstrap()
