@@ -110,7 +110,10 @@ def _create_compatibility_view(
     *, nvcc: Path, include_dir: Path, libcudart: Path
 ) -> Path:
     identity = hashlib.sha256(
-        f"{nvcc.resolve()}\0{include_dir.resolve()}\0{libcudart.resolve()}".encode()
+        (
+            "v2\0"
+            f"{nvcc.resolve()}\0{include_dir.resolve()}\0{libcudart.resolve()}"
+        ).encode()
     ).hexdigest()[:16]
     cache_root = _cache_root()
     view = cache_root / identity
@@ -119,6 +122,12 @@ def _create_compatibility_view(
         lib64.mkdir(parents=True, exist_ok=True)
         _ensure_symlink(view / "bin", nvcc.parent)
         _ensure_symlink(view / "include", include_dir)
+        # nvcc links libcudadevrt.a and libcudart_static.a implicitly in
+        # addition to FlashInfer's explicit -lcudart. Expose the complete
+        # wheel-owned runtime-lib directory, not only the dynamic library.
+        for library in libcudart.parent.iterdir():
+            if library.is_file():
+                _ensure_symlink(lib64 / library.name, library)
         _ensure_symlink(lib64 / "libcudart.so", libcudart)
     except OSError as exc:
         raise RuntimeError(

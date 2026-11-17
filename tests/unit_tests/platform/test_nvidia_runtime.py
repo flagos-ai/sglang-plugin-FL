@@ -76,6 +76,8 @@ def _fake_toolkit(root: Path, release: str = "13.0") -> tuple[Path, Path, Path]:
     lib = root / "wheel" / "lib" / "libcudart.so.13"
     lib.parent.mkdir(parents=True)
     lib.touch()
+    (lib.parent / "libcudadevrt.a").touch()
+    (lib.parent / "libcudart_static.a").touch()
     return nvcc, include, lib
 
 
@@ -96,6 +98,8 @@ def test_compatibility_view_is_concurrently_idempotent(tmp_path, monkeypatch):
     assert (view / "bin").resolve() == nvcc.parent.resolve()
     assert (view / "include").resolve() == include.resolve()
     assert (view / "lib64" / "libcudart.so").resolve() == libcudart.resolve()
+    for name in ("libcudadevrt.a", "libcudart_static.a"):
+        assert (view / "lib64" / name).resolve() == (libcudart.parent / name).resolve()
 
 
 def test_default_cache_does_not_depend_on_home(tmp_path, monkeypatch):

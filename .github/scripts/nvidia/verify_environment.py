@@ -6,8 +6,10 @@ from __future__ import annotations
 import argparse
 import importlib
 import importlib.util
+import os
 import sys
 from importlib import metadata
+from pathlib import Path
 
 
 # Operations runtime (flagos-runtime-nvidia-cuda13.3, digest-pinned in the
@@ -16,6 +18,7 @@ from importlib import metadata
 # SGLang wheel closure contributes sglang/sglang-kernel/flashinfer/triton.
 EXPECTED_RUNTIME_DISTRIBUTIONS = {
     "sglang": "0.5.18",
+    "sglang-fl": "0.1.0",
     "torch": "2.13.0+cu130",
     "sglang-kernel": "0.4.6.post1",
     "flagtree": "0.7.0",
@@ -25,6 +28,7 @@ EXPECTED_RUNTIME_DISTRIBUTIONS = {
     "packaging": "26.3",
     "PyYAML": "6.0.1",
     "SQLAlchemy": "2.0.57",
+    "triton": "3.7.1",
 }
 
 # Installed into the ephemeral CI container by setup.sh, not baked into the
@@ -59,25 +63,33 @@ def verify(
     if require_ci:
         for name, expected in EXPECTED_CI_DISTRIBUTIONS.items():
             _require_distribution(name, expected)
-    # FlagTree's triton module must be what resolves (PYTHONPATH=/opt/flagtree
-    # precedes site-packages at container start; find_spec resolves without
-    # executing device libraries).
+    # setup.sh uses the Runtime's official compiler activation command. The
+    # selected 3.7 slot, not the legacy FlagTree 3.6 compatibility slot, must
+    # be authoritative for the CI process.
     triton_spec = importlib.util.find_spec("triton")
     if (
         triton_spec is None
         or not triton_spec.origin
-        or not triton_spec.origin.startswith("/opt/flagtree")
+        or not triton_spec.origin.startswith("/opt/triton")
     ):
         found = triton_spec.origin if triton_spec else None
-        raise RuntimeError(
-            f"triton module must resolve under /opt/flagtree, found {found}"
-        )
+        raise RuntimeError(f"triton module must resolve under /opt/triton, found {found}")
     print(f"[cuda-env] triton-module authoritative at {triton_spec.origin}")
 
     torch = importlib.import_module("torch")
     if torch.version.cuda != "13.0":
         raise RuntimeError(f"PyTorch must use CUDA 13.0, found {torch.version.cuda}")
     print(f"[cuda-env] torch-cuda={torch.version.cuda}")
+
+    # Importing the installed plugin activates the NVIDIA CUDA wheel layout.
+    # This must happen before FlashInfer's first JIT path resolves CUDA_HOME.
+    plugin = importlib.import_module("sglang_fl")
+    plugin_file = Path(plugin.__file__).resolve()
+    if "site-packages" not in plugin_file.parts:
+        raise RuntimeError(
+            f"sglang_fl must come from the installed wheel, found {plugin_file}"
+        )
+    print(f"[cuda-env] imported installed plugin from {plugin_file}")
 
     for module_name in ("sglang", "flashinfer"):
         importlib.import_module(module_name)
@@ -112,6 +124,30 @@ def verify(
             for index in range(device_count)
         )
         print(f"[cuda-env] visible-gpus={device_count} ({devices})")
+
+        cuda_home = Path(os.environ.get("CUDA_HOME", ""))
+        required_view_paths = (
+            cuda_home / "bin" / "nvcc",
+            cuda_home / "include" / "cuda_runtime.h",
+            cuda_home / "lib64" / "libcudart.so",
+        )
+        if not str(cuda_home) or not all(path.exists() for path in required_view_paths):
+            raise RuntimeError(
+                "plugin did not activate a complete CUDA compatibility view: "
+                f"CUDA_HOME={cuda_home}, paths={required_view_paths}"
+            )
+
+        from flashinfer.jit.cpp_ext import get_cuda_path
+
+        get_cuda_path.cache_clear()
+        flashinfer_cuda_home = Path(get_cuda_path()).resolve()
+        if flashinfer_cuda_home != cuda_home.resolve():
+            raise RuntimeError(
+                "FlashInfer JIT did not consume the plugin CUDA view: "
+                f"expected {cuda_home}, found {flashinfer_cuda_home}"
+            )
+        print(f"[cuda-env] FlashInfer JIT CUDA view={flashinfer_cuda_home}")
+
         importlib.import_module("sgl_kernel")
         importlib.import_module("flag_gems")
         importlib.import_module("flag_gems.fused.DSA")
