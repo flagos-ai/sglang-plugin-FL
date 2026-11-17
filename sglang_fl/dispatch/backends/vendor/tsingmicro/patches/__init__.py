@@ -6,6 +6,7 @@ These patches replace direct modifications to the sglang source tree with
 runtime monkey-patching, keeping all txda-specific logic inside the plugin.
 
 Patches applied:
+  cuda_alias      – torch.cuda -> txda (torch_txda.transfer_to_txda), first
   device_support  – torchvision fake-register tolerance, safe CUDA
                     properties, get_device() txda awareness, inject
                     is_txda() utility, SUPPORTED_DEVICES txda extension
@@ -81,6 +82,11 @@ def apply_all_txda_patches() -> None:
     for per-patch submodules; per_rank_log and device_support are applied
     unconditionally.
     """
+    from sglang_fl.dispatch.backends.vendor.tsingmicro.patches import cuda_alias
+
+    # First: torch.cuda -> txda. Everything below (and SGLang) relies on it.
+    cuda_alias.patch()
+
     from sglang_fl.dispatch.backends.vendor.tsingmicro.patches import per_rank_log, device_support, platform_stubs, model_runner, qwen3_asr_config, kv_leak_fix
 
     per_rank_log.patch()

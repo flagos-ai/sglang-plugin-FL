@@ -36,12 +36,8 @@ import os
 import sys
 import types
 
+from sglang_fl.dispatch.backends.vendor.tsingmicro.patches import cuda_alias
 from sglang_fl.dispatch.backends.vendor.tsingmicro.patches._logger import patch_logger
-try:
-    import torch_txda  # noqa: F401
-    from torch_txda import transfer_to_txda
-except ImportError:
-    pass
 
 
 _log = patch_logger("platform_stubs")
@@ -251,6 +247,9 @@ def patch() -> None:
     global _patched
     if _patched:
         return
+
+    # torch.cuda -> txda first (this module used to do it as an import side effect).
+    cuda_alias.patch()
 
     mod_names = _resolve_module_names()
     injected: list[str] = []
