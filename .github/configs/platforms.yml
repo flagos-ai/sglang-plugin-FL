@@ -58,7 +58,9 @@ platforms:
       - .github/configs/nvidia.yml
       - tests/platforms/nvidia.yaml
   ascend:
-    enabled: true
+    # TEMPORARY (GPU-verify probe PR only; MUST NOT land in PR #179):
+    # disabled so the two-wheel probe routes to NVIDIA alone.
+    enabled: false
     trigger_paths:
       - sglang_fl/dispatch/config/ascend.yaml
       - .github/scripts/ascend/
@@ -73,7 +75,8 @@ platforms:
       - .github/configs/ascend.yml
       - tests/platforms/ascend.yaml
   musa:
-    enabled: true
+    # TEMPORARY (GPU-verify probe PR only; MUST NOT land in PR #179).
+    enabled: false
     trigger_paths:
       - sglang_fl/dispatch/config/musa.yaml
       - .github/scripts/musa/
@@ -86,7 +89,8 @@ platforms:
       - .github/configs/musa.yml
       - tests/platforms/musa.yaml
   iluvatar:
-    enabled: true
+    # TEMPORARY (GPU-verify probe PR only; MUST NOT land in PR #179).
+    enabled: false
     trigger_paths:
       - sglang_fl/dispatch/config/iluvatar.yaml
       - .github/scripts/iluvatar/
@@ -114,7 +118,8 @@ platforms:
   hygon:
     # Self-hosted runner pool: label ci-sglang-plugin-fl-hygon (8x BW1000 DCU).
     # CI image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-hygon-ci.
-    enabled: true
+    # TEMPORARY (GPU-verify probe PR only; MUST NOT land in PR #179).
+    enabled: false
     trigger_paths:
       - sglang_fl/dispatch/config/hygon.yaml
       - .github/scripts/hygon/
