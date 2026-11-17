@@ -44,7 +44,7 @@ class FlagCXTransferEngine:
             _import_flagcx_wrapper,
         )
 
-        flagcx_library = _import_flagcx_wrapper()[0]
+        flagcx_library = _import_flagcx_wrapper().FLAGCXLibrary
 
         self.hostname = hostname
         self.gpu_id = gpu_id if gpu_id is not None else 0

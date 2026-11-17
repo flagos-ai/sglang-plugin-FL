@@ -347,13 +347,12 @@ def test_constructor_creates_npu_stream_before_eager_warmup(
     monkeypatch.setattr(
         flagcx_module,
         "_import_flagcx_wrapper",
-        lambda: (
-            lambda path: runtime.library,
-            lambda ptr=None: ("buffer", ptr),
-            object,
-            runtime.dtype_enum,
-            runtime.redop_enum,
-            lambda: SimpleNamespace(internal=[0] * 128),
+        lambda: SimpleNamespace(
+            FLAGCXLibrary=lambda path: runtime.library,
+            buffer_type=lambda ptr=None: ("buffer", ptr),
+            flagcxDataTypeEnum=runtime.dtype_enum,
+            flagcxRedOpTypeEnum=runtime.redop_enum,
+            flagcxUniqueId=lambda: SimpleNamespace(internal=[0] * 128),
         ),
     )
     flagcx_module.dist = SimpleNamespace(

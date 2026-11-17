@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+import ctypes
 from pathlib import Path
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, call
 
 import pytest
@@ -22,14 +24,15 @@ class _FakeFlagCXId:
         self.internal = [0] * 128
 
 
-def _fake_wrapper_tuple():
-    return (
-        _FakeFlagCXLibrary,
-        lambda ptr=None: ptr,
-        object,
-        object,
-        object,
-        _FakeFlagCXId,
+def _fake_wrapper_api():
+    return SimpleNamespace(
+        FLAGCXLibrary=_FakeFlagCXLibrary,
+        buffer_type=ctypes.c_void_p,
+        flagcxComm_t=ctypes.c_void_p,
+        flagcxDataTypeEnum=object,
+        flagcxRedOpTypeEnum=object,
+        flagcxUniqueId=_FakeFlagCXId,
+        flagcxStream_t=ctypes.c_void_p,
     )
 
 
@@ -63,13 +66,24 @@ def test_import_flagcx_wrapper_rejects_invalid_path(monkeypatch) -> None:
         _import_flagcx_wrapper()
 
 
-def test_world_size_one_disables_communicator(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("use_wheel", [False, True])
+def test_communicator_uses_selected_api_and_library(
+    monkeypatch, tmp_path: Path, use_wheel: bool
+) -> None:
     from sglang_fl.distributed.device_communicators import flagcx as flagcx_mod
 
-    monkeypatch.setenv("FLAGCX_PATH", str(tmp_path))
-    monkeypatch.setattr(
-        flagcx_mod, "_import_flagcx_wrapper", lambda: _fake_wrapper_tuple()
-    )
+    api = _fake_wrapper_api()
+    if use_wheel:
+        monkeypatch.delenv("FLAGCX_PATH", raising=False)
+        package = ModuleType("flagcx")
+        package.api = api
+        api.__file__ = str(tmp_path / "wheel" / "flagcx" / "api.py")
+        monkeypatch.setitem(sys.modules, "flagcx", package)
+        expected_library = tmp_path / "wheel" / "flagcx" / "lib" / "libflagcx.so"
+    else:
+        monkeypatch.setenv("FLAGCX_PATH", str(tmp_path / "source"))
+        monkeypatch.setattr(flagcx_mod, "_import_flagcx_wrapper", lambda: api)
+        expected_library = tmp_path / "source" / "build" / "lib" / "libflagcx.so"
     monkeypatch.setattr(flagcx_mod.dist, "get_rank", Mock(return_value=0))
     monkeypatch.setattr(flagcx_mod.dist, "get_world_size", Mock(return_value=1))
 
@@ -78,6 +92,19 @@ def test_world_size_one_disables_communicator(monkeypatch, tmp_path: Path) -> No
     assert comm.disabled is True
     assert comm.available is False
     assert comm.group == "group"
+    assert comm.flagcx.library_path == str(expected_library)
+
+    monkeypatch.setattr(comm, "_get_raw_stream_handle", lambda: 123)
+    stream_copy = Mock(return_value=0)
+    comm.flagcx.devHandle = SimpleNamespace(
+        contents=SimpleNamespace(streamCopy=stream_copy)
+    )
+    comm.flagcx.FLAGCX_CHECK = Mock()
+    stream = comm._get_stream()
+    assert isinstance(stream, api.flagcxStream_t)
+    assert comm._get_stream() is stream
+    stream_copy.assert_called_once()
+    assert stream_copy.call_args.args[1].value == 123
 
 
 def test_del_destroys_communicator() -> None:
@@ -201,22 +228,15 @@ def test_flagcx_api_selection_and_stream_cache(monkeypatch, tmp_path, missing_ne
     class Stream(ctypes.c_void_p):
         pass
 
-    symbols = _fake_wrapper_tuple()
-    api = SimpleNamespace(
-        **dict(
-            zip(
-                (
-                    "FLAGCXLibrary",
-                    "buffer_type",
-                    "flagcxComm_t",
-                    "flagcxDataTypeEnum",
-                    "flagcxRedOpTypeEnum",
-                    "flagcxUniqueId",
-                ),
-                symbols,
-            )
-        ),
-        flagcxStream_t=Stream,
+    api = _fake_wrapper_api()
+    api.flagcxStream_t = Stream
+    symbols = (
+        api.FLAGCXLibrary,
+        api.buffer_type,
+        api.flagcxComm_t,
+        api.flagcxDataTypeEnum,
+        api.flagcxRedOpTypeEnum,
+        api.flagcxUniqueId,
     )
 
     def import_api(name):
@@ -248,6 +268,7 @@ def test_flagcx_api_selection_and_stream_cache(monkeypatch, tmp_path, missing_ne
     comm = flagcx_mod.FlagCXCommunicator.__new__(flagcx_mod.FlagCXCommunicator)
     comm.comm = None
     comm._stream_cache = {}
+    comm._flagcx_api = api
     comm._get_raw_stream_handle = lambda: 42
     comm.flagcx = SimpleNamespace(
         devHandle=SimpleNamespace(contents=SimpleNamespace(streamCopy=copy)),
