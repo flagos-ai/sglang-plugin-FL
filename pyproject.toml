@@ -28,7 +28,7 @@ dependencies = [
 
 [project.optional-dependencies]
 qwen38-musa = [
-    "flaggems_sglang @ git+https://github.com/zhaiyansen/FlagGems-sglang.git@e468341776fae58f9d60202b8779abefc3776012",
+    "flaggems_sglang @ git+https://github.com/zhaiyansen/FlagGems-sglang.git@b3c85ef467cdbf95a51b64059e653698cc884228",
 ]
 
 [project.entry-points."sglang.srt.platforms"]
