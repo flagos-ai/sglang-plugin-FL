@@ -10,13 +10,17 @@ Two explicit phases, selected by CLI flag:
   - no requirement on the active Triton slot, pytest, or any setup.sh
     side effect; imports nothing that mutates the process
 
-``--phase post-setup`` (setup.sh, after the Runtime compiler activation):
+``--phase post-setup`` (setup.sh, after the Runtime slot selection):
   - everything pre-setup checks
-  - Triton distribution 3.7.1 and the module resolving under /opt/triton
-    (the Runtime's official ``compiler triton`` selection)
+  - NO standalone triton distribution; ``import triton`` resolves to the
+    Runtime's /opt/flagtree module tree (Triton 3.6.0, provided by
+    FlagTree). Torch/xgrammar/humming-kernels still declare triton in
+    their distribution metadata -- the documented platform capability
+    exception (pip check compares exactly against the runtime baseline
+    plus those requirers).
   - sglang-plugin-FL 0.1.0 loading from site-packages with both SGLang
     entry-point groups discoverable
-  - the ephemeral CI test-runner versions
+  - the ephemeral CI test-runner versions and USE_FLAGGEMS=1
   - with --require-gpu: the plugin's CUDA compatibility view is active and
     FlashInfer's JIT resolves CUDA_HOME to it
 """
@@ -37,7 +41,9 @@ PHASE_POST_SETUP = "post-setup"
 # Operations runtime (flagos-runtime-nvidia-cuda13.3, digest-pinned in the
 # containerfile) plus the two staged wheels. The runtime contributes
 # torch/flagtree/flag-gems/numpy; the SGLang wheel closure contributes
-# sglang/sglang-kernel/flashinfer/triton; the plugin wheel is sglang-fl.
+# sglang/sglang-kernel/flashinfer (triton is intentionally excluded from
+# resolution -- the /opt/flagtree module tree is the compiler); the plugin
+# wheel is sglang-fl.
 EXPECTED_DISTRIBUTIONS = {
     "sglang": "0.5.18",
     "sglang-fl": "0.1.0",
@@ -46,12 +52,15 @@ EXPECTED_DISTRIBUTIONS = {
 }
 
 # Only meaningful after setup.sh's ephemeral install; never checked in the
-# pre-setup phase.
+# pre-setup phase. Triton is deliberately absent -- see check_triton_slot.
 POST_SETUP_DISTRIBUTIONS = {
-    "triton": "3.7.1",
     "pytest": "9.1.1",
     "pytest-timeout": "2.4.0",
 }
+
+# The Runtime's default compiler slot selected by its login-shell profile.
+FLAGTREE_MODULE_ROOT = "/opt/flagtree/triton"
+EXPECTED_FLAGTREE_VERSION = "3.6.0"
 
 PLUGIN_ENTRY_POINT_GROUPS = ("sglang.srt.platforms", "sglang.srt.plugins")
 
@@ -94,18 +103,49 @@ def check_identity_and_gpu(min_gpus: int) -> None:
 
 
 def check_triton_slot() -> None:
-    _require_distribution("triton", POST_SETUP_DISTRIBUTIONS["triton"])
+    # The compiler is a Runtime module tree, not a pip distribution: the
+    # standalone triton distribution must be absent while ``import triton``
+    # resolves to /opt/flagtree (3.6.0, provided by FlagTree). The /opt/triton
+    # 3.7.1 tree stays untouched and unselected (its integrity is the image
+    # verifier's compiler-slots gate, not this runtime check).
+    try:
+        metadata.version("triton")
+    except metadata.PackageNotFoundError:
+        pass
+    else:
+        raise RuntimeError(
+            "a standalone triton distribution is installed; the image must "
+            "resolve without one (the compiler is the /opt/flagtree module tree)"
+        )
+    print("[cuda-env] no standalone triton distribution (platform capability exception)")
+
     triton_spec = importlib.util.find_spec("triton")
     if (
         triton_spec is None
         or not triton_spec.origin
-        or not triton_spec.origin.startswith("/opt/triton")
+        or not triton_spec.origin.startswith(FLAGTREE_MODULE_ROOT)
     ):
         found = triton_spec.origin if triton_spec else None
         raise RuntimeError(
-            f"triton module must resolve under /opt/triton, found {found}"
+            f"triton module must resolve under {FLAGTREE_MODULE_ROOT}, found {found}"
+        )
+    triton = importlib.import_module("triton")
+    if triton.__version__ != EXPECTED_FLAGTREE_VERSION:
+        raise RuntimeError(
+            f"/opt/flagtree triton must be {EXPECTED_FLAGTREE_VERSION}, "
+            f"found {triton.__version__}"
         )
     print(f"[cuda-env] triton-module authoritative at {triton_spec.origin}")
+    print(f"[cuda-env] triton={triton.__version__} (FlagTree module tree)")
+
+
+def check_flaggems_enabled() -> None:
+    if os.environ.get("USE_FLAGGEMS") != "1":
+        raise RuntimeError(
+            f"USE_FLAGGEMS must be 1 (FlagGems dispatch enabled), found "
+            f"{os.environ.get('USE_FLAGGEMS')!r}"
+        )
+    print("[cuda-env] FlagGems enabled (USE_FLAGGEMS=1)")
 
 
 def check_installed_plugin() -> None:
@@ -167,7 +207,8 @@ def print_provenance_record() -> None:
         f"[cuda-env] provenance sglang={metadata.version('sglang')} at {sglang.__file__}"
     )
     print(
-        f"[cuda-env] provenance triton={metadata.version('triton')} at {triton.__file__}"
+        f"[cuda-env] provenance triton={triton.__version__} (module tree, "
+        f"no distribution) at {triton.__file__}"
     )
 
 
@@ -178,6 +219,7 @@ def verify(*, phase: str, min_gpus: int = 1) -> None:
         for name, expected in POST_SETUP_DISTRIBUTIONS.items():
             _require_distribution(name, expected)
         check_triton_slot()
+        check_flaggems_enabled()
         check_installed_plugin()
         print_provenance_record()
         check_cuda_view()

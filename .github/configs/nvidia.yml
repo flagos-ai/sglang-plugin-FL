@@ -7,13 +7,14 @@ platform: nvidia
 # sglang_fl[nvidia]==0.1.0 -- installed once on the immutable operations
 # runtime (flagos-runtime-nvidia-cuda13.3), built by
 # docker/cuda/runtime-0.5.18.containerfile (top-level resolution: the
-# wheels' METADATA drive the closure, no enumerated lock). Digest-
-# pinned; the aligned CUDA 13.0 toolchain, the plugin's compatibility
-# view for FlashInfer's JIT, and the numpy1-era datasets stack are baked
-# in. The image installs the triton==3.7.1 distribution (site-packages)
-# and setup.sh's `compiler triton` selects the Runtime's /opt/triton
-# module of the same version for actual imports; /opt/flagtree keeps
-# 3.6.0 as the login-shell default slot.
+# wheels' METADATA drive the closure, no enumerated lock; uv drops the
+# standalone triton distribution per
+# docker/cuda/runtime-0.5.18.excludes.txt). Digest-pinned; the aligned
+# CUDA 13.0 toolchain, the plugin's compatibility view for FlashInfer's
+# JIT, and the numpy1-era datasets stack are baked in. setup.sh keeps the
+# Runtime's default /opt/flagtree slot (Triton 3.6.0 module tree, no pip
+# distribution) -- FlagGems 5.4.0 is incompatible with standalone Triton
+# 3.7.x; /opt/triton stays untouched and unselected.
 # The operations-runtime image is ~20 GB; a cold runner spends most of an
 # hour pulling it, so all platform stages get 180 minutes.
 test_timeout: 180

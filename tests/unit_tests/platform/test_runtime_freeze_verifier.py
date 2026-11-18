@@ -129,3 +129,42 @@ class TestPipCheckViolations:
         assert "returncode=2" in message
         assert "partial stdout" in message
         assert "pip internals exploded" in message
+
+    def test_documented_triton_exception_is_the_only_accepted_addition(
+        self, verifier
+    ):
+        baseline = {"torch 2.13.0+cu130 requires triton, which is not installed."}
+        stdout = (
+            "torch 2.13.0+cu130 requires triton, which is not installed.\n"
+            "xgrammar 0.8.2 requires triton, which is not installed.\n"
+            "humming-kernels 0.4.1 requires triton, which is not installed.\n"
+        )
+        assert verifier.pip_check_violations(1, stdout, "", baseline) == set()
+
+    def test_other_triton_requirer_is_a_violation(self, verifier):
+        baseline = {"torch 2.13.0+cu130 requires triton, which is not installed."}
+        stdout = "flashinfer-python 0.6.17 requires triton, which is not installed.\n"
+        assert verifier.pip_check_violations(1, stdout, "", baseline) == {
+            "flashinfer-python 0.6.17 requires triton, which is not installed."
+        }
+
+    def test_versioned_requirement_matches_by_distribution_name(self, verifier):
+        baseline = set()
+        stdout = "xgrammar 0.8.2 requires triton>=3.2, which is not installed.\n"
+        assert verifier.pip_check_violations(1, stdout, "", baseline) == set()
+
+    def test_other_requirement_of_an_allowed_requirer_is_a_violation(self, verifier):
+        baseline = set()
+        stdout = "xgrammar 0.8.2 requires pydantic, which is not installed.\n"
+        assert verifier.pip_check_violations(1, stdout, "", baseline) == {
+            "xgrammar 0.8.2 requires pydantic, which is not installed."
+        }
+
+    def test_exact_pairs_only_no_substring_acceptance(self, verifier):
+        # A requirer whose canonical name merely contains an allowed name
+        # must not inherit the exception.
+        baseline = set()
+        stdout = "xgrammar-extra 1.0 requires triton, which is not installed.\n"
+        assert verifier.pip_check_violations(1, stdout, "", baseline) == {
+            "xgrammar-extra 1.0 requires triton, which is not installed."
+        }

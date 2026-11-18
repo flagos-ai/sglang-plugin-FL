@@ -73,9 +73,10 @@ context="$(mktemp -d "${TMPDIR:-/tmp}/nv-two-wheel-context.XXXXXX")"
 mkdir "$context/artifacts"
 cp "$plugin_wheel" "$context/artifacts/"
 cp "$sglang_wheel" "$context/artifacts/"
+cp "$repo_root/docker/cuda/runtime-0.5.18.excludes.txt" "$context/artifacts/"
 cp "$repo_root/docker/cuda/runtime-0.5.18.containerfile" "$context/Containerfile"
 
-echo "=== Cross-checking the Containerfile against the staged wheels ==="
+echo "=== Cross-checking the Containerfile against the staged inputs ==="
 containerfile="$context/Containerfile"
 for staged in "$context"/artifacts/*.whl; do
     base="$(basename "$staged")"
@@ -84,6 +85,17 @@ for staged in "$context"/artifacts/*.whl; do
         exit 1
     }
 done
+# The exclusion list must reach the build under the exact name the
+# Containerfile COPYs, and carry exactly one requirement.
+grep -q "artifacts/runtime-0.5.18.excludes.txt" "$containerfile" || {
+    echo "FATAL: Containerfile does not reference artifacts/runtime-0.5.18.excludes.txt" >&2
+    exit 1
+}
+excludes_line="$(grep -v -e '^\s*#' -e '^\s*$' "$context/artifacts/runtime-0.5.18.excludes.txt" | tr -d '[:space:]')"
+if [ "$excludes_line" != "triton" ]; then
+    echo "FATAL: excludes file must contain exactly the single requirement 'triton', found: $excludes_line" >&2
+    exit 1
+fi
 
 echo "=== Re-verifying digests inside the context ==="
 # Digests are recomputed on the files the docker build will actually see.

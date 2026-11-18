@@ -19,7 +19,13 @@ Checks:
   3. pip check           -- returncode-aware comparison against the runtime
      baseline; the success notice is never treated as a violation and a
      crashing pip check fails loudly with returncode, stdout, and stderr
-     in the report (no waiver list)
+     in the report. The only accepted additions are the exact
+     (requirer, triton) pairs in ALLOWED_NEW_REQUIREMENTS: the image
+     resolves without a standalone triton distribution while
+     Torch/xgrammar/humming-kernels still declare it in their metadata --
+     a documented platform capability exception (the compiler is the
+     Runtime's /opt/flagtree module tree). Matching is exact on the
+     canonical requirer and requirement names, never substring-based.
   4. compiler slots      -- /opt/flagtree and /opt/triton still carry the
      recorded Triton versions
 
@@ -41,6 +47,26 @@ from pathlib import Path
 from packaging.utils import canonicalize_name
 
 PIP_CHECK_SUCCESS_NOTICE = "No broken requirements found."
+
+# (requirer, requirement) pairs that the image may add on top of the
+# runtime baseline, exactly and completely. The two-wheel install resolves
+# without a standalone triton distribution; these requirers still declare
+# triton in their wheel metadata, and the compiler comes from the
+# Runtime's /opt/flagtree module tree instead. This is a documented
+# platform capability exception, not a satisfied packaging contract.
+ALLOWED_NEW_REQUIREMENTS = frozenset(
+    {
+        ("xgrammar", "triton"),
+        ("humming-kernels", "triton"),
+    }
+)
+
+# pip check reports a missing distribution as:
+#   <requirer> <version> requires <requirement>, which is not installed.
+_PIP_CHECK_MISSING_RE = re.compile(
+    r"^(?P<requirer>\S+) \S+ requires (?P<requirement>[^,]+), "
+    r"which is not installed\.$"
+)
 
 
 def parse_freeze_lines(lines: list[str]) -> dict[str, str]:
@@ -78,23 +104,45 @@ def diff_runtime(
 
 
 def pip_check_violations(
-    returncode: int, stdout: str, stderr: str, baseline: set[str]
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    baseline: set[str],
+    allowed_pairs: frozenset[tuple[str, str]] = ALLOWED_NEW_REQUIREMENTS,
 ) -> set[str]:
-    """New pip check violations, or errors when pip check itself failed."""
+    """New pip check violations, or errors when pip check itself failed.
+
+    A new finding is accepted only when it parses as a missing-distribution
+    line whose canonical (requirer, requirement-name) pair is in
+    ``allowed_pairs``; everything else -- unknown line shapes included --
+    is a violation.
+    """
     if returncode == 0:
         # Clean run: stdout carries the success notice, not violations.
         return set()
-    if returncode == 1:
-        current = {
-            line.strip()
-            for line in stdout.splitlines()
-            if line.strip() and line.strip() != PIP_CHECK_SUCCESS_NOTICE
-        }
-        return current - baseline
-    raise RuntimeError(
-        "pip check itself failed: "
-        f"returncode={returncode} stdout={stdout!r} stderr={stderr!r}"
-    )
+    if returncode != 1:
+        raise RuntimeError(
+            "pip check itself failed: "
+            f"returncode={returncode} stdout={stdout!r} stderr={stderr!r}"
+        )
+    current = {
+        line.strip()
+        for line in stdout.splitlines()
+        if line.strip() and line.strip() != PIP_CHECK_SUCCESS_NOTICE
+    }
+    violations: set[str] = set()
+    for line in current - baseline:
+        match = _PIP_CHECK_MISSING_RE.match(line)
+        if match is None:
+            violations.add(line)
+            continue
+        requirement = re.split(
+            r"[\s\[<>=!~;]", match.group("requirement").strip(), maxsplit=1
+        )[0]
+        pair = (canonicalize_name(match.group("requirer")), canonicalize_name(requirement))
+        if pair not in allowed_pairs:
+            violations.add(line)
+    return violations
 
 
 def installed_distributions() -> dict[str, str]:
@@ -159,9 +207,21 @@ def check_pip_check(evidence: Path) -> None:
         completed.returncode, completed.stdout, completed.stderr, baseline
     )
     assert not new, (
-        f"new pip check violations introduced by the two-wheel install: {sorted(new)}"
+        f"new pip check violations introduced by the two-wheel install "
+        f"(only the exact triton requirers {sorted(ALLOWED_NEW_REQUIREMENTS)} "
+        f"are accepted): {sorted(new)}"
     )
-    print("[3/4] pip check: no new violations versus the runtime baseline")
+    accepted = {
+        line.strip()
+        for line in completed.stdout.splitlines()
+        if line.strip() and line.strip() != PIP_CHECK_SUCCESS_NOTICE
+    }
+    for line in sorted(accepted - baseline):
+        print(f"[3/4] accepted (metadata-only triton gap): {line}")
+    print(
+        "[3/4] pip check: only the documented platform capability exception "
+        "versus the runtime baseline"
+    )
 
 
 def check_compiler_slots(evidence: Path) -> None:

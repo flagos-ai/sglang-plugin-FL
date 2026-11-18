@@ -5,8 +5,12 @@ Verifies the built wheel carries the two-wheel NVIDIA contract before it
 enters any image build context:
 
   - METADATA Name/Version match the project,
-  - the ``nvidia`` optional dependency group exists and carries the
-    compatibility anchors (sglang pin, triton slot pin, runtime numpy),
+  - the ``nvidia`` optional dependency group exists, carries the
+    compatibility anchors (sglang pin, runtime numpy), and contains six
+    requirements,
+  - no Requires-Dist anywhere in the wheel names ``triton`` (the Runtime
+    provides the Triton compiler as the /opt/flagtree module tree, not as
+    a pip distribution),
   - both SGLang entry-point groups are registered,
   - sglang_fl/nvidia_runtime.py ships in the wheel,
   - no test files ship in the wheel.
@@ -23,9 +27,10 @@ from pathlib import Path
 
 EXPECTED_EXTRA_ANCHORS = (
     "sglang==0.5.18",
-    "triton==3.7.1",
     "numpy==1.26.4",
 )
+EXPECTED_EXTRA_COUNT = 6
+EXCLUDED_DISTRIBUTION = "triton"
 EXPECTED_ENTRY_POINTS = {
     "sglang.srt.platforms": "sglang_fl",
     "sglang.srt.plugins": "sglang_fl",
@@ -82,6 +87,29 @@ def main() -> int:
     for anchor in EXPECTED_EXTRA_ANCHORS:
         if not any(anchor in entry for entry in nvidia_extra):
             failures.append(f"nvidia extra lacks the {anchor!r} anchor")
+    if len(nvidia_extra) != EXPECTED_EXTRA_COUNT:
+        failures.append(
+            f"nvidia extra must carry exactly {EXPECTED_EXTRA_COUNT} "
+            f"requirements, found {len(nvidia_extra)}: {nvidia_extra}"
+        )
+
+    def requirement_name(entry: str) -> str:
+        # PEP 503 canonical form, inlined so the acceptance check runs on
+        # any host python3 without the packaging package installed.
+        name = re.split(r"\s|\[|;|<|>|=|!|~", entry.strip(), maxsplit=1)[0]
+        return re.sub(r"[-_.]+", "-", name).lower()
+
+    all_requirements = metadata.get_all("Requires-Dist") or []
+    triton_refs = sorted(
+        entry
+        for entry in all_requirements
+        if requirement_name(entry) == EXCLUDED_DISTRIBUTION
+    )
+    if triton_refs:
+        failures.append(
+            "the wheel must not declare a triton distribution (the Runtime "
+            f"provides /opt/flagtree), found: {triton_refs}"
+        )
 
     groups: dict[str, list[str]] = {}
     current: list[str] | None = None
@@ -112,7 +140,8 @@ def main() -> int:
     print(f"[wheel] {name}=={version}")
     print(
         f"[wheel] nvidia extra: {len(nvidia_extra)} requirements "
-        f"(anchors verified: {', '.join(EXPECTED_EXTRA_ANCHORS)})"
+        f"(anchors verified: {', '.join(EXPECTED_EXTRA_ANCHORS)}; "
+        f"no '{EXCLUDED_DISTRIBUTION}' Requires-Dist in the whole wheel)"
     )
     print(f"[wheel] entry points: {sorted(EXPECTED_ENTRY_POINTS)} verified")
     print("[wheel] contains sglang_fl/nvidia_runtime.py; no tests shipped")

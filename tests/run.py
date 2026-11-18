@@ -74,8 +74,8 @@ def _filter_pythonpath(existing: str, repo_root: Path) -> list[str]:
 
     Drops empty entries and anything at or under the repository root (the
     checkout's sglang_fl must never win over the installed wheel) while
-    preserving legitimate entries such as the Runtime's /opt/triton
-    compiler slot activated by setup.sh.
+    preserving legitimate entries such as the Runtime's /opt/flagtree
+    compiler slot selected by setup.sh.
     """
     root = repo_root.resolve()
     kept: list[str] = []
@@ -97,9 +97,9 @@ def _wheel_mode_child_env(base_env: dict[str, str]) -> dict[str, str]:
     staging = _wheel_staging_dir()
     env = dict(base_env)
     # Prepend the staging dir but keep every legitimate PYTHONPATH entry
-    # (notably /opt/triton from the Runtime's `compiler triton` selection):
-    # the installed plugin's CUDA view and the Triton slot contract depend
-    # on it surviving the test harness.
+    # (notably /opt/flagtree, the Runtime's default compiler slot that
+    # setup.sh selects): the installed plugin's CUDA view and the Triton
+    # slot contract depend on it surviving the test harness.
     kept = _filter_pythonpath(env.get("PYTHONPATH", ""), _REPO_ROOT)
     env["PYTHONPATH"] = os.pathsep.join([str(staging), *kept])
     env["PYTHONSAFEPATH"] = "1"
