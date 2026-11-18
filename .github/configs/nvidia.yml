@@ -19,7 +19,11 @@ platform: nvidia
 # hour pulling it, so all platform stages get 180 minutes.
 test_timeout: 180
 
-ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:0ab4b9556a496943a6a57f041bb0cb85dddd254789e16ab135d9a93c55965db6
+# TEMP(two-wheel probe): flagtree-3.6 zero-standalone-triton image
+# (0.5.18-nvidia-two-wheel-flagtree36-20261118). Digest-pinned, remote
+# verifier re-run against this digest before triggering. Not part of any
+# product commit.
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:492a864cf3af1eefbc155f72030fe0e4d03e1e7540088c24c32c2e501ec55cc6
 
 # Runner labels for this hardware
 runner_labels:
