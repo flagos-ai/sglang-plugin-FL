@@ -66,7 +66,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      platforms: ${{ steps.detect.outputs.platforms }}
+      # TEMP(probe/hygon-two-wheel-hwci): the restrict step may pin this to
+      # ["hygon"] for the single-platform hardware probe; see that step.
+      platforms: ${{ steps.restrict.outputs.platforms || steps.detect.outputs.platforms }}
       # PR test tier from labels (see header); workflow_dispatch = full.
       run_e2e: ${{ steps.tier.outputs.run_e2e }}
       run_benchmark: ${{ steps.tier.outputs.run_benchmark }}
@@ -148,6 +150,22 @@ jobs:
           else
             python3 .github/scripts/detect_platforms.py
           fi
+
+      # TEMP(probe/hygon-two-wheel-hwci): single-platform hardware probe.
+      # The two-wheel chain's diff necessarily touches global trigger paths
+      # (tests/run.py, pyproject.toml, .github/scripts), which with the
+      # current platform fleet fans out to six platforms of hardware; this
+      # probe must burn Hygon only. Gated on the probe branch name so every
+      # other PR keeps the diff-based routing. Dropped at fold time together
+      # with the TEMP digest routing commit.
+      - name: Restrict platforms for hygon two-wheel probe (TEMP)
+        id: restrict
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.ref == 'probe/hygon-two-wheel-hwci'
+        run: |
+          echo 'platforms=["hygon"]' >> "$GITHUB_OUTPUT"
+          echo "probe platform restriction active: hygon only"
 
   # ============================================================
   # Jobs 6a-6f: per-platform testing (routed by discover)
