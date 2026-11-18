@@ -21,6 +21,9 @@ Patches applied:
   speculative_tree – EAGLE/MTP tree build via SGLang's Triton kernel (no CUDA
                     sgl_kernel binding); greedy verify in torch (the Triton
                     verify is wrong on txda)
+  speculative_cache_locs – speculative KV slot bookkeeping in torch (verify
+                    write locations: no txda branch upstream; req_to_token writes
+                    and assign_extend_cache_locs: Triton kernels wrong on txda)
   vocab_embedding – Keep VocabParallelEmbedding on the torch path on txda
                     (SGLang 0.5.18 Triton embedding: wrong rows for out-of-shard ids)
   triton_load_watch – Disable SGLang 0.5.18 CUDA-only Triton kernel-load
@@ -104,6 +107,7 @@ def apply_all_txda_patches() -> None:
         fused_moe,
         gdn_norm,
         scheduler_pp_mixin,
+        speculative_cache_locs,
         triton_load_watch,
         vocab_embedding,
         speculative_tree,
@@ -113,6 +117,7 @@ def apply_all_txda_patches() -> None:
     fused_moe.patch()  # moe_align_block_size for the Triton MoE fallback
     scheduler_pp_mixin.patch()
     speculative_tree.patch()  # EAGLE/MTP tree build (Triton) + greedy verify (torch)
+    speculative_cache_locs.patch()  # speculative KV slot bookkeeping in torch
     vocab_embedding.patch()  # 0.5.18 Triton embedding returns non-zero rows for out-of-shard ids on txda
     triton_load_watch.patch()  # 0.5.18 CUDA-only kernel-load hook crashes on txda
     dummy_weights.patch()  # load_format=dummy: torch_txda uniform_ rejects a txda generator
