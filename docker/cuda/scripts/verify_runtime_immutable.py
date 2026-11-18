@@ -139,7 +139,10 @@ def pip_check_violations(
         requirement = re.split(
             r"[\s\[<>=!~;]", match.group("requirement").strip(), maxsplit=1
         )[0]
-        pair = (canonicalize_name(match.group("requirer")), canonicalize_name(requirement))
+        pair = (
+            canonicalize_name(match.group("requirer")),
+            canonicalize_name(requirement),
+        )
         if pair not in allowed_pairs:
             violations.add(line)
     return violations

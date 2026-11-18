@@ -117,7 +117,9 @@ def check_triton_slot() -> None:
             "a standalone triton distribution is installed; the image must "
             "resolve without one (the compiler is the /opt/flagtree module tree)"
         )
-    print("[cuda-env] no standalone triton distribution (platform capability exception)")
+    print(
+        "[cuda-env] no standalone triton distribution (platform capability exception)"
+    )
 
     triton_spec = importlib.util.find_spec("triton")
     if (
