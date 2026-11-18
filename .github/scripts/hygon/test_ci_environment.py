@@ -198,20 +198,25 @@ class ImageAndSetupTests(unittest.TestCase):
                 )
             run.assert_not_called()
 
-    def test_setup_has_one_dependency_preserving_install(self):
+    def test_setup_installs_only_the_test_runner(self):
         source = (SCRIPTS / "setup.sh").read_text(encoding="utf-8")
         installs = [line for line in source.splitlines() if "pip install" in line]
-        # One pinned job-time test-runner install plus exactly one
-        # dependency-preserving plugin install (--no-deps).
-        self.assertEqual(len(installs), 2)
+        # The image ships the real application wheels; the job installs
+        # only the pinned test runner and never an editable checkout.
+        self.assertEqual(len(installs), 1)
         self.assertIn("pytest==9.1.1 pytest-timeout==2.4.0", installs[0])
         self.assertIn("iniconfig==2.3.1 pluggy==1.7.0", source)
-        self.assertIn("--no-deps --no-build-isolation -e", installs[-1])
         self.assertIn("--check-ci-packages", source)
         self.assertNotIn("--upgrade", source)
         self.assertNotIn(".[dev]", source)
+        self.assertNotIn("--no-deps --no-build-isolation -e", source)
         self.assertIn("--runtime-evidence", source)
         self.assertIn("--require-gpu --min-gpus 2", source)
+        # Installed-wheel mode: the test harness must reject the checkout
+        # as a plugin source in every subprocess.
+        self.assertIn("SGLANG_FL_TEST_SOURCE=wheel", source)
+        self.assertIn('locate_file("")', source)
+        self.assertIn("attention_backend", source)
         # The DTK prefix contract (ROCM_PATH, /opt/rocm, the clang wrapper) is
         # baked into the image; the job only verifies it and never rewrites.
         self.assertNotIn("enable_flagtree_device_lib_fallback.py", source)

@@ -33,116 +33,79 @@ FROM ${BASE_IMAGE}
 # FlagTree (/opt/flagtree) is the runtime's authoritative Triton. The base
 # image exposes it to bash sessions only (BASH_ENV -> /etc/bash_env.sh ->
 # /etc/profile.d/vendor.sh), so the resolved Triton silently depended on the
-# container entrypoint (bash saw FlagTree 3.6, a direct python entrypoint
-# saw the closure's standalone wheel). Bake it as image-level PYTHONPATH so
-# shell, direct python entrypoints and CI jobs all resolve the same
-# /opt/flagtree tree; the standalone triton wheel that xgrammar's
-# declaration pulls in is removed right after the install below (the cuda
-# CI image uses the same convention).
+# container entrypoint. Bake it as image-level PYTHONPATH so shell, direct
+# python entrypoints and CI jobs all resolve the same /opt/flagtree tree;
+# the standalone triton distribution never enters resolution at all (the
+# excludes file below drops it before the resolver runs).
 ENV PYTHONPATH=/opt/flagtree
 
-ARG SGLANG_WHEEL_URL=https://resource.flagos.net/repository/flagos-pypi-hygon/packages/sglang/0.5.18+flagos/sglang-0.5.18+flagos-cp310-cp310-linux_x86_64.whl
-ARG SGLANG_WHEEL_SHA256=1fe8a560353fd15aea7194869f1fd50e1fdbedd8fc1074db52b9a13028756800
-ARG SGLANG_WHEEL_NAME=sglang-0.5.18+flagos-cp310-cp310-linux_x86_64.whl
-# resource.flagos.net's pypi-proxy intermittently 504s large upstream fetches
-# and pip does not retry HTTP 504; every pip call below loops instead, because
-# pip's HTTP cache keeps whatever the previous attempt already fetched.
+# resource.flagos.net's pypi-proxy intermittently 504s large upstream
+# fetches; uv retries internally. The platform index keeps first priority
+# (flagos-built wheels and the fsspec/datasets pin reality); PyPI stays
+# last because transpacific delivery of large wheels is slow.
 ARG PIP_MAIN_INDEX=https://resource.flagos.net/repository/flagos-pypi-hygon/simple
-# PyPI serves generic wheels at datacenter speed; the pypi-proxy mirrors
-# PyPI byte-for-byte but its gateway times out delivering large wheels on
-# transpacific links (sglang-kernel is 377 MB), so it stays the LAST index.
-# The platform index keeps first priority: flagos-built wheels (and the
-# fsspec-pin reality - the runtime ships 2026.9.0, which every datasets
-# release the proxy carries caps below; datasets 5.2.0 is the first
-# release allowing it) always win from flagos-pypi-hygon.
 ARG PIP_FALLBACK_INDEX=https://pypi.org/simple
 ARG PIP_EXTRA_INDEX=https://resource.flagos.net/repository/pypi-proxy/simple
 
 WORKDIR /opt/sglang-ci
 
 # Application-level constraints: only evidence-backed pins (see the file).
-# The runtime inventory is frozen dynamically at build start and the SGLang
-# wheel pins its own direct requirements, so the closure's transitive
-# resolution stays with the resolver; the dry-run gate verifies zero runtime
-# replacements and the resolved closure is recorded as a build-time audit
-# artifact (/opt/sglang-ci/sglang-additions-installed.txt), never committed
-# back as an input lock.
+# The runtime inventory is frozen dynamically at build start and the two
+# staged wheels pin their own direct requirements, so the closure's
+# transitive resolution stays with the resolver; the dry-run gate verifies
+# zero runtime replacements and the resolved closure is recorded as a
+# build-time audit artifact, never committed back as an input lock.
 COPY docker/hygon/top-level-constraints.txt /opt/sglang-ci/top-level-constraints.txt
 
-# --- Stable, slow: fetch and SHA256-verify the SGLang wheel ------------------
-RUN --mount=type=bind,target=/ctx python /ctx/docker/hygon/scripts/fetch_sglang_wheel.py
+# The two reviewed application wheels and the single-item resolver
+# exclusion list are staged by docker/hygon/stage_wheels.sh; their SHA256s
+# are part of the staging reproducibility record.
+COPY artifacts/sglang-0.5.18+flagos-cp310-cp310-linux_x86_64.whl /tmp/wheels/sglang-0.5.18+flagos-cp310-cp310-linux_x86_64.whl
+COPY artifacts/sglang_fl-0.1.0-py3-none-any.whl /tmp/wheels/sglang_fl-0.1.0-py3-none-any.whl
+COPY artifacts/runtime-0.5.18.excludes.txt /tmp/runtime-0.5.18.excludes.txt
 
 # --- Stable: capture the pre-install runtime state ---------------------------
 # Canonicalized distribution inventory, exact constraints for the resolver,
 # the runtime's own pip check result (kept as the baseline so pre-existing
-# runtime findings are not attributed to SGLang), the file-level
+# runtime findings are not attributed to the application), the file-level
 # site-packages baseline, and module-level provenance for the vendor stack.
 RUN --mount=type=bind,target=/ctx python -m pip freeze --all | sort > /opt/sglang-ci/runtime-freeze-before.txt \
     && { python -m pip check > /opt/sglang-ci/runtime-pip-check-baseline.txt 2>&1; \
          printf '%s\n' "$?" > /opt/sglang-ci/runtime-pip-check-baseline.exitcode; true; } \
     && python /ctx/docker/hygon/scripts/capture_runtime_baseline.py
 
-# --- Resolver gate: dry-run with report before touching site-packages --------
-# Any runtime distribution in the install plan fails the build: a different
-# version is a hard conflict, an identical version is a reinstall that needs
-# explicit review. New (absent) distributions are the SGLang closure; they are
-# recorded for review but allowed.
-RUN --mount=type=cache,target=/tmp/pip-cache \
-    --mount=type=bind,target=/ctx \
-    dry_run_rc=1 \
-    && for attempt in 1 2 3 4 5 6 7 8; do \
-         if python -m pip install \
-             --dry-run \
-             --timeout 120 \
-             --retries 20 \
-             --cache-dir /tmp/pip-cache \
-             --report /opt/sglang-ci/sglang-resolver-plan.json \
-             --constraint /opt/sglang-ci/runtime-constraints.txt \
-             --constraint /opt/sglang-ci/top-level-constraints.txt \
-             --index-url "$PIP_MAIN_INDEX" \
-             --extra-index-url "$PIP_FALLBACK_INDEX" \
-             --extra-index-url "$PIP_EXTRA_INDEX" \
-             "/opt/sglang-ci/wheels/${SGLANG_WHEEL_NAME}[srt_empty,runtime_common]"; then \
-           dry_run_rc=0; break; \
-         else \
-           dry_run_rc="$?"; \
-         fi; \
-         echo "dry-run attempt ${attempt} failed (rc=${dry_run_rc}); retrying" >&2; \
-         sleep 20; \
-       done \
-    && [ "$dry_run_rc" -eq 0 ] \
-    && python /ctx/docker/hygon/scripts/validate_resolver_plan.py
-
-# --- Stable, slow: the real install ------------------------------------------
-# Same constraints and indexes as the reviewed dry-run plan. The standalone
-# triton wheel (pulled by xgrammar's declaration) is uninstalled in the SAME
-# layer: FlagTree provides the only Triton, and a later-layer uninstall would
-# still ship the ~893 MB in this layer.
-RUN --mount=type=cache,target=/tmp/pip-cache \
-    install_rc=1 \
-    && for attempt in 1 2 3 4 5 6 7 8; do \
-         if python -m pip install \
-             --timeout 120 \
-             --retries 20 \
-             --cache-dir /tmp/pip-cache \
-             --constraint /opt/sglang-ci/runtime-constraints.txt \
-             --constraint /opt/sglang-ci/top-level-constraints.txt \
-             --index-url "$PIP_MAIN_INDEX" \
-             --extra-index-url "$PIP_FALLBACK_INDEX" \
-             --extra-index-url "$PIP_EXTRA_INDEX" \
-             "/opt/sglang-ci/wheels/${SGLANG_WHEEL_NAME}[srt_empty,runtime_common]"; then \
-           install_rc=0; break; \
-         else \
-           install_rc="$?"; \
-         fi; \
-         echo "install attempt ${attempt} failed (rc=${install_rc}); retrying" >&2; \
-         sleep 20; \
-       done \
-    && [ "$install_rc" -eq 0 ] \
-    && while python -m pip show triton >/dev/null 2>&1; do \
-         python -m pip uninstall -y triton; \
-       done \
-    && echo "standalone triton wheel removed; FlagTree is the only Triton"
+# --- Two-wheel install with the Runtime's own uv -----------------------------
+# Both application wheels resolve together in one graph:
+#   sglang[srt_empty,runtime_common] + sglang_fl[hygon].
+# The dry-run and the real install use the identical resolver and the
+# identical arguments; the plan (uv "Would install ...") is validated
+# against the runtime baseline and recorded as the audit artifact. The
+# single-item excludes file drops the standalone triton distribution from
+# resolution - nothing is installed, uninstalled, or stubbed for it; the
+# metadata gap xgrammar still declares is pip check's documented platform
+# capability exception (checked precisely by pip_check_exceptions.py).
+RUN --mount=type=bind,target=/ctx \
+    /usr/local/bin/uv pip install --python /flagos/bin/python3 \
+      --dry-run \
+      --index-url "$PIP_MAIN_INDEX" \
+      --extra-index-url "$PIP_FALLBACK_INDEX" \
+      --extra-index-url "$PIP_EXTRA_INDEX" \
+      --constraints /opt/sglang-ci/runtime-constraints.txt \
+      --constraints /opt/sglang-ci/top-level-constraints.txt \
+      --excludes /tmp/runtime-0.5.18.excludes.txt \
+      '/tmp/wheels/sglang-0.5.18+flagos-cp310-cp310-linux_x86_64.whl[srt_empty,runtime_common]' \
+      '/tmp/wheels/sglang_fl-0.1.0-py3-none-any.whl[hygon]' \
+      | tee /opt/sglang-ci/uv-dry-run.txt \
+      | python /ctx/docker/hygon/scripts/validate_uv_plan.py \
+    && /usr/local/bin/uv pip install --python /flagos/bin/python3 \
+      --index-url "$PIP_MAIN_INDEX" \
+      --extra-index-url "$PIP_FALLBACK_INDEX" \
+      --extra-index-url "$PIP_EXTRA_INDEX" \
+      --constraints /opt/sglang-ci/runtime-constraints.txt \
+      --constraints /opt/sglang-ci/top-level-constraints.txt \
+      --excludes /tmp/runtime-0.5.18.excludes.txt \
+      '/tmp/wheels/sglang-0.5.18+flagos-cp310-cp310-linux_x86_64.whl[srt_empty,runtime_common]' \
+      '/tmp/wheels/sglang_fl-0.1.0-py3-none-any.whl[hygon]'
 
 # --- Application compatibility: distinguish HCU from AMD ROCm --------------
 # Keep this after the slow dependency layer so changes to the application-only
@@ -265,24 +228,46 @@ RUN --mount=type=bind,target=/ctx python /ctx/docker/hygon/scripts/verify_distri
 #     exist with the identical SHA256 (catches in-place overwrites).
 RUN --mount=type=bind,target=/ctx python /ctx/docker/hygon/scripts/verify_site_files.py
 
-# 2. pip check: only violations NEW relative to the runtime baseline fail the
-#    build; the runtime's own pre-existing findings stay on record. One
-#    declared gap is exempt: xgrammar requires triton, which the runtime
-#    provides out-of-band as FlagTree (pip cannot see it - same convention
-#    as the cuda CI image).
-RUN { python -m pip check > /opt/sglang-ci/runtime-pip-check-after.txt 2>&1; \
-         printf '%s\n' "$?" > /opt/sglang-ci/runtime-pip-check-after.exitcode; true; } \
-    && grep -v '^No broken requirements found\.$' /opt/sglang-ci/runtime-pip-check-baseline.txt | sort -u > /tmp/pip-check-baseline.lines \
-    && grep -v '^No broken requirements found\.$' /opt/sglang-ci/runtime-pip-check-after.txt | sort -u > /tmp/pip-check-after.lines \
-    && comm -13 /tmp/pip-check-baseline.lines /tmp/pip-check-after.lines \
-       | { grep -v 'requires triton, which is not installed' || true; } \
-       > /opt/sglang-ci/pip-check-new-violations.txt \
-    && if [ -s /opt/sglang-ci/pip-check-new-violations.txt ]; then \
-         echo 'FATAL: new pip check violations introduced by the SGLang install:'; \
-         cat /opt/sglang-ci/pip-check-new-violations.txt; \
-         exit 1; \
-       fi \
-    && echo 'pip check: no new violations (baseline preserved; xgrammar->triton provided by FlagTree)'
+# 2. pip check: only violations NEW relative to the runtime baseline fail
+#    the build, and the ONLY accepted addition is the exact canonical
+#    (xgrammar, triton) pair - parsed precisely by the shared module, never
+#    substring-matched. A crashing pip check fails loudly with its output.
+RUN --mount=type=bind,target=/ctx python - <<'PY'
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "/ctx/docker/hygon/scripts")
+from pip_check_exceptions import (  # noqa: E402
+    PIP_CHECK_SUCCESS_NOTICE,
+    pip_check_violations,
+)
+
+completed = subprocess.run(
+    [sys.executable, "-m", "pip", "check"], capture_output=True, text=True
+)
+Path("/opt/sglang-ci/runtime-pip-check-after.txt").write_text(completed.stdout)
+Path("/opt/sglang-ci/runtime-pip-check-after.exitcode").write_text(
+    f"{completed.returncode}\n"
+)
+baseline = {
+    line.strip()
+    for line in Path("/opt/sglang-ci/runtime-pip-check-baseline.txt")
+    .read_text()
+    .splitlines()
+    if line.strip() and line.strip() != PIP_CHECK_SUCCESS_NOTICE
+}
+violations = pip_check_violations(
+    completed.returncode, completed.stdout, completed.stderr, baseline
+)
+if violations:
+    print("FATAL: new pip check violations introduced by the two-wheel install:")
+    for line in sorted(violations):
+        print(f"  ! {line}")
+    raise SystemExit(1)
+print("pip check: only the documented (xgrammar, triton) capability "
+      "exception versus the runtime baseline")
+PY
 
 # 3. Module provenance: every vendor module must still resolve to the exact
 #    same origin (see the script docstring for the one recorded exception).

@@ -44,13 +44,20 @@ with (evidence / "runtime-constraints.txt").open("w") as f:
 # The post-install gate requires every baseline file to still exist with the
 # identical hash, so an in-place overwrite by any closure wheel is caught
 # even when pip metadata (or an import origin) stays unchanged.
+# __pycache__/*.pyc artifacts are excluded: interpreters legitimately
+# (re)generate them at import time, so their presence is nondeterministic
+# and they are not source drift (same convention as the committed
+# reference data used by the post-build verifier).
 purelib = Path(sysconfig.get_paths()["purelib"])
 manifest = {}
 for path in sorted(purelib.rglob("*")):
-    if path.is_file():
-        manifest[str(path.relative_to(purelib))] = hashlib.sha256(
-            path.read_bytes()
-        ).hexdigest()
+    if not path.is_file() or path.suffix == ".pyc":
+        continue
+    if "__pycache__" in path.parts:
+        continue
+    manifest[str(path.relative_to(purelib))] = hashlib.sha256(
+        path.read_bytes()
+    ).hexdigest()
 with (evidence / "site-files-before.sha256").open("w") as f:
     for relative, digest in manifest.items():
         f.write(f"{digest}  {relative}\n")
