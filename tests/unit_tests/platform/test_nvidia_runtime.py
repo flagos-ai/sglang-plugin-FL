@@ -148,6 +148,12 @@ def test_configured_cuda_home_version_mismatch_fails(tmp_path, monkeypatch):
 
 
 def test_activation_creates_flashinfer_layout(tmp_path, monkeypatch):
+    # Only meaningful where the CUDA python wheel exists (NVIDIA-style
+    # environments); skip cleanly on other vendors' images so the shared
+    # unit suite stays green everywhere.
+    cuda_pathfinder = pytest.importorskip(
+        "cuda.pathfinder", reason="the cuda python wheel is not installed"
+    )
     nvcc, include, libcudart = _fake_toolkit(tmp_path)
     monkeypatch.delenv("CUDA_HOME", raising=False)
     monkeypatch.delenv("CUDA_PATH", raising=False)
@@ -157,13 +163,11 @@ def test_activation_creates_flashinfer_layout(tmp_path, monkeypatch):
     monkeypatch.setattr(nvidia_runtime, "_is_nvidia_vendor", lambda: True)
     monkeypatch.setattr(nvidia_runtime, "_distribution_libcudart", lambda: libcudart)
 
-    import cuda.pathfinder
-
     monkeypatch.setattr(
-        cuda.pathfinder, "find_nvidia_binary_utility", lambda name: str(nvcc)
+        cuda_pathfinder, "find_nvidia_binary_utility", lambda name: str(nvcc)
     )
     monkeypatch.setattr(
-        cuda.pathfinder, "find_nvidia_header_directory", lambda name: str(include)
+        cuda_pathfinder, "find_nvidia_header_directory", lambda name: str(include)
     )
     torch_module = SimpleNamespace(version=SimpleNamespace(cuda="13.0", hip=None))
 
