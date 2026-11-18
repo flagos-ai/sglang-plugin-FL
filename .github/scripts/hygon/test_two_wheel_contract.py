@@ -54,6 +54,42 @@ class StagingCouplingTests(unittest.TestCase):
             path = SCRIPTS / script
             self.assertTrue(path.is_file(), f"referenced build script missing: {path}")
 
+    def test_uv_invocations_are_identical_and_use_unsafe_first_match(self):
+        """Dry-run and real install must share every resolver argument.
+
+        --index-strategy first-index was measured insufficient on the real
+        runtime (the Hygon index has xgrammar but not ==0.2.1, and
+        first-index stops at the name instead of falling through to PyPI);
+        both invocations must use unsafe-first-match, and the only allowed
+        difference between them is the --dry-run flag.
+        """
+        containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
+        marker = "/usr/local/bin/uv pip install"
+        parts = containerfile.split(marker)
+        self.assertEqual(len(parts), 3, "expected exactly two uv invocations")
+
+        def args_of(chunk: str) -> list[str]:
+            lines = []
+            for line in chunk.splitlines():
+                stripped = line.strip().rstrip("\\").strip()
+                if stripped.startswith("--") or stripped.startswith("'/tmp/wheels/"):
+                    lines.append(stripped)
+                elif stripped.startswith(">") or stripped.startswith("&&"):
+                    break
+            return lines
+
+        dry_run = args_of(parts[1])
+        real = args_of(parts[2])
+        self.assertIn("--dry-run", dry_run)
+        self.assertNotIn("--dry-run", real)
+        self.assertEqual(
+            [a for a in dry_run if a != "--dry-run"],
+            real,
+            "dry-run and real install arguments diverge",
+        )
+        self.assertEqual(real.count("--index-strategy unsafe-first-match"), 1)
+        self.assertNotIn("first-index", " ".join(real))
+
     def test_excludes_file_is_single_item_triton(self):
         content = (DOCKER / "runtime-0.5.18.excludes.txt").read_text()
         requirements = [

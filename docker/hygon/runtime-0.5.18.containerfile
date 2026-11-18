@@ -12,8 +12,10 @@
 #     beyond runtime_base, because sglang.srt's quantization registry
 #     imports compressed_tensors eagerly at server start while the wheel
 #     only declares it under runtime-common. No hand-picked packages.
-#   * No sglang-plugin-FL source in this image; CI installs the plugin from
-#     the PR checkout via the standard setup flow.
+#   * The image ships the two real application wheels (sglang 0.5.18+flagos
+#     and sglang_fl built from this repository); CI installs only the test
+#     runner and validates against the installed wheels - the checkout
+#     never shadows them (SGLANG_FL_TEST_SOURCE=wheel).
 #   * Build logic lives in docker/hygon/scripts/ (reviewable, lintable,
 #     black-formatted) and runs through BuildKit bind mounts, so the scripts
 #     never enter the image;
@@ -39,14 +41,16 @@ FROM ${BASE_IMAGE}
 # excludes file below drops it before the resolver runs).
 ENV PYTHONPATH=/opt/flagtree
 
-# Index priority expressed with uv's real semantics: --extra-index wins
-# over --index-url in uv (the inverse of pip), so the named forms below
-# are explicit. With --index-strategy first-index the FIRST index carrying
-# a package wins: the flagos platform index (flagos-built wheels, the
-# fsspec/datasets pin reality) comes first, PyPI second for generic
-# wheels, and the pypi-proxy only as the default-index last resort
-# (transpacific delivery of large wheels through it is slow and it
-# intermittently 504s).
+# Index priority expressed with uv's real semantics. --index-strategy
+# unsafe-first-match exhausts the FIRST index that carries a package NAME
+# before consulting later indexes: the flagos platform index (flagos-built
+# wheels, the fsspec/datasets pin reality) wins whenever it has a
+# compatible version, PyPI follows for generic wheels, and the pypi-proxy
+# is the --default-index last resort (slow transpacific delivery,
+# intermittent 504s). first-index was measured insufficient on the real
+# runtime: the Hygon index carries xgrammar but not xgrammar==0.2.1, and
+# first-index stops at the name instead of falling through to PyPI
+# ("No solution found ... not at xgrammar==0.2.1").
 ARG FLAGOS_INDEX=https://resource.flagos.net/repository/flagos-pypi-hygon/simple
 ARG PYPI_INDEX=https://pypi.org/simple
 ARG PROXY_INDEX=https://resource.flagos.net/repository/pypi-proxy/simple
@@ -97,7 +101,7 @@ RUN --mount=type=bind,target=/ctx \
       --index "$FLAGOS_INDEX" \
       --index "$PYPI_INDEX" \
       --default-index "$PROXY_INDEX" \
-      --index-strategy first-index \
+      --index-strategy unsafe-first-match \
       --constraints /opt/sglang-ci/runtime-constraints.txt \
       --constraints /opt/sglang-ci/top-level-constraints.txt \
       --excludes /tmp/runtime-0.5.18.excludes.txt \
@@ -109,7 +113,7 @@ RUN --mount=type=bind,target=/ctx \
       --index "$FLAGOS_INDEX" \
       --index "$PYPI_INDEX" \
       --default-index "$PROXY_INDEX" \
-      --index-strategy first-index \
+      --index-strategy unsafe-first-match \
       --constraints /opt/sglang-ci/runtime-constraints.txt \
       --constraints /opt/sglang-ci/top-level-constraints.txt \
       --excludes /tmp/runtime-0.5.18.excludes.txt \
