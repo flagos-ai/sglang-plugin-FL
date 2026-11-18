@@ -176,7 +176,9 @@ def test_qsa_attention_dispatch_metadata_and_no_retry(monkeypatch):
     table = torch.tensor([[11, 3, 9], [1, 2, 4]], dtype=torch.int32)
     requests = torch.tensor([0, 1, 0], dtype=torch.int32)
     selected = torch.tensor([[0, -1], [0, 1], [1, 2]], dtype=torch.int32)
-    metadata = SimpleNamespace(token_slot_table=table, token_to_batch_idx=requests)
+    metadata = SimpleNamespace(
+        token_slot_table=table, token_to_batch_idx=requests, is_cuda_graph=False
+    )
     cache = SimpleNamespace(key=lambda: key_cache, value=lambda: value_cache)
     backend = SimpleNamespace(
         token_to_kv_pool=SimpleNamespace(

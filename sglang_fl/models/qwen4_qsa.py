@@ -231,13 +231,21 @@ def _attention(
     gate = kwargs["qsa_output_gate"]
     if gate is not None:
         gate = gate.reshape(query.shape)[:valid_rows]
+    if metadata.is_cuda_graph:
+        # Decode graph metadata carries a dummy token table. The framework
+        # updates the request-pool indices and full table before each replay.
+        token_table = self.req_to_token_pool.req_to_token
+        request_ids = metadata.row_req_pool_indices
+    else:
+        token_table = metadata.token_slot_table
+        request_ids = metadata.token_to_batch_idx
     output = attention(
         query[:valid_rows],
         key_cache,
         value_cache,
         indices,
-        metadata.token_slot_table,
-        metadata.token_to_batch_idx,
+        token_table,
+        request_ids,
         layer.scaling,
         gate=gate,
     )
