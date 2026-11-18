@@ -1,0 +1,56 @@
+platform: kunlunxin
+vendor: kunlunxin
+
+device_types:
+  p800:
+    memory_gb: 96
+    tags: [kunlunxin, xpu, bf16]
+
+engine_overrides: {}
+
+tolerance:
+  inference:
+    default: {exact: true}
+
+device_overrides: {}
+unsupported_features: []
+
+env_defaults:
+  USE_FLAGGEMS: "1"
+  USE_FLAGTUNE: "0"
+  SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK: "1"
+  FLAGCX_PATH: "/opt/FlagCX"
+  SGLANG_FORCE_COARSE_WAR_BARRIER: "1"
+  SGLANG_PLUGINS: "sglang_fl"
+
+p800:
+  name: "p800"
+  tests:
+    unit:
+      include: "*"
+      exclude: []
+    functional:
+      include: "*"
+      exclude: []
+    e2e:
+      pr:
+        inference:
+          qwen3_6: ["27b_tp4_nograph", "35b_a3b_tp4_nograph"]
+        serving:
+          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+        concurrent:
+          qwen3_6: ["27b_tp4_nograph", "35b_a3b_tp4_nograph"]
+      nightly:
+        inference:
+          qwen3_6: ["27b_tp4_nograph", "35b_a3b_tp4_nograph"]
+        serving:
+          qwen3_6: ["35b_a3b_tp4_nograph", "27b_tp4_nograph"]
+        concurrent:
+          qwen3_6: ["27b_tp4_nograph", "35b_a3b_tp4_nograph"]
+    benchmark:
+      pr:
+        enabled: true
+        types: ["throughput", "latency", "serve"]
+      nightly:
+        enabled: true
+        types: ["throughput", "latency", "serve"]
