@@ -99,6 +99,35 @@ python tests/run.py --platform tsingmicro --scope benchmark --stage nightly
 | `sglang.bench_one_batch` 的 worker 不调用 `load_plugins()`，插件不生效 | `plugin_bootstrap.py` 在每个 worker 第一次构造 `ModelConfig` 前加载插件，做法与天数相同 |
 | torch_txda 的 `TXDAGraph` 捕获空图，不支持 graph | 平台声明不支持 CUDA graph，相关测试跳过 |
 
+## MTP（EAGLE）
+
+Qwen3.6-27B / 35B-A3B 自带 1 层 MTP，可以用 EAGLE 投机解码（`topk=1` 的 chain）：
+
+```python
+Engine(model_path=..., tp_size=8, disable_cuda_graph=True, disable_overlap_schedule=True,
+       speculative_algorithm="EAGLE", speculative_draft_model_path=<同一模型目录>,
+       speculative_num_steps=3, speculative_eagle_topk=1, speculative_num_draft_tokens=4)
+```
+
+SGLang 0.5.18 的投机解码路径在 TXDA 上有下面这些问题，插件都做了规避（`patches/` 下）：
+
+| 问题 | 规避 |
+|---|---|
+| tree 构建只在 CUDA/HIP/MUSA 上导入 `sgl_kernel`，TXDA 上 `NameError` | `speculative_tree.py`：改用 SGLang 自带的 Triton tree 构建 |
+| SGLang 的 Triton greedy verify 在 TXDA 上算错（draft 全对也只接受 1 个，`accept_index` 写错） | `speculative_tree.py`：greedy verify 改用 torch 实现（chain 和 tree 都支持） |
+| FlagTree 编译不了 GDN conv update 的"多 token + 保存中间窗口"变体（`tsingmicro-opt` 断言） | `gdn_verify_conv.py`：verify 时逐个 draft token 调单 token kernel，窗口写入中间缓存，不改持久 conv state |
+| verify 写入位置（`assign_extend_cache_locs*`）没有 TXDA 分支、返回 `None`；`assign_req_to_token_pool`、`assign_extend_cache_locs` 的 Triton kernel 在 TXDA 上写不全 | `speculative_cache_locs.py`：改用 torch 计算和写入 |
+| 提交 conv 状态的多对合并 scatter kernel 在 TXDA 上写错 | `mamba_commit_scatter.py`：改用逐对的 kernel |
+| draft attention 表里没有 `txda_oot`；draft graph capture 没有 TXDA 分支；重叠视图的 conv 窗口写入不可靠；fast input logprob kernel 编译不了 | `eagle_runtime.py`：`txda_oot` 映射到 `triton`、跳过 draft graph、conv 窗口不去重、关闭 fast input logprob |
+
+验证结果（单机 TP8，greedy）：两个模型 MTP 输出与不开 MTP 一致（batch=1），平均接受长度 27B 约 3.2、35B 约 2.1–3.5，没有 KV 泄漏。
+
+**已知限制：**
+
+- 性能：预热后 MTP 比不开 MTP 更慢（每个 prompt 128 token）。batch=1 时 27B 0.88 vs 1.25 tok/s、35B 1.08 vs 1.53 tok/s；batch=4 时 27B 1.61 vs 3.19、35B 2.50 vs 5.60。主要来自上面的规避（逐 token conv、torch 实现的 verify 逻辑、draft 无 graph）。
+- batch=4 时 4 条输出中有 2 条从中途开始与不开 MTP 的结果不同，原因未查。
+- 只验证了 `topk=1`、greedy、短上下文；`topk>1`、采样、长上下文未在设备上测试。
+
 ## 已验证范围（2026-11）
 
 TX8110，driver/runtime/CCL 0.30279.6，Qwen3.6-35B-A3B 和 Qwen3.6-27B，TP8：
@@ -108,7 +137,10 @@ TX8110，driver/runtime/CCL 0.30279.6，Qwen3.6-35B-A3B 和 Qwen3.6-27B，TP8：
 - serving、throughput/latency/serve benchmark smoke：通过。
 - 本目录 containerfile 构建的镜像上，四项单机测试冷缓存通过。
 
-未覆盖：MTP（EAGLE）只有单元测试，没有在设备上验证；长时间稳定性和 32k 上下文 server 压测未做。
+- 32k 上下文 server 压测（1K/4K/16K 输入 × 1K 输出，并发 64，每组 64 个请求）：35B 全部成功，输出吞吐 9.99 / 7.18 / 3.45 tok/s。
+- MTP：见上节。
+
+未覆盖：长时间稳定性测试。
 
 ## GitHub CI
 
