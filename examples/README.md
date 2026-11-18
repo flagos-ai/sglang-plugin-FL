@@ -62,3 +62,11 @@ Control the plugin behavior via environment variables:
 | Vendor | `USE_FLAGGEMS=0 SGLANG_FL_PREFER=vendor` | Layer 2 only: vendor fused ops |
 
 For precision comparison across modes, use `tests/test_precision_align.py` or `tests/validate.sh`.
+
+## Qwen3.8-Flash-Next (MUSA BF16 text)
+
+[`qwen3_8_flash_next_musa.sh`](./qwen3_8_flash_next_musa.sh) launches TP8 serving
+on eight MTT S5000 GPUs. Prepare the pinned dependencies described in the root
+README, set `MODEL_PATH` to the local BF16 checkpoint and `FLAGCX_PATH` to FlagCX,
+then run the script. `PORT` defaults to 30000. The example preserves the model's
+context limit and enables decode graphs; it does not enable MTP.

@@ -57,6 +57,7 @@ The tables below summarize the current support status of end-to-end verified mod
 |-------|--------|---------|-----------|
 | Qwen3.6-27B | Supported | [Qwen/Qwen3.6-27B](https://huggingface.co/Qwen/Qwen3.6-27B) | [example](./examples/qwen3_6_27b_offline_inference.py) |
 | Qwen3.6-35B-A3B | Supported | [Qwen/Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [example](./examples/qwen3_6_35b_a3b_offline_inference.py) |
+| Qwen3.8-Flash-Next | Experimental: MUSA BF16 text, TP8 | [FlagRelease BF16 weights](https://modelscope.cn/models/FlagRelease/Qwen3.8-Flash-Next-BF16-mthreads-FlagOS) | [example](./examples/qwen3_8_flash_next_musa.sh) |
 
 ### Supported Chips
 
@@ -160,6 +161,39 @@ python -m sglang.launch_server \
 `SGLANG_FL_DENY_VENDORS` is a coverage-audit switch, not a default Empty-mode setting. For example, `SGLANG_FL_DENY_VENDORS=cuda` intentionally removes `vendor.cuda`. Operators that are not yet implemented by FlagOS or a genuine torch reference are then expected to report `No available implementation`. FLA and Fused MoE currently use the platform vendor backend until their FlagOS implementations are available and validated.
 
 **Why empty install?** In short, SGLang's default `pyproject.toml` hard-pins `torch==2.11.0`, `torchao`, `flashinfer`, etc., which conflicts with vendor-specific PyTorch. Empty install strips these out, letting each vendor bring their own torch.
+
+### Qwen3.8-Flash-Next on MUSA
+
+The [serving example](./examples/qwen3_8_flash_next_musa.sh) targets eight MTT S5000
+80 GB GPUs with BF16 weights, KV cache and QSA indexer, FP32 Mamba state, and decode
+graphs. MTP, multimodal inputs and other accelerator families are not validated by
+this model integration. The QSA indexer supports lengths above the short-context
+all-blocks threshold; requests beyond that threshold use eager execution.
+
+Use SGLang runtime commit
+[`1b6e7d09a751bc53dec30e839e944e8662ca0bc5`](https://github.com/zhaiyansen/sglang/commit/1b6e7d09a751bc53dec30e839e944e8662ca0bc5).
+It is upstream `23a45fd33921164fa440fd7c28cc63341259c28c` plus the existing MUSA
+ratio-three GDN projection-unpack compatibility change. Install its Python package
+with `pip install --no-deps -e ./python` in the vendor environment to preserve the
+vendor PyTorch stack. This integration requires Torch/torch_musa 2.9.0, MUSA 4.3,
+FlagGems 5.3.0rc2, FlagCX, and the MUSA compiler build of FlagTree PR #1592
+([`f8ec64d486f8c2ea54a5f9763ed933f04a257915`](https://github.com/flagos-ai/FlagTree/commit/f8ec64d486f8c2ea54a5f9763ed933f04a257915),
+Triton 3.6.0). The installed vendor attention dependencies remain required.
+
+The `qwen38-musa` extra pins the public FlagGems-sglang commit used by this
+integration, including its HC, QSA and PLE APIs:
+
+```bash
+pip install -e ".[qwen38-musa]"
+export FLAGCX_PATH=/path/to/FlagCX
+MODEL_PATH=/models/Qwen3.8-Flash-Next bash examples/qwen3_8_flash_next_musa.sh
+```
+
+The model hooks are installed only on MUSA and act on Qwen3.8 model instances.
+Numerical operations resolve through the shared dispatch policy before execution;
+execution errors propagate without selecting another implementation after a
+cache or state update. Model code owns packed HC checkpoint views and SGLang cache
+metadata; FlagGems-sglang owns the numerical kernels.
 
 ### Download Models
 
