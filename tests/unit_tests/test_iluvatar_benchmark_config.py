@@ -111,14 +111,37 @@ def test_cli_launches_each_original_pytest_with_bound_runtime_case(
     assert result == 0
     assert len(calls) == 1
     command, cwd, env = calls[0]
-    assert command[:4] == [
-        runner_module.sys.executable,
-        "-m",
-        "pytest",
-        f"tests/benchmarks/test_benchmark_{benchmark}.py",
-    ]
+    if runner_module.WHEEL_SOURCE_MODE:
+        # Installed-wheel mode launches the original pytest by absolute
+        # path from the staging dir (its only payload is the tests
+        # symlink) with the safe-path env, so the checkout tree can
+        # never shadow the installed wheel.
+        assert command[:4] == [
+            runner_module.sys.executable,
+            "-m",
+            "pytest",
+            str(
+                (
+                    runner_module._REPO_ROOT
+                    / f"tests/benchmarks/test_benchmark_{benchmark}.py"
+                ).resolve()
+            ),
+        ]
+        assert "--import-mode=importlib" in command
+        assert cwd == str(runner_module._wheel_staging_dir())
+        assert env["PYTHONSAFEPATH"] == "1"
+        assert env["PYTHONPATH"].split(runner_module.os.pathsep)[0] == str(
+            runner_module._wheel_staging_dir()
+        )
+    else:
+        assert command[:4] == [
+            runner_module.sys.executable,
+            "-m",
+            "pytest",
+            f"tests/benchmarks/test_benchmark_{benchmark}.py",
+        ]
+        assert cwd == str(_ROOT)
     assert f"--junitxml={report}" in command
-    assert cwd == str(_ROOT)
     assert env["FL_BENCHMARK_TYPE"] == benchmark
     runtime = json.loads(env["FL_BENCHMARK_CASE"])
     section = "server_parameters" if benchmark == "serve" else "parameters"
