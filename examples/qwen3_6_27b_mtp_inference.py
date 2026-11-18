@@ -226,6 +226,10 @@ def _platform_engine_kwargs() -> dict:
             "mm_attention_backend": "triton_attn",
             "context_length": 8192,
             "chunked_prefill_size": 256,
+            # Validated TXDA value (offline/concurrent examples, CI cases). The
+            # generic 0.8 leaves too little room for the fp32 full-vocab logits
+            # of the logprob checks on 35B-A3B ("Device memory malloc failed").
+            "mem_fraction_static": 0.6,
         }
     if _is_corex:
         return {

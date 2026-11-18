@@ -150,7 +150,8 @@ def _extract_num_tokens(forward_batch) -> int:
     * decode: ``batch_size`` — each request decodes exactly one token.
     * prefill / extend / mixed: ``extend_num_tokens`` — the newly prefilled
       tokens for this step.
-    * fallback: ``seq_lens_sum``.
+    * target verify / fallback: the size of ``input_ids`` when available
+      (``seq_lens_sum`` is ``None`` during EAGLE/MTP target verify on 0.5.18).
 
     Note ``seq_lens_sum`` is the *sum of full sequence lengths* (KV-cache
     tokens), which grows by one every decode step and is therefore NOT what we
@@ -171,7 +172,11 @@ def _extract_num_tokens(forward_batch) -> int:
         except Exception:
             pass
 
-    return int(getattr(forward_batch, "seq_lens_sum", 0))
+    input_ids = getattr(forward_batch, "input_ids", None)
+    if input_ids is not None:
+        return input_ids.numel()
+
+    return int(getattr(forward_batch, "seq_lens_sum", None) or 0)
 
 
 def _extract_forward_mode(forward_batch) -> str:
