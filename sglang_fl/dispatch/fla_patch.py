@@ -22,8 +22,29 @@ def patch_fla_functions():
     """
     try:
         # Import SGLang FLA modules
-        import sglang.srt.layers.attention.fla.chunk as chunk_module
-        import sglang.srt.layers.attention.fla.fused_recurrent as fused_recurrent_module
+        try:
+            import sglang.srt.layers.attention.fla.chunk as chunk_module
+            import sglang.srt.layers.attention.fla.fused_recurrent as fused_recurrent_module
+        except ModuleNotFoundError as exc:
+            if not (exc.name or "").startswith("sglang.srt.layers.attention.fla"):
+                raise
+            import sglang.kernels.ops.attention.fla.chunk as chunk_module
+            import sglang.kernels.ops.attention.fla.fused_recurrent as fused_recurrent_module
+            from sglang_fl.utils import get_device_info
+
+            info = get_device_info()
+            if info is not None and info.vendor_name == "mthreads":
+                # Current MUSA backend delegates to these originals anyway.
+                # The new chunk API adds in-place/output-index contracts which
+                # the legacy bridge does not expose. Keep native direct calls.
+                for name, module in (
+                    ("chunk_gated_delta_rule", chunk_module),
+                    ("fused_recurrent_gated_delta_rule", fused_recurrent_module),
+                    ("fused_recurrent_gated_delta_rule_packed_decode", fused_recurrent_module),
+                ):
+                    _originals[name] = getattr(module, name)
+                logger.info("MUSA: retained relocated native FLA kernels and their current signatures")
+                return _originals
 
         # Import our bridge functions
         from sglang_fl.dispatch.bridge.fla_chunk import chunk_gated_delta_rule_bridge

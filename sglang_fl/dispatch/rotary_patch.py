@@ -70,7 +70,8 @@ def patch_rotary_embedding_init() -> None:
             # returns here.  Each subclass that needs the fix gets its own patched __init__.
             if type(self) is not RotaryEmbedding:
                 return
-            self._forward_method = self.dispatch_forward()
+            resolve = getattr(self, "dispatch_forward", None) or self._resolve_forward_method
+            self._forward_method = resolve()
 
         def _patched_mrope_init(self, *args, **kwargs):
             _orig_mrope_init(self, *args, **kwargs)
@@ -79,7 +80,8 @@ def patch_rotary_embedding_init() -> None:
             # all fully set, so there is no partial-init window.
             if type(self) is not MRotaryEmbedding:
                 return
-            self._forward_method = self.dispatch_forward()
+            resolve = getattr(self, "dispatch_forward", None) or self._resolve_forward_method
+            self._forward_method = resolve()
 
         RotaryEmbedding.__init__ = _patched_rope_init
         MRotaryEmbedding.__init__ = _patched_mrope_init

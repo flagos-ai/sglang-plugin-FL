@@ -340,7 +340,13 @@ def _make_dispatch_hook(config: dict = None):
             # No bridge registered: return forward_cuda directly to bypass dispatch_forward.
             # This allows unregistered OOT ops (e.g., MoE before bridge is added) to use
             # their native CUDA implementation instead of falling into forward_native.
-            result = self.forward_cuda
+            # Current BaseFusedOp owns capability-aware backend selection.
+            # Preserve it for operators without a FlagOS bridge.
+            result = (
+                self.forward_cuda
+                if hasattr(type(self), "dispatch_forward")
+                else original_fn(self)
+            )
             self._fl_cached_fn = result
             return result
 
@@ -771,10 +777,15 @@ def load_plugin():
         os.environ.get("SGLANG_FL_OOT_ENABLED", "1"), default=True
     )
     if oot_enabled:
+        from sglang.srt.layers.utils.multi_platform import MultiPlatformOp
+
+        dispatch_target = (
+            "sglang.srt.layers.utils.multi_platform.MultiPlatformOp.dispatch_forward"
+            if hasattr(MultiPlatformOp, "dispatch_forward")
+            else "sglang.kernels.fused_op.BaseFusedOp._resolve_forward_method"
+        )
         HookRegistry.register(
-            "sglang.srt.layers.utils.multi_platform.MultiPlatformOp.dispatch_forward",
-            _make_dispatch_hook(config),
-            HookType.AROUND,
+            dispatch_target, _make_dispatch_hook(config), HookType.AROUND
         )
         # Patch FLA functions to use dispatch mechanism
         from sglang_fl.dispatch.fla_patch import patch_fla_functions
