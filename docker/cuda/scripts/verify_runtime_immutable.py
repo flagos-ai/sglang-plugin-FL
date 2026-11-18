@@ -1,17 +1,25 @@
 #!/usr/bin/env python3
-"""Post-build runtime-immutability verifier for the NVIDIA CI image.
+"""Runtime-immutability baseline generator and verifier for the NVIDIA CI image.
 
-Runs INSIDE the completed image (docker run --rm --volume
-<docker/cuda>:/evidence:ro --entrypoint python3 <image>
-/evidence/scripts/verify_runtime_immutable.py --evidence-dir /evidence),
-never during image construction. All reference data is bind-mounted:
+One script, two modes, so the generated baseline and its consumer always
+share the same format logic:
 
-  runtime-0.5.18.runtime-freeze.txt      runtime distributions (name==version)
-  runtime-0.5.18.site-files.sha256       runtime site-packages file hashes
-  runtime-0.5.18.pip-check-baseline.txt  the runtime's own pip check findings
-  runtime-0.5.18.provenance.json         compiler slot inventory
+``--generate --out DIR``  run INSIDE the Runtime base image (docker run
+  from the digest pinned in the containerfile -- never inside the
+  candidate) and write the reference data:
 
-Checks:
+    runtime-freeze.txt      distributions (name==version)
+    site-files.sha256       site-packages file hashes
+    pip-check-baseline.txt  the base's own pip check findings
+    provenance.json         compiler slot versions + module origins
+
+  These are derived data, not source: they live in a temporary directory
+  (or CI artifacts), are regenerated whenever the Runtime base digest
+  changes, and are never committed to the repository.
+
+``--verify --evidence-dir DIR``  run INSIDE the completed candidate image
+  against a generated baseline:
+
   1. distribution freeze -- every runtime distribution survives with the
      exact version string, local versions included (torch==2.13.0+cu130);
      any upgrade, downgrade, or removal fails
@@ -160,7 +168,7 @@ def installed_distributions() -> dict[str, str]:
 
 def check_freeze(evidence: Path) -> set[str]:
     baseline = parse_freeze_lines(
-        (evidence / "runtime-0.5.18.runtime-freeze.txt").read_text().splitlines()
+        (evidence / "runtime-freeze.txt").read_text().splitlines()
     )
     current = installed_distributions()
     missing, version_changed = diff_runtime(baseline, current)
@@ -176,7 +184,7 @@ def check_freeze(evidence: Path) -> set[str]:
 
 def check_site_files(evidence: Path) -> None:
     purelib = Path(sysconfig.get_paths()["purelib"])
-    manifest = evidence / "runtime-0.5.18.site-files.sha256"
+    manifest = evidence / "site-files.sha256"
     missing, changed = [], []
     for line in manifest.read_text().splitlines():
         digest, relative = line.split("  ", 1)
@@ -201,9 +209,7 @@ def check_pip_check(evidence: Path) -> None:
     )
     baseline = {
         line.strip()
-        for line in (evidence / "runtime-0.5.18.pip-check-baseline.txt")
-        .read_text()
-        .splitlines()
+        for line in (evidence / "pip-check-baseline.txt").read_text().splitlines()
         if line.strip() and line.strip() != PIP_CHECK_SUCCESS_NOTICE
     }
     new = pip_check_violations(
@@ -228,7 +234,7 @@ def check_pip_check(evidence: Path) -> None:
 
 
 def check_compiler_slots(evidence: Path) -> None:
-    recorded = json.loads((evidence / "runtime-0.5.18.provenance.json").read_text())
+    recorded = json.loads((evidence / "provenance.json").read_text())
     slots = recorded.get("compiler_slots", {})
     expected = {
         "flagtree_slot": (
@@ -242,7 +248,7 @@ def check_compiler_slots(evidence: Path) -> None:
     }
     for key, (init_path, expected_version) in expected.items():
         assert init_path.is_file(), f"compiler slot missing: {init_path}"
-        assert expected_version, f"provenance.json lacks the version for {key}"
+        assert expected_version, f"the baseline provenance lacks the version for {key}"
         match = re.search(r"__version__\s*=\s*['\"]([^'\"]+)", init_path.read_text())
         actual = match.group(1) if match else None
         assert actual == expected_version, (
@@ -262,18 +268,135 @@ def report_additions(runtime_names: set[str]) -> None:
         print(f"[audit]   {line}")
 
 
+# --- baseline generation (run inside the pinned Runtime base) --------------
+# Derived data only: regenerated per base digest, never committed.
+
+PROVENANCE_MODULES = (
+    "torch",
+    "flag_gems",
+    "flagcx",
+    "flagtree",
+    "triton",
+)
+COMPILER_SLOT_INITS = {
+    "/opt/flagtree/triton": Path("/opt/flagtree/triton/__init__.py"),
+    "/opt/triton/triton": Path("/opt/triton/triton/__init__.py"),
+}
+
+
+def _write_freeze(out: Path) -> None:
+    lines = sorted(
+        f"{name}=={version}" for name, version in installed_distributions().items()
+    )
+    (out / "runtime-freeze.txt").write_text("\n".join(lines) + "\n")
+    print(f"[generate] runtime-freeze.txt: {len(lines)} distributions")
+
+
+def _write_site_files(out: Path) -> None:
+    purelib = Path(sysconfig.get_paths()["purelib"])
+    digest = hashlib.sha256()
+    count = 0
+    with open(out / "site-files.sha256", "w") as manifest:
+        for path in sorted(purelib.rglob("*")):
+            if not path.is_file():
+                continue
+            file_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            manifest.write(f"{file_digest}  {path.relative_to(purelib)}\n")
+            digest.update(file_digest.encode())
+            count += 1
+    print(
+        f"[generate] site-files.sha256: {count} files (digest {digest.hexdigest()[:12]}…)"
+    )
+
+
+def _write_pip_check(out: Path) -> None:
+    completed = subprocess.run(
+        [sys.executable, "-m", "pip", "check"],
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode not in (0, 1):
+        raise RuntimeError(
+            "pip check itself failed during baseline generation: "
+            f"returncode={completed.returncode} "
+            f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
+        )
+    findings = sorted(
+        line.strip()
+        for line in completed.stdout.splitlines()
+        if line.strip() and line.strip() != PIP_CHECK_SUCCESS_NOTICE
+    )
+    (out / "pip-check-baseline.txt").write_text(
+        "\n".join(findings) + ("\n" if findings else "")
+    )
+    print(f"[generate] pip-check-baseline.txt: {len(findings)} baseline findings")
+
+
+def _write_provenance(out: Path) -> None:
+    import importlib.util
+
+    provenance: dict[str, object] = {"compiler_slots": {}}
+    for slot, init_path in COMPILER_SLOT_INITS.items():
+        match = re.search(r"__version__\s*=\s*['\"]([^'\"]+)", init_path.read_text())
+        assert match, f"cannot read the version from {init_path}"
+        provenance["compiler_slots"][slot] = match.group(1)
+    for module_name in PROVENANCE_MODULES:
+        spec = importlib.util.find_spec(module_name)
+        provenance[module_name] = {
+            "found": spec is not None and bool(spec.origin),
+            "origin": spec.origin if spec else None,
+        }
+    (out / "provenance.json").write_text(
+        json.dumps(provenance, indent=2, sort_keys=True)
+    )
+    print("[generate] provenance.json: compiler slots + module origins")
+
+
+def generate_baseline(out: Path) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    _write_freeze(out)
+    _write_site_files(out)
+    _write_pip_check(out)
+    _write_provenance(out)
+    print(f"runtime baseline generated in {out}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--generate",
+        action="store_true",
+        help="write the runtime baseline (--out) from THIS environment; "
+        "run inside the pinned Runtime base image",
+    )
+    mode.add_argument(
+        "--verify",
+        action="store_true",
+        help="verify THIS environment against the baseline in --evidence-dir; "
+        "run inside the candidate image",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        help="directory to write the generated baseline into",
+    )
     parser.add_argument(
         "--evidence-dir",
         type=Path,
-        required=True,
-        help="bind-mounted directory with the runtime reference data",
+        help="bind-mounted directory with the generated runtime baseline",
     )
     args = parser.parse_args()
-    evidence = args.evidence_dir
 
     try:
+        if args.generate:
+            if args.out is None:
+                parser.error("--generate requires --out")
+            generate_baseline(args.out)
+            return 0
+        if args.evidence_dir is None:
+            parser.error("--verify requires --evidence-dir")
+        evidence = args.evidence_dir
         runtime_names = check_freeze(evidence)
         check_site_files(evidence)
         check_pip_check(evidence)

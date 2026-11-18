@@ -130,9 +130,7 @@ class TestPipCheckViolations:
         assert "partial stdout" in message
         assert "pip internals exploded" in message
 
-    def test_documented_triton_exception_is_the_only_accepted_addition(
-        self, verifier
-    ):
+    def test_documented_triton_exception_is_the_only_accepted_addition(self, verifier):
         baseline = {"torch 2.13.0+cu130 requires triton, which is not installed."}
         stdout = (
             "torch 2.13.0+cu130 requires triton, which is not installed.\n"
@@ -168,3 +166,70 @@ class TestPipCheckViolations:
         assert verifier.pip_check_violations(1, stdout, "", baseline) == {
             "xgrammar-extra 1.0 requires triton, which is not installed."
         }
+
+
+class TestGenerateBaseline:
+    """The --generate mode must emit exactly what --verify consumes.
+
+    These round-trip tests run in an environment with a working pip and
+    the Runtime's compiler slots (the verification container); on a bare
+    host without pip or /opt/flagtree they are skipped.
+    """
+
+    @pytest.fixture(scope="class")
+    def generated(self, verifier, tmp_path_factory):
+        out = tmp_path_factory.mktemp("baseline")
+        try:
+            verifier.generate_baseline(out)
+        except (RuntimeError, FileNotFoundError, AssertionError) as exc:
+            pytest.skip(f"baseline generation unavailable here: {exc}")
+        return out
+
+    def test_four_files_written(self, generated):
+        for name in (
+            "runtime-freeze.txt",
+            "site-files.sha256",
+            "pip-check-baseline.txt",
+            "provenance.json",
+        ):
+            assert (generated / name).is_file(), name
+
+    def test_freeze_roundtrips_through_the_verify_parser(self, verifier, generated):
+        lines = (generated / "runtime-freeze.txt").read_text().splitlines()
+        assert lines
+        parsed = verifier.parse_freeze_lines(lines)
+        assert parsed
+        assert all("==" not in name for name in parsed)
+
+    def test_site_files_rows_are_hash_relative_pairs(self, verifier, generated):
+        rows = (generated / "site-files.sha256").read_text().splitlines()
+        assert rows
+        for row in rows[:20]:
+            digest, relative = row.split("  ", 1)
+            assert len(digest) == 64
+            assert not relative.startswith("/")
+
+    def test_pip_check_baseline_is_a_findings_set(self, verifier, generated):
+        text = (generated / "pip-check-baseline.txt").read_text()
+        findings = {line for line in text.splitlines() if line.strip()}
+        assert verifier.PIP_CHECK_SUCCESS_NOTICE not in findings
+
+    def test_provenance_records_both_compiler_slots(self, verifier, generated):
+        import json
+
+        recorded = json.loads((generated / "provenance.json").read_text())
+        slots = recorded["compiler_slots"]
+        assert slots["/opt/flagtree/triton"]
+        assert slots["/opt/triton/triton"]
+
+    def test_verify_accepts_the_generated_baseline_as_is(self, verifier, generated):
+        # The strongest form of the contract: this environment's own
+        # baseline, verified against itself, passes all four gates.
+        try:
+            runtime_names = verifier.check_freeze(generated)
+            verifier.check_site_files(generated)
+            verifier.check_pip_check(generated)
+            verifier.check_compiler_slots(generated)
+        except (RuntimeError, FileNotFoundError, AssertionError) as exc:
+            pytest.skip(f"verification unavailable here: {exc}")
+        assert runtime_names

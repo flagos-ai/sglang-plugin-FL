@@ -30,17 +30,11 @@ thw = "thw"
 muh = "muh"
 
 [files]
-# Machine-generated runtime reference data for the NVIDIA CI image build
-# (docker/cuda/runtime-0.5.18.containerfile). The site-files manifest lists
-# 33k real runtime file paths (torch's nll_loss_nd, FlagGems' convolution_
-# overrideable, ...) and the freeze/baseline quote package metadata; none
-# of it is prose, so spellchecking them only produces false positives.
 # The kunlunxin patched-sglang wheel below carries upstream identifiers
-# verbatim; it is vendor payload, not prose.
+# verbatim; it is vendor payload, not prose. (The NVIDIA image's runtime
+# baselines are generated at verification time from the pinned base
+# digest and never live in the repository.)
 extend-exclude = [
-  "docker/cuda/runtime-0.5.18.site-files.sha256",
-  "docker/cuda/runtime-0.5.18.runtime-freeze.txt",
-  "docker/cuda/runtime-0.5.18.pip-check-baseline.txt",
   "docker/kunlunxin/sglang-v0.5.18-kunlunxin.patch",
 ]
 
