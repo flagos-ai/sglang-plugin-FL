@@ -26,6 +26,8 @@ Patches applied:
   speculative_cache_locs – speculative KV slot bookkeeping in torch (verify
                     write locations: no txda branch upstream; req_to_token writes
                     and assign_extend_cache_locs: Triton kernels wrong on txda)
+  mamba_commit_scatter – MTP commit of conv windows with the per-pair kernel
+                    (the multi-pair kernel writes wrong states on txda)
   vocab_embedding – Keep VocabParallelEmbedding on the torch path on txda
                     (SGLang 0.5.18 Triton embedding: wrong rows for out-of-shard ids)
   triton_load_watch – Disable SGLang 0.5.18 CUDA-only Triton kernel-load
@@ -108,6 +110,7 @@ def apply_all_txda_patches() -> None:
         dummy_weights,
         fused_moe,
         gdn_verify_conv,
+        mamba_commit_scatter,
         gdn_norm,
         scheduler_pp_mixin,
         speculative_cache_locs,
@@ -122,6 +125,7 @@ def apply_all_txda_patches() -> None:
     speculative_tree.patch()  # EAGLE/MTP tree build (Triton) + greedy verify (torch)
     gdn_verify_conv.patch()  # MTP verify: GDN conv update one draft token per call (FlagTree)
     speculative_cache_locs.patch()  # speculative KV slot bookkeeping in torch
+    mamba_commit_scatter.patch()  # MTP commit: multi conv-window scatter kernel wrong on txda
     vocab_embedding.patch()  # 0.5.18 Triton embedding returns non-zero rows for out-of-shard ids on txda
     triton_load_watch.patch()  # 0.5.18 CUDA-only kernel-load hook crashes on txda
     dummy_weights.patch()  # load_format=dummy: torch_txda uniform_ rejects a txda generator
