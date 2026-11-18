@@ -42,6 +42,5 @@ def register_builtins(registry):
                     kind=BackendImplKind.DEFAULT,
                     fn=function,
                     priority=BackendPriority.DEFAULT,
-                    supported_dtypes={"bfloat16", "float16"},
                 )
             )
