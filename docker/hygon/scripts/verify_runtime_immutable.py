@@ -225,7 +225,7 @@ def check_hcu_compat_markers() -> None:
     assert 'fullname == "sgl_kernel.scalar_type"' in text, (
         "stub finder lacks the scalar_type exemption"
     )
-    assert Path(HCU_PATCH_RECORD).is_file(), f"HCU patch record missing"
+    assert Path(HCU_PATCH_RECORD).is_file(), "HCU patch record missing"
     print(
         "[6/6] HCU compat markers: clang wrapper + scalar_type fallback + patch record"
     )

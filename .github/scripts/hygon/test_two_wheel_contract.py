@@ -17,17 +17,11 @@ import tempfile
 import zipfile
 from email.parser import Parser
 from pathlib import Path
-from unittest import mock
-
 import unittest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DOCKER = REPO_ROOT / "docker" / "hygon"
 SCRIPTS = DOCKER / "scripts"
-
-sys.path.insert(0, str(SCRIPTS))
-
-import check_plugin_wheel  # noqa: E402
 
 
 class StagingCouplingTests(unittest.TestCase):
