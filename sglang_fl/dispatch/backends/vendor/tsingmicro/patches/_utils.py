@@ -18,11 +18,11 @@ def is_txda() -> bool:
 
 
 class _PostImportLoader(importlib.abc.Loader):
-    """Forward to the original loader, then run a callback after the module loads."""
+    """Forward to the original loader, then run the callbacks after the module loads."""
 
-    def __init__(self, inner, callback):
+    def __init__(self, inner, callbacks):
         self._inner = inner
-        self._callback = callback
+        self._callbacks = callbacks
 
     def create_module(self, spec):
         try:
@@ -32,15 +32,16 @@ class _PostImportLoader(importlib.abc.Loader):
 
     def exec_module(self, module):
         self._inner.exec_module(module)
-        self._callback()
+        for callback in list(self._callbacks):
+            callback()
 
 
 class _PostImportWrapFinder(importlib.abc.MetaPathFinder):
-    """One-shot finder: wrap a target module's loader to run `callback` after import."""
+    """One-shot finder: wrap a target module's loader to run its callbacks after import."""
 
     def __init__(self, target, callback):
         self._target = target
-        self._callback = callback
+        self._callbacks = [callback]
         self._finding = False
 
     def find_spec(self, fullname, path=None, target=None):
@@ -53,7 +54,7 @@ class _PostImportWrapFinder(importlib.abc.MetaPathFinder):
             self._finding = False
         if spec is None or spec.loader is None:
             return None
-        spec.loader = _PostImportLoader(spec.loader, self._callback)
+        spec.loader = _PostImportLoader(spec.loader, self._callbacks)
         return spec
 
 
@@ -62,11 +63,15 @@ def _install_post_import_wrap(module_name, callback) -> None:
 
     If the module is already loaded, apply immediately. Otherwise install a
     meta_path finder that fires the callback right after the module loads.
+    Several patches may hook the same module; each callback runs once, in
+    registration order.
     """
     if module_name in sys.modules:
         callback()
         return
     for f in sys.meta_path:
         if type(f) is _PostImportWrapFinder and f._target == module_name:
+            if callback not in f._callbacks:
+                f._callbacks.append(callback)
             return
     sys.meta_path.insert(0, _PostImportWrapFinder(module_name, callback))
