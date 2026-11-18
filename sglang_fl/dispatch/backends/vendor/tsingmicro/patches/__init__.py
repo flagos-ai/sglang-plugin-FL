@@ -28,6 +28,8 @@ Patches applied:
                     and assign_extend_cache_locs: Triton kernels wrong on txda)
   mamba_commit_scatter – MTP commit of conv windows with the per-pair kernel
                     (the multi-pair kernel writes wrong states on txda)
+  eagle_runtime   – EAGLE draft attention txda_oot -> triton, no draft graphs,
+                    dense conv verify windows, no fast input logprobs
   vocab_embedding – Keep VocabParallelEmbedding on the torch path on txda
                     (SGLang 0.5.18 Triton embedding: wrong rows for out-of-shard ids)
   triton_load_watch – Disable SGLang 0.5.18 CUDA-only Triton kernel-load
@@ -108,6 +110,7 @@ def apply_all_txda_patches() -> None:
     from sglang_fl.dispatch.backends.vendor.tsingmicro.patches import (
         dist_init,
         dummy_weights,
+        eagle_runtime,
         fused_moe,
         gdn_verify_conv,
         mamba_commit_scatter,
@@ -126,6 +129,7 @@ def apply_all_txda_patches() -> None:
     gdn_verify_conv.patch()  # MTP verify: GDN conv update one draft token per call (FlagTree)
     speculative_cache_locs.patch()  # speculative KV slot bookkeeping in torch
     mamba_commit_scatter.patch()  # MTP commit: multi conv-window scatter kernel wrong on txda
+    eagle_runtime.patch()  # EAGLE draft backend/graphs, dense conv windows, input logprobs on txda
     vocab_embedding.patch()  # 0.5.18 Triton embedding returns non-zero rows for out-of-shard ids on txda
     triton_load_watch.patch()  # 0.5.18 CUDA-only kernel-load hook crashes on txda
     dummy_weights.patch()  # load_format=dummy: torch_txda uniform_ rejects a txda generator
