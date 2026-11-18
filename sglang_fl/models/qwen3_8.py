@@ -21,13 +21,12 @@ def register_hooks():
     if find_spec("sglang.srt.models.qwen4_exp") is None:
         return
     from sglang.srt.plugins.hook_registry import HookRegistry
-    from . import gdn_norm, qwen4_hc, qwen4_ple, qwen4_qsa, qwen4_qsa_rope
+    from . import gdn_norm, qwen4_hc, qwen4_qsa, qwen4_qsa_rope
 
     entries = (
         qwen4_hc.hooks()
         + qwen4_qsa.hooks()
         + qwen4_qsa_rope.hooks()
-        + qwen4_ple.hooks()
     )
     from sglang.kernels.fused_op import BaseFusedOp
 
@@ -55,4 +54,4 @@ def register_hooks():
             BaseFusedOp._oot_forward_registry["oot"] = previous_oot
         raise
     _registered = True
-    logger.info("Qwen3.8 MUSA HC, QSA and PLE hooks registered")
+    logger.info("Qwen3.8 MUSA HC and QSA hooks registered")

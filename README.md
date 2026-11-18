@@ -169,9 +169,9 @@ The [serving example](./examples/qwen3_8_flash_next_musa.sh) targets eight MTT S
 graphs. MTP, multimodal inputs and other accelerator families are not validated by
 this model integration. The QSA indexer supports lengths above the short-context
 all-blocks threshold; requests beyond that threshold use eager execution.
-PLE keeps the existing SGLang gate/norm sequence and dispatches the short
-convolution/state update. The standalone fused gate/norm API is available in
-FlagGems-sglang but is not enabled by this model integration.
+PLE keeps the existing SGLang forward and convolution sequence. The standalone
+fused gate/norm and convolution APIs are available in FlagGems-sglang but are not
+enabled by this model integration.
 
 Use SGLang runtime commit
 [`1b6e7d09a751bc53dec30e839e944e8662ca0bc5`](https://github.com/zhaiyansen/sglang/commit/1b6e7d09a751bc53dec30e839e944e8662ca0bc5).
