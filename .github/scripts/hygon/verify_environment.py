@@ -345,18 +345,33 @@ def _verify_runtime_evidence(evidence: Path) -> None:
     print(f"[hygon-env] triton module authoritative at {spec.origin}")
 
 
-def _verify_plugin_path(plugin_root: Path) -> None:
+def _verify_plugin_path(plugin_root: Path, plugin_source: str) -> None:
     spec = importlib.util.find_spec("sglang_fl")
     if spec is None or spec.origin is None:
-        raise RuntimeError("sglang_fl is not importable; install the current checkout")
+        raise RuntimeError("sglang_fl is not importable; install it first")
     actual = Path(spec.origin).resolve().parent
+    if plugin_source == "wheel":
+        # The two-wheel image ships the real sglang_fl wheel: the module
+        # must come from the installed distribution's own root (resolved
+        # through the public locate_file API), and the checkout must not
+        # shadow it.
+        dist_root = Path(metadata.distribution("sglang-fl").locate_file("")).resolve()
+        if plugin_root.resolve() == actual or plugin_root.resolve() in actual.parents:
+            raise RuntimeError(f"sglang_fl resolves from the checkout: {actual}")
+        if not actual.is_relative_to(dist_root):
+            raise RuntimeError(
+                f"sglang_fl resolves to {actual}, which is not inside the "
+                f"installed distribution root {dist_root}"
+            )
+        print(f"[hygon-env] plugin-source=wheel at {actual} (root {dist_root})")
+        return
     expected = plugin_root.resolve() / "sglang_fl"
     if actual != expected:
         raise RuntimeError(
             f"sglang_fl resolves to {actual}, expected {expected}; "
             "an older plugin copy may be shadowing the upgrade"
         )
-    print(f"[hygon-env] plugin-source={actual}")
+    print(f"[hygon-env] plugin-source=checkout at {actual}")
 
 
 def _require_import(module_name: str):
@@ -578,6 +593,7 @@ def _verify_gpu(torch, min_gpus: int) -> None:
 def verify(
     *,
     plugin_root: Path = REPO_ROOT,
+    plugin_source: str = "checkout",
     baseline: Path | None = None,
     runtime_evidence: Path | None = None,
     metadata_only: bool = False,
@@ -588,6 +604,10 @@ def verify(
         raise RuntimeError("--metadata-only cannot be combined with --require-gpu")
     if min_gpus < 1:
         raise RuntimeError("--min-gpus must be at least 1")
+    if plugin_source not in ("checkout", "wheel"):
+        raise RuntimeError(
+            f"--plugin-source must be checkout or wheel, not {plugin_source!r}"
+        )
     if baseline and runtime_evidence:
         raise RuntimeError("--baseline and --runtime-evidence are exclusive")
     if sys.version_info[:2] != (3, 10):
@@ -601,7 +621,7 @@ def verify(
         _verify_runtime_evidence(runtime_evidence)
     else:
         _verify_versions(baseline)
-    _verify_plugin_path(plugin_root)
+    _verify_plugin_path(plugin_root, plugin_source)
     if metadata_only:
         print("[hygon-env] metadata checks passed; runtime/GPU checks were not run")
         return
@@ -645,6 +665,13 @@ def verify(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--plugin-root", type=Path, default=REPO_ROOT)
+    parser.add_argument(
+        "--plugin-source",
+        choices=("checkout", "wheel"),
+        default="checkout",
+        help="where sglang_fl must resolve from: the editable checkout "
+        "(legacy) or the installed wheel distribution root (two-wheel image)",
+    )
     parser.add_argument("--baseline", type=Path)
     parser.add_argument(
         "--runtime-evidence",
@@ -671,6 +698,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             verify(
                 plugin_root=args.plugin_root,
+                plugin_source=args.plugin_source,
                 baseline=args.baseline,
                 runtime_evidence=args.runtime_evidence,
                 metadata_only=args.metadata_only,

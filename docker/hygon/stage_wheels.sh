@@ -31,15 +31,21 @@ SGLANG_WHEEL_URL="https://resource.flagos.net/repository/flagos-pypi-hygon/packa
 SGLANG_WHEEL_SHA256="1fe8a560353fd15aea7194869f1fd50e1fdbedd8fc1074db52b9a13028756800"
 
 stage="$(mktemp -d "${TMPDIR:-/tmp}/hygon-two-wheel-stage.XXXXXX")"
+# The final build context must SURVIVE this script (the printed docker
+# build command references it), so it lives outside the trapped cleanup
+# area; only the intermediate staging area is disposable.
+context="$(mktemp -d "${TMPDIR:-/tmp}/hygon-two-wheel-context.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
 
-# Keep the staging area strictly outside the repository.
-case "$(cd "$stage" && pwd -P)/" in
-    "$(cd "$repo_root" && pwd -P)/"*)
-        echo "FATAL: staging directory resolved inside the repository" >&2
-        exit 1
-        ;;
-esac
+# Keep both areas strictly outside the repository.
+for area in "$stage" "$context"; do
+    case "$(cd "$area" && pwd -P)/" in
+        "$(cd "$repo_root" && pwd -P)/"*)
+            echo "FATAL: staging directory resolved inside the repository" >&2
+            exit 1
+            ;;
+    esac
+done
 
 echo "=== Building the sglang-plugin-FL wheel ==="
 python3 -m build --wheel --outdir "$stage" "$repo_root" >/dev/null
@@ -67,7 +73,6 @@ fi
 echo "verified $SGLANG_WHEEL_NAME sha256=$actual"
 
 echo "=== Assembling the build context ==="
-context="$stage/context"
 mkdir -p "$context/artifacts"
 cp "$plugin_wheel" "$context/artifacts/"
 cp "$sglang_wheel" "$context/artifacts/"
@@ -84,6 +89,6 @@ commit="$(git -C "$repo_root" rev-parse HEAD)"
 echo "source-commit:  $commit"
 echo "plugin-wheel:   $(basename "$plugin_wheel") sha256=$(sha256sum "$plugin_wheel" | awk '{print $1}')"
 echo "sglang-wheel:   $SGLANG_WHEEL_NAME sha256=$SGLANG_WHEEL_SHA256"
-echo "context:        $context"
+echo "context:        $context (survives this script; remove manually when done)"
 echo "build command:"
 echo "  docker build -f $context/runtime-0.5.18.containerfile -t <tag> $context"

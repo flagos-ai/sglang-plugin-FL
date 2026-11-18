@@ -20,6 +20,7 @@ Usage: check_plugin_wheel.py <wheel> [--repo-root DIR]
 """
 
 import argparse
+import configparser
 import re
 import sys
 import zipfile
@@ -33,8 +34,8 @@ EXPECTED_EXTRA_ANCHORS = (
 EXPECTED_EXTRA_COUNT = 2
 EXCLUDED_DISTRIBUTION = "triton"
 EXPECTED_ENTRY_POINTS = {
-    "sglang.srt.platforms": "sglang_fl",
-    "sglang.srt.plugins": "sglang_fl",
+    "sglang.srt.platforms": ("sglang_fl", "sglang_fl:activate_platform"),
+    "sglang.srt.plugins": ("sglang_fl", "sglang_fl:load_plugin"),
 }
 REQUIRED_PAYLOAD = (
     "sglang_fl/dispatch/backends/vendor/hygon/impl/attention_backend.py",
@@ -101,12 +102,19 @@ def main() -> int:
                     f"wheel declares {EXCLUDED_DISTRIBUTION!r}: {requirement!r}"
                 )
 
-        entry_points = archive.read(
+        entry_points_text = archive.read(
             "sglang_fl-0.1.0.dist-info/entry_points.txt"
         ).decode("utf-8")
-        for group, target in EXPECTED_ENTRY_POINTS.items():
-            if f"[{group}]" not in entry_points or target not in entry_points:
-                failures.append(f"entry-point group {group} -> {target} missing")
+        parser = configparser.ConfigParser()
+        parser.read_string(entry_points_text)
+        for group, (name, value) in EXPECTED_ENTRY_POINTS.items():
+            if not parser.has_section(group) or not parser.has_option(group, name):
+                failures.append(f"entry-point {group}: {name} missing")
+            elif parser.get(group, name) != value:
+                failures.append(
+                    f"entry-point {group}: {name} -> "
+                    f"{parser.get(group, name)!r}, expected {value!r}"
+                )
 
         for payload in REQUIRED_PAYLOAD:
             if payload not in names:

@@ -39,13 +39,17 @@ FROM ${BASE_IMAGE}
 # excludes file below drops it before the resolver runs).
 ENV PYTHONPATH=/opt/flagtree
 
-# resource.flagos.net's pypi-proxy intermittently 504s large upstream
-# fetches; uv retries internally. The platform index keeps first priority
-# (flagos-built wheels and the fsspec/datasets pin reality); PyPI stays
-# last because transpacific delivery of large wheels is slow.
-ARG PIP_MAIN_INDEX=https://resource.flagos.net/repository/flagos-pypi-hygon/simple
-ARG PIP_FALLBACK_INDEX=https://pypi.org/simple
-ARG PIP_EXTRA_INDEX=https://resource.flagos.net/repository/pypi-proxy/simple
+# Index priority expressed with uv's real semantics: --extra-index wins
+# over --index-url in uv (the inverse of pip), so the named forms below
+# are explicit. With --index-strategy first-index the FIRST index carrying
+# a package wins: the flagos platform index (flagos-built wheels, the
+# fsspec/datasets pin reality) comes first, PyPI second for generic
+# wheels, and the pypi-proxy only as the default-index last resort
+# (transpacific delivery of large wheels through it is slow and it
+# intermittently 504s).
+ARG FLAGOS_INDEX=https://resource.flagos.net/repository/flagos-pypi-hygon/simple
+ARG PYPI_INDEX=https://pypi.org/simple
+ARG PROXY_INDEX=https://resource.flagos.net/repository/pypi-proxy/simple
 
 WORKDIR /opt/sglang-ci
 
@@ -78,8 +82,11 @@ RUN --mount=type=bind,target=/ctx python -m pip freeze --all | sort > /opt/sglan
 # Both application wheels resolve together in one graph:
 #   sglang[srt_empty,runtime_common] + sglang_fl[hygon].
 # The dry-run and the real install use the identical resolver and the
-# identical arguments; the plan (uv "Would install ...") is validated
-# against the runtime baseline and recorded as the audit artifact. The
+# identical arguments. uv writes the plan to STDERR as multi-line
+# '+ name==version' / '+ name @ file://...' rows; the output (both
+# streams) lands in uv-dry-run.txt first - no pipeline, so uv's own exit
+# code propagates - and is validated against the runtime baseline as the
+# audit artifact. The
 # single-item excludes file drops the standalone triton distribution from
 # resolution - nothing is installed, uninstalled, or stubbed for it; the
 # metadata gap xgrammar still declares is pip check's documented platform
@@ -87,20 +94,22 @@ RUN --mount=type=bind,target=/ctx python -m pip freeze --all | sort > /opt/sglan
 RUN --mount=type=bind,target=/ctx \
     /usr/local/bin/uv pip install --python /flagos/bin/python3 \
       --dry-run \
-      --index-url "$PIP_MAIN_INDEX" \
-      --extra-index-url "$PIP_FALLBACK_INDEX" \
-      --extra-index-url "$PIP_EXTRA_INDEX" \
+      --index "$FLAGOS_INDEX" \
+      --index "$PYPI_INDEX" \
+      --default-index "$PROXY_INDEX" \
+      --index-strategy first-index \
       --constraints /opt/sglang-ci/runtime-constraints.txt \
       --constraints /opt/sglang-ci/top-level-constraints.txt \
       --excludes /tmp/runtime-0.5.18.excludes.txt \
       '/tmp/wheels/sglang-0.5.18+flagos-cp310-cp310-linux_x86_64.whl[srt_empty,runtime_common]' \
       '/tmp/wheels/sglang_fl-0.1.0-py3-none-any.whl[hygon]' \
-      | tee /opt/sglang-ci/uv-dry-run.txt \
-      | python /ctx/docker/hygon/scripts/validate_uv_plan.py \
+      > /opt/sglang-ci/uv-dry-run.txt 2>&1 \
+    && python /ctx/docker/hygon/scripts/validate_uv_plan.py /opt/sglang-ci/uv-dry-run.txt \
     && /usr/local/bin/uv pip install --python /flagos/bin/python3 \
-      --index-url "$PIP_MAIN_INDEX" \
-      --extra-index-url "$PIP_FALLBACK_INDEX" \
-      --extra-index-url "$PIP_EXTRA_INDEX" \
+      --index "$FLAGOS_INDEX" \
+      --index "$PYPI_INDEX" \
+      --default-index "$PROXY_INDEX" \
+      --index-strategy first-index \
       --constraints /opt/sglang-ci/runtime-constraints.txt \
       --constraints /opt/sglang-ci/top-level-constraints.txt \
       --excludes /tmp/runtime-0.5.18.excludes.txt \

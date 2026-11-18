@@ -136,7 +136,61 @@ class EnvironmentVerifierTests(unittest.TestCase):
             return_value=SimpleNamespace(origin=str(REPO_ROOT / "old" / "__init__.py")),
         ):
             with self.assertRaisesRegex(RuntimeError, "older plugin copy"):
-                verifier._verify_plugin_path(REPO_ROOT)
+                verifier._verify_plugin_path(REPO_ROOT, "checkout")
+
+    def test_wheel_source_requires_installed_distribution_root(self):
+        stub_root = Path(REPO_ROOT.parent) / "hygon2w-test-site"
+        dist_root = stub_root / "site-packages"
+        installed = dist_root / "sglang_fl" / "__init__.py"
+        installed.parent.mkdir(parents=True, exist_ok=True)
+        installed.write_text("# stub", encoding="utf-8")
+        self.addCleanup(lambda: __import__("shutil").rmtree(stub_root, True))
+
+        def fake_distribution(name):
+            assert name == "sglang-fl"
+            return SimpleNamespace(locate_file=lambda _p: dist_root)
+
+        with (
+            patch.object(
+                verifier.importlib.util,
+                "find_spec",
+                return_value=SimpleNamespace(origin=str(installed)),
+            ),
+            patch.object(
+                verifier.metadata, "distribution", side_effect=fake_distribution
+            ),
+        ):
+            verifier._verify_plugin_path(REPO_ROOT, "wheel")  # installed: passes
+
+        with (
+            patch.object(
+                verifier.importlib.util,
+                "find_spec",
+                return_value=SimpleNamespace(
+                    origin=str(REPO_ROOT / "sglang_fl" / "__init__.py")
+                ),
+            ),
+            patch.object(
+                verifier.metadata, "distribution", side_effect=fake_distribution
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "checkout"):
+                verifier._verify_plugin_path(REPO_ROOT, "wheel")
+
+        with (
+            patch.object(
+                verifier.importlib.util,
+                "find_spec",
+                return_value=SimpleNamespace(
+                    origin=str(stub_root / "elsewhere" / "__init__.py")
+                ),
+            ),
+            patch.object(
+                verifier.metadata, "distribution", side_effect=fake_distribution
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "not inside the installed"):
+                verifier._verify_plugin_path(REPO_ROOT, "wheel")
 
     def test_metadata_only_does_not_load_gpu_libraries(self):
         with (

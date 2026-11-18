@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib
+import importlib.util
 import json
 import os
 import re
@@ -53,9 +53,13 @@ from pip_check_exceptions import pip_check_violations  # noqa: E402
 EXPECTED_SGLANG = "0.5.18+flagos"
 EXPECTED_PLUGIN = "0.1.0"
 EXPECTED_ENTRY_POINTS = {
-    "sglang.srt.platforms": "sglang_fl",
-    "sglang.srt.plugins": "sglang_fl",
+    "sglang.srt.platforms": ("sglang_fl", "sglang_fl:activate_platform"),
+    "sglang.srt.plugins": ("sglang_fl", "sglang_fl:load_plugin"),
 }
+REQUIRED_PLUGIN_PAYLOAD = (
+    "sglang_fl/dispatch/backends/vendor/hygon/impl/attention_backend.py",
+    "sglang_fl/dispatch/config/hygon.yaml",
+)
 HCU_PATCH_RECORD = "/opt/sglang-ci/sglang-hcu-patch.sha256"
 STUB_FINDER = "site-packages/_hcu_kernel_stub_finder.py"
 CLANG_WRAPPER = Path("/opt/hcu-clang/clang-18-device-libs")
@@ -143,60 +147,70 @@ def check_pip_check(evidence: Path) -> None:
 def check_compiler_slots(evidence: Path) -> None:
     recorded = json.loads((evidence / "runtime-0.5.18.provenance.json").read_text())
     slots = recorded.get("compiler_slots", {})
-    for slot, expected_version in slots.items():
-        init_path = Path(slot) / "triton" / "__init__.py"
-        if slot == "/opt/flagtree":
-            assert init_path.is_file(), f"compiler slot missing: {init_path}"
-            match = re.search(
-                r"__version__\s*=\s*['\"]([^'\"]+)", init_path.read_text()
-            )
-            actual = match.group(1) if match else None
-            assert actual == expected_version, (
-                f"compiler slot {slot} drifted: expected {expected_version}, "
-                f"found {actual}"
-            )
-            print(f"[4/6] flagtree slot: triton {actual} at {slot}/triton")
+    assert slots, "provenance.json carries no compiler slots"
+    # The schema keys are slot ROOTS ('/opt/flagtree', '/opt/triton');
+    # every recorded slot must still carry its recorded Triton version.
+    for slot_root, expected_version in sorted(slots.items()):
+        init_path = Path(slot_root) / "triton" / "__init__.py"
+        assert init_path.is_file(), f"compiler slot missing: {init_path}"
+        assert expected_version, f"provenance.json lacks the version for {slot_root}"
+        match = re.search(r"__version__\s*=\s*['\"]([^'\"]+)", init_path.read_text())
+        actual = match.group(1) if match else None
+        assert actual == expected_version, (
+            f"compiler slot {slot_root} drifted: expected {expected_version}, "
+            f"found {actual}"
+        )
+        print(f"[4/6] compiler slot {slot_root}: triton {actual}")
     current = installed_distributions()
     assert "triton" not in current, (
         f"standalone triton distribution present: {current['triton']}"
     )
-    module = importlib.import_module("triton")
-    assert str(module.__file__).startswith("/opt/flagtree/"), (
-        f"triton module resolved {module.__file__}, expected /opt/flagtree"
+    selected = recorded.get("selected_slot")
+    assert selected in slots, f"selected slot {selected!r} is not a recorded slot"
+    # find_spec resolves without executing the module: safe on GPU-less
+    # builders, and it is the resolution every entrypoint inherits from
+    # the image-level PYTHONPATH.
+    spec = importlib.util.find_spec("triton")
+    assert spec is not None and spec.origin, "triton module not resolvable"
+    assert spec.origin.startswith(str(Path(selected).resolve()) + "/"), (
+        f"triton module resolves {spec.origin}, expected under {selected}"
     )
-    print(f"[4/6] no standalone triton; module resolves {module.__file__}")
+    print(
+        f"[4/6] no standalone triton; module resolves {spec.origin} (slot {selected})"
+    )
 
 
 def check_two_wheel_contract() -> None:
+    """Metadata/payload-only: this verifier must run on GPU-less builders.
+
+    Importing sglang_fl (or the attention backend) initializes HCU and
+    aborts with 'no ROCm-capable device' without a GPU, so the wheel
+    contract is checked through distribution metadata, file listings and
+    payload paths; the real import runs on the HCU CI runner.
+    """
     import importlib.metadata as md
 
     assert md.version("sglang") == EXPECTED_SGLANG, md.version("sglang")
     assert md.version("sglang-fl") == EXPECTED_PLUGIN, md.version("sglang-fl")
-    for group, target in EXPECTED_ENTRY_POINTS.items():
-        registered = sorted(
-            ep.value for ep in md.entry_points(group=group) if ep.name == target
+    for group, (name, value) in EXPECTED_ENTRY_POINTS.items():
+        registered = {(ep.name, ep.value) for ep in md.entry_points(group=group)}
+        assert (name, value) in registered, (
+            f"{group}: ({name!r}, {value!r}) not in {sorted(registered)}"
         )
-        assert registered == [target], f"{group}: {registered}"
-    plugin = importlib.import_module("sglang_fl")
-    from importlib import metadata
-
-    distribution_root = Path(
-        metadata.distribution("sglang-fl").locate_file("")
-    ).resolve()
-    module_file = Path(plugin.__file__).resolve()
-    assert module_file.is_relative_to(distribution_root), (
-        f"sglang_fl at {module_file} is not from the installed distribution "
-        f"root {distribution_root}"
-    )
-    attention = importlib.import_module(
-        "sglang_fl.dispatch.backends.vendor.hygon.impl.attention_backend"
-    )
-    assert str(Path(attention.__file__)).startswith(str(distribution_root)), (
-        f"attention backend outside the wheel: {attention.__file__}"
-    )
+    dist = md.distribution("sglang-fl")
+    distribution_root = Path(dist.locate_file("")).resolve()
+    payload = {str(item) for item in dist.files or ()}
+    for required in REQUIRED_PLUGIN_PAYLOAD:
+        assert required in payload, (
+            f"{required} missing from the installed sglang_fl distribution"
+        )
+        assert (distribution_root / required).is_file(), (
+            f"{required} listed in RECORD but absent on disk"
+        )
     print(
         f"[5/6] two-wheel contract: sglang=={EXPECTED_SGLANG}, "
-        f"sglang_fl=={EXPECTED_PLUGIN} from {distribution_root}"
+        f"sglang_fl=={EXPECTED_PLUGIN} at {distribution_root} "
+        f"(metadata/payload verified; import deferred to HCU CI)"
     )
 
 

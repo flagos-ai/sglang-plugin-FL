@@ -1,8 +1,11 @@
 {
+  "base_image": "harbor.baai.ac.cn/flagos-runtime/flagos-runtime-hygon-dtk26.04@sha256:03e598b348e58e7233628394bbefa0ccef26969a091c7e6f2f02835161757f8b",
   "compiler_slots": {
-    "/opt/flagtree/triton": "3.6.0",
-    "/opt/triton/triton": "3.5.1"
+    "/opt/flagtree": "3.6.0",
+    "/opt/triton": "3.5.1"
   },
+  "generated_by": "docker run --rm -i --entrypoint python <base-image> with this script on stdin; regenerate whenever the pinned base digest changes",
+  "schema": "compiler-slots-v2 (keys are slot ROOTS; each value is the triton __init__.__version__ found under <root>/triton)",
   "selected_slot": "/opt/flagtree",
   "selection": "image-level ENV PYTHONPATH=/opt/flagtree"
 }

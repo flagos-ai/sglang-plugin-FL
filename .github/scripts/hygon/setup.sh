@@ -54,14 +54,14 @@ assert md.version("sglang") == "0.5.18+flagos", md.version("sglang")
 assert md.version("sglang-fl") == "0.1.0", md.version("sglang-fl")
 
 expected_entry_points = {
-    "sglang.srt.platforms": "sglang_fl",
-    "sglang.srt.plugins": "sglang_fl",
+    "sglang.srt.platforms": ("sglang_fl", "sglang_fl:activate_platform"),
+    "sglang.srt.plugins": ("sglang_fl", "sglang_fl:load_plugin"),
 }
-for group, target in expected_entry_points.items():
-    registered = sorted(
-        ep.value for ep in md.entry_points(group=group) if ep.name == target
+for group, (name, value) in expected_entry_points.items():
+    registered = {(ep.name, ep.value) for ep in md.entry_points(group=group)}
+    assert (name, value) in registered, (
+        f"{group}: ({name!r}, {value!r}) not in {sorted(registered)}"
     )
-    assert registered == [target], f"{group}: {registered}"
 
 module_file = Path(sglang_fl.__file__).resolve()
 distribution_root = Path(metadata.distribution("sglang-fl").locate_file("")).resolve()
@@ -118,5 +118,6 @@ PY
 
 python .github/scripts/hygon/ci_environment.py -- \
   python .github/scripts/hygon/verify_environment.py \
-    --plugin-root "$PLUGIN_ROOT" --runtime-evidence "$EVIDENCE" \
+    --plugin-root "$PLUGIN_ROOT" --plugin-source wheel \
+    --runtime-evidence "$EVIDENCE" \
     --require-gpu --min-gpus 2
