@@ -6,42 +6,6 @@ import torch
 from sglang_fl.dispatch import resolve_op
 
 
-def _forward(original, self, hidden_states, forward_batch, batch):
-    if not getattr(self, "_fl_qwen38", False) or batch.mode.is_target_verify():
-        return original(self, hidden_states, forward_batch, batch)
-    from sglang.srt.models.qwen4_exp import _pad_token_rows
-
-    gate_norm = resolve_op("ple_gate_norm")
-    hidden_states = hidden_states[: batch.processed_tokens]
-    if self._prefetch_state is not None:
-        embeddings = self._consume_prefetched_embeddings(forward_batch)
-    else:
-        embeddings = self.ple_embedding(batch, forward_batch)
-    key, _ = self.key_proj(embeddings)
-    value, _ = self.value_proj(embeddings)
-    rows = hidden_states.shape[0]
-    key = key.reshape(rows, self.hc_count, self.hidden_size)
-    query = hidden_states.reshape(rows, self.hc_count, self.hidden_size)
-    gated, normalized = gate_norm(
-        key,
-        query,
-        value,
-        self.norm_key.weight,
-        self.norm_query.weight,
-        self.norm_conv.weight,
-        self.hc_count,
-        self.norm_key.eps,
-    )
-    output = gated.flatten(-2) + self._short_conv(
-        normalized.flatten(-2), forward_batch, batch
-    )
-    if not batch.use_decode_fast_path:
-        output = torch.where(
-            batch.valid_tokens.unsqueeze(-1), output, torch.zeros_like(output)
-        )
-    return _pad_token_rows(output, batch.physical_tokens)
-
-
 def _short_conv(original, self, x, forward_batch, batch):
     from sglang.srt.models.qwen4_exp import (
         SHORT_CONV_PART,
@@ -80,6 +44,5 @@ def hooks():
 
     prefix = "sglang.srt.models.qwen4_exp.Qwen4ExpPLELayer."
     return [
-        (prefix + "forward", _forward, HookType.AROUND),
         (prefix + "_short_conv", _short_conv, HookType.AROUND),
     ]

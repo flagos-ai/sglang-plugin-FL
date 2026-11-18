@@ -377,3 +377,56 @@ def test_gdn_non_target_keeps_native_path():
     marker = object()
     instance = SimpleNamespace(forward_native=lambda *args: marker)
     assert gdn_norm.gated_rmsnorm_oot(instance, torch.empty(1)) is marker
+
+
+@pytest.mark.parametrize("decode", [False, True])
+def test_ple_stateful_dispatch_preserves_metadata_and_no_retry(monkeypatch, decode):
+    from sglang.srt.models import qwen4_exp
+    from sglang_fl.models import qwen4_ple
+
+    state = torch.zeros(2, 3, 9)
+    weight = torch.ones(3, 1, 4)
+    indices = torch.tensor([1, 0], dtype=torch.int32)
+    starts = torch.tensor([0, 1, 2], dtype=torch.int32)
+    cache = SimpleNamespace(layer_cache=lambda _: state)
+    pool = SimpleNamespace(
+        layer_router=SimpleNamespace(
+            read=lambda *_: SimpleNamespace(view=cache, view_layer_id=0)
+        )
+    )
+    monkeypatch.setattr(qwen4_exp, "get_token_to_kv_pool", lambda: pool)
+    monkeypatch.setattr(qwen4_exp, "_ple_track_targets", lambda *_: None)
+    instance = SimpleNamespace(
+        _fl_qwen38=True,
+        layer_id=0,
+        short_conv_dilation=3,
+        conv1d=SimpleNamespace(weight=weight),
+    )
+    batch = SimpleNamespace(
+        mode=SimpleNamespace(is_target_verify=lambda: False),
+        use_decode_fast_path=decode,
+        state_indices=indices,
+        query_start_loc=starts,
+    )
+    calls = []
+
+    def convolution(x, output, passed_state, passed_weight, passed_indices, **kwargs):
+        calls.append("executed")
+        assert passed_state is state and passed_indices is indices
+        assert passed_weight.shape == (3, 4)
+        assert kwargs["dilation"] == 3 and kwargs["null_block_id"] == 0
+        assert kwargs["query_start_loc"] is (None if decode else starts)
+        state.add_(1)
+        raise RuntimeError("Stateful execution failed")
+
+    def resolve(name):
+        assert name == "ple_short_conv_"
+        return convolution
+
+    monkeypatch.setattr(qwen4_ple, "resolve_op", resolve)
+    with pytest.raises(RuntimeError, match="Stateful execution failed"):
+        qwen4_ple._short_conv(
+            lambda *_: calls.append("retried"), instance, torch.zeros(2, 3), None, batch
+        )
+    assert calls == ["executed"]
+    torch.testing.assert_close(state, torch.ones_like(state), atol=0, rtol=0)
