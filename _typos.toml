@@ -12,6 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Machine-generated validation evidence: the Hygon site-packages hash
+# baseline records real runtime file names (e.g. flaggems
+# test_constant_pad_nd.py, test_convolution_overrideable.py,
+# test_patch_empyt_vllm.py) whose tokens are not our prose to fix.
+[files]
+extend-exclude = [
+    "docker/hygon/runtime-0.5.18.site-files.sha256",
+]
+
 [default.extend-words]
 # Ascend CANN is Huawei's official toolkit name
 CANN = "CANN"
