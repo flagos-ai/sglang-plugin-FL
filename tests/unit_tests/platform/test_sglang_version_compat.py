@@ -38,13 +38,20 @@ def test_nvidia_uses_cuda_fused_op_fallback_key() -> None:
     assert _platform("nvidia", "cuda").get_dispatch_key_name() == "cuda"
 
 
-def test_nvidia_uses_sglang_cuda_piecewise_backend() -> None:
-    from sglang.srt.compilation.cuda_piecewise_backend import CUDAPiecewiseBackend
+def test_nvidia_uses_sglang_cuda_piecewise_backend(monkeypatch) -> None:
+    module_name = "sglang.srt.compilation.cuda_piecewise_backend"
+    fake_module = ModuleType(module_name)
+
+    class FakeCUDAPiecewiseBackend:
+        pass
+
+    fake_module.CUDAPiecewiseBackend = FakeCUDAPiecewiseBackend
+    monkeypatch.setitem(sys.modules, module_name, fake_module)
 
     platform = _platform("nvidia", "cuda")
 
     assert platform.support_piecewise_cuda_graph() is True
-    assert platform.get_piecewise_backend_cls() is CUDAPiecewiseBackend
+    assert platform.get_piecewise_backend_cls() is FakeCUDAPiecewiseBackend
 
 
 @pytest.mark.parametrize(

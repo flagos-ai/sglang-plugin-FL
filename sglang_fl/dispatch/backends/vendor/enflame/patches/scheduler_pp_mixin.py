@@ -12,6 +12,7 @@ from sglang.srt.managers.scheduler import Scheduler
 def _pp_launch_batch(
         self: Scheduler,
         mb_id: int,
+        cur_batch,
         pp_proxy_tensors: PPProxyTensors,
         mb_metadata: List[Optional[PPBatchMetadata]],
         last_rank_comm_queue: deque,
@@ -20,17 +21,17 @@ def _pp_launch_batch(
             with self.forward_stream_ctx:
                 self.forward_stream.wait_stream(self.schedule_stream)
                 set_time_batch(
-                    self.cur_batch.reqs,
+                    cur_batch.reqs,
                     "set_run_batch_cpu_start_time",
                     trace_only=True,
                 )
-                result = self.run_batch(self.cur_batch, pp_proxy_tensors)
+                result = self.run_batch(cur_batch, pp_proxy_tensors)
                 # GCU limits
                 major, _ = torch.gcu.get_device_capability("gcu")
                 if major == 3:
                     torch.cuda.synchronize() # add sync, before next batch
                 set_time_batch(
-                    self.cur_batch.reqs,
+                    cur_batch.reqs,
                     "set_run_batch_cpu_end_time",
                     trace_only=True,
                     attrs={"pp_mb_id": mb_id},
@@ -46,7 +47,7 @@ def _pp_launch_batch(
                         (
                             event,
                             PPProxyTensors(
-                                self._pp_prepare_tensor_dict(result, self.cur_batch)
+                                self._pp_prepare_tensor_dict(result, cur_batch)
                             ),
                         )
                     )

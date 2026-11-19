@@ -131,3 +131,6 @@ platforms:
     # harbor CI image from docker/kunlunxin/ci-0.5.18.containerfile are ready.
     # Local matrix: tests/platforms/kunlunxin.yaml.
     enabled: true
+
+  enflame:
+    enabled: true
