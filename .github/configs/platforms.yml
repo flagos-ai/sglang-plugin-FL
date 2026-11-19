@@ -134,9 +134,10 @@ platforms:
     enabled: true
 
   tsingmicro:
-    # TX8110 (TXDA), SGLang 0.5.18 empty runtime. Disabled until the CI image
-    # (docker/tsingmicro/empty-0.5.18.containerfile) is published and pinned in
-    # tsingmicro.yml and the ci-sglang-plugin-fl-tsingmicro runner is online.
+    # TX8110 (TXDA), SGLang 0.5.18 empty runtime. CI image (from
+    # docker/tsingmicro/empty-0.5.18.containerfile) is published and pinned in
+    # tsingmicro.yml; disabled until the ci-sglang-plugin-fl-tsingmicro runner
+    # is online.
     enabled: false
     trigger_paths:
       - sglang_fl/dispatch/config/tsingmicro.yaml

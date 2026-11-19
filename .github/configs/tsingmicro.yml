@@ -5,9 +5,8 @@ platform: tsingmicro
 
 # Docker image for this hardware: docker/tsingmicro/empty-0.5.18.containerfile
 # (--target ci). Single system Python environment with SGLang 0.5.18.
-# TODO: replace with the published Harbor digest once the image is pushed;
-# the platform stays disabled in platforms.yml until then.
-ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl:0.5.18-tsingmicro-ci
+# Published tag: 0.2.0-tsingmicro-sglang0.5.18-ci; anonymous manifest pull verified.
+ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:86d1a503b2a9dbbf1bdd6849736fcd094afd4b4d672ea54f344a95aee3811096
 
 # Runner labels for this hardware (runner host not provisioned yet).
 runner_labels:
