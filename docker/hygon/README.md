@@ -327,3 +327,27 @@ python tests/run.py --platform hygon --device bw1000 --scope e2e --task mtp
 
 benchmark 保持显式启用。上面的 MTP 结果来自手动实机验收；工作流配置完成和
 镜像发布不代表 GitHub 硬件 CI 通过，应以对应 PR 最新提交的实际 job 结果为准。
+
+## 两-wheel CI 镜像：构建与构建后验收
+
+`runtime-0.5.18.containerfile` 只做镜像组装：digest 钉死的 Runtime 基底、
+一次 uv 解析安装两个真实 wheel（`sglang-0.5.18+flagos` 与本仓库构建的
+`sglang_fl`）、以及 HCU/DTK 兼容层。所有验收都不在镜像构建期执行：
+
+```bash
+# 组装构建（staging + 从固定 base digest 动态采集 runtime-constraints +
+# dry-run 计划门 + docker build）
+docker/hygon/build_two_wheel.sh <tag>
+
+# 构建后外置验收（同一 base digest 动态基线；失败 = 禁止推送）
+docker/hygon/scripts/verify_image.sh <tag>
+```
+
+- 参考数据（freeze、site-packages 哈希、pip-check 基线、provenance）每次
+  从固定 base digest 现场采集，只存在于 `mktemp`/CI artifact，不提交仓库，
+  也不进镜像；
+- `verify_image.sh` 覆盖：runtime 零漂移六门、vendor 模块 provenance、
+  stub 冒烟、wrapper 无卡 HSACO 编译、SGLang import 冒烟、Triton 多入口
+  解析、installed-wheel 父/子进程解析、镜像级 ENV 合同；
+- wheel 的 METADATA/entry point/payload 验收在 staging 期
+  （`scripts/check_plugin_wheel.py`）与验收期（六门之五）各跑一次。

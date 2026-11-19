@@ -3,14 +3,21 @@
 Covers the product-candidate wiring that the next image build will run:
 
 * the staged containerfile references exactly the artifacts stage_wheels.sh
-  assembles (two wheels + the excludes file) and every bind-mounted build
-  script exists in docker/hygon/scripts/;
+  assembles (two wheels + the excludes file), stays assembly-only (no
+  bind-mounted build scripts), and its single uv install carries the full
+  resolver contract, mirrored flag-for-flag by the pre-build dry-run gate
+  in build_two_wheel.sh;
+* every script the external build/acceptance wrappers mount into their
+  docker runs exists in docker/hygon/scripts/;
+* the static runtime reference snapshots stay out of the repository (the
+  reference data is collected dynamically from the pinned base digest);
 * the excludes file is the single deliberate resolver exclusion;
 * the plugin wheel acceptance script accepts the real wheel built from
   this checkout and rejects tampered variants (wrong extra anchor, triton
   declaration, missing entry points, shipped tests).
 """
 
+import re
 import subprocess
 import sys
 import tempfile
@@ -22,6 +29,18 @@ import unittest
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DOCKER = REPO_ROOT / "docker" / "hygon"
 SCRIPTS = DOCKER / "scripts"
+
+
+def uv_args(chunk: str) -> list[str]:
+    """Collect the resolver arguments of one uv invocation block."""
+    lines = []
+    for line in chunk.splitlines():
+        stripped = line.strip().rstrip("\\").strip()
+        if stripped.startswith("--") or stripped.startswith("'/tmp/wheels/"):
+            lines.append(stripped)
+        elif stripped.startswith(">") or stripped.startswith("&&"):
+            break
+    return lines
 
 
 class StagingCouplingTests(unittest.TestCase):
@@ -36,53 +55,95 @@ class StagingCouplingTests(unittest.TestCase):
             self.assertIn(wheel, containerfile, f"containerfile never stages {wheel}")
             self.assertIn(wheel, staging, f"stage_wheels.sh never assembles {wheel}")
 
-    def test_every_bind_mounted_script_exists(self):
+    def test_containerfile_is_assembly_only(self):
         containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
-        import re
-
-        referenced = set(
-            re.findall(r"/ctx/docker/hygon/scripts/([\w.-]+)", containerfile)
+        self.assertNotIn(
+            "/ctx/", containerfile, "build-time bind-mounted logic crept back in"
         )
-        self.assertTrue(referenced, "containerfile references no build scripts?")
+        for banned in (
+            "verify_distributions",
+            "verify_site_files",
+            "verify_module_provenance",
+            "verify_runtime_immutable",
+            "validate_uv_plan",
+            "capture_runtime_baseline",
+            "pip check",
+            "pip_check_exceptions",
+            "sglang_import_smoke",
+        ):
+            self.assertNotIn(
+                banned, containerfile, f"acceptance logic {banned!r} in the recipe"
+            )
+
+    def test_external_wrapper_scripts_exist(self):
+        referenced = set()
+        for wrapper in ("build_two_wheel.sh", "scripts/verify_image.sh"):
+            text = (DOCKER / wrapper).read_text()
+            referenced |= set(re.findall(r"/scripts/([\w.-]+)", text))
+        self.assertTrue(referenced, "wrappers reference no scripts?")
         for script in referenced:
             path = SCRIPTS / script
-            self.assertTrue(path.is_file(), f"referenced build script missing: {path}")
+            self.assertTrue(path.is_file(), f"referenced script missing: {path}")
 
-    def test_uv_invocations_are_identical_and_use_unsafe_first_match(self):
-        """Dry-run and real install must share every resolver argument.
+    def test_uv_install_contract_and_dry_run_mirror_it(self):
+        """The single real install and the pre-build dry-run must agree.
 
         --index-strategy first-index was measured insufficient on the real
         runtime (the Hygon index has xgrammar but not ==0.2.1, and
         first-index stops at the name instead of falling through to PyPI);
-        both invocations must use unsafe-first-match, and the only allowed
-        difference between them is the --dry-run flag.
+        the install must use unsafe-first-match with the full flag
+        contract, and build_two_wheel.sh's dry-run.sh must carry exactly
+        the same arguments plus --dry-run (it plan-gates the build against
+        the same pinned base digest).
         """
         containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
         marker = "/usr/local/bin/uv pip install"
         parts = containerfile.split(marker)
-        self.assertEqual(len(parts), 3, "expected exactly two uv invocations")
+        self.assertEqual(len(parts), 2, "expected exactly one uv invocation")
 
-        def args_of(chunk: str) -> list[str]:
-            lines = []
-            for line in chunk.splitlines():
-                stripped = line.strip().rstrip("\\").strip()
-                if stripped.startswith("--") or stripped.startswith("'/tmp/wheels/"):
-                    lines.append(stripped)
-                elif stripped.startswith(">") or stripped.startswith("&&"):
-                    break
-            return lines
-
-        dry_run = args_of(parts[1])
-        real = args_of(parts[2])
-        self.assertIn("--dry-run", dry_run)
+        real = uv_args(parts[1])
         self.assertNotIn("--dry-run", real)
+        self.assertEqual(real.count("--index-strategy unsafe-first-match"), 1)
+        self.assertNotIn("first-index", " ".join(real))
+        for required in (
+            "--excludes /tmp/runtime-0.5.18.excludes.txt",
+            "--constraints /opt/sglang-ci/runtime-constraints.txt",
+            "--constraints /opt/sglang-ci/top-level-constraints.txt",
+            "'/tmp/wheels/sglang-0.5.18+flagos-cp310-cp310-linux_x86_64"
+            ".whl[srt_empty,runtime_common]'",
+            "'/tmp/wheels/sglang_fl-0.1.0-py3-none-any.whl[hygon]'",
+        ):
+            self.assertIn(required, real, f"install lost contract flag {required!r}")
+
+        build_wrapper = (DOCKER / "build_two_wheel.sh").read_text()
+        heredoc = re.search(
+            r"cat > \"\$plan/dry-run\.sh\" <<'EOF'\n(.*?)\nEOF\n",
+            build_wrapper,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(heredoc, "build_two_wheel.sh lost the dry-run heredoc")
+        # Split the heredoc at the same marker so both extractions start
+        # from the identical remainder-of-marker-line form.
+        dry_run = uv_args(heredoc.group(1).split(marker)[1])
+        self.assertIn("--dry-run", dry_run)
         self.assertEqual(
             [a for a in dry_run if a != "--dry-run"],
             real,
             "dry-run and real install arguments diverge",
         )
-        self.assertEqual(real.count("--index-strategy unsafe-first-match"), 1)
-        self.assertNotIn("first-index", " ".join(real))
+
+    def test_no_committed_runtime_snapshots(self):
+        for name in (
+            "runtime-0.5.18.runtime-freeze.txt",
+            "runtime-0.5.18.site-files.sha256",
+            "runtime-0.5.18.pip-check-baseline.txt",
+            "runtime-0.5.18.provenance.json",
+            "scripts/capture_runtime_baseline.py",
+        ):
+            self.assertFalse(
+                (DOCKER / name).exists(),
+                f"static runtime snapshot returned to the repo: {name}",
+            )
 
     def test_excludes_file_is_single_item_triton(self):
         content = (DOCKER / "runtime-0.5.18.excludes.txt").read_text()

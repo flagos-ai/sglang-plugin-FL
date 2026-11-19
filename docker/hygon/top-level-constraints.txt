@@ -3,12 +3,12 @@
 # Deliberately tiny: the SGLang wheel's own METADATA already pins its direct
 # dependencies (blobfile==3.0.0, openai==2.6.1, outlines==0.1.11,
 # transformers==5.12.1, xgrammar==0.2.1, ...), and the operations runtime's
-# live inventory is frozen dynamically at build start
-# (runtime-constraints.txt from runtime-distributions-before.json), so every
-# runtime distribution is unpipinstallable and transitive resolution belongs
-# to the resolver. The full resolved closure is recorded at build time as an
-# audit artifact (/opt/sglang-ci/sglang-additions-installed.txt) and is never
-# committed back as an input lock.
+# inventory is frozen from the pinned base digest by
+# docker/hygon/build_two_wheel.sh (runtime-constraints.txt), so every
+# runtime distribution is unpipinstallable and transitive resolution
+# belongs to the resolver. The resolved closure is audited post-build by
+# docker/hygon/scripts/verify_image.sh and is never committed back as an
+# input lock.
 #
 # Only pins with concrete failure evidence belong here:
 #

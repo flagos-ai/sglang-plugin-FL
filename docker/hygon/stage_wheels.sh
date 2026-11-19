@@ -91,4 +91,7 @@ echo "plugin-wheel:   $(basename "$plugin_wheel") sha256=$(sha256sum "$plugin_wh
 echo "sglang-wheel:   $SGLANG_WHEEL_NAME sha256=$SGLANG_WHEEL_SHA256"
 echo "context:        $context (survives this script; remove manually when done)"
 echo "build command:"
-echo "  docker build -f $context/runtime-0.5.18.containerfile -t <tag> $context"
+echo "  docker/hygon/build_two_wheel.sh <tag>"
+echo "  (collects runtime-constraints.txt from the pinned base digest, runs"
+echo "   the dry-run plan gate, copies the constraints into this context,"
+echo "   then builds it)"

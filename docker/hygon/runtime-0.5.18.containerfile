@@ -1,69 +1,75 @@
-# SGLang 0.5.18 CI image on the Hygon operations runtime (DTK 26.04).
+# SGLang 0.5.18 two-wheel CI image on the Hygon operations runtime (DTK 26.04).
+#
+# This recipe is runtime-image ASSEMBLY only: the digest-pinned operations
+# Runtime, one uv resolver install of the two real application wheels, and
+# the HCU/DTK compatibility layer. Every acceptance gate - the resolver
+# dry-run plan, runtime zero-drift, site-packages hashes, the pip-check
+# diff, the wheel contract, the stub/wrapper/import smoke and the Triton
+# provenance - runs OUTSIDE this recipe: docker/hygon/build_two_wheel.sh
+# stages the inputs and plan-gates the build, docker/hygon/scripts/
+# verify_image.sh accepts the finished image against reference data
+# collected dynamically from the same pinned base digest. Baselines and
+# audit records live in mktemp/CI artifacts only; none is committed to the
+# repository and none is baked into the image.
 #
 # Principles (do not weaken without review):
 #   * The operations runtime is immutable: no runtime distribution may be
-#     upgraded, downgraded, replaced, or removed. The resolver must only ADD
-#     the SGLang dependency closure. Any planned change to an existing
-#     distribution fails the build.
-#   * Hygon installs sglang[srt_empty,runtime_common]: the dependency
-#     ownership-inversion extras. The DTK torch/FlagTree/FlagGems/FlagCX
-#     stack comes from the runtime, never from this build. runtime_common
-#     is the wheel's own extra that adds compressed-tensors (unpinned)
-#     beyond runtime_base, because sglang.srt's quantization registry
-#     imports compressed_tensors eagerly at server start while the wheel
-#     only declares it under runtime-common. No hand-picked packages.
+#     upgraded, downgraded, replaced, or removed; the resolver may only ADD
+#     the SGLang dependency closure. Enforcement is post-build (the
+#     zero-drift gates in verify_image.sh); a failed verification blocks
+#     the push instead of failing the build.
+#   * Hygon installs sglang[srt_empty,runtime_common] + sglang_fl[hygon]:
+#     the dependency ownership-inversion extras. The DTK torch/FlagTree/
+#     FlagGems/FlagCX stack comes from the runtime, never from this build;
+#     runtime_common only adds compressed-tensors (unpinned) because
+#     sglang.srt's quantization registry imports it eagerly at server
+#     start while the wheel declares it under that extra.
 #   * The image ships the two real application wheels (sglang 0.5.18+flagos
 #     and sglang_fl built from this repository); CI installs only the test
 #     runner and validates against the installed wheels - the checkout
 #     never shadows them (SGLANG_FL_TEST_SOURCE=wheel).
-#   * Build logic lives in docker/hygon/scripts/ (reviewable, lintable,
-#     black-formatted) and runs through BuildKit bind mounts, so the scripts
-#     never enter the image;
-#     this file is orchestration only. Verification gates stay in the build
-#     so a drifting image fails before it can be pushed, and the volatile
-#     gates are layered after the heavy install so tuning them reuses the
-#     downloaded closure.
 #
-# Build from the repository root:
-#   docker build -f docker/hygon/runtime-0.5.18.containerfile \
-#     -t harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-hygon-runtime-ci-<date> .
+# Build:  docker/hygon/build_two_wheel.sh <tag>
+# Accept: docker/hygon/scripts/verify_image.sh <tag>
 
 # syntax=docker/dockerfile:1.7
 ARG BASE_IMAGE=harbor.baai.ac.cn/flagos-runtime/flagos-runtime-hygon-dtk26.04@sha256:03e598b348e58e7233628394bbefa0ccef26969a091c7e6f2f02835161757f8b
 FROM ${BASE_IMAGE}
 
-# FlagTree (/opt/flagtree) is the runtime's authoritative Triton. The base
-# image exposes it to bash sessions only (BASH_ENV -> /etc/bash_env.sh ->
-# /etc/profile.d/vendor.sh), so the resolved Triton silently depended on the
-# container entrypoint. Bake it as image-level PYTHONPATH so shell, direct
-# python entrypoints and CI jobs all resolve the same /opt/flagtree tree;
-# the standalone triton distribution never enters resolution at all (the
-# excludes file below drops it before the resolver runs).
+# CONTRACT: every entrypoint must resolve the Runtime's Triton.
+# The Runtime ships /opt/flagtree and exposes it only to bash sessions
+# (BASH_ENV -> /etc/profile.d/vendor.sh); a direct python entrypoint gets
+# find_spec("triton") is None. Image-level PYTHONPATH closes that
+# direct-entrypoint gap.
+# Evidence: direct-entrypoint contract failure probe on the base image
+# (find_spec("triton") is None without a bash profile).
+# Removal condition: the Runtime exposes /opt/flagtree through OCI ENV,
+# a .pth file, or another mechanism effective for all entrypoints.
 ENV PYTHONPATH=/opt/flagtree
 
-# Index priority expressed with uv's real semantics. --index-strategy
-# unsafe-first-match exhausts the FIRST index that carries a package NAME
+# Index priority with uv's real semantics. --index-strategy
+# unsafe-first-match exhausts the FIRST index carrying a package NAME
 # before consulting later indexes: the flagos platform index (flagos-built
-# wheels, the fsspec/datasets pin reality) wins whenever it has a
-# compatible version, PyPI follows for generic wheels, and the pypi-proxy
-# is the --default-index last resort (slow transpacific delivery,
-# intermittent 504s). first-index was measured insufficient on the real
-# runtime: the Hygon index carries xgrammar but not xgrammar==0.2.1, and
-# first-index stops at the name instead of falling through to PyPI
-# ("No solution found ... not at xgrammar==0.2.1").
+# wheels) wins whenever it has a compatible version, PyPI follows for
+# generic wheels, and the pypi-proxy is the --default-index last resort
+# (slow transpacific delivery, intermittent 504s). first-index was
+# measured insufficient on the real runtime: the Hygon index carries
+# xgrammar but not xgrammar==0.2.1, and first-index stops at the name
+# instead of falling through to PyPI ("No solution found ...").
 ARG FLAGOS_INDEX=https://resource.flagos.net/repository/flagos-pypi-hygon/simple
 ARG PYPI_INDEX=https://pypi.org/simple
 ARG PROXY_INDEX=https://resource.flagos.net/repository/pypi-proxy/simple
 
 WORKDIR /opt/sglang-ci
 
-# Application-level constraints: only evidence-backed pins (see the file).
-# The runtime inventory is frozen dynamically at build start and the two
-# staged wheels pin their own direct requirements, so the closure's
-# transitive resolution stays with the resolver; the dry-run gate verifies
-# zero runtime replacements and the resolved closure is recorded as a
-# build-time audit artifact, never committed back as an input lock.
+# Resolver inputs. top-level-constraints.txt is the reviewed, hand-curated
+# pin file (see its header; only evidence-backed pins). runtime-constraints.txt
+# freezes the pristine Runtime inventory (canonical name==version) and is
+# generated from the pinned base digest by build_two_wheel.sh - never
+# committed; it makes every runtime distribution unpipinstallable for the
+# resolver below.
 COPY docker/hygon/top-level-constraints.txt /opt/sglang-ci/top-level-constraints.txt
+COPY artifacts/runtime-constraints.txt /opt/sglang-ci/runtime-constraints.txt
 
 # The two reviewed application wheels and the single-item resolver
 # exclusion list are staged by docker/hygon/stage_wheels.sh; their SHA256s
@@ -72,44 +78,28 @@ COPY artifacts/sglang-0.5.18+flagos-cp310-cp310-linux_x86_64.whl /tmp/wheels/sgl
 COPY artifacts/sglang_fl-0.1.0-py3-none-any.whl /tmp/wheels/sglang_fl-0.1.0-py3-none-any.whl
 COPY artifacts/runtime-0.5.18.excludes.txt /tmp/runtime-0.5.18.excludes.txt
 
-# --- Stable: capture the pre-install runtime state ---------------------------
-# Canonicalized distribution inventory, exact constraints for the resolver,
-# the runtime's own pip check result (kept as the baseline so pre-existing
-# runtime findings are not attributed to the application), the file-level
-# site-packages baseline, and module-level provenance for the vendor stack.
-RUN --mount=type=bind,target=/ctx python -m pip freeze --all | sort > /opt/sglang-ci/runtime-freeze-before.txt \
-    && { python -m pip check > /opt/sglang-ci/runtime-pip-check-baseline.txt 2>&1; \
-         printf '%s\n' "$?" > /opt/sglang-ci/runtime-pip-check-baseline.exitcode; true; } \
-    && python /ctx/docker/hygon/scripts/capture_runtime_baseline.py
-
 # --- Two-wheel install with the Runtime's own uv -----------------------------
 # Both application wheels resolve together in one graph:
 #   sglang[srt_empty,runtime_common] + sglang_fl[hygon].
-# The dry-run and the real install use the identical resolver and the
-# identical arguments. uv writes the plan to STDERR as multi-line
-# '+ name==version' / '+ name @ file://...' rows; the output (both
-# streams) lands in uv-dry-run.txt first - no pipeline, so uv's own exit
-# code propagates - and is validated against the runtime baseline as the
-# audit artifact. The
-# single-item excludes file drops the standalone triton distribution from
-# resolution - nothing is installed, uninstalled, or stubbed for it; the
-# metadata gap xgrammar still declares is pip check's documented platform
-# capability exception (checked precisely by pip_check_exceptions.py).
-RUN --mount=type=bind,target=/ctx \
-    /usr/local/bin/uv pip install --python /flagos/bin/python3 \
-      --dry-run \
-      --index "$FLAGOS_INDEX" \
-      --index "$PYPI_INDEX" \
-      --default-index "$PROXY_INDEX" \
-      --index-strategy unsafe-first-match \
-      --constraints /opt/sglang-ci/runtime-constraints.txt \
-      --constraints /opt/sglang-ci/top-level-constraints.txt \
-      --excludes /tmp/runtime-0.5.18.excludes.txt \
-      '/tmp/wheels/sglang-0.5.18+flagos-cp310-cp310-linux_x86_64.whl[srt_empty,runtime_common]' \
-      '/tmp/wheels/sglang_fl-0.1.0-py3-none-any.whl[hygon]' \
-      > /opt/sglang-ci/uv-dry-run.txt 2>&1 \
-    && python /ctx/docker/hygon/scripts/validate_uv_plan.py /opt/sglang-ci/uv-dry-run.txt \
-    && /usr/local/bin/uv pip install --python /flagos/bin/python3 \
+# build_two_wheel.sh runs the exact twin of this command (plus --dry-run)
+# against the pinned base digest and plan-validates it BEFORE the build.
+#
+# CONTRACT: no standalone triton distribution enters the image. The
+# Runtime's real compiler module is the /opt/flagtree tree (Triton 3.6,
+# which the runtime's FlagGems 5.4.0 build targets); xgrammar's
+# distribution metadata would otherwise pull standalone triton into the
+# resolver and create two competing Triton sources. --excludes drops it
+# before resolution - nothing is installed, uninstalled, or stubbed for
+# it; the metadata gap xgrammar still declares is the pip-check gate's
+# documented platform capability exception.
+# Evidence: run 44465620210 - the full Hygon hardware matrix green on this
+# exact combination (no triton distribution installed; triton.__file__
+# under /opt/flagtree). This is a resolver/provenance contract verified
+# post-build, not a functional-must-fail claim.
+# Removal condition: the Runtime ships a triton distribution consistent
+# with Python distribution metadata, or upstream dependencies stop
+# declaring standalone triton.
+RUN /usr/local/bin/uv pip install --python /flagos/bin/python3 \
       --index "$FLAGOS_INDEX" \
       --index "$PYPI_INDEX" \
       --default-index "$PROXY_INDEX" \
@@ -120,15 +110,20 @@ RUN --mount=type=bind,target=/ctx \
       '/tmp/wheels/sglang-0.5.18+flagos-cp310-cp310-linux_x86_64.whl[srt_empty,runtime_common]' \
       '/tmp/wheels/sglang_fl-0.1.0-py3-none-any.whl[hygon]'
 
-# --- Application compatibility: distinguish HCU from AMD ROCm --------------
-# Keep this after the slow dependency layer so changes to the application-only
-# compatibility patch reuse the downloaded and installed requirements cache.
-# SGLang 0.5.18 treats every HIP runtime as AMD ROCm in three eagerly-imported
-# Quark modules and consequently imports AMD AITER on HCU.  AITER is not an HCU
-# requirement and must not be added to the Runtime.  Apply the reviewed SGLang
-# source patch to the installed application package instead.  --check makes a
-# future wheel/source change fail visibly rather than silently shipping an
-# unpatched image.
+# --- Application compatibility: distinguish HCU from AMD ROCm ----------------
+# Kept after the slow install layer so compatibility tuning reuses the
+# downloaded closure.
+# REQUIRED: SGLang 0.5.18 treats every HIP runtime as AMD ROCm in three
+# eagerly-imported Quark modules and then imports AMD AITER on HCU. AITER
+# is not an HCU dependency and must not be added to the Runtime, so the
+# reviewed source patch is applied to the installed application package.
+# --check makes a future wheel/source change fail visibly rather than
+# silently shipping an unpatched image; the .sha256 record is the
+# applied-patch marker consumed by the post-build verifier.
+# Evidence: the original failure "ModuleNotFoundError: No module named
+# 'aiter'"; reviewed patch commit a5d492a.
+# Removal condition: an official SGLang wheel/upstream version already
+# carries the equivalent HCU-vs-ROCm gating.
 COPY docker/hygon/sglang-v0.5.18-hcu.patch /opt/sglang-ci/sglang-v0.5.18-hcu.patch
 RUN PURELIB="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" \
     && cd "$PURELIB" \
@@ -146,19 +141,29 @@ RUN PURELIB="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib
     && sha256sum /opt/sglang-ci/sglang-v0.5.18-hcu.patch \
          > /opt/sglang-ci/sglang-hcu-patch.sha256
 
-# --- Application compatibility: import stubs for absent kernel wheels -------
-# SGLang 0.5.18 imports sgl_kernel / flashinfer eagerly at module scope in
-# many srt files whenever the CUDA/HIP fast path is compiled in (eagle_utils,
-# communicator, deepseek_v2, the cuda-graph runners, ...).  HCU provides
-# neither wheel, and the plugin dispatches the executed ops to the FlagOS
-# backends (DEFAULT priority outranks the VENDOR sgl_kernel implementations,
-# which are therefore never selected).  The HCU source patch above gates the
-# sites with real call semantics; these stubs keep the long tail of pure
-# import-time references alive and turn any unexpected call into an explicit
-# error.  This mirrors the legacy dev image's empty sgl_kernel wheel and the
-# iluvatar empty-image import shims.  No dist-info is emitted on purpose:
-# pip/importlib.metadata stay byte-compatible with the reviewed closure, and
-# the engine's wheel-version probe is disabled via ENV below.
+# --- Application compatibility: import stubs for absent kernel wheels --------
+# REQUIRED: SGLang 0.5.18 imports sgl_kernel / flashinfer eagerly at module
+# scope in many srt files whenever the CUDA/HIP fast path is compiled in
+# (eagle_utils, communicator, deepseek_v2, the cuda-graph runners, ...).
+# HCU provides neither vendor wheel, and the plugin dispatches the executed
+# ops to the FlagOS backends (DEFAULT priority outranks the VENDOR
+# sgl_kernel implementations, which are therefore never selected). The HCU
+# patch above gates the sites with real call semantics; these stubs keep
+# the long tail of pure import-time references alive and turn any
+# unexpected call into an explicit error. No dist-info is emitted on
+# purpose: pip/importlib.metadata stay byte-compatible with the reviewed
+# closure (the engine's wheel-version probe is disabled via ENV below).
+# Evidence: run 43311162022 / job 131508435886 - "ModuleNotFoundError: No
+# module named 'sgl_kernel.kvcacheio'" (10 failed) before the stubs.
+# Removal condition: SGLang upstream turns all these imports into correct
+# optional/lazy imports, or HCU gets a verified official vendor wheel.
+# The stub finder deliberately does NOT fake sgl_kernel.scalar_type: the
+# module must raise a real ImportError so SGLang enters its pure-Python
+# fallback.
+# Evidence: run 43361932722 / job 131677473082 - with the module stubbed,
+# "AttributeError: 'function' object has no attribute 'uint4b8'".
+# Removal condition: the wildcard stub finder is retired, or SGLang no
+# longer depends on that ImportError fallback.
 COPY docker/hygon/stubs/ /opt/sglang-ci/stubs/
 RUN PURELIB="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" \
     && mkdir -p "$PURELIB/sgl_kernel/utils" "$PURELIB/flashinfer" \
@@ -169,133 +174,72 @@ RUN PURELIB="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib
     && cp /opt/sglang-ci/stubs/zz-hcu-kernel-stub-hook.pth "$PURELIB/zz-hcu-kernel-stub-hook.pth" \
     && echo "stub files written"
 
-RUN python - <<'PY'
-from sgl_kernel.kvcacheio import save_kv_cache
-from flashinfer.sampling import top_k_renorm_prob
-
-import sgl_kernel
-import sgl_kernel.utils
-import flashinfer
-
-assert sgl_kernel.utils.is_arch_support_pdl() is False
-try:
-    save_kv_cache()
-except RuntimeError as e:
-    assert "stub" in str(e)
-print("kernel-wheel import stubs + submodule finder installed")
-PY
-
 # The engine compares the installed sgl_kernel wheel version against its
-# expectation; a stub has no version, so skip the probe (iluvatar precedent).
+# expectation; a stub has no dist-info version, so skip the probe (iluvatar
+# precedent). This ENV is a companion of the stub DESIGN above, not a
+# Runtime toolchain defect.
+# Removal condition: the stub/version probe disappears together with a
+# fixed SGLang wheel or a real vendor wheel - if the corrected wheel no
+# longer needs the stubs, delete this first.
 ENV SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1
 
-# The base runtime ships the DTK userspace under /opt/dtk but leaves the
-# loader path to the deployment environment; runner hosts differ in whether
-# they inject LD_LIBRARY_PATH (observed: identical containers import torch on
-# one host and fail with "libgalaxyhip.so.5: cannot open shared object file"
-# on another).  The paths are image-internal (plus the hyhal bind mounts), so
-# baking them here makes the image self-sufficient and host-independent.
+# CONTRACT: the image carries its own DTK loader path. The Runtime ships
+# the DTK userspace under /opt/dtk but leaves the loader path to the
+# deployment environment, and runner hosts differ in whether they inject
+# it: the identical container imported torch on one host and failed with
+# "libgalaxyhip.so.5: cannot open shared object file" on another. The
+# paths are image-internal (plus the hyhal bind mounts), so baking them
+# makes the image self-sufficient and host-independent.
+# Evidence: commit 06ff229 (the recorded loader-contract failure site).
+# Removal condition: the Runtime provides the full loader contract via
+# OCI ENV, ld.so.conf, or another in-image stable mechanism, verified on
+# different runners.
 ENV LD_LIBRARY_PATH=/opt/dtk/dcc/gcvm/lib:/opt/dtk/hip/lib:/opt/dtk/llvm/lib:/opt/dtk/lib:/opt/dtk/lib64:/opt/hyhal/lib:/opt/hyhal/lib64:/opt/dtk/dushmem/lib:/opt/dtk/opencl/lib:/opt/dtk/.hyhal/rocm_smi/lib:/opt/dtk/.hyhal/lib:/opt/dtk/.hyhal/lib64
 
-# The DTK prefix convention: SGLang 0.5.18's HIP JIT builder looks for hipcc
-# and headers under the conventional ROCm prefix, and FlagTree's hcu backend
-# derives its HCU clang-18 selection (aillvm, not the clang-17 compatibility
-# tree) from ROCM_PATH. The base image ships the complete DTK tree at
-# /opt/dtk but no /opt/rocm alias and no ROCM_PATH, so bake both here —
-# plain ENV (not a bash-profile export) so test steps that never source a
-# profile still inherit it.
+# CONTRACT: FlagTree's HCU backend derives its clang selection from
+# ROCM_PATH, and direct entrypoints carry no ROCM_PATH. Without it the
+# clang-17 compatibility tree gets selected and fails on unsupported
+# arguments; with it FlagTree selects the aillvm clang-18 under /opt/dtk.
+# Evidence: run 43426581773 (compatibility clang selected, unsupported
+# parameter failure) vs run 43430350486 (/opt/dtk/aillvm/bin/clang-18
+# selected, green). ROCM_PATH alone does NOT solve the device-library
+# problem - that is the wrapper block below.
+# Removal condition: Runtime/FlagTree stops deriving clang from this
+# variable, or the Runtime officially provides it via OCI ENV.
 ENV ROCM_PATH=/opt/dtk
+
+# CONTRACT: SGLang 0.5.18's HIP JIT builder looks for hipcc and headers
+# under the conventional /opt/rocm prefix; the Runtime ships the complete
+# DTK tree at /opt/dtk and no /opt/rocm alias.
+# Evidence: run 43417967624 / job 131868790147 - "/opt/rocm/bin/hipcc:
+# not found", "Failed to build JIT module
+# sgl_kernel_jit_clamp_position_int64_t".
+# Removal condition: the SGLang builder natively supports the DTK prefix,
+# or the Runtime officially provides the compatibility alias.
 RUN if [ ! -e /opt/rocm ] && [ ! -L /opt/rocm ]; then ln -s /opt/dtk /opt/rocm; fi \
     && test "$(readlink -f /opt/rocm)" = "$(readlink -f /opt/dtk)"
 
-# build-infra#1786: FlagTree 0.7.0's hcu backend asks clang to discover the
-# DTK device libraries on its own and that discovery fails on the BW1000
-# runner ("cannot find ROCm device library") even with ROCM_PATH set. Fix at
-# the seam FlagTree documents for this (TRITON_HIP_CLANG_PATH): a baked
-# wrapper around the real aillvm clang-18 that drops empty disabled-option
-# strings and appends the explicit device-library path. Runtime-owned
-# /opt/flagtree files stay untouched.
+# CONTRACT: the HCU compile path must pass the DTK device-library location
+# to clang explicitly. The Runtime already ships the complete DTK
+# toolchain - /opt/dtk/aillvm/bin/clang-18 and the ocml.bc / ockl.bc
+# bitcode under /opt/dtk/dcc/dccgcn/bitcode; what is missing is only the
+# explicit passing: FlagTree 0.7.0's hcu backend asks clang to discover
+# the DTK device libraries on its own and that discovery fails on the
+# BW1000 runner. This wrapper is injected at the seam FlagTree documents
+# (TRITON_HIP_CLANG_PATH) and appends
+# --rocm-device-lib-path=/opt/dtk/dcc/dccgcn/bitcode. The REQUIRED
+# capability is the explicit device-lib path passing; this wrapper is one
+# workaround implementation, not the only legal one. Runtime-owned
+# /opt/flagtree files stay untouched; the post-build verifier compiles a
+# real OCML-referencing kernel through the wrapper on the GPU-less host.
+# Evidence: build-infra #1786 ("cannot find ROCm device library"); after
+# the wrapper, mtp_logprobs 10/10 and the full run 44465620210 matrix.
+# Removal condition: Runtime/FlagTree _get_clang_args or the equivalent
+# compile path natively passes the correct DTK device-lib arguments, with
+# real kernel-compile evidence.
 COPY docker/hygon/hcu-clang/clang-18-device-libs /opt/hcu-clang/clang-18-device-libs
 RUN chmod +x /opt/hcu-clang/clang-18-device-libs \
     && test -f /opt/dtk/dcc/dccgcn/bitcode/ocml.bc \
     && test -f /opt/dtk/dcc/dccgcn/bitcode/ockl.bc \
     && /opt/dtk/aillvm/bin/clang-18 --version | head -n 1
 ENV TRITON_HIP_CLANG_PATH=/opt/hcu-clang/clang-18-device-libs
-
-# Prove the wrapper end-to-end on the GPU-less builder: the flagtree-style
-# two-step compile (LLIR -> asm -> hsaco) against a kernel that references an
-# OCML device-library symbol must succeed through the wrapper.
-RUN --mount=type=bind,target=/ctx /opt/dtk/aillvm/bin/clang-18 -target amdgcn-amd-amdhsa -mcpu=gfx936:xnack- -O3 \
-       /ctx/docker/hygon/scripts/hcu-device-lib-check.ll -S -o /tmp/hcu-device-lib-check.s \
-    && /opt/hcu-clang/clang-18-device-libs -target amdgcn-amd-amdhsa -mcpu=gfx936:xnack- -O3 \
-       /tmp/hcu-device-lib-check.s -x assembler -o /tmp/hcu-device-lib-check.hsaco \
-    && test -s /tmp/hcu-device-lib-check.hsaco \
-    && echo "wrapper hsaco compile through DTK device libraries: OK"
-
-# --- Volatile verification (cheap layers, tuned without re-downloading) ------
-# 1. Every runtime distribution survives with the exact same version and the
-#    installed additions match the reviewed resolver plan.
-RUN --mount=type=bind,target=/ctx python /ctx/docker/hygon/scripts/verify_distributions.py
-
-# 1b. File-level zero-drift: every baseline site-packages file must still
-#     exist with the identical SHA256 (catches in-place overwrites).
-RUN --mount=type=bind,target=/ctx python /ctx/docker/hygon/scripts/verify_site_files.py
-
-# 2. pip check: only violations NEW relative to the runtime baseline fail
-#    the build, and the ONLY accepted addition is the exact canonical
-#    (xgrammar, triton) pair - parsed precisely by the shared module, never
-#    substring-matched. A crashing pip check fails loudly with its output.
-RUN --mount=type=bind,target=/ctx python - <<'PY'
-import subprocess
-import sys
-from pathlib import Path
-
-sys.path.insert(0, "/ctx/docker/hygon/scripts")
-from pip_check_exceptions import (  # noqa: E402
-    PIP_CHECK_SUCCESS_NOTICE,
-    pip_check_violations,
-)
-
-completed = subprocess.run(
-    [sys.executable, "-m", "pip", "check"], capture_output=True, text=True
-)
-Path("/opt/sglang-ci/runtime-pip-check-after.txt").write_text(completed.stdout)
-Path("/opt/sglang-ci/runtime-pip-check-after.exitcode").write_text(
-    f"{completed.returncode}\n"
-)
-baseline = {
-    line.strip()
-    for line in Path("/opt/sglang-ci/runtime-pip-check-baseline.txt")
-    .read_text()
-    .splitlines()
-    if line.strip() and line.strip() != PIP_CHECK_SUCCESS_NOTICE
-}
-violations = pip_check_violations(
-    completed.returncode, completed.stdout, completed.stderr, baseline
-)
-if violations:
-    print("FATAL: new pip check violations introduced by the two-wheel install:")
-    for line in sorted(violations):
-        print(f"  ! {line}")
-    raise SystemExit(1)
-print("pip check: only the documented (xgrammar, triton) capability "
-      "exception versus the runtime baseline")
-PY
-
-# 3. Module provenance: every vendor module must still resolve to the exact
-#    same origin (see the script docstring for the one recorded exception).
-RUN --mount=type=bind,target=/ctx python /ctx/docker/hygon/scripts/verify_module_provenance.py
-
-# 3b. Triton resolution: with the standalone wheel gone and PYTHONPATH baked,
-#     every entrypoint style must resolve the same FlagTree tree. Exercise
-#     the plain RUN shell, an explicit bash, and a python -c child process.
-RUN python -c 'import triton; p = triton.__file__; assert p and p.startswith("/opt/flagtree"), p; print("triton (sh):", p)' \
-    && bash -c 'python -c "import triton; assert triton.__file__.startswith(\"/opt/flagtree\"), triton.__file__; print(\"triton (bash):\", triton.__file__)"' \
-    && python -c 'import importlib.metadata as md; names=[(d.metadata["Name"] or "").lower() for d in md.distributions()]; assert "triton" not in names, "standalone triton distribution still installed"; print("standalone triton distribution absent: OK")'
-
-# 4. Import smoke check for sglang itself (sentinel-classified; the script
-#    docstring explains why the verdict comes from the log, not the exit code).
-RUN --mount=type=bind,target=/ctx python /ctx/docker/hygon/scripts/sglang_import_smoke.py > /tmp/sglang-import-smoke.log 2>&1 || true
-RUN cat /tmp/sglang-import-smoke.log \
-    && grep -qE "SMOKE-PASS|SMOKE-TOLERATED|no ROCm-capable device is detected" \
-       /tmp/sglang-import-smoke.log
