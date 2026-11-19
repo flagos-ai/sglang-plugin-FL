@@ -46,6 +46,10 @@ unsupported_features: []
 env_defaults:
   CUDA_DEVICE_MAX_CONNECTIONS: "1"
   NCCL_ALGO: "Ring"
+  # The CI image sets no environment of its own: plugin activation lives here.
+  SGLANG_PLUGINS: sglang_fl
+  USE_FLAGGEMS: "1"
+  SGLANG_FL_THEAD_MOE_FLAGGEMS: "1"
 
 # ---- Device-specific test configurations ------------------------------------
 zw810e:

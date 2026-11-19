@@ -1,0 +1,5 @@
+# xgrammar==0.2.1 requires triton on Linux x86_64, but the Runtime ships the
+# compiler as the /opt/flagtree module tree without a pip distribution. uv
+# drops exactly this package from resolution; nothing is installed, uninstalled
+# or stubbed for it.
+triton
