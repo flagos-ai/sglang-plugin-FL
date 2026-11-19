@@ -91,3 +91,7 @@ def register_builtins(registry) -> None:
     ]
 
     registry.register_many(impls)
+
+    from .qwen4 import register_builtins as register_qwen4
+
+    register_qwen4(registry)

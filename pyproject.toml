@@ -26,6 +26,11 @@ dependencies = [
     "pyyaml",
 ]
 
+[project.optional-dependencies]
+qwen38-musa = [
+    "flaggems_sglang[musa-communication] @ git+https://github.com/zhaiyansen/FlagGems-sglang.git@73bd13f8f78245547b78c035c6036de9e1091702",
+]
+
 [project.entry-points."sglang.srt.platforms"]
 sglang_fl = "sglang_fl:activate_platform"
 

@@ -109,11 +109,7 @@ class CommunicatorFL:
     def all_reduce(self, input_: torch.Tensor) -> torch.Tensor:
         """In-place all-reduce. Returns the input tensor (modified in-place)."""
         if self._flagcx_comm and not self._flagcx_comm.disabled:
-            out = self._flagcx_comm.all_reduce(input_)
-            if out is not None:
-                # FlagCX all_reduce returns a new tensor; copy back for in-place semantics
-                input_.copy_(out)
-                return input_
+            return self._flagcx_comm.all_reduce(input_)
         # Fallback: torch.distributed
         dist.all_reduce(input_, group=self.device_group)
         return input_

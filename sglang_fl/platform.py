@@ -36,6 +36,7 @@ from typing import Optional
 import torch
 
 from sglang.srt.platforms.device_mixin import DeviceCapability, PlatformEnum
+from sglang.srt.platforms import interface as platform_interface
 from sglang.srt.platforms.interface import SRTPlatform
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,10 @@ class PlatformFL(SRTPlatform):
         self._device_type: str = info.device_type    # "cuda", "npu", ...
         self._dispatch_key: str = info.dispatch_key  # "CUDA", "NPU", ...
         self._device_count: int = info.device_count
+
+        # New SGLang gates decode graph capture on this explicit capability.
+        if self._device_type == "musa" and hasattr(platform_interface, "PlatformCapabilities"):
+            self.capabilities = platform_interface.PlatformCapabilities(graph_capture=True)
 
         # Set class-level attributes expected by DeviceMixin
         self.device_name = self._device_type
@@ -234,6 +239,10 @@ class PlatformFL(SRTPlatform):
             )
 
             return NPUGraphRunner
+        if self._device_type == "musa" and hasattr(platform_interface, "PlatformCapabilities"):
+            from sglang_fl.musa_graph import MusaDecodeGraphRunner
+
+            return MusaDecodeGraphRunner
         from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner
 
         return CudaGraphRunner
@@ -301,7 +310,7 @@ class PlatformFL(SRTPlatform):
     def support_piecewise_cuda_graph(self) -> bool:
         return self._device_type == "cuda"
 
-    def is_pin_memory_available(self) -> bool:
+    def is_pin_memory_available(self, device=None) -> bool:
         return self._device_type in ("cuda", "npu", "xpu", "musa", "tsingmicro")
 
     def supports_fp8(self) -> bool:

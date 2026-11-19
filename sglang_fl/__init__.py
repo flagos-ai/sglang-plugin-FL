@@ -340,7 +340,13 @@ def _make_dispatch_hook(config: dict = None):
             # No bridge registered: return forward_cuda directly to bypass dispatch_forward.
             # This allows unregistered OOT ops (e.g., MoE before bridge is added) to use
             # their native CUDA implementation instead of falling into forward_native.
-            result = self.forward_cuda
+            # Current BaseFusedOp owns capability-aware backend selection.
+            # Preserve it for operators without a FlagOS bridge.
+            result = (
+                self.forward_cuda
+                if hasattr(type(self), "dispatch_forward")
+                else original_fn(self)
+            )
             self._fl_cached_fn = result
             return result
 
@@ -516,6 +522,11 @@ def _setup_communicator_hooks():
     # ── all_reduce hook ──
 
     def _all_reduce_hook(original_fn, self, input_):
+        custom = getattr(self, "_fl_qwen38_custom_ar", None)
+        if custom is not None and custom.should_custom_ar(input_):
+            output = custom.custom_all_reduce(input_)
+            input_.copy_(output)
+            return input_
         comm = getattr(self, "fl_communicator", None)
         if comm is not None and not comm.disabled:
             return comm.all_reduce(input_)
@@ -714,7 +725,9 @@ def activate_platform() -> str | None:
 
     info = get_device_info()
     if info is None:
-        logger.warning("sglang_fl platform activation failed: DeviceDetector unavailable")
+        logger.warning(
+            "sglang_fl platform activation failed: DeviceDetector unavailable"
+        )
         return None
     logger.info(
         "sglang_fl platform activating: vendor=%s, device=%s",
@@ -733,6 +746,7 @@ _plugin_active = False
 def is_plugin_loaded() -> bool:
     """Return whether SGLang invoked the general plugin entry point."""
     return _plugin_loaded
+
 
 def is_plugin_active() -> bool:
     """Return whether the general plugin completed its initialization."""
@@ -771,10 +785,15 @@ def load_plugin():
         os.environ.get("SGLANG_FL_OOT_ENABLED", "1"), default=True
     )
     if oot_enabled:
+        from sglang.srt.layers.utils.multi_platform import MultiPlatformOp
+
+        dispatch_target = (
+            "sglang.srt.layers.utils.multi_platform.MultiPlatformOp.dispatch_forward"
+            if hasattr(MultiPlatformOp, "dispatch_forward")
+            else "sglang.kernels.fused_op.BaseFusedOp._resolve_forward_method"
+        )
         HookRegistry.register(
-            "sglang.srt.layers.utils.multi_platform.MultiPlatformOp.dispatch_forward",
-            _make_dispatch_hook(config),
-            HookType.AROUND,
+            dispatch_target, _make_dispatch_hook(config), HookType.AROUND
         )
         # Patch FLA functions to use dispatch mechanism
         from sglang_fl.dispatch.fla_patch import patch_fla_functions
@@ -794,6 +813,10 @@ def load_plugin():
 
     # 5. Vendor-specific patches — final overlay on top of all sglang_fl layers
     _apply_vendor_patches()
+
+    from sglang_fl.models.qwen3_8 import register_hooks as register_qwen38
+
+    register_qwen38()
 
     # 6. FlagCX PD-disaggregation transfer backend. the FlagCX connector itself is
     #    imported lazily, when the user actually selects this backend.
