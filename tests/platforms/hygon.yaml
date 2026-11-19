@@ -55,6 +55,12 @@ bw1000: &bw1000_profile
       # lane; the Iluvatar CI lane retains their full coverage.
       exclude:
         - platform/test_iluvatar_import_shims.py
+        # TEMP(probe): kunlunxin's platform-owned unit tests (dev/0.5.18
+        # #155) import vendor code absent from this probe's wheel, which was
+        # staged from 3cb3f31 (pre-#155). For this old-wheel probe only;
+        # REMOVE once the formal image is rebuilt from the final source tree
+        # (the wheel then contains #155 and these tests collect and hold).
+        - kunlunxin/
     functional:
       include: "*"
       # build-infra#1786 (FlagTree JIT device-lib discovery) is fixed by the
@@ -68,6 +74,9 @@ bw1000: &bw1000_profile
       # Restoring them needs a dispatch-layer routing decision.
       exclude:
         - ops/test_hygon_mtp_attention.py
+        # TEMP(probe): same pre-#155 wheel reasoning as the kunlunxin/ unit
+        # exclusion above; REMOVE with the formal rebuild.
+        - ops/test_kunlunxin_ops.py
     e2e:
       # PR acceptance runs the representative eager model through inference
       # and serving; concurrent/mtp stay in nightly (scheduled workflows only
