@@ -24,6 +24,16 @@ from sglang_fl.distributed.device_communicators.musa_custom_ar import (
 )
 
 
+@pytest.fixture
+def musa_api(monkeypatch):
+    api = SimpleNamespace(
+        get_device_properties=lambda device: None,
+        can_device_access_peer=lambda device, peer: False,
+    )
+    monkeypatch.setattr(torch, "musa", api, raising=False)
+    return api
+
+
 def test_collective_failure_propagates_without_retry(monkeypatch):
     communicator = CommunicatorFL.__new__(CommunicatorFL)
     failed = Mock(side_effect=RuntimeError("collective failed"))
@@ -203,7 +213,7 @@ def test_custom_ar_keeps_smaller_batches_on_flagcx(rows):
 
 @pytest.mark.parametrize("unsupported", ["remote", "chip", "peer"])
 def test_prepare_rejects_unsupported_topology_before_allocation(
-    monkeypatch, unsupported
+    monkeypatch, unsupported, musa_api
 ):
     from sglang_fl.models import qwen4_communication as communication
     from sglang_fl.distributed.device_communicators import musa_custom_ar
@@ -247,7 +257,7 @@ def test_prepare_rejects_unsupported_topology_before_allocation(
     assert group.ca_comm is None
 
 
-def test_prepare_respects_framework_custom_allreduce_disable(monkeypatch):
+def test_prepare_respects_framework_custom_allreduce_disable(monkeypatch, musa_api):
     from sglang_fl.models import qwen4_communication as communication
 
     group = SimpleNamespace(
@@ -266,7 +276,7 @@ def test_prepare_respects_framework_custom_allreduce_disable(monkeypatch):
     assert group.ca_comm is None
 
 
-def test_prepare_enables_inplace_only_for_validated_model_group(monkeypatch):
+def test_prepare_enables_inplace_only_for_validated_model_group(monkeypatch, musa_api):
     from sglang_fl.models import qwen4_communication as communication
     from sglang_fl.distributed.device_communicators import musa_custom_ar
 
