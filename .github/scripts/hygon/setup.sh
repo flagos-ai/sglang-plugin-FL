@@ -41,7 +41,17 @@ fi
 # Installed-wheel contract: the two application distributions exist with
 # the expected versions, the entry points are registered, and sglang_fl
 # resolves from the installed distribution root - never from the checkout.
-PLUGIN_ROOT="$PLUGIN_ROOT" python .github/scripts/hygon/ci_environment.py -- python - <<'PY'
+# `python -` prepends the CWD to sys.path and this runtime is Python 3.10
+# (PYTHONSAFEPATH only exists from 3.11 on), so the contract interpreter
+# must not run from the checkout: stage it in a scratch directory the way
+# tests/run.py stages its pytest children, keeping the checkout from
+# shadowing the installed wheel.
+(
+  WHEEL_CONTRACT_STAGE="$(mktemp -d)"
+  trap 'rm -rf "$WHEEL_CONTRACT_STAGE"' EXIT
+  cd "$WHEEL_CONTRACT_STAGE"
+  PLUGIN_ROOT="$PLUGIN_ROOT" \
+    python "$PLUGIN_ROOT/.github/scripts/hygon/ci_environment.py" -- python - <<'PY'
 import importlib
 import importlib.metadata as md
 import os
@@ -93,6 +103,7 @@ _, scalar_types = get_scalar_types()
 assert scalar_types.uint4b8 == "uint4b8", scalar_types.uint4b8
 print("[hygon-ci] SGLang scalar fallback intact")
 PY
+)
 
 # The image bakes the DTK prefix contract (ROCM_PATH, the /opt/rocm alias
 # and the FlagTree clang wrapper, see the containerfile); this job only
