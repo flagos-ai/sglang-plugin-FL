@@ -75,6 +75,18 @@ bw1000: &bw1000_profile
         # fold (make the contract test mode-aware); this lane exclusion
         # only unblocks the probe.
         - test_iluvatar_benchmark_config.py
+        # TEMP(probe): the thead platform unit tests (dev/0.5.18 #160)
+        # import vendor.thead at module scope; this probe's wheel was
+        # staged from 3cb3f31 (pre-#160) and carries no vendor.thead
+        # package, so collection fails with ImportError (run 44489953257,
+        # 4 files). REMOVE once the formal image is rebuilt from the final
+        # source tree (the wheel then contains #160 and these tests
+        # collect and hold). The three thead tests that stub sys.modules
+        # themselves are kept: they do not need the real package.
+        - platform/test_thead_graph_capture_status.py
+        - platform/test_thead_import_guard.py
+        - platform/test_thead_runtime_config.py
+        - platform/test_thead_sgl_kernel_compat.py
     functional:
       include: "*"
       # build-infra#1786 (FlagTree JIT device-lib discovery) is fixed by the
