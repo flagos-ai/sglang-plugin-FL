@@ -18,12 +18,16 @@
 #      (plus --dry-run), and validate that the plan touches no runtime
 #      distribution;
 #   4. place the generated runtime-constraints.txt into the build context
-#      and build the candidate image.
+#     and build the candidate image, carrying its provenance as OCI labels
+#     (org.flagos.ci.base-digest / org.flagos.ci.source-commit) so the
+#     acceptance step binds to the image itself, not to the checkout;
+#   5. run the post-build acceptance (docker/hygon/scripts/verify_image.sh)
+#     against the produced tag - this is the release gate.
 #
-# Acceptance (which gates the push) is a separate step:
-#   docker/hygon/scripts/verify_image.sh <tag>
+# A failed acceptance aborts this script; --push (the only documented way
+# to publish from here) is reached only after acceptance passes.
 #
-# Usage: build_two_wheel.sh <tag>
+# Usage: build_two_wheel.sh [--push] <tag>
 
 set -euo pipefail
 
@@ -32,7 +36,20 @@ platform_dir="$repo_root/docker/hygon"
 scripts="$platform_dir/scripts"
 containerfile="$platform_dir/runtime-0.5.18.containerfile"
 
-tag="${1:?usage: build_two_wheel.sh <tag>}"
+push=0
+args=()
+for arg in "$@"; do
+    case "$arg" in
+        --push) push=1 ;;
+        -h|--help)
+            echo "usage: build_two_wheel.sh [--push] <tag>"
+            exit 0
+            ;;
+        *) args+=("$arg") ;;
+    esac
+done
+[ "${#args[@]}" -eq 1 ] || { echo "usage: build_two_wheel.sh [--push] <tag>" >&2; exit 1; }
+tag="${args[0]}"
 
 # Single source of truth for the pinned base digest: the containerfile's
 # ARG default.
@@ -45,10 +62,10 @@ FLAGOS_INDEX=https://resource.flagos.net/repository/flagos-pypi-hygon/simple
 PYPI_INDEX=https://pypi.org/simple
 PROXY_INDEX=https://resource.flagos.net/repository/pypi-proxy/simple
 
-echo "=== [1/4] Staging the two wheels ==="
+echo "=== [1/5] Staging the two wheels ==="
 staging_log="$(mktemp "${TMPDIR:-/tmp}/hygon-2w-stage-log.XXXXXX")"
 bash "$platform_dir/stage_wheels.sh" | tee "$staging_log"
-context="$(sed -n 's/^context:[[:space:]]\+\(\S*\).*/\1/p' "$staging_log" | tail -n 1)"
+context="$(awk '/^context:/{print $2}' "$staging_log" | tail -n 1)"
 rm -f "$staging_log"
 [ -n "$context" ] && [ -d "$context" ] || {
     echo "FATAL: could not locate the staged build context" >&2
@@ -58,14 +75,14 @@ rm -f "$staging_log"
 refdir="$(mktemp -d "${TMPDIR:-/tmp}/hygon-2w-reference.XXXXXX")"
 trap 'rm -rf "$refdir"' EXIT
 
-echo "=== [2/4] Collecting the Runtime reference from the pinned base digest ==="
+echo "=== [2/5] Collecting the Runtime reference from the pinned base digest ==="
 docker run --rm --platform linux/amd64 \
     --volume "$refdir":/out \
     --volume "$scripts":/scripts:ro \
     --entrypoint python "$BASE_IMAGE" \
     /scripts/collect_runtime_reference.py --out /out --base-ref "$BASE_IMAGE"
 
-echo "=== [3/4] Resolver dry-run plan gate (same base digest) ==="
+echo "=== [3/5] Resolver dry-run plan gate (same base digest) ==="
 # /opt/sglang-ci inside this container is the disposable plan dir; the
 # mounts reproduce the exact paths the containerfile install will see:
 # the constraints at /opt/sglang-ci, the staged wheels under /tmp/wheels,
@@ -102,17 +119,29 @@ docker run --rm --platform linux/amd64 \
 echo "resolver plan validated: no runtime distribution replaced"
 echo "  plan audit: $plan/sglang-resolver-additions.txt (disposable)"
 
-echo "=== [4/4] Building the candidate image ==="
+echo "=== [4/5] Building the candidate image ==="
+source_commit="$(git -C "$repo_root" rev-parse HEAD)"
 cp "$refdir/runtime-constraints.txt" "$context/artifacts/runtime-constraints.txt"
 docker build --platform linux/amd64 \
+    --label "org.flagos.ci.base-digest=$BASE_IMAGE" \
+    --label "org.flagos.ci.source-commit=$source_commit" \
     -f "$context/runtime-0.5.18.containerfile" \
     -t "$tag" "$context"
 
+echo "=== [5/5] Post-build acceptance (release gate) ==="
+bash "$scripts/verify_image.sh" "$tag"
+
 echo "=== Reproducibility record ==="
-echo "source-commit:  $(git -C "$repo_root" rev-parse HEAD)"
-echo "base-digest:    $BASE_IMAGE"
+echo "source-commit:  $source_commit"
+echo "base-digest:    $BASE_IMAGE (baked as org.flagos.ci.base-digest)"
 echo "image-tag:      $tag"
 echo "image-id:       $(docker image inspect --format '{{.Id}}' "$tag")"
 echo "build-context:  $context (from stage_wheels.sh; remove manually when done)"
-echo "accept next:"
-echo "  docker/hygon/scripts/verify_image.sh $tag"
+
+if [ "$push" -eq 1 ]; then
+    echo "=== Pushing (acceptance passed) ==="
+    docker push "$tag"
+    echo "pushed: $tag"
+else
+    echo "accepted (not pushed); publish later with: docker push $tag"
+fi

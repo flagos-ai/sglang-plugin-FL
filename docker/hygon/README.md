@@ -335,11 +335,13 @@ benchmark 保持显式启用。上面的 MTP 结果来自手动实机验收；�
 `sglang_fl`）、以及 HCU/DTK 兼容层。所有验收都不在镜像构建期执行：
 
 ```bash
-# 组装构建（staging + 从固定 base digest 动态采集 runtime-constraints +
-# dry-run 计划门 + docker build）
-docker/hygon/build_two_wheel.sh <tag>
+# 组装构建 + 构建后验收 + 可选推送（唯一发布入口：验收是发布门，
+# --push 只在验收通过后可达；staging + 从固定 base digest 动态采集
+# runtime-constraints + dry-run 计划门 + docker build 带 provenance
+# label + verify_image.sh 八阶段验收）
+docker/hygon/build_two_wheel.sh [--push] <tag>
 
-# 构建后外置验收（同一 base digest 动态基线；失败 = 禁止推送）
+# 也可对已构建镜像单独验收（基底从镜像自身的 OCI label 读取）
 docker/hygon/scripts/verify_image.sh <tag>
 ```
 

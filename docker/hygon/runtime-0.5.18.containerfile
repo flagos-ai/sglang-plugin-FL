@@ -29,8 +29,13 @@
 #     runner and validates against the installed wheels - the checkout
 #     never shadows them (SGLANG_FL_TEST_SOURCE=wheel).
 #
-# Build:  docker/hygon/build_two_wheel.sh <tag>
-# Accept: docker/hygon/scripts/verify_image.sh <tag>
+# Build + accept (single release entry; acceptance is the gate, --push is
+# reachable only after it passes):
+#   docker/hygon/build_two_wheel.sh [--push] <tag>
+# The image carries its provenance as OCI labels
+# (org.flagos.ci.base-digest / org.flagos.ci.source-commit); the
+# acceptance step reads the base digest from the image itself, not from
+# the checkout.
 
 # syntax=docker/dockerfile:1.7
 ARG BASE_IMAGE=harbor.baai.ac.cn/flagos-runtime/flagos-runtime-hygon-dtk26.04@sha256:03e598b348e58e7233628394bbefa0ccef26969a091c7e6f2f02835161757f8b

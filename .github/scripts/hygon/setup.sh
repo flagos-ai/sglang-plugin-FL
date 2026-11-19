@@ -13,11 +13,36 @@ PLUGIN_ROOT="$(pwd)"
 # checkout's safe.directory uses a temporary HOME that build subprocesses do
 # not inherit. Trust only this checkout for editable metadata's Git inspection.
 git config --global --add safe.directory "$PLUGIN_ROOT"
-EVIDENCE="${HYGON_RUNTIME_EVIDENCE:-/opt/sglang-ci}"
-if [ ! -f "$EVIDENCE/runtime-distributions-before.json" ]; then
-  echo "::error::CI image lacks its runtime evidence pack: $EVIDENCE" >&2
-  exit 1
-fi
+# Job-time drift reference: snapshot the pristine distribution inventory
+# BEFORE installing the pinned test runner. The image deliberately ships
+# no baked evidence pack - build-time acceptance (docker/hygon/scripts/
+# verify_image.sh, against a baseline collected from the pinned base
+# digest) owns the image-level zero-drift proof, and CI consumes the
+# image by digest; this snapshot anchors the job-time drift check at the
+# bottom of this script. The heredoc runs from an isolated directory so
+# the checkout cannot shadow any import (PYTHONSAFEPATH is 3.11+ only).
+RUNTIME_SNAPSHOT="$(mktemp /tmp/hygon-runtime-snapshot.XXXXXX.json)"
+(
+  SNAPSHOT_STAGE="$(mktemp -d)"
+  trap 'rm -rf "$SNAPSHOT_STAGE"' EXIT
+  cd "$SNAPSHOT_STAGE"
+  python - "$RUNTIME_SNAPSHOT" <<'PY'
+import importlib.metadata as md
+import json
+import sys
+
+from packaging.utils import canonicalize_name
+
+snapshot = {
+    canonicalize_name(dist.metadata["Name"]): dist.version
+    for dist in md.distributions()
+    if dist.metadata.get("Name")
+}
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    json.dump(snapshot, f, indent=2, sort_keys=True)
+print(f"[hygon-ci] container-start runtime snapshot: {len(snapshot)} distributions")
+PY
+)
 # The operations runtime intentionally ships no test packages; install the
 # pinned runner into the ephemeral job container, then verify the runner
 # landed (check.sh's --check-image runs earlier and cannot see it yet).
@@ -130,5 +155,5 @@ PY
 python .github/scripts/hygon/ci_environment.py -- \
   python .github/scripts/hygon/verify_environment.py \
     --plugin-root "$PLUGIN_ROOT" --plugin-source wheel \
-    --runtime-evidence "$EVIDENCE" \
+    --runtime-evidence "$RUNTIME_SNAPSHOT" \
     --require-gpu --min-gpus 2

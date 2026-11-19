@@ -880,28 +880,28 @@ class RuntimeEvidenceTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "torch"):
                 verifier._verify_runtime_image_versions()
 
-    def _evidence_dir(self, before, additions):
+    def _snapshot_file(self, before):
         import tempfile
 
         root = Path(tempfile.mkdtemp())
-        (root / "runtime-distributions-before.json").write_text(
-            json.dumps(before), encoding="utf-8"
-        )
-        (root / "sglang-additions-installed.txt").write_text(
-            "\n".join(additions) + "\n", encoding="utf-8"
-        )
+        snapshot = root / "runtime-snapshot.json"
+        snapshot.write_text(json.dumps(before), encoding="utf-8")
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
-        return root
+        return snapshot
 
-    def test_zero_drift_evidence_passes_and_asserts_flagtree_triton(self):
-        before = {"torch": "2.9.0+das.opt1.dtk2604", "flag-gems": "5.4.0"}
-        additions = ["triton==3.8.0", "xgrammar==0.2.1"]
-        evidence = self._evidence_dir(before, additions)
+    def test_zero_drift_snapshot_passes_and_asserts_flagtree_triton(self):
+        before = {
+            "torch": "2.9.0+das.opt1.dtk2604",
+            "flag-gems": "5.4.0",
+            "xgrammar": "0.2.1",
+            "sglang": "0.5.18+flagos",
+        }
+        snapshot = self._snapshot_file(before)
         distributions = [
             self._dist("torch", "2.9.0+das.opt1.dtk2604"),
             self._dist("flag-gems", "5.4.0"),
-            self._dist("triton", "3.8.0"),
             self._dist("xgrammar", "0.2.1"),
+            self._dist("sglang", "0.5.18+flagos"),
             self._dist("pytest", "9.1.1"),
             self._dist("iniconfig", "2.3.1"),
             self._dist("pluggy", "1.7.0"),
@@ -914,22 +914,21 @@ class RuntimeEvidenceTests(unittest.TestCase):
             ),
             patch.object(verifier.importlib.util, "find_spec", return_value=spec),
         ):
-            verifier._verify_runtime_evidence(evidence)
+            verifier._verify_runtime_evidence(snapshot)
 
     def test_runtime_distribution_drift_fails(self):
         before = {"torch": "2.9.0+das.opt1.dtk2604"}
-        evidence = self._evidence_dir(before, [])
+        snapshot = self._snapshot_file(before)
         distributions = [self._dist("torch", "2.9.0+replaced.dtk")]
         with patch.object(
             verifier.metadata, "distributions", lambda: iter(distributions)
         ):
-            with self.assertRaisesRegex(RuntimeError, "drifted"):
-                verifier._verify_runtime_evidence(evidence)
+            with self.assertRaisesRegex(RuntimeError, "drifted since container start"):
+                verifier._verify_runtime_evidence(snapshot)
 
-    def test_unexpected_distribution_beyond_reviewed_closure_fails(self):
+    def test_unexpected_distribution_beyond_job_container_set_fails(self):
         before = {"torch": "2.9.0+das.opt1.dtk2604"}
-        additions = ["triton==3.8.0"]
-        evidence = self._evidence_dir(before, additions)
+        snapshot = self._snapshot_file(before)
         distributions = [
             self._dist("torch", "2.9.0+das.opt1.dtk2604"),
             self._dist("some-extra-package", "1.0"),
@@ -941,12 +940,24 @@ class RuntimeEvidenceTests(unittest.TestCase):
             ),
             patch.object(verifier.importlib.util, "find_spec", return_value=spec),
         ):
-            with self.assertRaisesRegex(RuntimeError, "beyond the reviewed closure"):
-                verifier._verify_runtime_evidence(evidence)
+            with self.assertRaisesRegex(
+                RuntimeError, "beyond the snapshot and the job container set"
+            ):
+                verifier._verify_runtime_evidence(snapshot)
+
+    def test_malformed_snapshot_fails(self):
+        import tempfile
+
+        root = Path(tempfile.mkdtemp())
+        bad = root / "runtime-snapshot.json"
+        bad.write_text("[]", encoding="utf-8")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        with self.assertRaisesRegex(RuntimeError, "empty or malformed"):
+            verifier._verify_runtime_evidence(bad)
 
     def test_shadowed_flagtree_triton_fails(self):
-        before = {"torch": "2.9.0+das.opt1.dtk2604"}
-        evidence = self._evidence_dir(before, ["triton==3.8.0"])
+        before = {"torch": "2.9.0+das.opt1.dtk2604", "triton": "3.8.0"}
+        snapshot = self._snapshot_file(before)
         distributions = [
             self._dist("torch", "2.9.0+das.opt1.dtk2604"),
             self._dist("triton", "3.8.0"),
@@ -961,7 +972,7 @@ class RuntimeEvidenceTests(unittest.TestCase):
             patch.object(verifier.importlib.util, "find_spec", return_value=spec),
         ):
             with self.assertRaisesRegex(RuntimeError, "/opt/flagtree"):
-                verifier._verify_runtime_evidence(evidence)
+                verifier._verify_runtime_evidence(snapshot)
 
 
 if __name__ == "__main__":

@@ -284,25 +284,28 @@ def _verify_runtime_image_versions() -> None:
     print(f"[hygon-env] standalone triton absent; module resolves {resolved}")
 
 
-def _verify_runtime_evidence(evidence: Path) -> None:
-    """Job-time zero-drift check against the image's recorded evidence pack.
+def _verify_runtime_evidence(snapshot: Path) -> None:
+    """Job-time drift check against the container-start snapshot.
 
-    The CI image writes /opt/sglang-ci at build time: the pristine runtime
-    distribution inventory, the reviewed SGLang closure additions, and module
-    provenance. At job time every runtime distribution must still match the
-    recorded inventory, additions beyond it may only be the SGLang closure
-    itself plus the job-time test runner, and the vendor triton module must
-    still resolve under /opt/flagtree (PYTHONPATH precedes site-packages).
+    The two-wheel image deliberately carries no baked evidence pack: the
+    build-time zero-drift gates (docker/hygon/scripts/verify_image.sh,
+    run against a baseline collected dynamically from the pinned base
+    digest) already prove image == runtime base + reviewed closure, and
+    CI consumes the image by digest, so that proof covers exactly the
+    artifact under test. What remains a job-time concern is drift
+    introduced AFTER container start: setup.sh snapshots the pristine
+    distribution inventory before installing the pinned test runner, and
+    this check asserts that every snapshot distribution survived with
+    its exact version, that the only additions are the documented job
+    container distributions, and that the vendor triton module still
+    resolves under /opt/flagtree (PYTHONPATH precedes site-packages).
     """
     try:
-        before = json.loads(
-            (evidence / "runtime-distributions-before.json").read_text("utf-8")
-        )
-        recorded_additions = set(
-            (evidence / "sglang-additions-installed.txt").read_text("utf-8").split()
-        )
+        before = json.loads(snapshot.read_text("utf-8"))
     except (OSError, ValueError) as exc:
-        raise RuntimeError(f"unreadable runtime evidence pack at {evidence}: {exc}")
+        raise RuntimeError(f"unreadable runtime snapshot at {snapshot}: {exc}") from exc
+    if not isinstance(before, dict) or not before:
+        raise RuntimeError(f"runtime snapshot at {snapshot} is empty or malformed")
 
     current = {}
     for dist in metadata.distributions():
@@ -317,23 +320,22 @@ def _verify_runtime_evidence(evidence: Path) -> None:
     }
     if drifted:
         raise RuntimeError(
-            f"runtime distributions drifted from the image evidence: {drifted}"
+            f"runtime distributions drifted since container start: {drifted}"
         )
     unexpected = {
         f"{name}=={version}"
         for name, version in current.items()
-        if name not in before
-        and f"{name}=={version}" not in recorded_additions
-        and name not in JOB_CONTAINER_DISTRIBUTIONS
+        if name not in before and name not in JOB_CONTAINER_DISTRIBUTIONS
     }
     if unexpected:
         raise RuntimeError(
-            f"distributions beyond the reviewed closure appeared: {sorted(unexpected)}"
+            f"distributions beyond the snapshot and the job container set "
+            f"appeared: {sorted(unexpected)}"
         )
     print(
-        f"[hygon-env] runtime zero-drift verified against the image evidence "
-        f"({len(before)} runtime distributions, "
-        f"{len(recorded_additions)} reviewed closure additions)"
+        "[hygon-env] job-time zero-drift verified against the container-start "
+        f"snapshot ({len(before)} distributions; additions limited to the "
+        "job container set)"
     )
 
     spec = importlib.util.find_spec("triton")
@@ -676,8 +678,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--runtime-evidence",
         type=Path,
-        help="verify the operations-runtime image against its /opt/sglang-ci "
-        "evidence pack instead of the legacy vendor baseline",
+        help="verify the operations-runtime image against the container-start "
+        "runtime snapshot JSON (written by setup.sh before the test-runner "
+        "install) instead of the legacy vendor baseline",
     )
     parser.add_argument("--metadata-only", action="store_true")
     parser.add_argument("--require-gpu", action="store_true")

@@ -11,8 +11,7 @@ writable, and emits, under --out:
   runtime-0.5.18.site-files.sha256      site-packages file hashes
   runtime-0.5.18.pip-check-baseline.txt the runtime's own pip check output
   runtime-0.5.18.provenance.json        compiler slots + vendor module origins
-  runtime-distributions-before.json     canonical map (dry-run plan gate +
-                                        the CI job-time evidence pack)
+  runtime-distributions-before.json     canonical map (dry-run plan gate)
   runtime-constraints.txt               canonical name==version resolver
                                         constraints (build input)
 
