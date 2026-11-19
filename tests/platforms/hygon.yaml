@@ -67,6 +67,11 @@ bw1000: &bw1000_profile
         # (collection passes, 6 hardware failures, run 44456739955).
         # REMOVE with the formal rebuild.
         - distributed/test_kunlunxin_flagcx_api.py
+        # TEMP(probe): #160 reworked this generic flagcx unit file onto the
+        # same post-#155 seams; the old wheel's flagcx.py lacks find_spec/
+        # import_module (9 failures, run 44493525417). REMOVE with the
+        # formal rebuild - the reworked file then holds on the new wheel.
+        - distributed/test_flagcx.py
         # TEMP(probe): the iluvatar benchmark CLI contract pins the
         # checkout-mode pytest argv (relative test paths), but wheel mode
         # necessarily absolutizes run.py's case targets (children run from
@@ -81,12 +86,17 @@ bw1000: &bw1000_profile
         # package, so collection fails with ImportError (run 44489953257,
         # 4 files). REMOVE once the formal image is rebuilt from the final
         # source tree (the wheel then contains #160 and these tests
-        # collect and hold). The three thead tests that stub sys.modules
-        # themselves are kept: they do not need the real package.
+        # collect and hold). Two more thead files fail at RUNTIME on the
+        # old wheel (run 44493525417: platform_config needs the
+        # post-#160 _resolve_cuda_platform; register_platform imports the
+        # real package). test_thead_attention_default self-stubs and is
+        # kept.
         - platform/test_thead_graph_capture_status.py
         - platform/test_thead_import_guard.py
         - platform/test_thead_runtime_config.py
         - platform/test_thead_sgl_kernel_compat.py
+        - platform/test_thead_platform_config.py
+        - platform/test_thead_register_platform.py
     functional:
       include: "*"
       # build-infra#1786 (FlagTree JIT device-lib discovery) is fixed by the
