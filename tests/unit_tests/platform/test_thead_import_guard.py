@@ -1,4 +1,5 @@
-"""Tests for the PPU (thead) import placeholders (flashinfer, deep_gemm)."""
+"""Tests for the PPU (thead) import placeholders (flashinfer, deep_gemm,
+sgl_kernel — the last with its exact semantic contract)."""
 
 import importlib
 import importlib.abc
@@ -42,10 +43,13 @@ def _active(root):
     return guard._active_finder(root) is not None
 
 
-def test_guards_both_packages_and_forces_availability_off(clean):
-    assert guard.install_import_guards() == ["flashinfer", "deep_gemm"]
+def test_guards_all_packages_and_forces_availability_off(clean):
+    assert guard.install_import_guards() == ["flashinfer", "deep_gemm", "sgl_kernel"]
     assert os.environ["SGLANG_IS_FLASHINFER_AVAILABLE"] == "false"
     assert os.environ["SGLANG_ENABLE_JIT_DEEPGEMM"] == "false"
+    # The sgl_kernel placeholder serves no dist-info, so SGLang's
+    # wheel-version probe must be skipped while it is active.
+    assert os.environ["SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK"] == "true"
 
 
 def test_module_level_import_patterns(clean, monkeypatch):
@@ -113,6 +117,124 @@ def test_per_package_opt_out(clean, monkeypatch, root):
     active = guard.install_import_guards()
     assert root not in active
     assert not _active(root)
+
+
+# --- sgl_kernel semantic placeholder ----------------------------------------
+#
+# The two-wheel candidate image ships NO sglang-kernel distribution; the
+# placeholder answers the srt control path's real queries and stays silent
+# otherwise. These tests pin the exact contract:
+#   * is_arch_support_pdl() -> False (the real control-flow answer);
+#   * scalar_type does not exist, so SGLang's own fallback selects the
+#     non-kernel path (no usable-looking fake);
+#   * every other member fails loudly on the first real call (no
+#     flash_mla/flash_attn fakes, no torch.ops registrations);
+#   * a real sgl_kernel beats the placeholder, both through the
+#     _installed() pre-check and through meta_path order — which is what
+#     makes the kernel-wheel fallback safe with no code change.
+
+
+def _placeholders_first(monkeypatch):
+    """Put the placeholder finders ahead of the real path finder.
+
+    CI images (CUDA/Hygon/MUSA) ship real sgl_kernel/flashinfer/deep_gemm;
+    on a PPU host none is importable and the appended placeholder wins.
+    Reordering reproduces the PPU host exactly (the same trick the
+    flashinfer/deep_gemm import-pattern test uses).
+    """
+    placeholders = [f for f in sys.meta_path if isinstance(f, guard._PlaceholderFinder)]
+    others = [f for f in sys.meta_path if not isinstance(f, guard._PlaceholderFinder)]
+    monkeypatch.setattr(sys, "meta_path", placeholders + others)
+
+
+def test_sgl_kernel_pdl_query_answers_real_false(clean, monkeypatch):
+    guard.install_import_guards()
+    _placeholders_first(monkeypatch)
+    from sgl_kernel.utils import is_arch_support_pdl
+
+    assert is_arch_support_pdl() is False
+
+
+def test_sgl_kernel_scalar_type_is_absent(clean, monkeypatch):
+    guard.install_import_guards()
+    _placeholders_first(monkeypatch)
+    import sgl_kernel
+
+    assert not hasattr(sgl_kernel, "scalar_type")
+    with pytest.raises(ImportError):
+        from sgl_kernel import scalar_type  # noqa: F401
+    # The submodule-import fallback (what `from X import Y` tries after the
+    # AttributeError) must refuse too — no placeholder module may exist for
+    # an _ABSENT member.
+    with pytest.raises(ModuleNotFoundError):
+        import sgl_kernel.scalar_type  # noqa: F401
+
+
+def test_sgl_kernel_unknown_members_fail_loudly(clean, monkeypatch):
+    guard.install_import_guards()
+    _placeholders_first(monkeypatch)
+    import sgl_kernel
+    import sgl_kernel.utils
+
+    # Submodule members: importable, loud on the first real call.
+    with pytest.raises(RuntimeError, match="sgl_kernel.utils.any_op is unavailable"):
+        sgl_kernel.utils.any_op()
+    # Root members such as the kernel entry points: never faked.
+    with pytest.raises(RuntimeError, match="sgl_kernel.flash_mla is unavailable"):
+        sgl_kernel.flash_mla()
+    with pytest.raises(RuntimeError, match="sgl_kernel.flash_attn is unavailable"):
+        sgl_kernel.flash_attn()
+
+
+def test_torch_ops_sgl_kernel_not_faked(clean, monkeypatch):
+    # sglang's own probe (srt/utils/common.py): with no registered op the
+    # native fallback path is selected. The placeholder cannot fake torch
+    # ops and must not try.
+    torch = pytest.importorskip("torch")
+    guard.install_import_guards()
+    _placeholders_first(monkeypatch)
+    assert not hasattr(torch.ops.sgl_kernel, "convert_weight_packed")
+
+
+def test_installed_sgl_kernel_disables_placeholder(clean, monkeypatch):
+    # The pre-check: a real sgl_kernel importable from meta_path means the
+    # placeholder never activates for that root (others stay guarded).
+    monkeypatch.setattr(guard, "_installed", lambda root: root == "sgl_kernel")
+    active = guard.install_import_guards()
+    assert "sgl_kernel" not in active
+    assert not _active("sgl_kernel")
+    assert _active("flashinfer")
+
+
+def test_real_sgl_kernel_beats_placeholder(clean, monkeypatch):
+    # meta_path order wins: a finder serving a real module ahead of the
+    # placeholder resolves the real package (mirrors how an installed
+    # distribution shadows an appended finder).
+    real = types.ModuleType("sgl_kernel")
+    real.__path__ = []
+    real.sentinel = "real"
+
+    class _RealFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+        def find_spec(self, fullname, path, target=None):
+            if fullname == "sgl_kernel":
+                return importlib.machinery.ModuleSpec(fullname, self, is_package=True)
+            return None
+
+        def create_module(self, spec):
+            return real if spec.name == "sgl_kernel" else None
+
+        def exec_module(self, module):
+            pass
+
+    guard.install_import_guards()
+    placeholders = [f for f in sys.meta_path if isinstance(f, guard._PlaceholderFinder)]
+    others = [f for f in sys.meta_path if not isinstance(f, guard._PlaceholderFinder)]
+    monkeypatch.setattr(sys, "meta_path", [_RealFinder()] + placeholders + others)
+
+    import sgl_kernel
+
+    assert getattr(sgl_kernel, "sentinel", None) == "real"
+    assert not getattr(sgl_kernel, "__sglang_fl_placeholder__", False)
 
 
 def test_unrelated_imports_untouched(clean):
