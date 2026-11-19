@@ -47,9 +47,15 @@ container_volumes:
 # and pip install needs write access to /usr/local. This matches org convention.
 # --init: tini as PID 1 reaps orphan zombies from sglang TP workers on shutdown
 # (PID 1 was tail -f /dev/null, never wait()s -> zombies pile up, kill_process_tree times out)
+# Docker 20.10.8 blocks clone3 used by the image's glibc and Actions Node 24.
+# Scope the seccomp workaround to this container and drop Linux capabilities.
+# The device nodes grant read/write access to the Ascend driver group (1000).
 container_options: >-
   --hostname sglang-plugin-fl
   --runtime=ascend
+  --security-opt seccomp=unconfined
+  --cap-drop=ALL
+  --group-add=1000
   --ipc=host
   --shm-size=64g
   --ulimit memlock=-1
