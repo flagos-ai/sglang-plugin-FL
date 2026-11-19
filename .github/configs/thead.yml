@@ -3,12 +3,12 @@
 
 platform: thead
 
-# Docker image for this hardware (tag: 0.5.18-thead-20261028)
-# SGLang 0.5.18 empty mode + sglang-plugin-FL on the PPU empty base image, built from
-# docker/thead/empty-0.5.18.containerfile and cleaned of 0.5.11 leftovers. The same
-# image is published for users, so the HF offline switches are off in the image and
-# enabled for CI via container_options below.
-ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:fbf1fb254dd0382ffc38229342987472a626a19a66f511e89dd341f051bd648b
+# SGLang 0.5.18 two-wheel CI image for this hardware: the T-Head operations
+# Runtime plus the sglang[srt_empty,runtime_common] and sglang_fl[thead]
+# wheels, assembled by docker/thead/runtime-0.5.18.containerfile (build
+# procedure: docker/thead/README.md). The image sets no environment of its
+# own; the HF offline switches are enabled for CI via container_options below.
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:1bd8e8cbfb3ff602ac0a66819f96113c61cc38dbf8d1ab5574dbc8d86aea9cb1
 
 # Runner labels for this hardware
 runner_labels:
