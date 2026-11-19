@@ -48,6 +48,83 @@ class MusaDecodeGraphRunner(DecodeCudaGraphRunner):
                 if comm is not None:
                     comm.reset_graph_buffers()
         super().capture()
+        self._capture_metadata_graphs()
+
+    def _capture_metadata_graphs(self):
+        from sglang.srt.model_executor.runner.metadata_glue_graph import (
+            MetadataGlueGraph,
+        )
+        from sglang.srt.layers.attention.hybrid_linear_attn_backend import (
+            HybridLinearAttnBackend,
+        )
+        from sglang.srt.layers.attention.qwen_sparse_attn_backend import (
+            QwenSparseAttnBackend,
+        )
+
+        backend = self.attn_backend
+        if (
+            not self.capture_forward_mode.is_decode()
+            or not self.model_runner.spec_algorithm.is_none()
+            or self.enable_two_batch_overlap
+            or self.model_runner.lora_manager is not None
+            or not isinstance(backend, HybridLinearAttnBackend)
+            or not isinstance(backend.full_attn_backend, QwenSparseAttnBackend)
+            or backend.linear_attn_backend.replayssm_write_pos_list is not None
+        ):
+            return
+        self._metadata_glue = MetadataGlueGraph(self.device, strict=True)
+        with self.model_context():
+            for bs in self.capture_bs:
+                batch, _, _ = self.capture_prepare(bs)
+                key = self._glue_key(bs, str(self.capture_forward_mode), None)
+                for _ in range(MetadataGlueGraph.NUM_WARMUP + 1):
+                    self._init_replay_attn_metadata_from_view(
+                        batch,
+                        raw_bs=bs,
+                        bs=bs,
+                        num_tokens=bs,
+                        glue_key=key,
+                        attention_variant=None,
+                    )
+                if not self._metadata_glue.is_captured(key):
+                    raise RuntimeError("Qwen3.8 metadata graph was not captured")
+        self.device_module.synchronize()
+        logger.info(
+            "Qwen3.8 metadata graphs prepared before serving: %s", self.capture_bs
+        )
+
+    def _init_replay_attn_metadata(
+        self,
+        forward_batch,
+        *,
+        raw_bs,
+        bs,
+        num_tokens,
+        glue_key,
+        early_staged,
+        attention_variant,
+    ):
+        # Unknown modes stay eager. Serving never captures a new metadata graph.
+        if self._metadata_glue is not None and not self._metadata_glue.is_captured(
+            glue_key
+        ):
+            return self._init_replay_attn_metadata_from_view(
+                forward_batch,
+                raw_bs=raw_bs,
+                bs=bs,
+                num_tokens=num_tokens,
+                glue_key=None,
+                attention_variant=attention_variant,
+            )
+        return super()._init_replay_attn_metadata(
+            forward_batch,
+            raw_bs=raw_bs,
+            bs=bs,
+            num_tokens=num_tokens,
+            glue_key=glue_key,
+            early_staged=early_staged,
+            attention_variant=attention_variant,
+        )
 
     def can_run_graph(self, forward_batch):
         if not qsa_context_supported(

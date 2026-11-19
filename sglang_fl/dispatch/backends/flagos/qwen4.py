@@ -5,6 +5,7 @@
 HC/gate/norm return fresh tensors. KV/compression stores mutate only cache
 rows selected by slots; PLE convolution mutates output and selected state.
 Sparse attention mutates caller-owned output/workspace when supplied.
+Decode metadata mutates framework-owned output buffers and returns None.
 """
 
 from sglang_fl.dispatch.types import BackendImplKind, BackendPriority, OpImpl
@@ -20,6 +21,7 @@ OP_NAMES = (
     "qwen4_qsa_topk",
     "qwen4_qsa_partial_rope",
     "qsa_mqa_paged",
+    "qsa_build_decode_metadata",
     "qsa_store_kv_cache_rows",
     "qsa_compress_norm_mrope_store_groups",
     "qsa_sparse_paged_attention",

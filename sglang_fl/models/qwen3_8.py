@@ -25,6 +25,7 @@ def register_hooks():
         gdn_norm,
         qwen4_communication,
         qwen4_hc,
+        qwen4_metadata,
         qwen4_qsa,
         qwen4_qsa_rope,
     )
@@ -33,6 +34,7 @@ def register_hooks():
         qwen4_hc.hooks()
         + qwen4_qsa.hooks()
         + qwen4_qsa_rope.hooks()
+        + qwen4_metadata.hooks()
         + qwen4_communication.hooks()
     )
     from sglang.kernels.fused_op import BaseFusedOp
