@@ -93,6 +93,7 @@ class FlagCXCommunicator:
         self.available = False
 
         self._stream_cache = {}
+        self._use_inplace_all_reduce = False
 
         # Import FlagCX wrapper
         try:
@@ -183,8 +184,7 @@ class FlagCXCommunicator:
         return torch.cuda.current_stream().cuda_stream
 
     def _sync_current_stream(self):
-        """Synchronize the vendor-specific current stream for this device.
-        """
+        """Synchronize the vendor-specific current stream for this device."""
         device_str = str(self.device)
         if "npu" in device_str:
             stream = torch.npu.current_stream()
@@ -195,9 +195,7 @@ class FlagCXCommunicator:
         try:
             stream.synchronize()
         except RuntimeError as e:
-            logger.error(
-                "stream.synchronize() failed on %s: %s", device_str, e
-            )
+            logger.error("stream.synchronize() failed on %s: %s", device_str, e)
             raise
 
     def _get_stream(self):
@@ -207,6 +205,7 @@ class FlagCXCommunicator:
         if cached is not None:
             return cached
         from plugin.interservice.flagcx_wrapper import flagcxStream_t
+
         new_stream = flagcxStream_t()
         self.flagcx.FLAGCX_CHECK(
             self.flagcx.devHandle.contents.streamCopy(
@@ -219,7 +218,17 @@ class FlagCXCommunicator:
 
     def _flagcx_all_reduce(self, tensor: torch.Tensor) -> torch.Tensor:
         """Internal all_reduce using FlagCX API."""
-        out_tensor = torch.empty_like(tensor)
+        out_tensor = (
+            tensor
+            if self._use_inplace_all_reduce
+            and self.device.type == "musa"
+            and tensor.dtype == torch.bfloat16
+            and tensor.is_contiguous()
+            and tensor.ndim == 2
+            and 1 <= tensor.shape[0] <= 16384
+            and tensor.shape[1] in (2560, 10240)
+            else torch.empty_like(tensor)
+        )
         flagcx_stream = self._get_stream()
         self.flagcx.flagcxAllReduce(
             self._buffer_type(tensor.data_ptr()),
@@ -242,7 +251,8 @@ class FlagCXCommunicator:
         )
         out = self._flagcx_all_reduce(input_)
         # Copy result back to input (in-place semantics expected by SGLang)
-        input_.copy_(out)
+        if out is not input_:
+            input_.copy_(out)
         return input_
 
     def reduce_scatter(self, output: torch.Tensor, input_: torch.Tensor):

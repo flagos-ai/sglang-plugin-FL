@@ -36,6 +36,19 @@ class MusaDecodeGraphRunner(DecodeCudaGraphRunner):
             self._qsa_all_blocks_limit,
         )
 
+    def capture(self):
+        from sglang_fl.models.qwen4_communication import groups
+
+        communicators = [
+            getattr(group, "_fl_qwen38_custom_ar", None) for group in groups()
+        ]
+        if any(comm is not None for comm in communicators):
+            self.backend.cleanup()
+            for comm in communicators:
+                if comm is not None:
+                    comm.reset_graph_buffers()
+        super().capture()
+
     def can_run_graph(self, forward_batch):
         if not qsa_context_supported(
             forward_batch.seq_lens_cpu, self._qsa_all_blocks_limit

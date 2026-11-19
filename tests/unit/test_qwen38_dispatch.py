@@ -23,6 +23,9 @@ def _model(monkeypatch):
             hc_count=4, hidden_size=16, hc_lowrank=8, hc_per_branch_norm=True
         )
     )
+    from sglang_fl.models import qwen4_communication
+
+    monkeypatch.setattr(qwen4_communication, "prepare", lambda: None)
     root = torch.nn.Module()
     root.add_module("hc", hc)
     monkeypatch.setattr(qwen4_hc, "resolve_op", lambda name: lambda *args: None)

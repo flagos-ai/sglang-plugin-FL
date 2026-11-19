@@ -138,8 +138,11 @@ def prepare_model(result, self, *args, **kwargs):
 
     from sglang_fl.dispatch.backends.flagos.qwen4 import OP_NAMES
 
+    from .qwen4_communication import prepare
+
     for name in OP_NAMES:
         resolve_op(name)
+    prepare()
     for module in self.modules():
         module._fl_qwen38 = True
         if isinstance(module, QSAIndexer):

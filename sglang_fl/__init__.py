@@ -522,6 +522,11 @@ def _setup_communicator_hooks():
     # ── all_reduce hook ──
 
     def _all_reduce_hook(original_fn, self, input_):
+        custom = getattr(self, "_fl_qwen38_custom_ar", None)
+        if custom is not None and custom.should_custom_ar(input_):
+            output = custom.custom_all_reduce(input_)
+            input_.copy_(output)
+            return input_
         comm = getattr(self, "fl_communicator", None)
         if comm is not None and not comm.disabled:
             return comm.all_reduce(input_)
@@ -720,7 +725,9 @@ def activate_platform() -> str | None:
 
     info = get_device_info()
     if info is None:
-        logger.warning("sglang_fl platform activation failed: DeviceDetector unavailable")
+        logger.warning(
+            "sglang_fl platform activation failed: DeviceDetector unavailable"
+        )
         return None
     logger.info(
         "sglang_fl platform activating: vendor=%s, device=%s",
@@ -739,6 +746,7 @@ _plugin_active = False
 def is_plugin_loaded() -> bool:
     """Return whether SGLang invoked the general plugin entry point."""
     return _plugin_loaded
+
 
 def is_plugin_active() -> bool:
     """Return whether the general plugin completed its initialization."""

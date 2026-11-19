@@ -21,12 +21,19 @@ def register_hooks():
     if find_spec("sglang.srt.models.qwen4_exp") is None:
         return
     from sglang.srt.plugins.hook_registry import HookRegistry
-    from . import gdn_norm, qwen4_hc, qwen4_qsa, qwen4_qsa_rope
+    from . import (
+        gdn_norm,
+        qwen4_communication,
+        qwen4_hc,
+        qwen4_qsa,
+        qwen4_qsa_rope,
+    )
 
     entries = (
         qwen4_hc.hooks()
         + qwen4_qsa.hooks()
         + qwen4_qsa_rope.hooks()
+        + qwen4_communication.hooks()
     )
     from sglang.kernels.fused_op import BaseFusedOp
 
