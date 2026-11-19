@@ -61,6 +61,20 @@ bw1000: &bw1000_profile
         # REMOVE once the formal image is rebuilt from the final source tree
         # (the wheel then contains #155 and these tests collect and hold).
         - kunlunxin/
+        # TEMP(probe): the kunlunxin flagcx API contract patches seams
+        # (find_spec / _import_flagcx_api) that only exist in post-#155
+        # flagcx.py; this probe's pre-#155 wheel lacks them at RUNTIME
+        # (collection passes, 6 hardware failures, run 44456739955).
+        # REMOVE with the formal rebuild.
+        - distributed/test_kunlunxin_flagcx_api.py
+        # TEMP(probe): the iluvatar benchmark CLI contract pins the
+        # checkout-mode pytest argv (relative test paths), but wheel mode
+        # necessarily absolutizes run.py's case targets (children run from
+        # the staging dir). Mode-vs-contract skew, not vendor skew; NO
+        # wheel rebuild fixes it. The product fix belongs to the two-wheel
+        # fold (make the contract test mode-aware); this lane exclusion
+        # only unblocks the probe.
+        - test_iluvatar_benchmark_config.py
     functional:
       include: "*"
       # build-infra#1786 (FlagTree JIT device-lib discovery) is fixed by the
