@@ -57,7 +57,7 @@ The tables below summarize the current support status of end-to-end verified mod
 |-------|--------|---------|-----------|
 | Qwen3.6-27B | Supported | [Qwen/Qwen3.6-27B](https://huggingface.co/Qwen/Qwen3.6-27B) | [example](./examples/qwen3_6_27b_offline_inference.py) |
 | Qwen3.6-35B-A3B | Supported | [Qwen/Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [example](./examples/qwen3_6_35b_a3b_offline_inference.py) |
-| Qwen3.8-Flash-Next | Experimental: MUSA BF16 text, TP8 | [FlagRelease BF16 weights](https://modelscope.cn/models/FlagRelease/Qwen3.8-Flash-Next-BF16-mthreads-FlagOS) | [example](./examples/qwen3_8_flash_next_musa.sh) |
+| Qwen3.8-Flash-Next | Experimental: S5000 BF16 text, TP8 | [FlagRelease BF16 weights](https://modelscope.cn/models/FlagRelease/Qwen3.8-Flash-Next-BF16-mthreads-FlagOS) | [example](./examples/qwen3_8_flash_next_musa.sh) |
 
 ### Supported Chips
 
@@ -178,13 +178,19 @@ Use SGLang runtime commit
 It is upstream `23a45fd33921164fa440fd7c28cc63341259c28c` plus the existing MUSA
 ratio-three GDN projection-unpack compatibility change. Install its Python package
 with `pip install --no-deps -e ./python` in the vendor environment to preserve the
-vendor PyTorch stack. This integration requires Torch/torch_musa 2.9.0, MUSA 4.3,
+vendor PyTorch stack. This integration requires Torch/torch_musa 2.9.0, MUSA 4.3.5,
 FlagGems 5.3.0rc2, FlagCX, and the MUSA compiler build of FlagTree PR #1592
 ([`f8ec64d486f8c2ea54a5f9763ed933f04a257915`](https://github.com/flagos-ai/FlagTree/commit/f8ec64d486f8c2ea54a5f9763ed933f04a257915),
 Triton 3.6.0). The installed vendor attention dependencies remain required.
+The custom communication path also requires the vendor
+`apache-tvm-ffi==0.1.9.post1+musa.1` package, Ninja and the active MUSA compiler.
+Preserve the vendor TVM-FFI build supplied with MATE; the generic PyPI build does
+not provide this MUSA JIT interface.
 
 The `qwen38-musa` extra pins the public FlagGems-sglang commit used by this
-integration, including its HC, QSA and PLE APIs:
+integration, including its HC, QSA, PLE, decode metadata and source-built MUSA
+communication APIs. The pinned operator commit is
+[`73bd13f8f78245547b78c035c6036de9e1091702`](https://github.com/zhaiyansen/FlagGems-sglang/commit/73bd13f8f78245547b78c035c6036de9e1091702):
 
 ```bash
 pip install -e ".[qwen38-musa]"
@@ -197,6 +203,25 @@ Numerical operations resolve through the shared dispatch policy before execution
 execution errors propagate without selecting another implementation after a
 cache or state update. Model code owns packed HC checkpoint views and SGLang cache
 metadata; FlagGems-sglang owns the numerical kernels.
+
+On one host with eight peer-accessible S5000 GPUs, batch-64 decode graphs select
+the source-built custom AllReduce for 16-byte-aligned, contiguous BF16 messages
+with hidden width
+2560 or 10240. The framework's `--disable-custom-all-reduce` switch is
+respected; other collective shapes retain FlagCX. In these validated model groups,
+contiguous BF16 matrices with 1–16384 rows and hidden width 2560 or 10240 use
+FlagCX's in-place output when custom AllReduce is not selected. GroupCoordinator owns IPC
+buffers and graph registration; collective execution failures are propagated.
+The native sources and their image digest/license are included in the pinned
+operator package and compiled with the active toolkit, rather than loading a
+binary from another MUSA release.
+
+Non-speculative QSA decode metadata resolves through the public
+`qsa_build_decode_metadata` operator into framework-owned buffers. Metadata
+graphs are warmed and captured before serving. Changed tensor contents reuse
+the capture; replacing pool or graph buffers requires the framework's graph
+recapture, which retires old IPC registrations and rebuilds metadata graphs.
+Unknown replay modes remain eager, and the 2048-token QSA graph bound is retained.
 
 ### Download Models
 
