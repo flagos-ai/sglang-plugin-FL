@@ -28,6 +28,36 @@ dependencies = [
 
 [project.optional-dependencies]
 cuda = ["sglang==0.5.18"]
+nvidia = [
+    "sglang==0.5.18",
+    # The operations Runtime owns NumPy 1.26.4.  Leaving this unconstrained
+    # lets current SciPy/Pandas metadata move it to NumPy 2 during an otherwise
+    # ordinary SGLang install.
+    "numpy==1.26.4",
+    # datasets requires pyarrow>=24.  pyarrow 26 requires NumPy 2 at import
+    # time, so keep the newest line compatible with the Runtime-owned NumPy.
+    "pyarrow>=24,<26",
+    # SGLang -> humming-kernels[cu13] asks for an unversioned nvcc.  Select the
+    # toolkit line already declared by the Runtime's torch 2.13.0+cu130 wheel;
+    # the cuda-toolkit extra owns the exact nvcc/nvvm/crt sub-package pins.
+    "cuda-toolkit[nvcc]==13.0.3",
+    # Used by the plugin to locate the wheel-provided compiler and headers.
+    # Declare it directly instead of relying on CUDA packages to provide it
+    # transitively.
+    "cuda-pathfinder>=1.8,<2",
+    # Compatibility assertion only: the Runtime supplies this distribution.
+    "flag-gems==5.4.0",
+    # Triton is intentionally absent here.  The operations Runtime provides
+    # the compiler as a module tree (/opt/flagtree, Triton 3.6.0) selected
+    # through its login-shell activation, not as a pip distribution, and its
+    # FlagGems 5.4.0 build is incompatible with standalone Triton 3.7.x
+    # (flag_gems.utils.libentry truncates kernel arguments on the 3.7
+    # launcher path).  The image build therefore excludes the ``triton``
+    # distribution from resolution entirely (see
+    # docker/cuda/runtime-0.5.18.excludes.txt); Torch/xgrammar/
+    # humming-kernels still declare it in their metadata, which pip check
+    # reports as the documented platform capability exception.
+]
 
 [project.entry-points."sglang.srt.platforms"]
 sglang_fl = "sglang_fl:activate_platform"

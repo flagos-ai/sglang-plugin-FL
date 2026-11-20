@@ -29,9 +29,15 @@ thw = "thw"
 # MUSA / flashinfer C++ header file extension (.muh), e.g. flashinfer/sampling.muh
 muh = "muh"
 
+[files]
+# The kunlunxin patched-sglang wheel below carries upstream identifiers
+# verbatim; it is vendor payload, not prose. (The NVIDIA image's runtime
+# baselines are generated at verification time from the pinned base
+# digest and never live in the repository.)
+extend-exclude = [
+  "docker/kunlunxin/sglang-v0.5.18-kunlunxin.patch",
+]
+
 [default.extend-identifiers]
 # Recorded Hygon runtime commit; preserve the exact SHA in validation evidence.
 "8029ba2" = "8029ba2"
-
-[files]
-extend-exclude = ["docker/kunlunxin/sglang-v0.5.18-kunlunxin.patch"]

@@ -3,9 +3,25 @@
 
 platform: nvidia
 
-# Docker image built from docker/cuda/containerfile. Keep the SGLang version in
-# the tag so an old 0.5.11 image cannot be mistaken for the 0.5.18 CI runtime.
-ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl:0.2.0-cuda-sglang0.5.18-ci
+# Docker image: the two reviewed wheels -- SGLang 0.5.18 and
+# sglang_fl[nvidia]==0.1.0 -- installed once on the immutable operations
+# runtime (flagos-runtime-nvidia-cuda13.3), built by
+# docker/cuda/runtime-0.5.18.containerfile (top-level resolution: the
+# wheels' METADATA drive the closure, no enumerated lock; uv drops the
+# standalone triton distribution per
+# docker/cuda/runtime-0.5.18.excludes.txt). Digest-pinned; the aligned
+# CUDA 13.0 toolchain, the plugin's compatibility view for FlashInfer's
+# JIT, and the numpy1-era datasets stack are baked in. setup.sh keeps the
+# Runtime's default /opt/flagtree slot (Triton 3.6.0 module tree, no pip
+# distribution) -- FlagGems 5.4.0 is incompatible with standalone Triton
+# 3.7.x; /opt/triton stays untouched and unselected.
+# The operations-runtime image is ~20 GB; a cold runner spends most of an
+# hour pulling it, so all platform stages get 180 minutes.
+test_timeout: 180
+
+# Digest-pinned validated image (flagtree-3.6 two-wheel build; the full
+# NVIDIA matrix ran green on this exact digest with USE_FLAGGEMS=1).
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:492a864cf3af1eefbc155f72030fe0e4d03e1e7540088c24c32c2e501ec55cc6
 
 # Runner labels for this hardware
 runner_labels:
