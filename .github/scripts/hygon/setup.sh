@@ -28,8 +28,12 @@ python "$PLUGIN_ROOT/.github/scripts/hygon/verify_environment.py" \
 # The operations runtime intentionally ships no test packages; install the
 # pinned runner (single source: test-requirements.txt) into the ephemeral
 # job container, then verify it landed (check.sh's --check-image runs
-# earlier and cannot see it yet).
+# earlier and cannot see it yet). The runner is generic packages only, so
+# the Tencent mirror is the sole index: --default-index replaces uv's
+# default index outright (a plain --index extra would keep the default as
+# the fallback), matching the image build's network policy.
 /usr/local/bin/uv pip install --python /flagos/bin/python3 \
+  --default-index https://mirrors.cloud.tencent.com/pypi/simple \
   -r "$PLUGIN_ROOT/.github/scripts/hygon/test-requirements.txt"
 python .github/scripts/hygon/ci_environment.py --check-ci-packages
 

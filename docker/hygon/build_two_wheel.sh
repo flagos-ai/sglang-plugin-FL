@@ -30,7 +30,14 @@
 # A failed acceptance aborts this script; --push (the only documented way
 # to publish from here) is reached only after acceptance passes.
 #
-# Usage: build_two_wheel.sh [--push] <tag>
+# Provenance: a releasable build requires a completely clean worktree -
+# the plugin wheel is built from this checkout and the build context
+# carries docker/hygon, so any staged, unstaged or untracked file could
+# silently enter the artifact while the labels name the recorded HEAD.
+# --allow-dirty is a dev-only escape that cannot push and whose output is
+# not releasable evidence.
+#
+# Usage: build_two_wheel.sh [--push] [--allow-dirty] <tag>
 
 set -euo pipefail
 
@@ -40,19 +47,36 @@ scripts="$platform_dir/scripts"
 containerfile="$platform_dir/runtime-0.5.18.containerfile"
 
 push=0
+allow_dirty=0
 args=()
 for arg in "$@"; do
     case "$arg" in
         --push) push=1 ;;
+        --allow-dirty) allow_dirty=1 ;;
         -h|--help)
-            echo "usage: build_two_wheel.sh [--push] <tag>"
+            echo "usage: build_two_wheel.sh [--push] [--allow-dirty] <tag>"
+            echo "  --allow-dirty  dev build from a dirty worktree;"
+            echo "                 not releasable, cannot be pushed"
             exit 0
             ;;
         *) args+=("$arg") ;;
     esac
 done
-[ "${#args[@]}" -eq 1 ] || { echo "usage: build_two_wheel.sh [--push] <tag>" >&2; exit 1; }
+[ "${#args[@]}" -eq 1 ] || { echo "usage: build_two_wheel.sh [--push] [--allow-dirty] <tag>" >&2; exit 1; }
 tag="${args[0]}"
+
+if [ "$push" -eq 1 ] && [ "$allow_dirty" -eq 1 ]; then
+    echo "FATAL: --allow-dirty cannot be combined with --push (a dirty build is not releasable)" >&2
+    exit 1
+fi
+
+source_commit="$(git -C "$repo_root" rev-parse HEAD)"
+if [ "$allow_dirty" -eq 0 ] && [ -n "$(git -C "$repo_root" status --porcelain)" ]; then
+    echo "FATAL: worktree is dirty; commit or stash first (dev builds: --allow-dirty)" >&2
+    git -C "$repo_root" status --short >&2
+    exit 1
+fi
+[ "$allow_dirty" -eq 0 ] || echo "WARNING: --allow-dirty dev build; NOT releasable"
 
 # Single source of truth for the Runtime base: the containerfile's ARG
 # default (a moving semver tag per the Runtime owner). Everything below
@@ -139,7 +163,6 @@ echo "resolver plan validated: no runtime distribution replaced"
 echo "  plan audit: $plan/sglang-resolver-additions.txt (disposable)"
 
 echo "=== [5/6] Building the candidate image ==="
-source_commit="$(git -C "$repo_root" rev-parse HEAD)"
 patch_sha256="$(sha256sum "$context/docker/hygon/sglang-v0.5.18-hcu.patch" | awk '{print $1}')"
 cp "$refdir/runtime-constraints.txt" "$context/artifacts/runtime-constraints.txt"
 docker build --platform linux/amd64 \
@@ -149,6 +172,18 @@ docker build --platform linux/amd64 \
     --label "org.flagos.ci.hcu-patch-sha256=$patch_sha256" \
     -f "$context/runtime-0.5.18.containerfile" \
     -t "$tag" "$context"
+
+# The build must have consumed exactly the recorded commit: the worktree
+# may not have moved, and the image must carry that commit as its label.
+[ "$(git -C "$repo_root" rev-parse HEAD)" = "$source_commit" ] || {
+    echo "FATAL: HEAD moved during the build" >&2
+    exit 1
+}
+labeled_commit="$(docker image inspect --format '{{index .Config.Labels "org.flagos.ci.source-commit"}}' "$tag")"
+[ "$labeled_commit" = "$source_commit" ] || {
+    echo "FATAL: source-commit label mismatch: image=$labeled_commit worktree=$source_commit" >&2
+    exit 1
+}
 
 echo "=== [6/6] Post-build acceptance (release gate) ==="
 bash "$scripts/verify_image.sh" "$tag"

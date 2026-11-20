@@ -10,7 +10,8 @@ Covers the product-candidate wiring that the next image build will run:
 * every script the external build/acceptance wrappers mount into their
   docker runs exists in docker/hygon/scripts/;
 * the static runtime reference snapshots stay out of the repository (the
-  reference data is collected dynamically from the pinned base digest);
+  reference data is collected dynamically from the digest each build
+  resolves once from the moving tag);
 * the excludes file is the single deliberate resolver exclusion;
 * the plugin wheel acceptance script accepts the real wheel built from
   this checkout and rejects tampered variants (wrong extra anchor, triton
@@ -141,7 +142,7 @@ class StagingCouplingTests(unittest.TestCase):
         the install must use unsafe-first-match with the full flag
         contract, and build_two_wheel.sh's dry-run.sh must carry exactly
         the same arguments plus --dry-run (it plan-gates the build against
-        the same pinned base digest).
+        the same resolved base digest).
         """
         containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
         marker = "/usr/local/bin/uv pip install"
@@ -201,6 +202,59 @@ class StagingCouplingTests(unittest.TestCase):
             if line.strip() and not line.strip().startswith("#")
         ]
         self.assertEqual(requirements, ["triton"])
+
+
+class SetupScriptContractTests(unittest.TestCase):
+    """The CI job's runner install must follow the no-pypi.org network rule."""
+
+    def test_runner_install_uses_only_the_tencent_mirror(self):
+        setup = (REPO_ROOT / ".github/scripts/hygon/setup.sh").read_text()
+        # --default-index replaces uv's pypi.org default outright; a plain
+        # --index extra would still leave pypi.org as the fallback.
+        self.assertIn(
+            "--default-index https://mirrors.cloud.tencent.com/pypi/simple",
+            setup,
+        )
+        self.assertNotIn("pypi.org", setup)
+
+    def test_runner_dependencies_have_a_single_source(self):
+        setup = (REPO_ROOT / ".github/scripts/hygon/setup.sh").read_text()
+        self.assertEqual(
+            setup.count("uv pip install"),
+            1,
+            "setup.sh must install dependencies in exactly one uv call",
+        )
+        self.assertIn(
+            '-r "$PLUGIN_ROOT/.github/scripts/hygon/test-requirements.txt"', setup
+        )
+        self.assertNotRegex(
+            setup,
+            r"pytest==",
+            "test dependencies are pinned only in test-requirements.txt",
+        )
+
+
+class BuildProvenanceContractTests(unittest.TestCase):
+    """A releasable build must come from a clean, unmoving worktree."""
+
+    def test_release_build_requires_a_clean_worktree(self):
+        wrapper = (DOCKER / "build_two_wheel.sh").read_text()
+        self.assertIn(
+            "status --porcelain",
+            wrapper,
+            "the release gate must reject staged/unstaged/untracked files",
+        )
+        self.assertIn("--allow-dirty", wrapper)
+        self.assertIn(
+            "--allow-dirty cannot be combined with --push",
+            wrapper,
+            "dirty dev builds must never publish",
+        )
+
+    def test_head_and_label_are_reasserted_after_the_build(self):
+        wrapper = (DOCKER / "build_two_wheel.sh").read_text()
+        self.assertIn("HEAD moved during the build", wrapper)
+        self.assertIn("source-commit label mismatch", wrapper)
 
 
 class PluginWheelAcceptanceTests(unittest.TestCase):

@@ -5,8 +5,9 @@
 
 Runs INSIDE the finished image (docker/hygon/scripts/verify_image.sh wraps
 the docker run) and compares the live module origins of the vendor stack
-against the reference provenance collected dynamically from the pinned
-base digest. The image-level PYTHONPATH=/opt/flagtree makes the runtime's
+against the reference provenance collected dynamically from the digest the
+build resolved once from the Runtime's moving tag. The image-level
+PYTHONPATH=/opt/flagtree makes the runtime's
 FlagTree tree the authoritative resolution in every entrypoint (this
 process included), and the standalone triton wheel never enters
 resolution, so every vendor module must resolve to the exact same origin
@@ -47,7 +48,7 @@ def main() -> int:
         type=Path,
         required=True,
         help=(
-            "provenance.json collected from the pinned base digest "
+            "provenance.json collected from the build's resolved base digest "
             "(carries the recorded 'modules' origins)"
         ),
     )

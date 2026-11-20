@@ -5,10 +5,11 @@ platform: hygon
 
 # Docker image for this hardware: SGLang 0.5.18+flagos two-wheel image on the
 # operations runtime, assembled by docker/hygon/runtime-0.5.18.containerfile
-# (digest-pinned here; compatibility blocks documented in
-# docker/hygon/README.md). The operations-runtime image is ~18 GB; a cold
-# runner spends most of an hour pulling it, so all platform stages get 180
-# minutes.
+# from the Runtime's moving semver tag (each build resolves it to one digest;
+# compatibility blocks documented in docker/hygon/README.md). CI consumes the
+# published image by the digest below. The operations-runtime image is ~18 GB;
+# a cold runner spends most of an hour pulling it, so all platform stages get
+# 180 minutes.
 test_timeout: 180
 
 ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:27534c2f2d561031c33a4cabb03ec964df6474a69439e86678e30592a0bdb680

@@ -53,13 +53,14 @@ EXPECTED_RELEASES = {
 }
 EXPECTED_FLAGTREE = "0.6.1+hcu3.6"
 
-# Operations-runtime image (flagos-runtime-hygon-dtk26.04, digest-pinned in
-# docker/hygon/runtime-0.5.18.containerfile). The runtime ships torch/flagtree/
-# flag-gems/flagcx; the sglang[srt_empty,runtime_common] closure adds the SGLang
-# wheel plus its pure-Python dependency closure. The standalone triton wheel
-# that xgrammar declares is an external platform component: removed at image
-# build time, FlagTree's /opt/flagtree (image-level PYTHONPATH) is the only
-# Triton in any entrypoint.
+# Operations-runtime image (flagos-runtime-hygon-dtk26.04; the containerfile
+# declares the Runtime's moving semver tag, and each build resolves it to one
+# digest before the baseline, dry-run, FROM and acceptance). The runtime ships
+# torch/flagtree/flag-gems/flagcx; the sglang[srt_empty,runtime_common]
+# closure adds the SGLang wheel plus its pure-Python dependency closure. The
+# standalone triton wheel that xgrammar declares is an external platform
+# component: removed at image build time, FlagTree's /opt/flagtree
+# (image-level PYTHONPATH) is the only Triton in any entrypoint.
 RUNTIME_IMAGE_RELEASES = {
     "sglang": "0.5.18+flagos",
     "sglang-fl": "0.1.0",
@@ -69,8 +70,8 @@ RUNTIME_IMAGE_RELEASES = {
 RUNTIME_IMAGE_FLAGTREE = "0.7.0+hcu3.6"
 # Installed into the ephemeral CI job container by setup.sh, pinned with
 # their transitive closure; the operations runtime intentionally ships no
-# test packages. sglang_fl is the editable plugin checkout installed by the
-# standard setup flow.
+# test packages. sglang_fl arrives preinstalled as the image's plugin
+# wheel; the checkout only supplies the test code.
 JOB_CONTAINER_DISTRIBUTIONS = (
     "pytest",
     "pytest-timeout",
