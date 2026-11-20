@@ -4,7 +4,7 @@ from typing import Optional
 from sglang.srt.layers.attention.vision import SingletonCache
 from sglang.srt.environ import envs
 from sglang.srt.layers.attention.vision import resolve_seqlens
-from sglang.srt.layers.dp_attention import get_attention_tp_size
+from sglang.srt.runtime_context import get_parallel
 
 
 class GCU_VisionFlash3Attention:
@@ -16,7 +16,7 @@ class GCU_VisionFlash3Attention:
         use_data_parallel = (
             kwargs["use_data_parallel"] if "use_data_parallel" in kwargs else False
         )
-        self.tp_size = 1 if use_data_parallel else get_attention_tp_size()
+        self.tp_size = 1 if use_data_parallel else get_parallel().attn_tp_size
 
     def forward(
             self,

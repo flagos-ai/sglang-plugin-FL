@@ -194,10 +194,15 @@ def _load_mtp_example(monkeypatch, vendor="iluvatar"):
     # accelerator context and does not depend on the machine running pytest.
     probed_torch = ModuleType("torch")
     probed_torch.cuda = SimpleNamespace(is_available=lambda: True)
+    # T-Head PPU exposes no torch-level marker, so the example detects it from
+    # PPU_SDK. Clear it so a PPU host does not leak into other identities.
+    monkeypatch.delenv("PPU_SDK", raising=False)
     if vendor == "iluvatar":
         probed_torch.corex = SimpleNamespace()
     elif vendor == "hygon":
         probed_torch.__hcu_version__ = "3.6"
+    elif vendor == "thead":
+        monkeypatch.setenv("PPU_SDK", "/usr/local/PPU_SDK")
     elif vendor != "cuda":
         attr = {"musa": "musa", "ascend": "npu", "tsingmicro": "txda"}[vendor]
         setattr(probed_torch, attr, SimpleNamespace(is_available=lambda: True))
@@ -282,7 +287,14 @@ def test_legacy_corex_mtp_keyword_is_rejected_by_current_server_args(
 
 @pytest.mark.parametrize(
     "vendor,tp",
-    [("cuda", 1), ("musa", 1), ("ascend", 4), ("tsingmicro", 4), ("hygon", 2)],
+    [
+        ("cuda", 1),
+        ("musa", 1),
+        ("ascend", 4),
+        ("tsingmicro", 4),
+        ("hygon", 2),
+        ("thead", 4),
+    ],
 )
 def test_mtp_other_platform_defaults_remain_unchanged(monkeypatch, vendor, tp):
     monkeypatch.delenv("TP_SIZE", raising=False)

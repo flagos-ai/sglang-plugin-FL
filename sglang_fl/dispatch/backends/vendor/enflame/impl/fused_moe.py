@@ -12,8 +12,13 @@ from sglang.srt.layers.moe.token_dispatcher import StandardCombineInput
 
 # max_block_m,swiglu_with_alpha_and_limit,
 from sglang.srt.layers.moe.moe_runner.triton_utils.fused_moe import (
-    _use_aiter,_down_moe_use_tma,_is_cuda,_is_hip,moe_sum_reduce_torch_compile)
-from sglang.srt.layers.moe.moe_runner.triton_utils.fused_moe_triton_kernels import moe_sum_reduce_triton
+    _use_aiter,
+    _moe_support_tma as _down_moe_use_tma,
+    _is_cuda,
+    _is_hip,
+    moe_sum_reduce_torch_compile,
+)
+from sglang.kernels.ops.moe.fused_moe_triton_kernels import moe_sum_reduce_triton
 from sglang.srt.layers.moe.moe_runner.triton_utils.fused_moe_triton_config import get_default_config
 import sgl_kernel as sgl_ops
 
@@ -539,7 +544,7 @@ def fused_experts_gcu(
     )
 
     assert not moe_runner_config.no_combine, "no combine + inplace makes no sense"
-    fused_experts_impl_gcu(
+    output = fused_experts_impl_gcu(
         hidden_states,
         w1,
         w2,
@@ -547,7 +552,7 @@ def fused_experts_gcu(
         topk_ids,
         b1,
         b2,
-        True,
+        moe_runner_config.inplace,
         moe_runner_config.activation,
         moe_runner_config.is_gated,
         moe_runner_config.apply_router_weight_on_input,
@@ -563,12 +568,13 @@ def fused_experts_gcu(
         a1_scale,
         a2_scale,
         block_shape,
+        moe_runner_config.no_combine,
         moe_runner_config.routed_scaling_factor,
         moe_runner_config.gemm1_alpha,
         moe_runner_config.gemm1_clamp_limit,
         filter_expert,
     )
-    return hidden_states
+    return output
 
 def fused_moe_gcu(
     obj,

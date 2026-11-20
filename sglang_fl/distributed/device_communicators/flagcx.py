@@ -193,8 +193,7 @@ class FlagCXCommunicator:
         return torch.cuda.current_stream().cuda_stream
 
     def _sync_current_stream(self):
-        """Synchronize the vendor-specific current stream for this device.
-        """
+        """Synchronize the vendor-specific current stream for this device."""
         device_str = str(self.device)
         if "npu" in device_str:
             stream = torch.npu.current_stream()
@@ -205,17 +204,13 @@ class FlagCXCommunicator:
         try:
             stream.synchronize()
         except RuntimeError as e:
-            logger.error(
-                "stream.synchronize() failed on %s: %s", device_str, e
-            )
+            logger.error("stream.synchronize() failed on %s: %s", device_str, e)
             raise
 
     def _is_current_stream_capturing(self) -> bool:
         """Return whether the communicator's device is capturing a graph."""
         device_module = getattr(torch, self.device.type, None)
-        is_capturing = getattr(
-            device_module, "is_current_stream_capturing", None
-        )
+        is_capturing = getattr(device_module, "is_current_stream_capturing", None)
         return bool(is_capturing()) if callable(is_capturing) else False
 
     def _get_stream(self):

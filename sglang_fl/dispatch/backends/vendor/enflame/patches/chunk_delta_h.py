@@ -4,7 +4,7 @@ import torch
 import triton
 import triton.language as tl
 
-from sglang.srt.layers.attention.fla.index import (
+from sglang.kernels.ops.attention.fla.index import (
     prepare_chunk_indices,
     prepare_chunk_offsets,
 )
@@ -280,7 +280,7 @@ def chunk_gated_delta_rule_fwd_h(
 def patch_chunk_delta_h():
     from sglang.srt.plugins.hook_registry import HookRegistry, HookType
 
-    _CHUNK_DELTA_H_MODULE = "sglang.srt.layers.attention.fla.chunk_delta_h"
+    _CHUNK_DELTA_H_MODULE = "sglang.kernels.ops.attention.fla.chunk_delta_h"
     HookRegistry.register(
         f"{_CHUNK_DELTA_H_MODULE}.chunk_gated_delta_rule_fwd_h",
         chunk_gated_delta_rule_fwd_h,
