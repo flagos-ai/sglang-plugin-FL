@@ -36,7 +36,7 @@ def uv_args(chunk: str) -> list[str]:
     lines = []
     for line in chunk.splitlines():
         stripped = line.strip().rstrip("\\").strip()
-        if stripped.startswith("--") or stripped.startswith("'/tmp/wheels/"):
+        if stripped.startswith(("--", "-r ")) or stripped.startswith("'/tmp/wheels/"):
             lines.append(stripped)
         elif stripped.startswith(">") or stripped.startswith("&&"):
             break
@@ -75,6 +75,53 @@ class StagingCouplingTests(unittest.TestCase):
                 banned, containerfile, f"acceptance logic {banned!r} in the recipe"
             )
 
+    def test_containerfile_is_a_release_image_not_a_ci_workspace(self):
+        containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
+        self.assertNotIn(
+            "WORKDIR", containerfile, "the recipe must inherit the Runtime WORKDIR"
+        )
+        self.assertNotIn(
+            "/opt/sglang-ci",
+            containerfile,
+            "CI working-directory semantics crept back into the release image",
+        )
+        # Every COPYed build input is removed by the RUN that consumes it.
+        self.assertIn(
+            "rm -rf /tmp/wheels /tmp/runtime-constraints.txt /tmp/requirements.txt"
+            " /tmp/runtime-0.5.18.excludes.txt",
+            containerfile,
+        )
+        self.assertIn("rm -f /tmp/sglang-v0.5.18-hcu.patch", containerfile)
+        self.assertIn("rm -rf /tmp/stubs", containerfile)
+
+    def test_containerfile_base_is_the_moving_semver_tag(self):
+        containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
+        arg = re.search(r"^ARG BASE_IMAGE=(\S+)", containerfile, re.MULTILINE)
+        self.assertIsNotNone(arg, "no ARG BASE_IMAGE")
+        self.assertEqual(
+            arg.group(1),
+            "harbor.baai.ac.cn/flagos-runtime/flagos-runtime-hygon-dtk26.04:2.3.0",
+        )
+        self.assertNotIn(
+            "@sha256:",
+            arg.group(1),
+            "the file must carry the moving tag; digest pinning is build-time",
+        )
+
+    def test_pypi_fallback_is_the_tencent_mirror(self):
+        containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
+        self.assertIn(
+            "ARG TENCENT_INDEX=https://mirrors.cloud.tencent.com/pypi/simple",
+            containerfile,
+        )
+        self.assertNotRegex(containerfile, r"https://pypi\.org")
+        build_wrapper = (DOCKER / "build_two_wheel.sh").read_text()
+        self.assertIn(
+            "TENCENT_INDEX=https://mirrors.cloud.tencent.com/pypi/simple",
+            build_wrapper,
+        )
+        self.assertNotIn("PYPI_INDEX", build_wrapper)
+
     def test_external_wrapper_scripts_exist(self):
         referenced = set()
         for wrapper in ("build_two_wheel.sh", "scripts/verify_image.sh"):
@@ -105,10 +152,11 @@ class StagingCouplingTests(unittest.TestCase):
         self.assertNotIn("--dry-run", real)
         self.assertEqual(real.count("--index-strategy unsafe-first-match"), 1)
         self.assertNotIn("first-index", " ".join(real))
+        self.assertEqual(real.count('--index "$TENCENT_INDEX"'), 1)
         for required in (
             "--excludes /tmp/runtime-0.5.18.excludes.txt",
-            "--constraints /opt/sglang-ci/runtime-constraints.txt",
-            "--constraints /opt/sglang-ci/top-level-constraints.txt",
+            "--constraints /tmp/runtime-constraints.txt",
+            "-r /tmp/requirements.txt",
             "'/tmp/wheels/sglang-0.5.18+flagos-cp310-cp310-linux_x86_64"
             ".whl[srt_empty,runtime_common]'",
             "'/tmp/wheels/sglang_fl-0.1.0-py3-none-any.whl[hygon]'",
@@ -363,6 +411,7 @@ class StageContextSurvivalTests(unittest.TestCase):
             "artifacts/sglang_fl-0.1.0-py3-none-any.whl",
             "artifacts/runtime-0.5.18.excludes.txt",
             "runtime-0.5.18.containerfile",
+            "docker/hygon/requirements.txt",
             "docker/hygon/scripts/validate_uv_plan.py",
         ):
             self.assertTrue((self.context / relative).is_file(), f"missing {relative}")

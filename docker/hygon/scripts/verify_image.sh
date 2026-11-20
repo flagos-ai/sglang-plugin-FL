@@ -5,15 +5,15 @@
 # Post-build acceptance for the Hygon two-wheel CI image. Nothing here
 # runs during image construction; every phase is a docker run against the
 # finished image, and the reference data is collected dynamically from the
-# same pinned base digest that built it (no committed snapshots, nothing
-# COPYed into the image - baselines live in this script's mktemp dir and
-# die with it).
+# base digest the image itself records in its org.flagos.ci.base-digest OCI
+# label (no committed snapshots, nothing COPYed into the image - baselines
+# live in this script's mktemp dir and die with it).
 #
 # A non-zero exit means the candidate image must NOT be pushed.
 #
 # Phases:
 #   0. collect the Runtime reference (freeze, site-file hashes, pip-check
-#      baseline, provenance) from the pinned base digest
+#      baseline, provenance) from the labeled base digest
 #   1. runtime immutability: distributions exact, site files unchanged,
 #      pip-check only the documented (xgrammar, triton) exception,
 #      compiler slots + no standalone triton + /opt/flagtree resolution,
@@ -25,7 +25,9 @@
 #   6. Triton entrypoint matrix (sh, bash, child process) + no triton dist
 #   7. installed-wheel resolution contract from an empty working
 #      directory (parent and child process; full import deferred to HCU CI)
-#   8. image-level ENV contract (the five compatibility variables)
+#   8. image-level ENV/label contract: the compatibility ENVs, the
+#      LD_LIBRARY_PATH prepend semantics, the provenance labels, the
+#      neutral WORKDIR, and the absence of any CI working directory
 #
 # Usage: verify_image.sh <image>
 
@@ -35,10 +37,22 @@ image="${1:?usage: verify_image.sh <image>}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 scripts="$here"
 repo_root="$(cd "$here/../../.." && pwd)"
-containerfile="$repo_root/docker/hygon/runtime-0.5.18.containerfile"
+patch_file="$repo_root/docker/hygon/sglang-v0.5.18-hcu.patch"
 
-BASE_IMAGE="$(sed -n 's/^ARG BASE_IMAGE=//p' "$containerfile" | head -n 1)"
-[ -n "$BASE_IMAGE" ] || { echo "FATAL: no ARG BASE_IMAGE in $containerfile" >&2; exit 1; }
+# The acceptance binds to the image itself: the base digest comes from the
+# OCI label build_two_wheel.sh bakes in, never from the checkout.
+BASE_IMAGE="$(docker image inspect --format '{{index .Config.Labels "org.flagos.ci.base-digest"}}' "$image")"
+[ -n "$BASE_IMAGE" ] || {
+    echo "FATAL: $image lacks the org.flagos.ci.base-digest label" >&2
+    exit 1
+}
+
+# The required (prepended) DTK loader prefix and whatever the base image
+# itself carries; both feed the phase-8 probe.
+LD_REQUIRED_PREFIX="/opt/dtk/dcc/gcvm/lib:/opt/dtk/hip/lib:/opt/dtk/llvm/lib:/opt/dtk/lib:/opt/dtk/lib64:/opt/hyhal/lib:/opt/hyhal/lib64:/opt/dtk/dushmem/lib:/opt/dtk/opencl/lib:/opt/dtk/.hyhal/rocm_smi/lib:/opt/dtk/.hyhal/lib:/opt/dtk/.hyhal/lib64"
+LD_BASE_SUFFIX="$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$BASE_IMAGE" \
+    | sed -n 's/^LD_LIBRARY_PATH=//p' | head -n 1)"
+BASE_WORKDIR="$(docker image inspect --format '{{.Config.WorkingDir}}' "$BASE_IMAGE")"
 
 refdir="$(mktemp -d "${TMPDIR:-/tmp}/hygon-2w-verify.XXXXXX")"
 trap 'rm -rf "$refdir"' EXIT
@@ -46,7 +60,8 @@ trap 'rm -rf "$refdir"' EXIT
 # -i: several phases feed their program to the container over stdin.
 run() { docker run --rm -i --platform linux/amd64 "$@"; }
 
-echo "=== [0/8] Collecting the Runtime reference from the pinned base digest ==="
+echo "=== [0/8] Collecting the Runtime reference from the labeled base digest ==="
+echo "    base (org.flagos.ci.base-digest): $BASE_IMAGE"
 run --volume "$refdir":/out \
     --volume "$scripts":/scripts:ro \
     --entrypoint python "$BASE_IMAGE" \
@@ -136,7 +151,7 @@ print("child process:", origin)
 PY
 EOF
 
-echo "=== [8/8] Image-level ENV contract ==="
+echo "=== [8/8] Image-level ENV/label contract ==="
 env_json="$(docker image inspect --format '{{json .Config.Env}}' "$image")"
 for var in PYTHONPATH=/opt/flagtree \
            SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1 \
@@ -151,7 +166,53 @@ grep -q '"LD_LIBRARY_PATH=/opt/dtk' <<<"$env_json" || {
     echo "FATAL: image ENV lacks the DTK LD_LIBRARY_PATH prefix" >&2
     exit 1
 }
-echo "ENV contract: PYTHONPATH, LD_LIBRARY_PATH, ROCM_PATH, TRITON_HIP_CLANG_PATH, SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK present"
 
-echo "ACCEPTED: $image passed all post-build gates (reference data was collected"
-echo "dynamically from $BASE_IMAGE and disposed with $refdir)"
+# Provenance labels: the base digest is consumed above; the applied HCU
+# patch SHA256 must be exactly the reviewed patch in this checkout.
+patch_sha256="$(sha256sum "$patch_file" | awk '{print $1}')"
+labeled_sha256="$(docker image inspect --format '{{index .Config.Labels "org.flagos.ci.hcu-patch-sha256"}}' "$image")"
+[ "$labeled_sha256" = "$patch_sha256" ] || {
+    echo "FATAL: org.flagos.ci.hcu-patch-sha256=$labeled_sha256 != reviewed patch $patch_sha256" >&2
+    exit 1
+}
+
+# The released image keeps the Runtime's neutral WORKDIR and carries no CI
+# working directory or build residue.
+workdir="$(docker image inspect --format '{{.Config.WorkingDir}}' "$image")"
+[ "$workdir" = "$BASE_WORKDIR" ] || {
+    echo "FATAL: WORKDIR drifted from the Runtime base: '$workdir' != '$BASE_WORKDIR'" >&2
+    exit 1
+}
+run --entrypoint bash "$image" -c \
+    'test ! -e /opt/sglang-ci && test ! -e /tmp/wheels && test ! -e /tmp/stubs' \
+    || { echo "FATAL: CI working directory or build residue in the image" >&2; exit 1; }
+
+# LD_LIBRARY_PATH prepend semantics, proven inside the image:
+# required DTK paths first, base value preserved, no empty path element.
+run -e LD_REQUIRED_PREFIX="$LD_REQUIRED_PREFIX" \
+    -e LD_BASE_SUFFIX="$LD_BASE_SUFFIX" \
+    --entrypoint python "$image" - <<'PY'
+import os
+
+value = os.environ.get("LD_LIBRARY_PATH", "")
+elements = value.split(":") if value else []
+required = os.environ["LD_REQUIRED_PREFIX"].split(":")
+assert elements[: len(required)] == required, (
+    f"required DTK paths not in front: {elements[: len(required)]}"
+)
+assert "" not in elements, f"empty LD_LIBRARY_PATH path element in {value!r}"
+base = os.environ.get("LD_BASE_SUFFIX", "")
+if base:
+    assert elements == required + base.split(":"), (
+        f"base LD_LIBRARY_PATH value not preserved: {value!r} (base {base!r})"
+    )
+print(f"LD_LIBRARY_PATH: {len(required)} DTK paths in front, "
+      f"{len(elements) - len(required)} inherited, no empty element")
+PY
+
+echo "ENV/label contract: PYTHONPATH, LD_LIBRARY_PATH (prepend), ROCM_PATH,"
+echo "TRITON_HIP_CLANG_PATH, SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK, provenance"
+echo "labels, neutral WORKDIR ('$workdir'), no /opt/sglang-ci residue"
+
+echo "ACCEPTED: $image passed all post-build gates (reference data was"
+echo "collected dynamically from $BASE_IMAGE and disposed with $refdir)"

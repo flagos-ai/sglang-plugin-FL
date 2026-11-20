@@ -27,6 +27,11 @@ except BaseException:  # noqa: BLE001 - classify below
         "libcuda.so" in text,
         "Failed to load the backend extension" in text,
         "cannot open shared object file" in text,
+        # The amdsmi==7.0.2 distribution (operations-runtime 2.3.0) is
+        # imported inside torch.cuda init; its ctypes wrapper raises a bare
+        # KeyError naming the driver library when the GPU-less host cannot
+        # load it - a device-library absence, not a closure defect.
+        "KeyError: 'libamd_smi.so'" in text,
     )
     if not any(tolerated):
         raise SystemExit(

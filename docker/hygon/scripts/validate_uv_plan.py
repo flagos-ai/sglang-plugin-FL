@@ -15,7 +15,11 @@ contribute the version read from their own METADATA) and fails when the
 plan touches any runtime distribution. External platform components
 (the excluded triton) never appear in a uv plan at all.
 
-Usage: validate_uv_plan.py <uv-dry-run-output.txt>
+Usage: validate_uv_plan.py <uv-dry-run-output.txt> [evidence-dir]
+
+The evidence dir (default /plan, the disposable plan dir mounted by
+build_two_wheel.sh) must carry runtime-distributions-before.json; the
+additions audit record is written next to it.
 """
 
 from __future__ import annotations
@@ -31,8 +35,6 @@ from packaging.utils import canonicalize_name
 # ' + name==version' (index package) or ' + name @ file://...' (local wheel).
 _PLAN_LINE_RE = re.compile(r"^\s*\+\s+(?P<token>.+)$", re.MULTILINE)
 _WHEEL_VERSION_RE = re.compile(r"^Version:\s*(.+)$", re.MULTILINE)
-
-evidence = Path("/opt/sglang-ci")
 
 
 def parse_plan(plan_text: str) -> dict[str, str]:
@@ -67,9 +69,12 @@ def parse_plan(plan_text: str) -> dict[str, str]:
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: validate_uv_plan.py <uv-dry-run-output.txt>")
+    if len(sys.argv) not in (2, 3):
+        raise SystemExit(
+            "usage: validate_uv_plan.py <uv-dry-run-output.txt> [evidence-dir]"
+        )
     plan_text = Path(sys.argv[1]).read_text()
+    evidence = Path(sys.argv[2]) if len(sys.argv) == 3 else Path("/plan")
     before = json.loads((evidence / "runtime-distributions-before.json").read_text())
 
     planned = parse_plan(plan_text)

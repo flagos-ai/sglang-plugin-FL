@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # Copyright 2026 FlagOS Contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Collect the Runtime reference data from the pinned base digest.
+"""Collect the Runtime reference data from the resolved base digest.
 
-Runs INSIDE a container of the pinned base image (build_two_wheel.sh and
-verify_image.sh wrap the docker run) with the output directory bind-mounted
-writable, and emits, under --out:
+Runs INSIDE a container of the base image (build_two_wheel.sh resolves the
+Runtime's moving tag to a repo digest and verify_image.sh reads that digest
+back from the image's org.flagos.ci.base-digest label; both wrap the docker
+run) with the output directory bind-mounted writable, and emits, under --out:
 
   runtime-0.5.18.runtime-freeze.txt     canonical name==version inventory
   runtime-0.5.18.site-files.sha256      site-packages file hashes
@@ -17,7 +18,7 @@ writable, and emits, under --out:
 
 The files are reference data for the POST-BUILD acceptance only: they live
 in mktemp/CI artifacts, are never committed, and are never COPYed into an
-image. Collecting from the pinned digest replaces the previously committed
+image. Collecting from the resolved digest replaces the previously committed
 static snapshots; regenerating is deterministic for an immutable digest.
 """
 
@@ -121,7 +122,7 @@ def collect(out: Path, base_ref: str) -> None:
         "compiler_slots": slots,
         "generated_by": (
             "docker/hygon/scripts/collect_runtime_reference.py against the "
-            "pinned base digest; regenerate whenever the digest changes"
+            "resolved base digest; regenerate whenever the digest changes"
         ),
         "schema": (
             "compiler-slots-v2 (keys are slot ROOTS; each value is the "
@@ -151,7 +152,7 @@ def main() -> int:
     parser.add_argument(
         "--base-ref",
         default="",
-        help="the pinned base digest, recorded in provenance.json",
+        help="the resolved base digest, recorded in provenance.json",
     )
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)

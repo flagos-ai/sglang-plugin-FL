@@ -78,9 +78,9 @@ cp "$plugin_wheel" "$context/artifacts/"
 cp "$sglang_wheel" "$context/artifacts/"
 cp "$repo_root/docker/hygon/runtime-0.5.18.excludes.txt" \
    "$context/artifacts/runtime-0.5.18.excludes.txt"
-# The staged containerfile references docker/hygon/ (build scripts via
-# bind mounts, stubs, the clang wrapper, the top-level constraints), so
-# the whole platform directory travels with the context.
+# The staged containerfile references docker/hygon/ (stubs, the clang
+# wrapper, requirements.txt), so the whole platform directory travels with
+# the context.
 cp -R "$repo_root/docker" "$context/docker"
 cp "$repo_root/docker/hygon/runtime-0.5.18.containerfile" "$context/"
 

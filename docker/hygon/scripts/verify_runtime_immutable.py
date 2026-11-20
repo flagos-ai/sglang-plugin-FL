@@ -25,8 +25,9 @@ Checks:
   5. two-wheel contract  -- sglang and sglang_fl distributions, versions,
      entry points, and the plugin resolving from its installed
      distribution root
-  6. HCU compat markers  -- the clang wrapper + ENV, the stub finder with
-     the scalar_type exemption, and the applied HCU patch record
+  6. HCU compat markers  -- the clang wrapper + ENV and the stub finder
+     with the scalar_type exemption (the applied HCU patch's SHA256 is
+     checked as an OCI label by verify_image.sh, not in-image)
 
 It also prints the additions manifest as an audit trail; it is output,
 never an input.
@@ -60,7 +61,6 @@ REQUIRED_PLUGIN_PAYLOAD = (
     "sglang_fl/dispatch/backends/vendor/hygon/impl/attention_backend.py",
     "sglang_fl/dispatch/config/hygon.yaml",
 )
-HCU_PATCH_RECORD = "/opt/sglang-ci/sglang-hcu-patch.sha256"
 STUB_FINDER = "site-packages/_hcu_kernel_stub_finder.py"
 CLANG_WRAPPER = Path("/opt/hcu-clang/clang-18-device-libs")
 
@@ -225,10 +225,7 @@ def check_hcu_compat_markers() -> None:
     assert 'fullname == "sgl_kernel.scalar_type"' in text, (
         "stub finder lacks the scalar_type exemption"
     )
-    assert Path(HCU_PATCH_RECORD).is_file(), "HCU patch record missing"
-    print(
-        "[6/6] HCU compat markers: clang wrapper + scalar_type fallback + patch record"
-    )
+    print("[6/6] HCU compat markers: clang wrapper + scalar_type fallback")
 
 
 def report_additions(runtime_names: set[str]) -> None:
