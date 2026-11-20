@@ -71,6 +71,8 @@ RUN set -euo pipefail; \
 
 # Keep the digest-pinned Torch, FlagGems, FlagCX and SHMEM stack while
 # installing the pinned SGLang source through its Torch-free empty extra.
+# Arrow 26 requires NumPy 2 at import time without declaring that requirement
+# in wheel metadata. Keep the validated NumPy 1.x ABI and pin Arrow 25 instead.
 RUN set -euo pipefail; \
     archive="$(mktemp)"; \
     trap 'rm -f "$archive"' EXIT; \
@@ -81,14 +83,15 @@ RUN set -euo pipefail; \
     tar -xzf "$archive" --strip-components=1 -C /opt/sglang-0.5.18; \
     printf '%s\n' "$SGLANG_COMMIT" > /opt/sglang-0.5.18/.flagos-source-commit; \
     printf '%s\n' 'torch==2.13.0+cpu' 'torch-npu==2.13.0' 'torchvision==0.28.0+cpu' \
-        'torchaudio==2.11.0+cpu' 'numpy==1.26.4' 'flag-gems==5.4.0' \
+        'torchaudio==2.11.0+cpu' 'numpy==1.26.4' 'datasets==5.2.0' \
+        'pyarrow==25.0.1' 'flag-gems==5.4.0' \
         'flagcx==0.14.1+cann9.2.1' 'cann-shmem==1.6.0' 'transformers==5.12.1' \
         'triton==0.0.0' 'triton-ascend==0.0.0' > /tmp/sglang-ascend-constraints.txt; \
     cd /opt/sglang-0.5.18/python; \
     cp pyproject_other.toml pyproject.toml; \
     SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SGLANG=0.5.18 \
         python3 -m pip install --no-cache-dir -c /tmp/sglang-ascend-constraints.txt \
-            '.[srt_empty]' 'setuptools>=64' PyYAML; \
+            '.[srt_empty]' 'setuptools>=64' PyYAML datasets pyarrow; \
     python3 -m pip install --no-cache-dir -c /tmp/sglang-ascend-constraints.txt \
         xgrammar==0.2.1 compressed-tensors==0.16.0; \
     rm /tmp/sglang-ascend-constraints.txt

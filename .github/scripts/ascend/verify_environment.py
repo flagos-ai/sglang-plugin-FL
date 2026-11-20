@@ -62,6 +62,9 @@ EXPECTED_CANN921_DISTRIBUTIONS = {
     "attentions": "0.2",
     "custom-ops": "1.0",
     "torch-memory-saver": "0.0.8",
+    "numpy": "1.26.4",
+    "pyarrow": "25.0.1",
+    "datasets": "5.2.0",
 }
 
 EXPECTED_SOURCE_MARKERS = {
@@ -684,6 +687,11 @@ def verify(
     if require_ci:
         for name, expected in EXPECTED_CI_DISTRIBUTIONS.items():
             _require_distribution(name, expected)
+        if cann921:
+            # PyArrow's optional NumPy ABI requirement is absent from its
+            # runtime metadata; version resolution alone cannot catch it.
+            for name in ("numpy", "pyarrow", "datasets"):
+                _require_import(name)
 
     _require_source_markers(cann921=cann921)
     _check_cann_version(expected_cann_version)
@@ -703,6 +711,10 @@ def verify(
 
     if require_npu:
         _require_npu(min_npus, flagcx_library, cann921=cann921)
+        if cann921 and require_ci:
+            # This entrypoint imports server_args/current_platform. Defer it
+            # until real devices are verified so image builders stay safe.
+            _require_import("sglang.benchmark.serving")
 
 
 def main() -> int:
