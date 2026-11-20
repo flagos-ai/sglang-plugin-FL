@@ -60,6 +60,48 @@ def _communicator(flagcx=None):
     return comm
 
 
+@pytest.mark.parametrize(
+    ("device_type", "available", "should_clear"),
+    [
+        ("musa", False, True),
+        ("musa", True, False),
+        ("musa", None, False),
+        ("cuda", False, False),
+        ("cpu", False, False),
+    ],
+)
+def test_unavailable_pynccl_cannot_be_reenabled_by_musa_graph_capture(
+    communicator_hooks, monkeypatch, device_type, available, should_clear
+):
+    hook = communicator_hooks[f"{_GC_TARGET}.__init__"]
+    pynccl = SimpleNamespace(available=available, disabled=True)
+    device_group = object()
+    coordinator = SimpleNamespace()
+
+    def initialize(self):
+        self.device = SimpleNamespace(type=device_type)
+        self.world_size = 2
+        self.pynccl_comm = pynccl
+        self.use_pynccl = True
+        self.device_group = device_group
+        self.cpu_group = object()
+        self.rank_in_group = 0
+        self.ranks = [0, 1]
+
+    monkeypatch.setattr(
+        "sglang_fl.distributed.communicator.CommunicatorFL",
+        lambda **kwargs: SimpleNamespace(_flagcx_comm=None),
+    )
+    hook(initialize, coordinator)
+    assert coordinator.device_group is device_group
+    if should_clear:
+        assert coordinator.pynccl_comm is None
+        assert coordinator.use_pynccl is False
+    else:
+        assert coordinator.pynccl_comm is pynccl
+        assert coordinator.use_pynccl is True
+
+
 def test_nccl_without_flagcx_uses_original_sglang_all_reduce(
     communicator_hooks,
 ) -> None:
@@ -189,9 +231,7 @@ def test_nccl_all_gatherv_forwards_preallocated_output_to_sglang(
         hook(original, coordinator, input_, sizes=sizes, output=output)
         == "native-gather-result"
     )
-    original.assert_called_once_with(
-        coordinator, input_, sizes=sizes, output=output
-    )
+    original.assert_called_once_with(coordinator, input_, sizes=sizes, output=output)
     comm.all_gatherv.assert_not_called()
 
 
@@ -225,9 +265,7 @@ def test_active_flagcx_all_gatherv_with_output_uses_sglang_native_path(
         hook(original, coordinator, input_, sizes=sizes, output=output)
         == "native-gather-result"
     )
-    original.assert_called_once_with(
-        coordinator, input_, sizes=sizes, output=output
-    )
+    original.assert_called_once_with(coordinator, input_, sizes=sizes, output=output)
     comm.all_gatherv.assert_not_called()
 
 
@@ -270,7 +308,9 @@ def test_pp_shutdown_hook_preserves_non_pp_scheduling(
         _pp_commit_comm_work=Mock(),
     )
 
-    assert hook(original, scheduler, running_batch="running", last_batch="last") == "plan"
+    assert (
+        hook(original, scheduler, running_batch="running", last_batch="last") == "plan"
+    )
     original.assert_called_once_with(
         scheduler, running_batch="running", last_batch="last"
     )

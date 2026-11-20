@@ -35,11 +35,23 @@ def _bind_is_available(fn, is_available_fn):
 def register_builtins(registry) -> None:
     """Register all FlagOS (DEFAULT) operator implementations."""
     from .flagos import FlagOSBackend
+    from .impl.int8_scaled_mm import (
+        int8_scaled_mm_flagos,
+        is_int8_scaled_mm_available,
+    )
 
     backend = FlagOSBackend()
     is_avail = backend.is_available
 
     impls = [
+        OpImpl(
+            op_name="int8_scaled_mm",
+            impl_id="default.flagos",
+            kind=BackendImplKind.DEFAULT,
+            fn=_bind_is_available(int8_scaled_mm_flagos, is_int8_scaled_mm_available),
+            vendor=None,
+            priority=BackendPriority.DEFAULT,
+        ),
         OpImpl(
             op_name="silu_and_mul",
             impl_id="default.flagos",
