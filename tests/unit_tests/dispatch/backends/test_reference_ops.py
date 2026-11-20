@@ -1,3 +1,4 @@
+from collections import namedtuple
 from types import ModuleType, SimpleNamespace
 
 import torch
@@ -126,10 +127,12 @@ def test_reference_rotary_embedding_matches_interleaved_formula() -> None:
 
 def test_reference_topk_uses_sglang_select_experts_torch_native(monkeypatch) -> None:
     calls = []
+    Output = namedtuple("Output", ["topk_ids"])
+    expected_ids = torch.tensor([[0, 2]], dtype=torch.int64)
 
     def fake_select_experts(**kwargs):
         calls.append(kwargs)
-        return "topk-output"
+        return Output(topk_ids=expected_ids)
 
     sglang_mod = ModuleType("sglang")
     srt_mod = ModuleType("sglang.srt")
@@ -156,7 +159,9 @@ def test_reference_topk_uses_sglang_select_experts_torch_native(monkeypatch) -> 
 
     result = backend.topk(obj, hidden_states, router_logits)
 
-    assert result == "topk-output"
+    torch.testing.assert_close(
+        result.topk_ids, expected_ids, check_dtype=False
+    )
     assert topk_config.torch_native is True
     assert calls[0]["hidden_states"] is hidden_states
     assert calls[0]["layer_id"] == 7

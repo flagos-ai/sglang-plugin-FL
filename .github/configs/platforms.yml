@@ -28,7 +28,7 @@
 # Vendor file name → platform mapping (mirrors the FlagGems vendor ids):
 #   nvidia  <- sglang_fl/dispatch/config/nvidia.yaml, docker/cuda/
 #   musa    <- sglang_fl/dispatch/config/musa.yaml,    docker/mthreads/
-#   thead   <- sglang_fl/dispatch/config/tsingmicro.yaml, docker/thead/
+#   thead   <- sglang_fl/dispatch/config/{thead,tsingmicro}.yaml, docker/thead/
 #   iluvatar <- sglang_fl/dispatch/config/iluvatar.yaml, docker/iluvatar/
 #   tsingmicro <- sglang_fl/dispatch/config/tsingmicro.yaml, docker/tsingmicro/
 
@@ -99,15 +99,18 @@ platforms:
       - .github/configs/iluvatar.yml
   thead:
     # Self-hosted runner pool: label flagcicd-810e (4 runners, online).
-    # CI image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-thead-ci.
-    enabled: false
+    # SGLang 0.5.18 empty-mode CI image is pinned in thead.yml (built from
+    # docker/thead/empty-0.5.18.containerfile).
+    enabled: true
     trigger_paths:
+      - sglang_fl/dispatch/config/thead.yaml
       - sglang_fl/dispatch/config/tsingmicro.yaml
       - .github/scripts/thead/
       - .github/configs/thead.yml
       - tests/platforms/thead.yaml
       - docker/thead/
     exempt_from_global:
+      - sglang_fl/dispatch/config/thead.yaml
       - sglang_fl/dispatch/config/tsingmicro.yaml
       - .github/scripts/thead/
       - .github/configs/thead.yml
@@ -150,3 +153,6 @@ platforms:
       - .github/scripts/tsingmicro/
       - .github/configs/tsingmicro.yml
       - tests/platforms/tsingmicro.yaml
+
+  enflame:
+    enabled: true
