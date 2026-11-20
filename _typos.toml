@@ -34,4 +34,10 @@ muh = "muh"
 "8029ba2" = "8029ba2"
 
 [files]
-extend-exclude = ["docker/kunlunxin/sglang-v0.5.18-kunlunxin.patch"]
+# Machine-generated validation evidence: real upstream file names recorded
+# verbatim in the kunlunxin vendor patch, not our prose to fix. (The Hygon
+# site-hash baseline moved out of the repo - it is collected dynamically
+# from the build's resolved base digest by docker/hygon/scripts/verify_image.sh.)
+extend-exclude = [
+    "docker/kunlunxin/sglang-v0.5.18-kunlunxin.patch",
+]

@@ -95,3 +95,102 @@ diff --git a/python/sglang/srt/layers/quantization/quark_int4fp8_moe.py b/python
              w13_int4_scale = torch.nn.Parameter(
                  torch.ones(
                      num_experts,
+diff --git a/python/sglang/srt/layers/attention/triton_backend.py b/python/sglang/srt/layers/attention/triton_backend.py
+--- a/python/sglang/srt/layers/attention/triton_backend.py
++++ b/python/sglang/srt/layers/attention/triton_backend.py
+@@ -53,8 +53,11 @@
+ _is_cuda = is_cuda()
+ _is_gfx942 = is_gfx942_supported()
+ _is_xpu = is_xpu()
++# HCU runs the CUDA-compatible HIP runtime but ships no NVIDIA sgl_kernel
++# wheel; the CUDA-gated eager imports below must not fire there.
++_is_hcu = hasattr(torch, "__hcu_version__")
+ 
+-if _is_cuda:
++if _is_cuda and not _is_hcu:
+     from sgl_kernel.utils import is_arch_support_pdl
+ 
+ if TYPE_CHECKING:
+@@ -257,7 +260,7 @@
+                 # fp32 attn_logits buffer to ~4 GiB on Kimi-K2.6 and faulting in
+                 # ROCm graph replay; pin to 256 to match validated gfx950 behavior.
+                 self.max_kv_splits = min(self.max_kv_splits, 256)
+-        if _is_cuda:
++        if _is_cuda and not _is_hcu:
+             self.use_pdl = is_arch_support_pdl()
+         else:
+             self.use_pdl = False
+diff --git a/python/sglang/srt/layers/activation.py b/python/sglang/srt/layers/activation.py
+--- a/python/sglang/srt/layers/activation.py
++++ b/python/sglang/srt/layers/activation.py
+@@ -57,9 +57,22 @@
+ _use_aiter = get_bool_env_var("SGLANG_USE_AITER") and _is_hip
+ 
+ if _is_cuda:
+-    from sgl_kernel import gelu_and_mul as _sgl_gelu_and_mul
+-    from sgl_kernel import gelu_tanh_and_mul as _sgl_gelu_tanh_and_mul
+-    from sgl_kernel import silu_and_mul as _sgl_silu_and_mul
++    if not hasattr(torch, "__hcu_version__"):
++        from sgl_kernel import gelu_and_mul as _sgl_gelu_and_mul
++        from sgl_kernel import gelu_tanh_and_mul as _sgl_gelu_tanh_and_mul
++        from sgl_kernel import silu_and_mul as _sgl_silu_and_mul
++    else:
++        # HCU ships no sgl_kernel wheel; alias the sgl fallbacks to the Triton
++        # JIT kernels, which take the same (input, out) signature.
++        from sglang.kernels.ops.activation.activation import (
++            gelu_and_mul as _sgl_gelu_and_mul,
++        )
++        from sglang.kernels.ops.activation.activation import (
++            gelu_tanh_and_mul as _sgl_gelu_tanh_and_mul,
++        )
++        from sglang.kernels.ops.activation.activation import (
++            silu_and_mul as _sgl_silu_and_mul,
++        )
+ 
+     from sglang.kernels.ops.activation.activation import (
+         gelu_and_mul as _jit_gelu_and_mul,
+diff --git a/python/sglang/srt/layers/layernorm.py b/python/sglang/srt/layers/layernorm.py
+--- a/python/sglang/srt/layers/layernorm.py
++++ b/python/sglang/srt/layers/layernorm.py
+@@ -98,12 +98,21 @@
+         _flashinfer_layernorm_available = False
+         _flashinfer_rmsnorm_quant_available = False
+ 
+-    from sgl_kernel import (
+-        fused_add_rmsnorm,
+-        gemma_fused_add_rmsnorm,
+-        gemma_rmsnorm,
+-        rmsnorm,
+-    )
++    if not hasattr(torch, "__hcu_version__"):
++        from sgl_kernel import (
++            fused_add_rmsnorm,
++            gemma_fused_add_rmsnorm,
++            gemma_rmsnorm,
++            rmsnorm,
++        )
++    else:
++        # HCU ships no sgl_kernel wheel.  The forward paths that call these
++        # names are not taken on HCU: forward_hip falls back to forward_native
++        # (vllm is absent) and forward_cuda/musa/xpu are other platforms.
++        fused_add_rmsnorm = None
++        gemma_fused_add_rmsnorm = None
++        gemma_rmsnorm = None
++        rmsnorm = None
+ _has_aiter_layer_norm = False
+ _has_vllm_rms_norm = False
+ _has_rocm_triton_gemma_rms_norm = False
+diff --git a/python/sglang/srt/layers/sampler.py b/python/sglang/srt/layers/sampler.py
+--- a/python/sglang/srt/layers/sampler.py
++++ b/python/sglang/srt/layers/sampler.py
+@@ -27,7 +27,9 @@
+     is_npu,
+ )
+ 
+-if is_cuda():
++if is_cuda() and not hasattr(torch, "__hcu_version__"):
++    # HCU ships neither flashinfer nor sgl_kernel; these sampling helpers are
++    # only referenced on the explicitly-selected flashinfer backend path.
+     from flashinfer.sampling import (
+         min_p_sampling_from_probs,
+         top_k_top_p_sampling_from_probs,
