@@ -4,50 +4,33 @@
 #
 # The image ships the real application wheels (sglang 0.5.18+flagos and
 # sglang_fl 0.1.0); this job only installs the pinned test runner and
-# verifies the installed-wheel contract. The checkout source tree must
-# never shadow the installed plugin: SGLANG_FL_TEST_SOURCE=wheel makes
-# tests/run.py stage every pytest child (and its engine grandchildren)
-# from an isolated directory with PYTHONSAFEPATH on.
+# verifies the installed-wheel contract. All Python verification goes
+# through .github/scripts/hygon/verify_environment.py (snapshot capture
+# plus the post-setup checks); the checkout source tree must never shadow
+# the installed plugin - SGLANG_FL_TEST_SOURCE=wheel makes tests/run.py
+# stage every pytest child (and its engine grandchildren) from an
+# isolated directory with PYTHONSAFEPATH on.
 set -euo pipefail
 PLUGIN_ROOT="$(pwd)"
 # checkout's safe.directory uses a temporary HOME that build subprocesses do
 # not inherit. Trust only this checkout for editable metadata's Git inspection.
 git config --global --add safe.directory "$PLUGIN_ROOT"
-# Job-time drift reference: snapshot the pristine distribution inventory
-# BEFORE installing the pinned test runner. The image deliberately ships
-# no baked evidence pack - build-time acceptance (docker/hygon/scripts/
-# verify_image.sh, against a baseline collected from the pinned base
-# digest) owns the image-level zero-drift proof, and CI consumes the
-# image by digest; this snapshot anchors the job-time drift check at the
-# bottom of this script. The heredoc runs from an isolated directory so
-# the checkout cannot shadow any import (PYTHONSAFEPATH is 3.11+ only).
+
+# Job-time drift reference: record the pristine distribution inventory
+# BEFORE installing the pinned test runner. Image-level zero-drift is
+# proven at build time by docker/hygon/scripts/verify_image.sh; CI
+# consumes the accepted image by digest, so this snapshot only anchors
+# drift introduced after container start.
 RUNTIME_SNAPSHOT="$(mktemp /tmp/hygon-runtime-snapshot.XXXXXX.json)"
-(
-  SNAPSHOT_STAGE="$(mktemp -d)"
-  trap 'rm -rf "$SNAPSHOT_STAGE"' EXIT
-  cd "$SNAPSHOT_STAGE"
-  python - "$RUNTIME_SNAPSHOT" <<'PY'
-import importlib.metadata as md
-import json
-import sys
+python "$PLUGIN_ROOT/.github/scripts/hygon/verify_environment.py" \
+  --capture-runtime-snapshot "$RUNTIME_SNAPSHOT"
 
-from packaging.utils import canonicalize_name
-
-snapshot = {
-    canonicalize_name(dist.metadata["Name"]): dist.version
-    for dist in md.distributions()
-    if dist.metadata.get("Name")
-}
-with open(sys.argv[1], "w", encoding="utf-8") as f:
-    json.dump(snapshot, f, indent=2, sort_keys=True)
-print(f"[hygon-ci] container-start runtime snapshot: {len(snapshot)} distributions")
-PY
-)
 # The operations runtime intentionally ships no test packages; install the
-# pinned runner into the ephemeral job container, then verify the runner
-# landed (check.sh's --check-image runs earlier and cannot see it yet).
-python -m pip install pytest==9.1.1 pytest-timeout==2.4.0 \
-  iniconfig==2.3.1 pluggy==1.7.0
+# pinned runner (single source: test-requirements.txt) into the ephemeral
+# job container, then verify it landed (check.sh's --check-image runs
+# earlier and cannot see it yet).
+/usr/local/bin/uv pip install --python /flagos/bin/python3 \
+  -r "$PLUGIN_ROOT/.github/scripts/hygon/test-requirements.txt"
 python .github/scripts/hygon/ci_environment.py --check-ci-packages
 
 # Select the installed-wheel test mode for every later pytest subprocess;
@@ -63,93 +46,14 @@ if [ -n "${GITHUB_ENV:-}" ]; then
   printf 'SGLANG_HYGON_DIAGNOSTIC_TRITON_ATTENTION=1\n' >> "$GITHUB_ENV"
 fi
 
-# Installed-wheel contract: the two application distributions exist with
-# the expected versions, the entry points are registered, and sglang_fl
-# resolves from the installed distribution root - never from the checkout.
-# `python -` prepends the CWD to sys.path and this runtime is Python 3.10
-# (PYTHONSAFEPATH only exists from 3.11 on), so the contract interpreter
-# must not run from the checkout: stage it in a scratch directory the way
-# tests/run.py stages its pytest children, keeping the checkout from
-# shadowing the installed wheel.
-(
-  WHEEL_CONTRACT_STAGE="$(mktemp -d)"
-  trap 'rm -rf "$WHEEL_CONTRACT_STAGE"' EXIT
-  cd "$WHEEL_CONTRACT_STAGE"
-  PLUGIN_ROOT="$PLUGIN_ROOT" \
-    python "$PLUGIN_ROOT/.github/scripts/hygon/ci_environment.py" -- python - <<'PY'
-import importlib
-import importlib.metadata as md
-import os
-from importlib import metadata
-from pathlib import Path
-
-import sglang_fl
-
-assert md.version("sglang") == "0.5.18+flagos", md.version("sglang")
-assert md.version("sglang-fl") == "0.1.0", md.version("sglang-fl")
-
-expected_entry_points = {
-    "sglang.srt.platforms": ("sglang_fl", "sglang_fl:activate_platform"),
-    "sglang.srt.plugins": ("sglang_fl", "sglang_fl:load_plugin"),
-}
-for group, (name, value) in expected_entry_points.items():
-    registered = {(ep.name, ep.value) for ep in md.entry_points(group=group)}
-    assert (name, value) in registered, (
-        f"{group}: ({name!r}, {value!r}) not in {sorted(registered)}"
-    )
-
-module_file = Path(sglang_fl.__file__).resolve()
-distribution_root = Path(metadata.distribution("sglang-fl").locate_file("")).resolve()
-checkout_root = Path(os.environ["PLUGIN_ROOT"]).resolve()
-if not module_file.is_relative_to(distribution_root):
-    raise RuntimeError(
-        f"sglang_fl resolved at {module_file}, which is not inside the "
-        f"installed distribution root {distribution_root}"
-    )
-if checkout_root == module_file.parent or checkout_root in module_file.parents:
-    raise RuntimeError(f"sglang_fl resolved from the checkout: {module_file}")
-print(f"[hygon-ci] installed plugin: {module_file} (distribution root {distribution_root})")
-
-importlib.import_module(
-    "sglang_fl.dispatch.backends.vendor.hygon.impl.attention_backend"
-)
-print("[hygon-ci] Hygon attention backend importable from the installed wheel")
-
-try:
-    importlib.import_module("sgl_kernel.scalar_type")
-except ModuleNotFoundError as error:
-    assert error.name == "sgl_kernel.scalar_type", error
-else:
-    raise AssertionError("sgl_kernel.scalar_type must remain absent on HCU")
-
-from sglang.srt.layers.quantization.utils import get_scalar_types
-
-_, scalar_types = get_scalar_types()
-assert scalar_types.uint4b8 == "uint4b8", scalar_types.uint4b8
-print("[hygon-ci] SGLang scalar fallback intact")
-PY
-)
-
 # The image bakes the DTK prefix contract (ROCM_PATH, the /opt/rocm alias
 # and the FlagTree clang wrapper, see the containerfile); this job only
-# verifies it.
+# verifies it. The FlagTree wrapper selection check runs inside
+# verify_environment.py below.
 if [ "$(readlink -f /opt/rocm)" != "$(readlink -f /opt/dtk)" ]; then
   echo "::error::/opt/rocm is missing or does not resolve to the DTK SDK" >&2
   exit 1
 fi
-python - <<'PY'
-import os
-from pathlib import Path
-
-from triton.backends.hcu.compiler_hcu import HIPBackend
-
-actual = Path(HIPBackend.path_to_rocm_clang())
-expected = Path(os.environ["TRITON_HIP_CLANG_PATH"])
-if actual != expected:
-    raise RuntimeError(f"FlagTree selected {actual}, expected the baked wrapper {expected}")
-resolved = Path("/opt/dtk/aillvm/bin/clang-18")
-print(f"[hygon-ci] FlagTree HCU compiler: {actual} -> {resolved}")
-PY
 /opt/rocm/bin/hipcc --version | head -n 1
 
 python .github/scripts/hygon/ci_environment.py -- \

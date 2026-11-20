@@ -62,6 +62,7 @@ EXPECTED_FLAGTREE = "0.6.1+hcu3.6"
 # Triton in any entrypoint.
 RUNTIME_IMAGE_RELEASES = {
     "sglang": "0.5.18+flagos",
+    "sglang-fl": "0.1.0",
     "torch": "2.9.0+das.opt1.dtk2604",
     "flag-gems": "5.4.0",
 }
@@ -289,16 +290,17 @@ def _verify_runtime_evidence(snapshot: Path) -> None:
 
     The two-wheel image deliberately carries no baked evidence pack: the
     build-time zero-drift gates (docker/hygon/scripts/verify_image.sh,
-    run against a baseline collected dynamically from the pinned base
+    run against a baseline collected dynamically from the resolved base
     digest) already prove image == runtime base + reviewed closure, and
     CI consumes the image by digest, so that proof covers exactly the
     artifact under test. What remains a job-time concern is drift
-    introduced AFTER container start: setup.sh snapshots the pristine
-    distribution inventory before installing the pinned test runner, and
-    this check asserts that every snapshot distribution survived with
-    its exact version, that the only additions are the documented job
-    container distributions, and that the vendor triton module still
-    resolves under /opt/flagtree (PYTHONPATH precedes site-packages).
+    introduced AFTER container start: setup.sh records the pristine
+    distribution inventory (--capture-runtime-snapshot) before installing
+    the pinned test runner, and this check asserts that every snapshot
+    distribution survived with its exact version, that the only additions
+    are the documented job container distributions, and that the vendor
+    triton module still resolves under /opt/flagtree (PYTHONPATH precedes
+    site-packages).
     """
     try:
         before = json.loads(snapshot.read_text("utf-8"))
@@ -345,6 +347,79 @@ def _verify_runtime_evidence(snapshot: Path) -> None:
             f"triton module must resolve under /opt/flagtree, found {found}"
         )
     print(f"[hygon-env] triton module authoritative at {spec.origin}")
+
+
+def capture_runtime_snapshot(path: Path) -> None:
+    """Record the pristine distribution inventory at container start.
+
+    Called by setup.sh BEFORE the pinned test runner is installed, so the
+    later --runtime-evidence drift check sees exactly what the accepted
+    image started with. Running this script file (not ``python -`` from
+    the checkout) keeps the checkout root off sys.path even on Python
+    3.10, where PYTHONSAFEPATH does not exist.
+    """
+    snapshot = {
+        canonicalize_name(dist.metadata["Name"]): dist.version
+        for dist in metadata.distributions()
+        if dist.metadata.get("Name")
+    }
+    path.write_text(
+        json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(
+        f"[hygon-env] container-start runtime snapshot: {len(snapshot)} "
+        f"distributions -> {path}"
+    )
+
+
+def _verify_plugin_entry_points() -> None:
+    """The installed plugin wheel must own both SGLang entry-point groups."""
+    expected = {
+        "sglang.srt.platforms": ("sglang_fl", "sglang_fl:activate_platform"),
+        "sglang.srt.plugins": ("sglang_fl", "sglang_fl:load_plugin"),
+    }
+    for group, (name, value) in expected.items():
+        registered = {(ep.name, ep.value) for ep in metadata.entry_points(group=group)}
+        if (name, value) not in registered:
+            raise RuntimeError(
+                f"{group}: ({name!r}, {value!r}) not in {sorted(registered)}"
+            )
+    print("[hygon-env] plugin entry points registered by the installed wheel")
+
+
+def _verify_sgl_kernel_scalar_type_fallback() -> None:
+    """The stub must leave sgl_kernel.scalar_type honestly absent.
+
+    With the module stubbed, SGLang's scalar-type fallback breaks with
+    "'function' object has no attribute 'uint4b8'" (run 43361932722); the
+    real ImportError keeps the pure-Python fallback alive.
+    """
+    try:
+        importlib.import_module("sgl_kernel.scalar_type")
+    except ModuleNotFoundError as error:
+        if error.name != "sgl_kernel.scalar_type":
+            raise
+    else:
+        raise RuntimeError("sgl_kernel.scalar_type must remain absent on HCU")
+    from sglang.srt.layers.quantization.utils import get_scalar_types
+
+    _, scalar_types = get_scalar_types()
+    if scalar_types.uint4b8 != "uint4b8":
+        raise RuntimeError(f"SGLang scalar fallback broken: {scalar_types.uint4b8}")
+    print("[hygon-env] SGLang scalar fallback intact (sgl_kernel.scalar_type absent)")
+
+
+def _verify_flagtree_clang_wrapper() -> None:
+    """FlagTree must select the baked DTK device-lib clang wrapper."""
+    from triton.backends.hcu.compiler_hcu import HIPBackend
+
+    actual = Path(HIPBackend.path_to_rocm_clang())
+    expected = Path(os.environ["TRITON_HIP_CLANG_PATH"])
+    if actual != expected:
+        raise RuntimeError(
+            f"FlagTree selected {actual}, expected the baked wrapper {expected}"
+        )
+    print(f"[hygon-env] FlagTree HCU compiler: {actual}")
 
 
 def _verify_plugin_path(plugin_root: Path, plugin_source: str) -> None:
@@ -624,6 +699,8 @@ def verify(
     else:
         _verify_versions(baseline)
     _verify_plugin_path(plugin_root, plugin_source)
+    if plugin_source == "wheel":
+        _verify_plugin_entry_points()
     if metadata_only:
         print("[hygon-env] metadata checks passed; runtime/GPU checks were not run")
         return
@@ -657,6 +734,8 @@ def verify(
         _verify_flagcx()
     else:
         _require_import("flagcx")
+        _verify_sgl_kernel_scalar_type_fallback()
+        _verify_flagtree_clang_wrapper()
     if require_gpu:
         _verify_gpu(torch, min_gpus)
     else:
@@ -679,7 +758,8 @@ def main(argv: list[str] | None = None) -> int:
         "--runtime-evidence",
         type=Path,
         help="verify the operations-runtime image against the container-start "
-        "runtime snapshot JSON (written by setup.sh before the test-runner "
+        "runtime snapshot JSON (written by this program's "
+        "--capture-runtime-snapshot in setup.sh, before the test-runner "
         "install) instead of the legacy vendor baseline",
     )
     parser.add_argument("--metadata-only", action="store_true")
@@ -690,13 +770,21 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="record base-image versions and adjacent .constraints.txt, then exit",
     )
+    parser.add_argument(
+        "--capture-runtime-snapshot",
+        type=Path,
+        metavar="PATH",
+        help="record the container-start distribution inventory JSON and exit",
+    )
     args = parser.parse_args(argv)
     if args.min_gpus < 1:
         parser.error("--min-gpus must be at least 1")
     if args.metadata_only and args.require_gpu:
         parser.error("--metadata-only cannot be combined with --require-gpu")
     try:
-        if args.capture_vendor_stack is not None:
+        if args.capture_runtime_snapshot is not None:
+            capture_runtime_snapshot(args.capture_runtime_snapshot)
+        elif args.capture_vendor_stack is not None:
             capture_vendor_stack(args.capture_vendor_stack)
         else:
             verify(

@@ -822,7 +822,7 @@ class HygonMTPModelSmokeTests(unittest.TestCase):
 
 
 class RuntimeEvidenceTests(unittest.TestCase):
-    """Operations-runtime image contract: /opt/sglang-ci evidence checks."""
+    """Operations-runtime image contract: container-snapshot checks."""
 
     def setUp(self):
         print_patch = patch("builtins.print")
@@ -836,6 +836,7 @@ class RuntimeEvidenceTests(unittest.TestCase):
     def test_runtime_image_versions_pin_the_operations_runtime(self):
         versions = {
             "sglang": "0.5.18+flagos",
+            "sglang-fl": "0.1.0",
             "torch": "2.9.0+das.opt1.dtk2604",
             "flag-gems": "5.4.0",
             "flagtree": "0.7.0+hcu3.6",
@@ -857,6 +858,7 @@ class RuntimeEvidenceTests(unittest.TestCase):
     def test_runtime_image_rejects_standalone_triton(self):
         versions = {
             "sglang": "0.5.18+flagos",
+            "sglang-fl": "0.1.0",
             "torch": "2.9.0+das.opt1.dtk2604",
             "flag-gems": "5.4.0",
             "flagtree": "0.7.0+hcu3.6",
@@ -871,6 +873,7 @@ class RuntimeEvidenceTests(unittest.TestCase):
     def test_runtime_image_rejects_replaced_torch(self):
         versions = {
             "sglang": "0.5.18+flagos",
+            "sglang-fl": "0.1.0",
             "torch": "2.10.0+replaced",
             "flag-gems": "5.4.0",
         }
@@ -973,6 +976,148 @@ class RuntimeEvidenceTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "/opt/flagtree"):
                 verifier._verify_runtime_evidence(snapshot)
+
+
+class SnapshotCaptureTests(unittest.TestCase):
+    """The container-start snapshot mode setup.sh uses instead of a heredoc."""
+
+    def setUp(self):
+        print_patch = patch("builtins.print")
+        print_patch.start()
+        self.addCleanup(print_patch.stop)
+
+    @staticmethod
+    def _dist(name, version):
+        return SimpleNamespace(metadata={"Name": name}, version=version)
+
+    def test_capture_writes_canonical_names_and_filters_unnamed(self):
+        import tempfile
+
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        out = root / "snapshot.json"
+        distributions = iter(
+            [
+                self._dist("sglang_fl", "0.1.0"),
+                self._dist("PyYAML", "6.0.2"),
+                self._dist(None, "ignored"),
+            ]
+        )
+        with patch.object(verifier.metadata, "distributions", lambda: distributions):
+            verifier.capture_runtime_snapshot(out)
+        self.assertEqual(
+            json.loads(out.read_text(encoding="utf-8")),
+            {"sglang-fl": "0.1.0", "pyyaml": "6.0.2"},
+        )
+
+    def test_captured_snapshot_feeds_the_drift_check(self):
+        import tempfile
+
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        out = root / "snapshot.json"
+        distributions = iter([self._dist("torch", "2.9.0+das.opt1.dtk2604")])
+        with patch.object(verifier.metadata, "distributions", lambda: distributions):
+            verifier.capture_runtime_snapshot(out)
+        with patch.object(verifier.metadata, "distributions", lambda: iter([])):
+            with self.assertRaisesRegex(RuntimeError, "drifted since container start"):
+                verifier._verify_runtime_evidence(out)
+
+
+class WheelContractCheckTests(unittest.TestCase):
+    """Checks migrated out of setup.sh's inline python heredocs."""
+
+    def setUp(self):
+        print_patch = patch("builtins.print")
+        print_patch.start()
+        self.addCleanup(print_patch.stop)
+
+    def test_registered_entry_points_pass(self):
+        by_group = {
+            "sglang.srt.platforms": [
+                SimpleNamespace(name="sglang_fl", value="sglang_fl:activate_platform")
+            ],
+            "sglang.srt.plugins": [
+                SimpleNamespace(name="sglang_fl", value="sglang_fl:load_plugin")
+            ],
+        }
+        with patch.object(
+            verifier.metadata,
+            "entry_points",
+            side_effect=lambda group: by_group[group],
+        ):
+            verifier._verify_plugin_entry_points()
+
+    def test_missing_entry_point_fails(self):
+        with patch.object(verifier.metadata, "entry_points", return_value=[]):
+            with self.assertRaisesRegex(RuntimeError, "not in \\[\\]"):
+                verifier._verify_plugin_entry_points()
+
+    def test_honest_scalar_type_absence_keeps_the_fallback(self):
+        def raise_absent(name):
+            raise ModuleNotFoundError(
+                "No module named 'sgl_kernel.scalar_type'",
+                name="sgl_kernel.scalar_type",
+            )
+
+        quant_utils = ModuleType("sglang.srt.layers.quantization.utils")
+        quant_utils.get_scalar_types = lambda: (
+            None,
+            SimpleNamespace(uint4b8="uint4b8"),
+        )
+        with (
+            patch.object(verifier.importlib, "import_module", side_effect=raise_absent),
+            patch.dict(
+                sys.modules, {"sglang.srt.layers.quantization.utils": quant_utils}
+            ),
+        ):
+            verifier._verify_sgl_kernel_scalar_type_fallback()
+
+    def test_other_import_errors_are_not_swallowed(self):
+        def raise_other(name):
+            raise ModuleNotFoundError("No module named 'other'", name="other")
+
+        with patch.object(verifier.importlib, "import_module", side_effect=raise_other):
+            with self.assertRaises(ModuleNotFoundError):
+                verifier._verify_sgl_kernel_scalar_type_fallback()
+
+    def test_stubbed_scalar_type_is_rejected(self):
+        with patch.object(
+            verifier.importlib,
+            "import_module",
+            return_value=ModuleType("sgl_kernel.scalar_type"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "must remain absent"):
+                verifier._verify_sgl_kernel_scalar_type_fallback()
+
+    def test_flagtree_selects_the_baked_clang_wrapper(self):
+        compiler_hcu = ModuleType("triton.backends.hcu.compiler_hcu")
+        compiler_hcu.HIPBackend = SimpleNamespace(
+            path_to_rocm_clang=lambda: "/opt/hcu-clang/clang-18-device-libs"
+        )
+        with (
+            patch.dict(sys.modules, {"triton.backends.hcu.compiler_hcu": compiler_hcu}),
+            patch.dict(
+                os.environ,
+                {"TRITON_HIP_CLANG_PATH": "/opt/hcu-clang/clang-18-device-libs"},
+            ),
+        ):
+            verifier._verify_flagtree_clang_wrapper()
+
+    def test_flagtree_selecting_another_clang_fails(self):
+        compiler_hcu = ModuleType("triton.backends.hcu.compiler_hcu")
+        compiler_hcu.HIPBackend = SimpleNamespace(
+            path_to_rocm_clang=lambda: "/opt/dtk/aillvm/bin/clang-18"
+        )
+        with (
+            patch.dict(sys.modules, {"triton.backends.hcu.compiler_hcu": compiler_hcu}),
+            patch.dict(
+                os.environ,
+                {"TRITON_HIP_CLANG_PATH": "/opt/hcu-clang/clang-18-device-libs"},
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "expected the baked wrapper"):
+                verifier._verify_flagtree_clang_wrapper()
 
 
 if __name__ == "__main__":

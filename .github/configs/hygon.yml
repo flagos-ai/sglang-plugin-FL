@@ -3,23 +3,12 @@
 
 platform: hygon
 
-# Docker image for this hardware: SGLang 0.5.18+flagos on the immutable
-# operations runtime (flagos-runtime-hygon-dtk26.04), built by
-# docker/hygon/runtime-0.5.18.containerfile. Published tag:
-# 0.5.18-hygon-two-wheel-20261118 (TEMP probe routing on branch
-# probe/hygon-two-wheel-hwci; do not fold into the formal PR branch).
-# Digest-pinned. The old development
-# image (and main's 0.5.5.11-era image) is rejected by setup. This image also
-# carries the HCU compatibility patches applied to the SGLang wheel (see
-# docker/hygon/sglang-v0.5.18-hcu.patch), import-only stubs for the
-# sgl_kernel/flashinfer wheels HCU does not ship (with the deliberate
-# sgl_kernel.scalar_type fallback exception), the baked DTK loader path, and
-# the baked DTK prefix contract (ROCM_PATH, /opt/rocm, and the FlagTree clang
-# wrapper for the DTK device libraries, build-infra#1786), so plain BF16
-# startup imports neither AMD AITER nor sgl_kernel on HCU, FlagTree's JIT
-# compiles against the DTK bitcode, and the container is host-independent.
-# The operations-runtime image is ~18 GB; a cold runner spends most of an
-# hour pulling it, so all platform stages get 180 minutes.
+# Docker image for this hardware: SGLang 0.5.18+flagos two-wheel image on the
+# operations runtime, assembled by docker/hygon/runtime-0.5.18.containerfile
+# (digest-pinned here; compatibility blocks documented in
+# docker/hygon/README.md). The operations-runtime image is ~18 GB; a cold
+# runner spends most of an hour pulling it, so all platform stages get 180
+# minutes.
 test_timeout: 180
 
 ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:27534c2f2d561031c33a4cabb03ec964df6474a69439e86678e30592a0bdb680

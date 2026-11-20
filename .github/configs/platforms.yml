@@ -1,40 +1,15 @@
 # Platform registry — controls which platforms are tested in CI.
-#
-# PR-scoped disable: this branch verifies only the hygon runtime image;
-# every other platform is disabled to keep their (scarce) hardware runners
-# out of this PR's CI. Restore before merging if this lands after the other
-# runtime-image PRs.
-#
 # Each key under `platforms` must match a config file name in this directory
-# (e.g., "nvidia" -> nvidia.yml, "ascend" -> ascend.yml).
+# (e.g., "nvidia" -> nvidia.yml); set `enabled: false` to skip a platform
+# without removing its config file.
 #
-# Set `enabled: false` to skip a platform without removing its config file.
-#
-# ---- Diff-based platform routing (ported from vllm-plugin-FL #581) --------
-#
-# global_trigger_paths: PR changes matching any of these prefixes run ALL
-# enabled platforms. This is the shared-code surface of the repo.
-#
-# trigger_paths / exempt_from_global per platform: a changed file matching a
-# platform's trigger_paths runs that platform only. Paths carved out by
-# exempt_from_global never count toward global_trigger_paths, so
-# platform-owned files (vendor dispatch configs, per-platform CI scripts,
-# runner configs, docker recipes) do not fan out to every platform.
-# Every exempt entry must also appear in the same platform's trigger_paths
-# (.github/scripts/detect_platforms.py errors on an exempt-only entry: files
-# would route to no platform) and warns on a trigger-only entry under a
-# global prefix (it would over-trigger a full run).
-#
-# A changed file matching no rule at all falls back to a full run (safety
-# default). Known consequence: sglang_fl/dispatch/config/kunlunxin.yaml belongs
-# to a platform not enabled here — touching it over-triggers a full run;
-# acceptable in the safe direction.
-#
-# Vendor file name → platform mapping (mirrors the FlagGems vendor ids):
-#   nvidia  <- sglang_fl/dispatch/config/nvidia.yaml, docker/cuda/
-#   musa    <- sglang_fl/dispatch/config/musa.yaml,    docker/mthreads/
-#   thead   <- sglang_fl/dispatch/config/tsingmicro.yaml, docker/thead/
-#   iluvatar <- sglang_fl/dispatch/config/iluvatar.yaml, docker/iluvatar/
+# Diff-based routing (ported from vllm-plugin-FL #581): a changed file
+# matching global_trigger_paths runs ALL enabled platforms; a file matching a
+# platform's trigger_paths runs that platform only; exempt_from_global carves
+# platform-owned files out of the global set (every exempt entry must also
+# appear in that platform's trigger_paths - detect_platforms.py errors
+# otherwise). Files matching no rule at all fall back to a full run (safe
+# direction).
 
 global_trigger_paths:
   # Shared plugin source; per-platform dispatch configs carved out below.
