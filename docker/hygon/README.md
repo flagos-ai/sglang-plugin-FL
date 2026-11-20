@@ -327,3 +327,69 @@ python tests/run.py --platform hygon --device bw1000 --scope e2e --task mtp
 
 benchmark 保持显式启用。上面的 MTP 结果来自手动实机验收；工作流配置完成和
 镜像发布不代表 GitHub 硬件 CI 通过，应以对应 PR 最新提交的实际 job 结果为准。
+
+## 两-wheel CI 镜像：构建与构建后验收
+
+`runtime-0.5.18.containerfile` 只做镜像组装：Runtime 基底（moving semver
+tag，见下）、一次 uv 解析安装两个真实 wheel（`sglang-0.5.18+flagos` 与
+本仓库构建的 `sglang_fl`）、以及 HCU/DTK 兼容层。所有验收都不在镜像构建
+期执行：
+
+```bash
+# 组装构建 + 构建后验收 + 可选推送（唯一发布入口：验收是发布门，
+# --push 只在验收通过后可达；staging + tag→digest 解析 + 从解析出的
+# digest 动态采集 runtime-constraints + dry-run 计划门 + docker build
+# 带 provenance label + verify_image.sh 八阶段验收）
+docker/hygon/build_two_wheel.sh [--push] <tag>
+
+# 也可对已构建镜像单独验收（基底从镜像自身的 OCI label 读取）
+docker/hygon/scripts/verify_image.sh <tag>
+```
+
+- 基底是 Runtime owner 要求的 moving semver tag
+  （`flagos-runtime-hygon-dtk26.04:2.3.0`；固定 digest 曾被 registry 清理
+  而失效）。`build_two_wheel.sh` 构建前把 tag 解析成 repo digest：参考
+  数据采集、dry-run 门、`docker build` 全部用同一 digest，并把 digest 记
+  进 `org.flagos.ci.base-digest` label，验收从该 label 回读基底——tag 再
+  移动也不影响已构建镜像的可复现验收；
+- 顶层 resolver 输入是 `docker/hygon/requirements.txt`（显式 `-r` 安装，
+  只收实证 pin；当前仅 `datasets==5.2.0`：runtime 自带 fsspec 2026.9.0，
+  平台 index 上的更旧 datasets 都对 fsspec 封顶导致 ResolutionImpossible，
+  5.2.0 是首个放开 fsspec 的版本）。这与 Runtime 动态 constraints 是两件
+  事：后者由 `build_two_wheel.sh` 从解析出的 digest 生成，只保护 Runtime
+  distributions 不被 resolver 替换，仅作构建临时输入（/tmp，同一 RUN 内
+  消费并删除），不留在最终镜像；
+- 构建期临时文件（constraints、requirements、两 wheel、excludes、HCU
+  patch、stubs）全部 COPY 到 `/tmp`，由消费它们的同一 `RUN` 删除；镜像不
+  设 `WORKDIR`（继承 Runtime 的 `/app`），不含 `/opt/sglang-ci` 或任何
+  构建痕迹；已应用的 HCU patch SHA256 记为 `org.flagos.ci.hcu-patch-sha256`
+  label，由验收核对；
+- 参考数据（freeze、site-packages 哈希、pip-check 基线、provenance）每次
+  从 label 指向的 digest 现场采集，只存在于 `mktemp`/CI artifact，不提交
+  仓库，也不进镜像；
+- `verify_image.sh` 覆盖：runtime 零漂移六门、vendor 模块 provenance、
+  stub 冒烟、wrapper 无卡 HSACO 编译、SGLang import 冒烟、Triton 多入口
+  解析、installed-wheel 父/子进程解析、镜像级 ENV/label 合同（含
+  LD_LIBRARY_PATH 前插语义、中性 WORKDIR、无 CI 工作目录残留）；
+- wheel 的 METADATA/entry point/payload 验收在 staging 期
+  （`scripts/check_plugin_wheel.py`）与验收期（六门之五）各跑一次。
+
+### 兼容块速查（containerfile 内仅留一行注释，证据口径在此）
+
+| 兼容块 | 为什么暂时存在 | 证据 | 移除条件 / owner |
+|---|---|---|---|
+| `ENV PYTHONPATH=/opt/flagtree` | Runtime 只经 BASH_ENV 向 bash 会话暴露 flagtree，直接 python 入口拿不到 triton | base 探针：无 bash profile 时 `find_spec("triton") is None` | Runtime 以 OCI ENV/.pth 等全入口暴露 flagtree |
+| `--excludes triton` | xgrammar 的 Requires-Dist 会拉独立 triton，与 flagtree 3.6 形成双 Triton | run 44465620210 全矩阵绿（无 triton distribution，模块在 /opt/flagtree） | Runtime 提供 metadata 一致的 triton，或上游不再声明 |
+| HCU patch（`sglang-v0.5.18-hcu.patch`） | SGLang 把一切 HIP 当 AMD ROCm，eager 导入 AMD AITER（HCU 没有） | 原始失败 `ModuleNotFoundError: No module named 'aiter'`；补丁 commit a5d492a | 上游 wheel 自带 HCU-vs-ROCm gating |
+| sgl_kernel/flashinfer stubs | SGLang 大量模块 scope 上 eager import 这两个 vendor wheel | run 43311162022 / job 131508435886（`sgl_kernel.kvcacheio` ImportError，10 败） | 上游改 lazy import，或 HCU 有经验证的官方 vendor wheel |
+| stub 不伪造 `sgl_kernel.scalar_type` | 伪造会破坏 SGLang 纯 Python scalar fallback | run 43361932722 / job 131677473082（`uint4b8` AttributeError） | stub finder 退役或上游不再依赖该 ImportError |
+| `SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1` | stub 无 dist-info 版本，引擎版本探针必失败 | iluvatar 先例 | 与 stubs 同进退 |
+| `ENV LD_LIBRARY_PATH=/opt/dtk/...`（前插） | runner 主机是否注入 DTK loader 不一致，镜像需自足 | commit 06ff229（loader 合同失败记录点） | Runtime 经 OCI ENV/ld.so.conf 提供完整 loader 合同 |
+| `ENV ROCM_PATH=/opt/dtk` | FlagTree 用它选 clang；缺失时选中 clang-17 兼容树并报不支持的参数 | run 43426581773（失败）vs 43430350486（aillvm clang-18，绿） | Runtime/FlagTree 不再从该变量推导 clang |
+| `/opt/rocm → /opt/dtk` 符号链接 | SGLang HIP JIT builder 找 `/opt/rocm/bin/hipcc` | run 43417967624 / job 131868790147（`/opt/rocm/bin/hipcc: not found`） | SGLang 原生支持 DTK prefix，或 Runtime 官方别名 |
+| clang wrapper（`/opt/hcu-clang/clang-18-device-libs` + `TRITON_HIP_CLANG_PATH`） | FlagTree 0.7.0 hcu 后端让 clang 自行发现 DTK device-lib，BW1000 上发现失败；wrapper 显式传 `--rocm-device-lib-path` | build-infra #1786；wrapper 后 mtp_logprobs 10/10、run 44465620210 全绿 | #1786 由 Runtime/FlagTree 修复（需真实 kernel 编译证据） |
+
+CI 侧（`.github/scripts/hygon/`）：测试 runner 依赖单源于
+`test-requirements.txt`；容器启动快照与全部安装后 Python 校验集中在
+`verify_environment.py`（`--capture-runtime-snapshot` 采集，`--plugin-source
+wheel --runtime-evidence` 校验）。

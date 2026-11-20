@@ -1,0 +1,19 @@
+#!/bin/bash
+# Hygon CI: explicit DTK device-library path for FlagTree JIT.
+# Injected via ENV TRITON_HIP_CLANG_PATH (the seam FlagTree documents in
+# HIPBackend.path_to_rocm_clang) to fix build-infra#1786: FlagTree 0.7.0
+# otherwise asks clang to discover the DTK device libraries on its own and
+# that discovery fails on the BW1000 runner ("cannot find ROCm device
+# library"), because clang does not consult the ROCM_PATH environment
+# variable. Also drops FlagTree's disabled-option empty strings.
+REAL=/opt/dtk/aillvm/bin/clang-18
+FIX=--rocm-device-lib-path=/opt/dtk/dcc/dccgcn/bitcode
+args=()
+found=0
+for a in "$@"; do
+  [ -n "$a" ] || continue
+  [ "$a" = "$FIX" ] && found=1
+  args+=("$a")
+done
+if [ "$found" -eq 0 ]; then args+=("$FIX"); fi
+exec "$REAL" "${args[@]}"

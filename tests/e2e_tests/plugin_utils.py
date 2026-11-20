@@ -26,6 +26,12 @@ def load_e2e_model_config() -> tuple[str, str, ModelConfig]:
 
     config = ModelConfig.load(model, case)
     config.apply_engine_overrides(load_engine_overrides_from_env())
+    if os.environ.get("SGLANG_HYGON_DIAGNOSTIC_TRITON_ATTENTION") == "1":
+        # Temporary runtime-migration probe: bypass the independently
+        # reproduced head_dim=256 vendor FlashAttention defect tracked in
+        # build-infra#1787 without weakening the checked-in HCU contract.
+        config.apply_engine_overrides({"attention_backend": "triton"})
+        print("[hygon-ci] diagnostic Triton attention override is active")
     if not Path(config.model).exists():
         pytest.fail(f"Model not found: {config.model}", pytrace=False)
     return model, case, config

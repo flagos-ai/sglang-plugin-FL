@@ -3,10 +3,21 @@
 
 platform: hygon
 
-# Docker image for this hardware
-# Published tag: 0.5.18-hygon-ci-20261015; anonymous manifest/config verified.
-# The old main image contains SGLang 0.5.11 and is rejected by setup.
-ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:d21327c133c4abd40297cf717278bd9190397916a544dc84cbfe9068f09b6c96
+# Docker image for this hardware: SGLang 0.5.18+flagos two-wheel image on the
+# operations runtime, assembled by docker/hygon/runtime-0.5.18.containerfile
+# from the Runtime's moving semver tag (each build resolves it to one digest;
+# compatibility blocks documented in docker/hygon/README.md). CI consumes the
+# published image by the digest below. The operations-runtime image is ~18 GB;
+# a cold runner spends most of an hour pulling it, so all platform stages get
+# 180 minutes.
+test_timeout: 180
+
+# TEMP(slot-A/B experiment, probe branch only): digest of the reviewer-
+# batch image built from 325aff0 (flagtree slot; org.flagos.ci.source-
+# commit=325aff0eac774ceaeac7632bbde75cbac76a9848). The B round flips
+# only this digest plus the SGLANG_FL_EXPECTED_TRITON_ROOT export in
+# setup.sh; revert both when folding.
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:42561deb225c1e0da841308f8553166dee2119e6ec7789b9be95d8928d66e7ba
 
 # Runner labels for this hardware
 runner_labels:
