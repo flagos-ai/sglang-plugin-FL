@@ -1,0 +1,10 @@
+{
+  "normal_dispatch": {
+    "num_sms": 30,
+    "num_max_nvl_chunked_send_tokens": 26
+  },
+  "normal_combine": {
+    "num_sms": 30,
+    "num_max_nvl_chunked_send_tokens": 16
+  }
+}

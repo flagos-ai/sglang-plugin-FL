@@ -89,6 +89,14 @@ def _parse_list(val: str) -> list:
     return [x.strip() for x in val.split(",") if x.strip()] if val else []
 
 
+def _preserve_native_runtime() -> bool:
+    return _parse_bool(os.environ.get("SGLANG_FL_PRESERVE_NATIVE_RUNTIME", "0"))
+
+
+def _glm52_profile_enabled() -> bool:
+    return _parse_bool(os.environ.get("SGLANG_FL_GLM52_MUSA", "0"))
+
+
 def _parse_op_prefer(val: str) -> dict:
     """Parse SGLANG_FL_PER_OP="silu_and_mul=flagos|vendor;rms_norm=vendor"
     Returns dict: {op_name -> list[str]}
@@ -311,6 +319,10 @@ def _make_dispatch_hook(config: dict = None):
         TopK: topk_bridge,
         UnquantizedFusedMoEMethod: fused_moe_bridge,
     }
+    if _glm52_profile_enabled():
+        from sglang_fl.dispatch.bridge.glm52_musa import glm52_rms_norm_bridge
+
+        _BRIDGE_MAP[RMSNorm] = glm52_rms_norm_bridge
 
     def _find_bridge(cls):
         """Walk MRO to find a bridge function for the given class."""
@@ -400,6 +412,14 @@ def _setup_flaggems(config: dict = None):
         fg_kwargs["path"] = log_path
 
     if whitelist:
+        if _glm52_profile_enabled():
+            from sglang_fl.dispatch.bridge.glm52_musa import register_aten_adapters
+            from sglang_fl.utils import get_device_info
+
+            logger.info("Enabling GLM-5.2 MUSA min and native_layer_norm adapters")
+            whitelist = register_aten_adapters(get_device_info(), whitelist)
+            if not whitelist:
+                return
         flag_gems.only_enable(include=whitelist, **fg_kwargs)
         logger.info(f"FlagGems only_enable: {whitelist}")
     elif blacklist:
@@ -710,6 +730,9 @@ def activate_platform() -> str | None:
     Returns the fully-qualified class path of PlatformFL if hardware is detected,
     or None if FlagGems DeviceDetector fails (no supported hardware).
     """
+    if _preserve_native_runtime():
+        return None
+
     from sglang_fl.utils import get_device_info
 
     info = get_device_info()
@@ -759,6 +782,12 @@ def load_plugin():
 
     # 0. Build unified config (YAML + env vars)
     config = _build_config()
+    preserve_native_runtime = _preserve_native_runtime()
+    if _glm52_profile_enabled() and (
+        not preserve_native_runtime
+        or not _parse_list(os.environ.get("SGLANG_FL_FLAGOS_WHITELIST", ""))
+    ):
+        raise ValueError("The GLM-5.2 MUSA profile requires native runtime and an ATen whitelist")
 
     # 1. FlagGems ATen ops
     _setup_flaggems(config)
@@ -776,28 +805,24 @@ def load_plugin():
             _make_dispatch_hook(config),
             HookType.AROUND,
         )
-        # Patch FLA functions to use dispatch mechanism
-        from sglang_fl.dispatch.fla_patch import patch_fla_functions
+        if not preserve_native_runtime:
+            # Broad patches belong to the full platform integration mode.
+            from sglang_fl.dispatch.fla_patch import patch_fla_functions
+            from sglang_fl.dispatch.rotary_patch import patch_rotary_embedding_init
 
-        patch_fla_functions()
-
-        # Patch RotaryEmbedding.__init__ to restore bridge after MUSA _forward_method stomp
-        # Must be called after the AROUND hook on dispatch_forward is registered (above).
-        from sglang_fl.dispatch.rotary_patch import patch_rotary_embedding_init
-
-        patch_rotary_embedding_init()
+            patch_fla_functions()
+            patch_rotary_embedding_init()
     else:
         logger.info("Layer 2 (Fused Ops) disabled (SGLANG_FL_OOT_ENABLED=0)")
 
-    # 4. Communicator hooks (CommunicatorFL with FlagCX/torch.distributed)
-    _setup_communicator_hooks()
-
-    # 5. Vendor-specific patches — final overlay on top of all sglang_fl layers
-    _apply_vendor_patches()
+    if not preserve_native_runtime:
+        # Communicator hooks and vendor overlays belong to full platform mode.
+        _setup_communicator_hooks()
+        _apply_vendor_patches()
 
     # 6. FlagCX PD-disaggregation transfer backend. the FlagCX connector itself is
     #    imported lazily, when the user actually selects this backend.
-    disagg_flagcx = _parse_bool(
+    disagg_flagcx = not preserve_native_runtime and _parse_bool(
         os.environ.get("SGLANG_FL_DISAGG_FLAGCX", "1"), default=True
     )
     if disagg_flagcx:
@@ -816,8 +841,9 @@ def load_plugin():
         oot_status = f"prefer={config['prefer']}" if oot_enabled else "OFF"
         # Reflects env-var configuration only; vendor-specific defaults (e.g. hccl
         # on Ascend) are not shown here — see PlatformFL init log for the full result.
-        dist_backend = os.environ.get("SGLANG_FL_DIST_BACKEND", "").strip() or (
-            "flagcx" if os.environ.get("FLAGCX_PATH", "").strip() else "nccl"
+        dist_backend = "native" if preserve_native_runtime else (
+            os.environ.get("SGLANG_FL_DIST_BACKEND", "").strip()
+            or ("flagcx" if os.environ.get("FLAGCX_PATH", "").strip() else "nccl")
         )
         banner = (
             "\n"
