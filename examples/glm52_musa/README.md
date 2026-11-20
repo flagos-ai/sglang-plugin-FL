@@ -32,3 +32,6 @@ verify the operator routing against the 30-entry target.
 
 The profile preserves the image's platform selection, communication and vendor
 hooks. It uses a launch-specific ATen allowlist and RMSNorm dispatch policy.
+`FLAGGEMS_SGLANG_OP_MODULES=native_layer_norm` limits operator module discovery
+to LayerNorm on this image. Other operators in the current library may need
+Triton features unavailable on the fixed MUSA image.
