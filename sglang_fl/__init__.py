@@ -836,4 +836,9 @@ def load_plugin():
         )
         logger.info(banner)
 
+    if _parse_bool(os.environ.get("SGLANG_FL_GLM52_MUSA_HADAMARD", "0")):
+        from sglang_fl.dispatch.bridge.glm52_hadamard import register_hadamard_hook
+
+        register_hadamard_hook()
+
     _plugin_active = True
