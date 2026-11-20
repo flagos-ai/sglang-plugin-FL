@@ -107,10 +107,14 @@ jobs:
           if [ "${{ inputs.platform }}" = "hygon" ]; then
             unset CUDA_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES
           fi
-          python "$TEST_DRIVER" \
+          set -- python "$TEST_DRIVER" \
             --platform ${{ inputs.platform }} \
             --scope benchmark \
             --stage ${{ inputs.ci_stage }}
+          if [ "${{ inputs.platform }}" = "ascend" ]; then
+            exec bash -c 'exec "$@"' bash "$@"
+          fi
+          exec "$@"
 
       - name: Upload test results
         if: always()

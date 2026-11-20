@@ -1,0 +1,17 @@
+# Allow only the plugin package, verifier, and SHA-pinned FlagTree wheel. Exclude
+# repository history, local models, credentials, caches, and unrelated files.
+**
+!pyproject.toml
+!sglang_fl/
+!sglang_fl/**
+!.github/
+!.github/scripts/
+!.github/scripts/ascend/
+!.github/scripts/ascend/verify_environment.py
+!docker/
+!docker/ascend/
+!docker/ascend/cann921-0.5.18.containerfile
+!docker/ascend/.build-inputs/
+!docker/ascend/.build-inputs/flagtree-0.7.0+ascend3.5-cp312-cp312-linux_aarch64.whl
+**/__pycache__/
+**/*.py[cod]
