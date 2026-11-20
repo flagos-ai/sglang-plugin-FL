@@ -41,9 +41,8 @@ def topk_musa(
     TopK expert routing on MUSA via Triton kernels.
 
     Uses sglang's upstream MUSA-specific topk_softmax / topk_sigmoid Triton
-    kernels for the common non-grouped case.  Falls back to select_experts
-    (torch-native path) for grouped topk, custom routing functions, or fused
-    shared experts.
+    kernels for contracts they fully implement. Falls back to SGLang's generic
+    select_experts path for routed sigmoid scaling and complex routing.
 
     Args:
         obj: The TopK instance (provides obj.topk_config, obj.layer_id)
@@ -55,13 +54,23 @@ def topk_musa(
     Returns:
         StandardTopKOutput(topk_weights, topk_ids, router_logits)
     """
-    from sglang.srt.hardware_backend.musa.kernels.topk import (
-        topk_sigmoid,
-        topk_softmax,
-    )
     from sglang.srt.layers.moe.topk import StandardTopKOutput, select_experts
 
     topk_cfg = obj.topk_config
+    scoring_func = topk_cfg.scoring_func
+
+    # The MUSA sigmoid kernel in SGLang 0.5.18 does not expose routed scaling.
+    # Route that contract to SGLang's generic implementation, which owns the
+    # numeric behavior, instead of duplicating the calculation in the plugin.
+    if scoring_func == "sigmoid" and topk_cfg.apply_routed_scaling_factor_on_output:
+        return select_experts(
+            hidden_states=hidden_states,
+            layer_id=obj.layer_id,
+            router_logits=router_logits,
+            topk_config=topk_cfg,
+            num_token_non_padded=num_token_non_padded,
+            expert_location_dispatch_info=expert_location_dispatch_info,
+        )
 
     # Delegate complex routing to the torch-native path in select_experts.
     if (
@@ -79,13 +88,19 @@ def topk_musa(
             expert_location_dispatch_info=expert_location_dispatch_info,
         )
 
+    from sglang.srt.hardware_backend.musa.kernels.topk import (
+        topk_sigmoid,
+        topk_softmax,
+    )
+
     topk = topk_cfg.top_k
     renormalize = topk_cfg.renormalize
-    scoring_func = topk_cfg.scoring_func
     correction_bias = topk_cfg.correction_bias
 
     M = hidden_states.shape[0]
-    topk_weights = torch.empty(M, topk, dtype=torch.float32, device=hidden_states.device)
+    topk_weights = torch.empty(
+        M, topk, dtype=torch.float32, device=hidden_states.device
+    )
     topk_ids = torch.empty(M, topk, dtype=torch.int32, device=hidden_states.device)
 
     # Triton kernels expect float32 gating logits.
