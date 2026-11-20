@@ -19,9 +19,11 @@ Checks:
      baseline; the ONLY accepted addition is the exact canonical
      (xgrammar, triton) pair, matched by the shared precise parser
      (pip_check_exceptions.py), never substring-based
-  4. compiler slots      -- /opt/flagtree carries the recorded Triton, no
-     standalone triton distribution exists, and the triton module
-     resolves from /opt/flagtree in THIS process
+  4. compiler slots      -- every recorded slot keeps its recorded Triton
+     version, the expected slot (SGLANG_FL_EXPECTED_TRITON_ROOT,
+     default /opt/flagtree) owns module resolution in THIS process, and
+     the triton distribution metadata is either absent (flagtree slot)
+     or exactly the Runtime's own dist-info (vendor slot)
   5. two-wheel contract  -- sglang and sglang_fl distributions, versions,
      entry points, and the plugin resolving from its installed
      distribution root
@@ -63,6 +65,20 @@ REQUIRED_PLUGIN_PAYLOAD = (
 )
 STUB_FINDER = "site-packages/_hcu_kernel_stub_finder.py"
 CLANG_WRAPPER = Path("/opt/hcu-clang/clang-18-device-libs")
+
+# Triton slot contract (see .github/scripts/hygon/verify_environment.py):
+# the flagtree slot carries no distribution metadata; the vendor slot's
+# dist-info is the Runtime's own, never a pip-installed replacement.
+EXPECTED_TRITON_ROOT = os.environ.get("SGLANG_FL_EXPECTED_TRITON_ROOT", "/opt/flagtree")
+TRITON_SLOT_METADATA_VERSIONS = {
+    "/opt/flagtree": None,
+    "/opt/triton": "3.5.1+das.opt1.dtk2604.torch290",
+}
+if EXPECTED_TRITON_ROOT not in TRITON_SLOT_METADATA_VERSIONS:
+    raise SystemExit(
+        f"FATAL: SGLANG_FL_EXPECTED_TRITON_ROOT must be one of "
+        f"{sorted(TRITON_SLOT_METADATA_VERSIONS)}, got {EXPECTED_TRITON_ROOT!r}"
+    )
 
 
 def installed_distributions() -> dict[str, str]:
@@ -162,11 +178,18 @@ def check_compiler_slots(evidence: Path) -> None:
         )
         print(f"[4/6] compiler slot {slot_root}: triton {actual}")
     current = installed_distributions()
-    assert "triton" not in current, (
-        f"standalone triton distribution present: {current['triton']}"
-    )
-    selected = recorded.get("selected_slot")
-    assert selected in slots, f"selected slot {selected!r} is not a recorded slot"
+    expected_metadata = TRITON_SLOT_METADATA_VERSIONS[EXPECTED_TRITON_ROOT]
+    if expected_metadata is None:
+        assert "triton" not in current, (
+            f"standalone triton distribution present: {current['triton']}"
+        )
+    else:
+        assert current.get("triton") == expected_metadata, (
+            f"vendor-slot triton metadata must be exactly {expected_metadata!r}, "
+            f"found {current.get('triton')!r}"
+        )
+    selected = EXPECTED_TRITON_ROOT
+    assert selected in slots, f"expected slot {selected!r} is not a recorded slot"
     # find_spec resolves without executing the module: safe on GPU-less
     # builders, and it is the resolution every entrypoint inherits from
     # the image-level PYTHONPATH.
@@ -176,7 +199,8 @@ def check_compiler_slots(evidence: Path) -> None:
         f"triton module resolves {spec.origin}, expected under {selected}"
     )
     print(
-        f"[4/6] no standalone triton; module resolves {spec.origin} (slot {selected})"
+        f"[4/6] triton metadata {expected_metadata!r} as contracted; module "
+        f"resolves {spec.origin} (slot {selected})"
     )
 
 

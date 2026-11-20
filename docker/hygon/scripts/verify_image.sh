@@ -28,6 +28,11 @@
 #   8. image-level ENV/label contract: the compatibility ENVs, the
 #      LD_LIBRARY_PATH prepend semantics, the provenance labels, the
 #      neutral WORKDIR, and the absence of any CI working directory
+#   9. vendor-slot preflight (only when SGLANG_FL_EXPECTED_TRITON_ROOT
+#      selects /opt/triton, the slot-A/B experiment): exact triton
+#      metadata, pip check free of triton complaints, xgrammar's
+#      requirement formally satisfied, flag_gems/libentry import, and
+#      both compiler slot trees byte-identical to the Runtime's own
 #
 # Usage: verify_image.sh <image>
 
@@ -46,6 +51,20 @@ BASE_IMAGE="$(docker image inspect --format '{{index .Config.Labels "org.flagos.
     echo "FATAL: $image lacks the org.flagos.ci.base-digest label" >&2
     exit 1
 }
+
+# Triton slot expectation (production default /opt/flagtree; the slot-A/B
+# experiment exports SGLANG_FL_EXPECTED_TRITON_ROOT=/opt/triton). The
+# phases below keep the same strictness in both modes; only the
+# contracted root, versions and metadata pin change.
+TRITON_EXPECTED_ROOT="${SGLANG_FL_EXPECTED_TRITON_ROOT:-/opt/flagtree}"
+case "$TRITON_EXPECTED_ROOT" in
+    /opt/flagtree) TRITON_EXPECTED_METADATA="" ;;
+    /opt/triton) TRITON_EXPECTED_METADATA="3.5.1+das.opt1.dtk2604.torch290" ;;
+    *)
+        echo "FATAL: unsupported SGLANG_FL_EXPECTED_TRITON_ROOT=$TRITON_EXPECTED_ROOT" >&2
+        exit 1
+        ;;
+esac
 
 # The required (prepended) DTK loader prefix and whatever the base image
 # itself carries; both feed the phase-8 probe.
@@ -68,13 +87,15 @@ run --volume "$refdir":/out \
     /scripts/collect_runtime_reference.py --out /out --base-ref "$BASE_IMAGE"
 
 echo "=== [1/8] Runtime immutability (six gates) ==="
-run --volume "$refdir":/evidence:ro \
+run -e SGLANG_FL_EXPECTED_TRITON_ROOT="$TRITON_EXPECTED_ROOT" \
+    --volume "$refdir":/evidence:ro \
     --volume "$scripts":/scripts:ro \
     --entrypoint python "$image" \
     /scripts/verify_runtime_immutable.py --evidence-dir /evidence
 
 echo "=== [2/8] Vendor module provenance ==="
-run --volume "$refdir":/evidence:ro \
+run -e SGLANG_FL_EXPECTED_TRITON_ROOT="$TRITON_EXPECTED_ROOT" \
+    --volume "$refdir":/evidence:ro \
     --volume "$scripts":/scripts:ro \
     --entrypoint python "$image" \
     /scripts/verify_module_provenance.py \
@@ -117,10 +138,25 @@ cat "$smoke_log"
 grep -qE "SMOKE-PASS|SMOKE-TOLERATED|no ROCm-capable device is detected" "$smoke_log"
 
 echo "=== [6/8] Triton entrypoint matrix ==="
-run --entrypoint bash "$image" <<'EOF'
-python -c 'import triton; p = triton.__file__; assert p and p.startswith("/opt/flagtree"), p; print("triton (sh):", p)' \
-&& bash -c 'python -c "import triton; assert triton.__file__.startswith(\"/opt/flagtree\"), triton.__file__; print(\"triton (bash):\", triton.__file__)"' \
-&& python -c 'import importlib.metadata as md; names=[(d.metadata["Name"] or "").lower() for d in md.distributions()]; assert "triton" not in names, "standalone triton distribution still installed"; print("standalone triton distribution absent: OK")'
+run -e TRITON_EXPECTED_ROOT -e TRITON_EXPECTED_METADATA \
+    --entrypoint bash "$image" <<'EOF'
+python -c 'import os, triton; p = triton.__file__; r = os.environ["TRITON_EXPECTED_ROOT"]; assert p and p.startswith(r), f"{p} not under {r}"; print("triton (sh):", p)' \
+&& bash -c 'python -c "import os, triton; r = os.environ[\"TRITON_EXPECTED_ROOT\"]; assert triton.__file__.startswith(r), triton.__file__; print(\"triton (bash):\", triton.__file__)"' \
+&& python - <<'PY'
+import importlib.metadata as md
+import os
+
+expected = os.environ["TRITON_EXPECTED_METADATA"]
+try:
+    actual = md.version("triton")
+except md.PackageNotFoundError:
+    actual = None
+if expected:
+    assert actual == expected, f"triton metadata must be {expected!r}, found {actual!r}"
+else:
+    assert actual is None, f"standalone triton distribution still installed: {actual}"
+print(f"triton distribution metadata {actual or 'absent'}: as contracted")
+PY
 EOF
 
 echo "=== [7/8] Installed-wheel resolution contract (empty cwd, no shadowing) ==="
@@ -153,7 +189,7 @@ EOF
 
 echo "=== [8/8] Image-level ENV/label contract ==="
 env_json="$(docker image inspect --format '{{json .Config.Env}}' "$image")"
-for var in PYTHONPATH=/opt/flagtree \
+for var in PYTHONPATH=$TRITON_EXPECTED_ROOT \
            SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1 \
            ROCM_PATH=/opt/dtk \
            TRITON_HIP_CLANG_PATH=/opt/hcu-clang/clang-18-device-libs; do
@@ -210,9 +246,78 @@ print(f"LD_LIBRARY_PATH: {len(required)} DTK paths in front, "
       f"{len(elements) - len(required)} inherited, no empty element")
 PY
 
-echo "ENV/label contract: PYTHONPATH, LD_LIBRARY_PATH (prepend), ROCM_PATH,"
-echo "TRITON_HIP_CLANG_PATH, SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK, provenance"
-echo "labels, neutral WORKDIR ('$workdir'), no /opt/sglang-ci residue"
+echo "ENV/label contract: PYTHONPATH=$TRITON_EXPECTED_ROOT, LD_LIBRARY_PATH"
+echo "(prepend), ROCM_PATH, TRITON_HIP_CLANG_PATH,"
+echo "SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK, provenance labels, neutral"
+echo "WORKDIR ('$workdir'), no /opt/sglang-ci residue"
+
+if [ "$TRITON_EXPECTED_ROOT" != "/opt/flagtree" ]; then
+echo "=== [9] Vendor-slot preflight (slot-A/B experiment gates) ==="
+run -e TRITON_EXPECTED_METADATA --entrypoint python "$image" - <<'PY'
+import importlib
+import importlib.metadata as md
+import os
+import subprocess
+import sys
+
+expected = os.environ["TRITON_EXPECTED_METADATA"]
+assert expected, "vendor-slot preflight requires an exact metadata pin"
+actual = md.version("triton")
+assert actual == expected, f"triton metadata {actual!r} != {expected!r}"
+print(f"triton metadata visible: {actual}")
+
+completed = subprocess.run(
+    [sys.executable, "-m", "pip", "check"], capture_output=True, text=True
+)
+output = (completed.stdout + completed.stderr).strip()
+print("pip check:", output or "clean")
+triton_complaints = [
+    line for line in output.splitlines() if "triton" in line.lower()
+]
+assert not triton_complaints, (
+    f"pip check still reports triton requirements under the vendor slot: "
+    f"{triton_complaints}"
+)
+requires = [
+    value for value in md.metadata("xgrammar").get_all("Requires-Dist") or []
+    if value.split()[0] == "triton"
+]
+print(f"xgrammar triton requirement formally satisfied: {requires}")
+
+importlib.import_module("flag_gems")
+libentry = importlib.import_module("flag_gems.libentry")
+print(f"flag_gems + libentry importable: {libentry.__file__}")
+PY
+
+# Both compiler slot trees must be byte-identical to the Runtime's own:
+# the experiment only repoints PYTHONPATH, so neither tree may show any
+# pip-installed or overwritten file.
+slot_manifest() {
+    docker run --rm --platform linux/amd64 --entrypoint python "$1" - \
+        > "$2" <<'PY'
+import hashlib
+from pathlib import Path
+
+for root in (Path("/opt/flagtree"), Path("/opt/triton")):
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.suffix == ".pyc":
+            continue
+        if "__pycache__" in path.parts:
+            continue
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        print(digest, path)
+PY
+}
+slot_manifest "$BASE_IMAGE" "$refdir/slots-base.txt"
+slot_manifest "$image" "$refdir/slots-image.txt"
+if ! diff -q "$refdir/slots-base.txt" "$refdir/slots-image.txt" >/dev/null; then
+    echo "FATAL: compiler slot trees differ from the Runtime's own:" >&2
+    diff "$refdir/slots-base.txt" "$refdir/slots-image.txt" | head -20 >&2
+    exit 1
+fi
+echo "compiler slot trees byte-identical to the Runtime (both slots)"
+fi
 
 echo "ACCEPTED: $image passed all post-build gates (reference data was"
-echo "collected dynamically from $BASE_IMAGE and disposed with $refdir)"
+echo "collected dynamically from $BASE_IMAGE and disposed with $refdir;"
+echo "triton slot expectation: $TRITON_EXPECTED_ROOT)"

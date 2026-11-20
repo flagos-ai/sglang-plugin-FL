@@ -25,6 +25,12 @@ from pathlib import Path
 
 VENDOR_MODULES = ("torch", "triton", "flag_gems", "flagcx", "flagtree")
 
+# The active Triton slot (image-level PYTHONPATH); the reference was
+# collected with the production /opt/flagtree selection, so under the
+# experiment's vendor slot only triton's expected origin changes - every
+# other module must match the reference exactly.
+EXPECTED_TRITON_ROOT = os.environ.get("SGLANG_FL_EXPECTED_TRITON_ROOT", "/opt/flagtree")
+
 # Mirror the container-start module resolution: PYTHONPATH (/opt/flagtree)
 # precedes site-packages there, while plain build steps do not inherit
 # that ENV. Same position, same precedence as at container start.
@@ -64,10 +70,27 @@ def main() -> int:
         return 1
 
     after = {module: probe_module(module) for module in VENDOR_MODULES}
+
+    def slot_expectation(module: str, probe: dict) -> bool | None:
+        """Slot-geometry modules follow the active slot's contracted state.
+
+        triton resolves from the expected slot root; the flagtree module
+        (only exposed through /opt/flagtree) is contracted absent under
+        the vendor slot. Everything else must match the reference exactly.
+        """
+        if module == "triton":
+            return (
+                (probe or {}).get("origin", "").startswith(EXPECTED_TRITON_ROOT + "/")
+            )
+        if module == "flagtree" and EXPECTED_TRITON_ROOT != "/opt/flagtree":
+            return probe == {"found": False}
+        return None
+
     changed = {
         module: (before.get(module), after.get(module))
         for module in sorted(set(before) | set(after))
         if before.get(module) != after.get(module)
+        and slot_expectation(module, after.get(module)) is not True
     }
     if changed:
         print("FATAL: vendor module provenance changed across the install:")

@@ -16,6 +16,7 @@ import importlib.util
 import inspect
 import json
 import os
+import re
 import sys
 from importlib import metadata
 from pathlib import Path
@@ -68,6 +69,46 @@ RUNTIME_IMAGE_RELEASES = {
     "flag-gems": "5.4.0",
 }
 RUNTIME_IMAGE_FLAGTREE = "0.7.0+hcu3.6"
+
+# Triton slot expectation. The production contract is /opt/flagtree
+# (FlagTree Triton 3.6.0, no triton distribution metadata; xgrammar's
+# declaration stays the documented pip-check exception). The slot-A/B
+# hardware experiment runs the identical image with
+# ENV PYTHONPATH=/opt/triton instead, where the Runtime ships the vendor
+# Triton module 3.5.1 plus its own dist-info - so the metadata becomes
+# visible and must be pinned exactly. SGLANG_FL_EXPECTED_TRITON_ROOT
+# parameterizes ONLY these provenance assertions (the experiment probe's
+# setup.sh exports it); both modes stay strict: exact roots, exact
+# versions, no loose matching, nothing skipped.
+EXPECTED_TRITON_ROOT = os.environ.get("SGLANG_FL_EXPECTED_TRITON_ROOT", "/opt/flagtree")
+TRITON_SLOT_CONTRACTS = {
+    "/opt/flagtree": {
+        "module_version": "3.6.0",
+        "metadata_version": None,
+        "hcu_backend": "triton.backends.hcu.compiler_hcu",
+        "flagtree_version": "0.7.0+hcu3.6",
+    },
+    "/opt/triton": {
+        "module_version": "3.5.1",
+        "metadata_version": "3.5.1+das.opt1.dtk2604.torch290",
+        "hcu_backend": "triton.backends.amd.compiler_hcu",
+        # /opt/flagtree also carries the flagtree dist-info and module;
+        # under the vendor slot both are simply off the path.
+        "flagtree_version": None,
+    },
+}
+
+
+def _triton_slot_contract() -> dict:
+    try:
+        return TRITON_SLOT_CONTRACTS[EXPECTED_TRITON_ROOT]
+    except KeyError:
+        raise RuntimeError(
+            f"SGLANG_FL_EXPECTED_TRITON_ROOT must be one of "
+            f"{sorted(TRITON_SLOT_CONTRACTS)}, got {EXPECTED_TRITON_ROOT!r}"
+        ) from None
+
+
 # Installed into the ephemeral CI job container by setup.sh, pinned with
 # their transitive closure; the operations runtime intentionally ships no
 # test packages. sglang_fl arrives preinstalled as the image's plugin
@@ -256,34 +297,69 @@ def _verify_runtime_image_versions() -> None:
                 f"operations runtime expects {name}=={expected}, found {actual}"
             )
         print(f"[hygon-env] {name}={actual}")
-    actual = _distribution_version("flagtree")
-    if actual != RUNTIME_IMAGE_FLAGTREE:
-        raise RuntimeError(
-            f"operations runtime expects flagtree=={RUNTIME_IMAGE_FLAGTREE}, "
-            f"found {actual}"
-        )
-    print(f"[hygon-env] flagtree={actual}")
-    # The standalone triton wheel (xgrammar declaration) is an external
-    # platform component: it must NOT be installed; FlagTree is the only
-    # Triton, and the module must resolve from /opt/flagtree in this very
-    # process (setup.sh and the image build gate the other entrypoints).
+    slot = _triton_slot_contract()
+    if slot["flagtree_version"] is None:
+        try:
+            stray = metadata.version("flagtree")
+        except metadata.PackageNotFoundError:
+            stray = None
+        if stray is not None:
+            raise RuntimeError(
+                "flagtree metadata must be invisible under the vendor slot; "
+                f"found {stray}"
+            )
+        print("[hygon-env] flagtree dist invisible under the vendor slot (contract)")
+    else:
+        actual = _distribution_version("flagtree")
+        if actual != slot["flagtree_version"]:
+            raise RuntimeError(
+                f"operations runtime expects flagtree=={slot['flagtree_version']}, "
+                f"found {actual}"
+            )
+        print(f"[hygon-env] flagtree={actual}")
+    # Triton provenance per the expected slot contract (see
+    # TRITON_SLOT_CONTRACTS): the resolved module must live under the
+    # expected root with the exact module version, and the distribution
+    # metadata must be either absent (flagtree slot - xgrammar's
+    # declaration stays the documented pip-check exception) or exactly the
+    # Runtime's own dist-info (vendor slot - never a pip-installed
+    # replacement). Checked in this very process; the image-level ENV and
+    # the image-build gates cover the other entrypoints.
+    slot = _triton_slot_contract()
     try:
         actual = metadata.version("triton")
     except metadata.PackageNotFoundError:
         actual = None
-    if actual is not None:
+    if actual != slot["metadata_version"]:
+        expected = (
+            "absent" if slot["metadata_version"] is None else slot["metadata_version"]
+        )
         raise RuntimeError(
-            "the standalone triton wheel must stay removed "
-            f"(FlagTree is the only Triton); found {actual}"
+            f"triton distribution metadata must be {expected!r} for slot "
+            f"{EXPECTED_TRITON_ROOT}; found {actual!r}"
         )
     spec = importlib.util.find_spec("triton")
     resolved = spec.origin if spec is not None else None
-    if not resolved or not resolved.startswith("/opt/flagtree"):
+    expected_prefix = EXPECTED_TRITON_ROOT + "/"
+    if not resolved or not resolved.startswith(expected_prefix):
         raise RuntimeError(
-            f"triton must resolve via /opt/flagtree in every entrypoint; "
-            f"this process resolved {resolved}"
+            f"triton must resolve via {EXPECTED_TRITON_ROOT} in every "
+            f"entrypoint; this process resolved {resolved}"
         )
-    print(f"[hygon-env] standalone triton absent; module resolves {resolved}")
+    module_version = None
+    init_text = (Path(resolved).parent / "__init__.py").read_text(encoding="utf-8")
+    version_match = re.search(r"__version__\s*=\s*['\"]([^'\"]+)", init_text)
+    if version_match:
+        module_version = version_match.group(1)
+    if module_version != slot["module_version"]:
+        raise RuntimeError(
+            f"slot {EXPECTED_TRITON_ROOT} must provide Triton "
+            f"{slot['module_version']}, found {module_version}"
+        )
+    print(
+        f"[hygon-env] triton slot {EXPECTED_TRITON_ROOT}: module "
+        f"{module_version}, metadata {actual!r}, resolves {resolved}"
+    )
 
 
 def _verify_runtime_evidence(snapshot: Path) -> None:
@@ -300,8 +376,8 @@ def _verify_runtime_evidence(snapshot: Path) -> None:
     the pinned test runner, and this check asserts that every snapshot
     distribution survived with its exact version, that the only additions
     are the documented job container distributions, and that the vendor
-    triton module still resolves under /opt/flagtree (PYTHONPATH precedes
-    site-packages).
+    triton module still resolves under the expected slot root (PYTHONPATH
+    precedes site-packages).
     """
     try:
         before = json.loads(snapshot.read_text("utf-8"))
@@ -342,10 +418,11 @@ def _verify_runtime_evidence(snapshot: Path) -> None:
     )
 
     spec = importlib.util.find_spec("triton")
-    if spec is None or not spec.origin or not spec.origin.startswith("/opt/flagtree"):
+    expected_prefix = EXPECTED_TRITON_ROOT + "/"
+    if spec is None or not spec.origin or not spec.origin.startswith(expected_prefix):
         found = spec.origin if spec else None
         raise RuntimeError(
-            f"triton module must resolve under /opt/flagtree, found {found}"
+            f"triton module must resolve under {EXPECTED_TRITON_ROOT}, found {found}"
         )
     print(f"[hygon-env] triton module authoritative at {spec.origin}")
 
@@ -411,16 +488,22 @@ def _verify_sgl_kernel_scalar_type_fallback() -> None:
 
 
 def _verify_flagtree_clang_wrapper() -> None:
-    """FlagTree must select the baked DTK device-lib clang wrapper."""
-    from triton.backends.hcu.compiler_hcu import HIPBackend
+    """The active Triton's HCU backend must select the baked clang wrapper.
+
+    FlagTree exposes it as triton.backends.hcu.compiler_hcu; the vendor
+    slot as triton.backends.amd.compiler_hcu (both consume
+    TRITON_HIP_CLANG_PATH). Same strict assertion in both modes.
+    """
+    backend_module = _triton_slot_contract()["hcu_backend"]
+    HIPBackend = importlib.import_module(backend_module).HIPBackend
 
     actual = Path(HIPBackend.path_to_rocm_clang())
     expected = Path(os.environ["TRITON_HIP_CLANG_PATH"])
     if actual != expected:
         raise RuntimeError(
-            f"FlagTree selected {actual}, expected the baked wrapper {expected}"
+            f"{backend_module} selected {actual}, expected the baked wrapper {expected}"
         )
-    print(f"[hygon-env] FlagTree HCU compiler: {actual}")
+    print(f"[hygon-env] HCU compiler via {backend_module}: {actual}")
 
 
 def _verify_plugin_path(plugin_root: Path, plugin_source: str) -> None:
@@ -709,9 +792,12 @@ def verify(
     torch = _require_import("torch")
     _verify_hygon_torch(torch)
     triton = _require_import("triton")
-    if str(getattr(triton, "__version__", "")).split(".")[:2] != ["3", "6"]:
+    slot = _triton_slot_contract()
+    if str(getattr(triton, "__version__", "")) != slot["module_version"]:
         raise RuntimeError(
-            f"FlagTree must provide Triton 3.6, found {getattr(triton, '__version__', None)}"
+            f"slot {EXPECTED_TRITON_ROOT} must provide Triton "
+            f"{slot['module_version']}, found "
+            f"{getattr(triton, '__version__', None)}"
         )
     if runtime_evidence is None:
         # The legacy dev image ships an empty sgl_kernel wheel and a built

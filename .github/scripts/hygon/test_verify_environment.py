@@ -849,11 +849,14 @@ class RuntimeEvidenceTests(unittest.TestCase):
             return versions[name]
 
         flagtree_spec = SimpleNamespace(origin="/opt/flagtree/triton/__init__.py")
-        with patch.object(verifier.metadata, "version", side_effect=lookup):
-            with patch.object(
+        with (
+            patch.object(verifier.metadata, "version", side_effect=lookup),
+            patch.object(
                 verifier.importlib.util, "find_spec", return_value=flagtree_spec
-            ):
-                verifier._verify_runtime_image_versions()
+            ),
+            patch.object(Path, "read_text", return_value="__version__ = '3.6.0'\n"),
+        ):
+            verifier._verify_runtime_image_versions()
 
     def test_runtime_image_rejects_standalone_triton(self):
         versions = {
@@ -864,10 +867,16 @@ class RuntimeEvidenceTests(unittest.TestCase):
             "flagtree": "0.7.0+hcu3.6",
             "triton": "3.8.0",
         }
-        with patch.object(
-            verifier.metadata, "version", side_effect=versions.__getitem__
+        flagtree_spec = SimpleNamespace(origin="/opt/flagtree/triton/__init__.py")
+        with (
+            patch.object(
+                verifier.metadata, "version", side_effect=versions.__getitem__
+            ),
+            patch.object(
+                verifier.importlib.util, "find_spec", return_value=flagtree_spec
+            ),
         ):
-            with self.assertRaisesRegex(RuntimeError, "must stay removed"):
+            with self.assertRaisesRegex(RuntimeError, "metadata must be"):
                 verifier._verify_runtime_image_versions()
 
     def test_runtime_image_rejects_replaced_torch(self):
@@ -976,6 +985,176 @@ class RuntimeEvidenceTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "/opt/flagtree"):
                 verifier._verify_runtime_evidence(snapshot)
+
+
+class TritonSlotContractTests(unittest.TestCase):
+    """Both slot modes stay strict: exact roots, versions, metadata pins."""
+
+    VENDOR_METADATA = "3.5.1+das.opt1.dtk2604.torch290"
+
+    def setUp(self):
+        print_patch = patch("builtins.print")
+        print_patch.start()
+        self.addCleanup(print_patch.stop)
+
+    def _slot_mode(self, root, *, origin, init_version, versions):
+        """Patch one slot geometry: module origin, __init__ version, metadata."""
+        spec = SimpleNamespace(origin=origin)
+
+        def lookup(name):
+            try:
+                return versions[name]
+            except KeyError:
+                raise verifier.metadata.PackageNotFoundError(name) from None
+
+        return (
+            patch.object(verifier, "EXPECTED_TRITON_ROOT", root),
+            patch.object(verifier.metadata, "version", side_effect=lookup),
+            patch.object(verifier.importlib.util, "find_spec", return_value=spec),
+            patch.object(
+                Path, "read_text", return_value=f"__version__ = '{init_version}'\n"
+            ),
+        )
+
+    def test_default_flagtree_contract_passes(self):
+        patches = self._slot_mode(
+            "/opt/flagtree",
+            origin="/opt/flagtree/triton/__init__.py",
+            init_version="3.6.0",
+            versions={
+                "sglang": "0.5.18+flagos",
+                "sglang-fl": "0.1.0",
+                "torch": "2.9.0+das.opt1.dtk2604",
+                "flag-gems": "5.4.0",
+                "flagtree": "0.7.0+hcu3.6",
+            },
+        )
+        with patches[0], patches[1], patches[2], patches[3]:
+            verifier._verify_runtime_image_versions()
+
+    def test_vendor_slot_contract_passes(self):
+        patches = self._slot_mode(
+            "/opt/triton",
+            origin="/opt/triton/triton/__init__.py",
+            init_version="3.5.1",
+            versions={
+                "sglang": "0.5.18+flagos",
+                "sglang-fl": "0.1.0",
+                "torch": "2.9.0+das.opt1.dtk2604",
+                "flag-gems": "5.4.0",
+                "triton": self.VENDOR_METADATA,
+            },
+        )
+        with patches[0], patches[1], patches[2], patches[3]:
+            verifier._verify_runtime_image_versions()
+
+    def test_vendor_slot_rejects_wrong_metadata(self):
+        patches = self._slot_mode(
+            "/opt/triton",
+            origin="/opt/triton/triton/__init__.py",
+            init_version="3.5.1",
+            versions={
+                "sglang": "0.5.18+flagos",
+                "sglang-fl": "0.1.0",
+                "torch": "2.9.0+das.opt1.dtk2604",
+                "flag-gems": "5.4.0",
+                "triton": "3.5.1",
+            },
+        )
+        with patches[0], patches[1], patches[2], patches[3]:
+            with self.assertRaisesRegex(RuntimeError, "metadata must be"):
+                verifier._verify_runtime_image_versions()
+
+    def test_vendor_slot_rejects_the_flagtree_origin(self):
+        patches = self._slot_mode(
+            "/opt/triton",
+            origin="/opt/flagtree/triton/__init__.py",
+            init_version="3.5.1",
+            versions={
+                "sglang": "0.5.18+flagos",
+                "sglang-fl": "0.1.0",
+                "torch": "2.9.0+das.opt1.dtk2604",
+                "flag-gems": "5.4.0",
+                "triton": self.VENDOR_METADATA,
+            },
+        )
+        with patches[0], patches[1], patches[2], patches[3]:
+            with self.assertRaisesRegex(RuntimeError, "must resolve via /opt/triton"):
+                verifier._verify_runtime_image_versions()
+
+    def test_vendor_slot_rejects_a_wrong_module_version(self):
+        patches = self._slot_mode(
+            "/opt/triton",
+            origin="/opt/triton/triton/__init__.py",
+            init_version="3.5.0",
+            versions={
+                "sglang": "0.5.18+flagos",
+                "sglang-fl": "0.1.0",
+                "torch": "2.9.0+das.opt1.dtk2604",
+                "flag-gems": "5.4.0",
+                "triton": self.VENDOR_METADATA,
+            },
+        )
+        with patches[0], patches[1], patches[2], patches[3]:
+            with self.assertRaisesRegex(RuntimeError, "must provide Triton 3.5.1"):
+                verifier._verify_runtime_image_versions()
+
+    def test_vendor_slot_rejects_visible_flagtree_metadata(self):
+        patches = self._slot_mode(
+            "/opt/triton",
+            origin="/opt/triton/triton/__init__.py",
+            init_version="3.5.1",
+            versions={
+                "sglang": "0.5.18+flagos",
+                "sglang-fl": "0.1.0",
+                "torch": "2.9.0+das.opt1.dtk2604",
+                "flag-gems": "5.4.0",
+                "triton": self.VENDOR_METADATA,
+                "flagtree": "0.7.0+hcu3.6",
+            },
+        )
+        with patches[0], patches[1], patches[2], patches[3]:
+            with self.assertRaisesRegex(RuntimeError, "invisible under the vendor"):
+                verifier._verify_runtime_image_versions()
+
+    def test_unsupported_expected_root_is_rejected(self):
+        with patch.object(verifier, "EXPECTED_TRITON_ROOT", "/opt/elsewhere"):
+            with self.assertRaisesRegex(RuntimeError, "must be one of"):
+                verifier._triton_slot_contract()
+
+    def test_hcu_backend_module_follows_the_slot(self):
+        wrapper = "/opt/hcu-clang/clang-18-device-libs"
+        hcu = ModuleType("triton.backends.hcu.compiler_hcu")
+        hcu.HIPBackend = SimpleNamespace(path_to_rocm_clang=lambda: wrapper)
+        amd = ModuleType("triton.backends.amd.compiler_hcu")
+        amd.HIPBackend = SimpleNamespace(path_to_rocm_clang=lambda: wrapper)
+        with patch.dict(
+            sys.modules,
+            {
+                "triton.backends.hcu.compiler_hcu": hcu,
+                "triton.backends.amd.compiler_hcu": amd,
+            },
+        ):
+            with patch.dict(os.environ, {"TRITON_HIP_CLANG_PATH": wrapper}):
+                with patch.object(verifier, "EXPECTED_TRITON_ROOT", "/opt/flagtree"):
+                    verifier._verify_flagtree_clang_wrapper()
+                with patch.object(verifier, "EXPECTED_TRITON_ROOT", "/opt/triton"):
+                    verifier._verify_flagtree_clang_wrapper()
+
+    def test_vendor_slot_requires_the_amd_backend_module(self):
+        wrapper = "/opt/hcu-clang/clang-18-device-libs"
+        hcu = ModuleType("triton.backends.hcu.compiler_hcu")
+        hcu.HIPBackend = SimpleNamespace(path_to_rocm_clang=lambda: wrapper)
+        saved = sys.modules.pop("triton.backends.amd.compiler_hcu", None)
+        try:
+            with patch.dict(sys.modules, {"triton.backends.hcu.compiler_hcu": hcu}):
+                with patch.dict(os.environ, {"TRITON_HIP_CLANG_PATH": wrapper}):
+                    with patch.object(verifier, "EXPECTED_TRITON_ROOT", "/opt/triton"):
+                        with self.assertRaises(ModuleNotFoundError):
+                            verifier._verify_flagtree_clang_wrapper()
+        finally:
+            if saved is not None:
+                sys.modules["triton.backends.amd.compiler_hcu"] = saved
 
 
 class SnapshotCaptureTests(unittest.TestCase):
