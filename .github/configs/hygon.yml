@@ -12,7 +12,12 @@ platform: hygon
 # 180 minutes.
 test_timeout: 180
 
-ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:27534c2f2d561031c33a4cabb03ec964df6474a69439e86678e30592a0bdb680
+# TEMP(slot-A/B experiment, probe branch only): digest of the reviewer-
+# batch image built from 325aff0 (flagtree slot; org.flagos.ci.source-
+# commit=325aff0eac774ceaeac7632bbde75cbac76a9848). The B round flips
+# only this digest plus the SGLANG_FL_EXPECTED_TRITON_ROOT export in
+# setup.sh; revert both when folding.
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:42561deb225c1e0da841308f8553166dee2119e6ec7789b9be95d8928d66e7ba
 
 # Runner labels for this hardware
 runner_labels:
