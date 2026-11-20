@@ -104,6 +104,9 @@ jobs:
       - name: Check Hygon CI allocation and image guards
         if: inputs.platform == 'hygon'
         run: python -m unittest discover -s .github/scripts/hygon -p 'test_ci_*.py'
+      - name: Check MetaX GPU selector
+        if: inputs.platform == 'metax'
+        run: python -m unittest discover -s .github/scripts/metax -p 'test_*.py'
       - id: matrix
         run: |
           python .github/scripts/generate_matrix.py \

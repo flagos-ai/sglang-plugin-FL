@@ -1,0 +1,28 @@
+# SGLang-FL Dispatch Configuration for MetaX/MACA GPU
+prefer: flagos
+
+# ATen ops that must not use FlagGems on MetaX. SGLANG_FL_FLAGOS_BLACKLIST
+# replaces (does not extend) this list, so keep these entries when setting it.
+#   count_nonzero .. mm: the MetaX empty-mode baseline list, validated on C550
+#   with Qwen3 / Qwen3.6 (offline, serving, concurrent, multinode).
+#   _log_softmax / log_softmax: the FlagGems MetaX kernel fails for the Qwen3.6
+#   vocabulary (248320) with "memory size or pointer value too large to fit in
+#   32 bit"; hit when logprobs are requested (e.g. MTP logprob conformance).
+#   index: FlagGems advanced indexing returns wrong rows for negative indices
+#   (x[tensor([0, -1])]); speculative logprobs index logits/predict with the -1
+#   padded accept_index, so the garbage token ids fault the next gather.
+#   exponential_: the FlagGems MetaX kernel reads a non-constexpr global
+#   (eps_1), which FlagTree 0.7 rejects at compile time; torch.multinomial
+#   (random sampling, temperature > 0) calls it and crashes the scheduler.
+flagos_blacklist:
+  - count_nonzero
+  - index_put_
+  - to_copy
+  - _index_put_impl_
+  - masked_fill_
+  - cumsum
+  - mm
+  - _log_softmax
+  - log_softmax
+  - index
+  - exponential_

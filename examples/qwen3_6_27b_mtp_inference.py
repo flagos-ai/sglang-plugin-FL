@@ -18,7 +18,7 @@ MODEL_PATH. Hardware acceptance still requires the speculative backend support.
 
 Environment variables:
   MODEL_PATH    Model path (default: /models/Qwen3.6-27B)
-  TP_SIZE       Tensor parallelism (default: 2 on Hygon, 4 on CoreX/Ascend/TXDA/T-Head PPU, else 1)
+  TP_SIZE       Tensor parallelism (default: 2 on Hygon, 4 on CoreX/Ascend/TXDA/T-Head PPU/MetaX, else 1)
   MAX_TOKENS    Max generation tokens (default: 256)
 """
 
@@ -45,6 +45,7 @@ _is_hcu = hasattr(torch, "__hcu_version__") and torch.cuda.is_available()
 # target + draft weights leave no room for the mamba speculative state on one
 # 96 GB card, so MTP defaults to TP=4 there.
 _is_ppu = "PPU_SDK" in os.environ
+_is_maca = "metax" in getattr(torch, "__version__", "") and torch.cuda.is_available()
 
 # These settings must be present before importing sglang.
 if _is_npu:
@@ -74,7 +75,11 @@ MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-27B")
 TP_SIZE = int(
     os.environ.get(
         "TP_SIZE",
-        "2" if _is_hcu else "4" if _is_npu or _is_txda or _is_corex or _is_ppu else "1",
+        "2"
+        if _is_hcu
+        else "4"
+        if _is_npu or _is_txda or _is_corex or _is_ppu or _is_maca
+        else "1",
     )
 )
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "256"))
@@ -244,6 +249,10 @@ def _platform_engine_kwargs() -> dict:
             # cards. Keep the same explicit C16 capacity for MTP and baseline.
             "max_running_requests": 16,
         }
+    if _is_maca:
+        # Empty mode ships no flashinfer; the EAGLE tree kernels run through the
+        # MetaX speculative_triton patch.
+        return {"attention_backend": "triton"}
     if _is_hcu:
         return {
             "nnodes": 1,
