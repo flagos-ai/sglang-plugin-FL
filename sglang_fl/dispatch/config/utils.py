@@ -45,6 +45,21 @@ import yaml
 _CONFIG_DIR = Path(__file__).parent
 
 
+def _detected_vendor() -> Optional[str]:
+    from sglang_fl.utils import get_device_info
+
+    info = get_device_info()
+    return info.vendor_name if info is not None else None
+
+
+def _resolve_cuda_platform() -> str:
+    # T-Head PPU exposes the CUDA API unchanged; only FlagGems'
+    # DeviceDetector tells it apart from NVIDIA.
+    if _detected_vendor() == "thead":
+        return "thead"
+    return "nvidia"
+
+
 def get_platform_name() -> str:
     """
     Detect the current hardware platform.
@@ -73,7 +88,7 @@ def get_platform_name() -> str:
             except ImportError:
                 pass
         if torch.cuda.is_available():
-            return "nvidia"
+            return _resolve_cuda_platform()
     except ImportError:
         pass
 

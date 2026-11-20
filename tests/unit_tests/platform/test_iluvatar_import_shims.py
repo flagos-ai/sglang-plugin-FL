@@ -91,6 +91,10 @@ def test_critical_cuda_alias_imports_work_before_plugin_loading():
     _probe(
         """
         import sys
+        # Startup .pth hooks may already load some of these on the host (e.g.
+        # cuda-bindings' _cuda_bindings_redirector.pth imports ``cuda``); only
+        # assert on what the shim imports below pull in.
+        preloaded = set(sys.modules)
         # These unconditional CUDA-alias imports occur in SGLang before the
         # general plugin lifecycle runs, including spawned scheduler workers.
         from sgl_kernel import fp8_scaled_mm, top_k_renorm_prob, top_p_renorm_prob
@@ -102,10 +106,9 @@ def test_critical_cuda_alias_imports_work_before_plugin_loading():
         from flashinfer.sampling import min_p_sampling_from_probs
         from flashinfer.sampling import top_k_top_p_sampling_from_probs
         from flashinfer.prefill import cudnn_batch_prefill_with_kv_cache
-        assert "sglang_fl" not in sys.modules
-        assert "torch" not in sys.modules
-        assert "cuda" not in sys.modules
-        assert "sgl_kernel_npu" not in sys.modules
+        loaded = set(sys.modules) - preloaded
+        for name in ("sglang_fl", "torch", "cuda", "sgl_kernel_npu"):
+            assert name not in loaded, name
         """
     )
 
