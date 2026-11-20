@@ -3,33 +3,22 @@
 from types import SimpleNamespace
 
 import pytest
-import torch
 
 from sglang_fl import utils as fl_utils
 from sglang_fl.dispatch.config import utils
 
 
-@pytest.fixture
-def cuda_like(monkeypatch):
-    # __hcu_version__ marks Hygon hosts; get_platform_name() checks it before
-    # the CUDA branch, so it must be stripped too or these tests can only pass
-    # on hosts whose torch lacks it (e.g. thead/nvidia but not hygon).
-    for attr in ("txda", "npu", "musa", "gcu", "corex", "__hcu_version__"):
-        monkeypatch.delattr(torch, attr, raising=False)
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-
-
 @pytest.mark.parametrize("vendor,expected", [("thead", "thead"), ("nvidia", "nvidia")])
-def test_cuda_api_platform_split_by_vendor(monkeypatch, cuda_like, vendor, expected):
+def test_cuda_api_platform_split_by_vendor(monkeypatch, vendor, expected):
     monkeypatch.setattr(
         fl_utils, "get_device_info", lambda: SimpleNamespace(vendor_name=vendor)
     )
-    assert utils.get_platform_name() == expected
+    assert utils._resolve_cuda_platform() == expected
 
 
-def test_missing_device_detector_falls_back_to_nvidia(monkeypatch, cuda_like):
+def test_missing_device_detector_falls_back_to_nvidia(monkeypatch):
     monkeypatch.setattr(fl_utils, "get_device_info", lambda: None)
-    assert utils.get_platform_name() == "nvidia"
+    assert utils._resolve_cuda_platform() == "nvidia"
 
 
 def test_thead_config_blacklists_masked_scatter():

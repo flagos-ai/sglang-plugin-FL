@@ -52,12 +52,20 @@ def _detected_vendor() -> Optional[str]:
     return info.vendor_name if info is not None else None
 
 
+def _resolve_cuda_platform() -> str:
+    # T-Head PPU exposes the CUDA API unchanged; only FlagGems'
+    # DeviceDetector tells it apart from NVIDIA.
+    if _detected_vendor() == "thead":
+        return "thead"
+    return "nvidia"
+
+
 def get_platform_name() -> str:
     """
     Detect the current hardware platform.
 
     Returns:
-        Platform name string: 'ascend', 'musa', 'iluvatar', 'nvidia', or 'unknown'
+        Platform name string: 'ascend', 'musa', 'iluvatar', 'kunlunxin', 'nvidia', or 'unknown'
     """
     try:
         import torch
@@ -73,12 +81,14 @@ def get_platform_name() -> str:
             return "iluvatar"
         if hasattr(torch, "__hcu_version__") and torch.cuda.is_available():
             return "hygon"
+        if hasattr(torch, "xpu") and torch.cuda.is_available():
+            try:
+                import torch_xmlir  # Kunlunxin exclusive package
+                return "kunlunxin"
+            except ImportError:
+                pass
         if torch.cuda.is_available():
-            # T-Head PPU exposes the CUDA API unchanged; only FlagGems'
-            # DeviceDetector tells it apart from NVIDIA.
-            if _detected_vendor() == "thead":
-                return "thead"
-            return "nvidia"
+            return _resolve_cuda_platform()
     except ImportError:
         pass
 

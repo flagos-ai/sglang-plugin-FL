@@ -53,15 +53,20 @@ bw1000: &bw1000_profile
       include: "*"
       exclude: []
     e2e:
+      # concurrent/mtp stay in the pr stage: scheduled workflows only fire on
+      # the default branch, so until this line merges back the nightly stage
+      # has no automatic trigger and per-PR runs are the only coverage.
       pr:
         inference: &hcu_model_cases
           qwen3_6: [27b_tp2_hygon, 35b_a3b_tp2_hygon]
         serving: *hcu_model_cases
+        concurrent: *hcu_model_cases
+        # Only the eager profile runs speculative model acceptance.
+        mtp: *hcu_model_cases
       nightly:
         inference: *hcu_model_cases
         serving: *hcu_model_cases
         concurrent: *hcu_model_cases
-        # Only the eager profile runs speculative model acceptance.
         mtp: *hcu_model_cases
     # Benchmark and two-node TP2/PP2 acceptance are separate opt-in runs.
     benchmark:
@@ -78,6 +83,7 @@ bw1000_graph:
       pr:
         inference: *hcu_model_cases
         serving: *hcu_model_cases
+        concurrent: *hcu_model_cases
       nightly:
         inference: *hcu_model_cases
         serving: *hcu_model_cases

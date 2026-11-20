@@ -74,11 +74,7 @@ MODEL_PATH = os.environ.get("MODEL_PATH", "/models/Qwen3.6-27B")
 TP_SIZE = int(
     os.environ.get(
         "TP_SIZE",
-        "2"
-        if _is_hcu
-        else "4"
-        if _is_npu or _is_txda or _is_corex or _is_ppu
-        else "1",
+        "2" if _is_hcu else "4" if _is_npu or _is_txda or _is_corex or _is_ppu else "1",
     )
 )
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "256"))

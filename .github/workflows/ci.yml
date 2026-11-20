@@ -27,7 +27,6 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
-      - "examples/**"
       - "LICENSE"
       - ".github/ISSUE_TEMPLATE/**"
       - ".github/PULL_REQUEST_TEMPLATE.md"
@@ -193,9 +192,8 @@ jobs:
     with:
       platform: thead
       ci_stage: pr
-      # Focused runtime-image acceptance: functional plus one TP2 inference.
-      run_e2e: true
-      run_benchmark: false
+      run_e2e: ${{ fromJson(needs.discover.outputs.run_e2e) }}
+      run_benchmark: ${{ fromJson(needs.discover.outputs.run_benchmark) }}
     secrets: inherit
 
   test-iluvatar:
@@ -215,6 +213,29 @@ jobs:
     uses: ./.github/workflows/_platform_test.yml
     with:
       platform: hygon
+      ci_stage: pr
+      run_e2e: ${{ fromJson(needs.discover.outputs.run_e2e) }}
+      run_benchmark: ${{ fromJson(needs.discover.outputs.run_benchmark) }}
+    secrets: inherit
+
+  # Retained for the upcoming Kunlunxin P800 0.5.18 adaptation.
+  test-kunlunxin:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'kunlunxin')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: kunlunxin
+      ci_stage: pr
+      run_e2e: ${{ fromJson(needs.discover.outputs.run_e2e) }}
+      run_benchmark: ${{ fromJson(needs.discover.outputs.run_benchmark) }}
+    secrets: inherit
+
+  test-enflame:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'enflame')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: enflame
       ci_stage: pr
       run_e2e: ${{ fromJson(needs.discover.outputs.run_e2e) }}
       run_benchmark: ${{ fromJson(needs.discover.outputs.run_benchmark) }}
@@ -244,6 +265,8 @@ jobs:
       - test-thead
       - test-iluvatar
       - test-hygon
+      - test-kunlunxin
+      - test-enflame
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -260,6 +283,8 @@ jobs:
           THEAD_RESULT:     ${{ needs.test-thead.result }}
           ILUVATAR_RESULT:  ${{ needs.test-iluvatar.result }}
           HYGON_RESULT:     ${{ needs.test-hygon.result }}
+          KUNLUNXIN_RESULT: ${{ needs.test-kunlunxin.result }}
+          ENFLAME_RESULT:   ${{ needs.test-enflame.result }}
         run: |
           set -euo pipefail
 
@@ -295,6 +320,8 @@ jobs:
           check_optional "test-thead"   "$THEAD_RESULT"
           check_optional "test-iluvatar" "$ILUVATAR_RESULT"
           check_optional "test-hygon"   "$HYGON_RESULT"
+          check_optional "test-kunlunxin" "$KUNLUNXIN_RESULT"
+          check_optional "test-enflame" "$ENFLAME_RESULT"
 
           if [ $fail -ne 0 ]; then
             echo "ci-gate: FAILED"

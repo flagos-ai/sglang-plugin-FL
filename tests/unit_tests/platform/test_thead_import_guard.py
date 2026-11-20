@@ -13,7 +13,9 @@ import pytest
 from sglang_fl.dispatch.backends.vendor.thead import import_guard as guard
 
 ROOTS = list(guard._PACKAGES)
-_REAL_INSTALLED = guard._installed  # the fixture stubs it out; one test needs the real one
+_REAL_INSTALLED = (
+    guard._installed
+)  # the fixture stubs it out; one test needs the real one
 
 
 @pytest.fixture
@@ -23,13 +25,6 @@ def clean(monkeypatch):
         "meta_path",
         [f for f in sys.meta_path if not isinstance(f, guard._PlaceholderFinder)],
     )
-    # Simulate package absence for real: without this, a host that ships
-    # deep_gemm/flashinfer (cuda, musa, hygon CI images) would have its real
-    # package imported by PathFinder even though _installed is stubbed below —
-    # the real __init__ then resolves a submodule through the placeholder and
-    # blows up outside the pytest.raises block. Hosts without the packages
-    # (PPU) already behave this way.
-    monkeypatch.setattr(sys, "path", [""])
     for root in ROOTS:
         for name in [m for m in sys.modules if m == root or m.startswith(root + ".")]:
             monkeypatch.delitem(sys.modules, name)
@@ -53,8 +48,14 @@ def test_guards_both_packages_and_forces_availability_off(clean):
     assert os.environ["SGLANG_ENABLE_JIT_DEEPGEMM"] == "false"
 
 
-def test_module_level_import_patterns(clean):
+def test_module_level_import_patterns(clean, monkeypatch):
     guard.install_import_guards()
+    # The guard appends its finders so an installed package always wins. CI hosts
+    # (CUDA/Hygon/MUSA images) do ship flashinfer / deep_gemm, so put the
+    # placeholders first to exercise them as on a PPU host where both are absent.
+    placeholders = [f for f in sys.meta_path if isinstance(f, guard._PlaceholderFinder)]
+    others = [f for f in sys.meta_path if not isinstance(f, guard._PlaceholderFinder)]
+    monkeypatch.setattr(sys, "meta_path", placeholders + others)
 
     from flashinfer import bmm_fp8  # noqa: F401  (fp8_utils.py pattern)
     import deep_gemm  # noqa: F401  (dsa_backend.py pattern)
@@ -126,7 +127,10 @@ def test_activate_platform_runs_vendor_early_hook(monkeypatch):
 
     seen = []
     monkeypatch.setattr(
-        importlib.util, "find_spec", lambda name: object() if name.endswith(".early") else None
+        importlib.util,
+        "find_spec",
+        # The vendor package and its early module both resolve.
+        lambda name: object() if name.startswith("sglang_fl.dispatch") else None,
     )
     monkeypatch.setattr(importlib, "import_module", lambda name: seen.append(name))
     sglang_fl._apply_vendor_early_patches("thead")
@@ -137,9 +141,40 @@ def test_vendor_without_early_module_is_skipped(monkeypatch):
     import sglang_fl
 
     called = []
-    # Real find_spec: "nvidia" has no vendor directory at all, so find_spec
-    # raises ModuleNotFoundError for the parent package instead of returning
-    # None. Regression guard: that raise used to abort activate_platform().
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
     monkeypatch.setattr(importlib, "import_module", lambda name: called.append(name))
     sglang_fl._apply_vendor_early_patches("nvidia")
     assert called == []
+
+
+@pytest.mark.parametrize("vendor", ["nvidia", "no_such_vendor"])
+def test_vendor_without_vendor_package_is_skipped(monkeypatch, vendor):
+    # Real import machinery: find_spec raises ModuleNotFoundError (not None) when
+    # vendor/<vendor>/ itself is missing, which is the case for nvidia (vendor/cuda/).
+    import sglang_fl
+
+    called = []
+    real_import = importlib.import_module
+
+    def tracking_import(name, *args, **kwargs):
+        if name.endswith(".early"):
+            called.append(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", tracking_import)
+    sglang_fl._apply_vendor_early_patches(vendor)
+    assert called == []
+
+
+# nvidia has no vendor/ package; ascend has one but no early.py.
+@pytest.mark.parametrize("vendor", ["nvidia", "ascend"])
+def test_activate_platform_succeeds_without_vendor_early_module(monkeypatch, vendor):
+    import sglang_fl
+    from sglang_fl import utils as fl_utils
+
+    monkeypatch.setattr(
+        fl_utils,
+        "get_device_info",
+        lambda: types.SimpleNamespace(vendor_name=vendor, device_type="test"),
+    )
+    assert sglang_fl.activate_platform() == "sglang_fl.platform:PlatformFL"

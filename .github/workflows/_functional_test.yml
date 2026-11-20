@@ -99,10 +99,6 @@ jobs:
         run: python3 examples/ascend_compat_probe.py
 
       - name: Run unit tests
-        # Focused T-Head runtime-image acceptance runs the hardware functional
-        # suite directly. The all-platform unit suite has an unrelated
-        # cross-test sglang namespace-state leak under this minimal image.
-        if: inputs.platform != 'thead'
         env:
           TEST_DRIVER: ${{ inputs.test_driver }}
         run: |
@@ -118,26 +114,15 @@ jobs:
         run: python .github/scripts/hygon/ci_environment.py -- python -m pytest .github/scripts/hygon/test_verify_environment.py -q --junitxml=test-results-hygon-environment.xml
 
       - name: Run functional tests
-        # The same runtime, torchvision and xgrammar stack already passed the
-        # focused PPU op suite. This probe adds only pure-Python import-time
-        # dependencies, so the following TP2 E2E is its effective validation.
-        if: inputs.platform != 'thead'
         env:
           TEST_DRIVER: ${{ inputs.test_driver }}
         run: |
           if [ "${{ inputs.platform }}" = "hygon" ]; then
             unset CUDA_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES
           fi
-          if [ "${{ inputs.platform }}" = "thead" ]; then
-            # Focus the minimal-runtime acceptance on real PPU op execution.
-            # Full SGLang startup is exercised by the following TP2 E2E job.
-            python -m pytest tests/functional_tests/ops/test_ops_correctness.py \
-              -v --tb=short -s
-          else
-            python "$TEST_DRIVER" \
-              --platform ${{ inputs.platform }} \
-              --scope functional
-          fi
+          python "$TEST_DRIVER" \
+            --platform ${{ inputs.platform }} \
+            --scope functional
 
       - name: Upload test results
         if: always()

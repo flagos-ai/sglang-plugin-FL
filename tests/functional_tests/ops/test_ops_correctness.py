@@ -18,7 +18,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from sglang_fl.dispatch import SelectionPolicy, call_op, policy_context
+from sglang_fl.dispatch import SelectionPolicy, call_op, get_policy, policy_context
 
 pytestmark = [pytest.mark.functional, pytest.mark.gpu]
 
@@ -26,6 +26,7 @@ pytestmark = [pytest.mark.functional, pytest.mark.gpu]
 _RTOL = 1e-3
 _ATOL = 1e-3
 _HALF_TOL = 2e-2
+_COVERAGE_FALLBACK_KINDS = ("flagos", "vendor", "reference")
 
 
 def _allclose(actual: torch.Tensor, expected: torch.Tensor, *, dtype: torch.dtype) -> bool:
@@ -43,12 +44,31 @@ def _call_reference(op_name: str, *args, **kwargs):
     with policy_context(policy):
         return call_op(op_name, *args, **kwargs)
 
+def _per_op_order_with_coverage_fallback(per_op_order):
+    if not per_op_order:
+        return None
+    out = {}
+    for op_name, order in per_op_order.items():
+        filled = list(order)
+        for kind in _COVERAGE_FALLBACK_KINDS:
+            if kind not in filled:
+                filled.append(kind)
+        out[op_name] = filled
+    return out
 
 def _call_selected(op_name: str, *args, **kwargs):
-    # Functional tests should validate the preferred implementation when it is
-    # available, while still allowing fallback so partially wired backends do not
-    # hide the rest of the operator surface.
-    policy = SelectionPolicy.from_dict(prefer=_selected_prefer(), strict=False)
+    # Global policy is set once in functional conftest via production path
+    # (_build_config → _init_dispatch / set_global_policy). get_policy() then
+    # returns that object (no _policy_from_env). Keep strict=False so missing
+    # backends can fall back during functional coverage.
+    global_policy = get_policy()
+    policy = SelectionPolicy.from_dict(
+        prefer=global_policy.prefer,
+        strict=False,
+        per_op_order=_per_op_order_with_coverage_fallback(
+            global_policy.per_op_order_dict or None
+        ),
+    )
     with policy_context(policy):
         return call_op(op_name, *args, **kwargs)
 
@@ -308,8 +328,19 @@ def _make_fla_inputs(device, dtype: torch.dtype = torch.float16):
 
 
 def test_fla_chunk_gated_delta_rule_contract(device) -> None:
-    """Check FLA chunk_gated_delta_rule returns valid output tensors."""
+    """Check chunk GDN with an explicit state pool and slot indices."""
     q, k, v, g, beta, scale = _make_fla_inputs(device)
+    initial_state = torch.zeros(
+        q.shape[0],
+        v.shape[2],
+        v.shape[-1],
+        k.shape[-1],
+        device=device,
+        dtype=torch.float32,
+    )
+    initial_state_indices = torch.arange(
+        q.shape[0], device=device, dtype=torch.int32
+    )
 
     try:
         output, _, final_state = _call_selected(
@@ -320,6 +351,8 @@ def test_fla_chunk_gated_delta_rule_contract(device) -> None:
             g,
             beta,
             scale,
+            initial_state=initial_state,
+            initial_state_indices=initial_state_indices,
             head_first=False,
         )
     except RuntimeError as exc:
@@ -365,18 +398,23 @@ def test_fla_packed_decode_contract(device) -> None:
     """Check FLA packed decode dispatch returns valid output/state tensors."""
     batch, num_heads, key_dim, value_dim = 2, 2, 16, 16
     dtype = torch.float16
-    mixed_qkv = torch.randn(
-        batch,
-        num_heads,
-        key_dim * 2 + value_dim,
-        device=device,
-        dtype=dtype,
+    q = torch.randn(
+        batch, num_heads, key_dim, device=device, dtype=dtype
+    )
+    k = torch.randn_like(q)
+    v = torch.randn(
+        batch, num_heads, value_dim, device=device, dtype=dtype
+    )
+    mixed_qkv = torch.cat(
+        [q.flatten(1), k.flatten(1), v.flatten(1)], dim=-1
     )
     a = torch.randn(batch, num_heads, device=device, dtype=dtype)
     b = torch.randn(batch, num_heads, device=device, dtype=dtype)
     A_log = torch.randn(num_heads, device=device, dtype=dtype)
     dt_bias = torch.randn(num_heads, device=device, dtype=dtype)
-    initial_state = torch.randn(batch, num_heads, key_dim, value_dim, device=device, dtype=dtype)
+    initial_state = torch.randn(
+        batch, num_heads, value_dim, key_dim, device=device, dtype=dtype
+    )
     out = torch.empty(batch, num_heads, value_dim, device=device, dtype=dtype)
     ssm_state_indices = torch.arange(batch, device=device, dtype=torch.int32)
 

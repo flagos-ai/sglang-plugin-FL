@@ -28,7 +28,7 @@
 # Vendor file name → platform mapping (mirrors the FlagGems vendor ids):
 #   nvidia  <- sglang_fl/dispatch/config/nvidia.yaml, docker/cuda/
 #   musa    <- sglang_fl/dispatch/config/musa.yaml,    docker/mthreads/
-#   thead   <- sglang_fl/dispatch/config/tsingmicro.yaml, docker/thead/
+#   thead   <- sglang_fl/dispatch/config/{thead,tsingmicro}.yaml, docker/thead/
 #   iluvatar <- sglang_fl/dispatch/config/iluvatar.yaml, docker/iluvatar/
 
 global_trigger_paths:
@@ -45,7 +45,7 @@ global_trigger_paths:
 
 platforms:
   nvidia:
-    enabled: false
+    enabled: true
     trigger_paths:
       - sglang_fl/dispatch/config/nvidia.yaml
       - .github/scripts/nvidia/
@@ -58,20 +58,22 @@ platforms:
       - .github/configs/nvidia.yml
       - tests/platforms/nvidia.yaml
   ascend:
-    enabled: false
+    enabled: true
     trigger_paths:
       - sglang_fl/dispatch/config/ascend.yaml
       - .github/scripts/ascend/
       - .github/configs/ascend.yml
       - tests/platforms/ascend.yaml
       - docker/ascend/
+      # Executed directly by the Ascend functional job (_functional_test.yml).
+      - examples/ascend_compat_probe.py
     exempt_from_global:
       - sglang_fl/dispatch/config/ascend.yaml
       - .github/scripts/ascend/
       - .github/configs/ascend.yml
       - tests/platforms/ascend.yaml
   musa:
-    enabled: false
+    enabled: true
     trigger_paths:
       - sglang_fl/dispatch/config/musa.yaml
       - .github/scripts/musa/
@@ -84,7 +86,7 @@ platforms:
       - .github/configs/musa.yml
       - tests/platforms/musa.yaml
   iluvatar:
-    enabled: false
+    enabled: true
     trigger_paths:
       - sglang_fl/dispatch/config/iluvatar.yaml
       - .github/scripts/iluvatar/
@@ -96,15 +98,18 @@ platforms:
       - .github/configs/iluvatar.yml
   thead:
     # Self-hosted runner pool: label flagcicd-810e (4 runners, online).
-    # SGLang 0.5.18 CI image is configured in thead.yml.
+    # SGLang 0.5.18 empty-mode CI image is pinned in thead.yml (built from
+    # docker/thead/empty-0.5.18.containerfile).
     enabled: true
     trigger_paths:
+      - sglang_fl/dispatch/config/thead.yaml
       - sglang_fl/dispatch/config/tsingmicro.yaml
       - .github/scripts/thead/
       - .github/configs/thead.yml
       - tests/platforms/thead.yaml
       - docker/thead/
     exempt_from_global:
+      - sglang_fl/dispatch/config/thead.yaml
       - sglang_fl/dispatch/config/tsingmicro.yaml
       - .github/scripts/thead/
       - .github/configs/thead.yml
@@ -112,7 +117,7 @@ platforms:
   hygon:
     # Self-hosted runner pool: label ci-sglang-plugin-fl-hygon (8x BW1000 DCU).
     # CI image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-hygon-ci.
-    enabled: false
+    enabled: true
     trigger_paths:
       - sglang_fl/dispatch/config/hygon.yaml
       - .github/scripts/hygon/
@@ -124,3 +129,11 @@ platforms:
       - .github/scripts/hygon/
       - .github/configs/hygon.yml
       - tests/platforms/hygon.yaml
+
+  kunlunxin:
+    # harbor CI image from docker/kunlunxin/ci-0.5.18.containerfile are ready.
+    # Local matrix: tests/platforms/kunlunxin.yaml.
+    enabled: true
+
+  enflame:
+    enabled: true
