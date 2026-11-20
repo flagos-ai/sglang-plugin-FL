@@ -106,6 +106,14 @@ def check_freeze(evidence: Path) -> set[str]:
     baseline = parse_freeze_lines(
         (evidence / "runtime-0.5.18.runtime-freeze.txt").read_text().splitlines()
     )
+    if EXPECTED_TRITON_ROOT != "/opt/flagtree":
+        # The baseline was collected with /opt/flagtree on the resolution
+        # path, so its inventory includes the flagtree dist-info; under the
+        # vendor slot that dist-info is off the path (the flagtree TREE
+        # itself is proven byte-unchanged by the slot-tree check in
+        # verify_image.sh phase 9). Every other baseline distribution must
+        # still be present with its exact version.
+        baseline.pop("flagtree", None)
     current = installed_distributions()
     missing = sorted(name for name in baseline if name not in current)
     version_changed = sorted(

@@ -138,7 +138,7 @@ cat "$smoke_log"
 grep -qE "SMOKE-PASS|SMOKE-TOLERATED|no ROCm-capable device is detected" "$smoke_log"
 
 echo "=== [6/8] Triton entrypoint matrix ==="
-run -e TRITON_EXPECTED_ROOT -e TRITON_EXPECTED_METADATA \
+run -e TRITON_EXPECTED_ROOT="$TRITON_EXPECTED_ROOT" -e TRITON_EXPECTED_METADATA="$TRITON_EXPECTED_METADATA" \
     --entrypoint bash "$image" <<'EOF'
 python -c 'import os, triton; p = triton.__file__; r = os.environ["TRITON_EXPECTED_ROOT"]; assert p and p.startswith(r), f"{p} not under {r}"; print("triton (sh):", p)' \
 && bash -c 'python -c "import os, triton; r = os.environ[\"TRITON_EXPECTED_ROOT\"]; assert triton.__file__.startswith(r), triton.__file__; print(\"triton (bash):\", triton.__file__)"' \
@@ -253,12 +253,14 @@ echo "WORKDIR ('$workdir'), no /opt/sglang-ci residue"
 
 if [ "$TRITON_EXPECTED_ROOT" != "/opt/flagtree" ]; then
 echo "=== [9] Vendor-slot preflight (slot-A/B experiment gates) ==="
-run -e TRITON_EXPECTED_METADATA --entrypoint python "$image" - <<'PY'
+run -e TRITON_EXPECTED_METADATA="$TRITON_EXPECTED_METADATA" --entrypoint python "$image" - <<'PY'
 import importlib
 import importlib.metadata as md
+import importlib.util
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 expected = os.environ["TRITON_EXPECTED_METADATA"]
 assert expected, "vendor-slot preflight requires an exact metadata pin"
@@ -284,16 +286,56 @@ requires = [
 ]
 print(f"xgrammar triton requirement formally satisfied: {requires}")
 
-importlib.import_module("flag_gems")
-libentry = importlib.import_module("flag_gems.libentry")
-print(f"flag_gems + libentry importable: {libentry.__file__}")
+# flag_gems' __init__ imports torch, whose cuda/amdsmi init aborts on a
+# GPU-less builder (the same tolerated device-library class as the
+# phase-5 smoke). Device-free boundary: a torch device-init failure is
+# recorded; every other failure - notably any Triton API mismatch inside
+# flag_gems/libentry - is fatal.
+import triton
+import traceback
+
+try:
+    has_flagtune = importlib.util.find_spec("triton.flagtune") is not None
+except (ImportError, AttributeError):
+    has_flagtune = False
+print(f"triton.flagtune present: {has_flagtune} (libentry guards it)")
+try:
+    import flag_gems  # noqa: F401
+
+    print("flag_gems imported")
+except BaseException as error:  # noqa: BLE001 - classified below
+    text = traceback.format_exc()
+    device_blocked = (
+        "libamd_smi" in text
+        or "libgalaxyhip" in text
+        or "libcuda.so" in text
+        or "cannot open shared object file" in text
+        or "no ROCm-capable device" in text
+    )
+    if not device_blocked:
+        raise SystemExit(
+            f"flag_gems import failed on a non-device reason under the "
+            f"vendor slot: {type(error).__name__}: {error}"
+        ) from error
+    print(
+        "flag_gems import blocked by torch device init only (GPU-less "
+        "boundary; libentry execution deferred to the hardware matrix)"
+    )
+    libentry_path = (
+        Path(importlib.util.find_spec("flag_gems").origin).parent
+        / "utils"
+        / "libentry.py"
+    )
+    compile(libentry_path.read_text(encoding="utf-8"), str(libentry_path), "exec")
+    print(f"libentry parses clean: {libentry_path}")
+print(f"active triton for flag_gems: {triton.__file__}")
 PY
 
 # Both compiler slot trees must be byte-identical to the Runtime's own:
 # the experiment only repoints PYTHONPATH, so neither tree may show any
 # pip-installed or overwritten file.
 slot_manifest() {
-    docker run --rm --platform linux/amd64 --entrypoint python "$1" - \
+    docker run --rm -i --platform linux/amd64 --entrypoint python "$1" - \
         > "$2" <<'PY'
 import hashlib
 from pathlib import Path
