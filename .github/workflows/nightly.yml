@@ -196,3 +196,13 @@ jobs:
       ci_stage: nightly
       branch: ${{ inputs.branch }}
     secrets: inherit
+
+  test-metax:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'metax')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: metax
+      ci_stage: nightly
+      branch: ${{ inputs.branch }}
+    secrets: inherit

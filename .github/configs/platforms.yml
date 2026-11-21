@@ -31,6 +31,7 @@
 #   thead   <- sglang_fl/dispatch/config/{thead,tsingmicro}.yaml, docker/thead/
 #   iluvatar <- sglang_fl/dispatch/config/iluvatar.yaml, docker/iluvatar/
 #   tsingmicro <- sglang_fl/dispatch/config/tsingmicro.yaml, docker/tsingmicro/
+#   metax   <- sglang_fl/dispatch/config/metax.yaml,  docker/metax/
 
 global_trigger_paths:
   # Shared plugin source; per-platform dispatch configs carved out below.
@@ -156,3 +157,19 @@ platforms:
 
   enflame:
     enabled: true
+  metax:
+    # Self-hosted runner label: ci-sglang-plugin-fl-metax (C550).
+    # Disabled until the SGLang 0.5.18 empty-mode CI image is published and
+    # pinned in metax.yml and the runner's model mount is confirmed.
+    enabled: false
+    trigger_paths:
+      - sglang_fl/dispatch/config/metax.yaml
+      - .github/scripts/metax/
+      - .github/configs/metax.yml
+      - tests/platforms/metax.yaml
+      - docker/metax/
+    exempt_from_global:
+      - sglang_fl/dispatch/config/metax.yaml
+      - .github/scripts/metax/
+      - .github/configs/metax.yml
+      - tests/platforms/metax.yaml
