@@ -66,8 +66,6 @@ if _is_npu:
 
 if _is_txda:
     os.environ.setdefault("SGLANG_FL_TIMER_ENABLE", "1")
-    os.environ.setdefault("SGLANG_REQ_WAITING_TIMEOUT", "-1")
-    os.environ.setdefault("SGLANG_REQ_RUNNING_TIMEOUT", "-1")
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -236,9 +234,12 @@ def _platform_engine_kwargs() -> dict:
             "dtype": "bfloat16",
             "watchdog_timeout": 3600,
             "mm_attention_backend": "triton_attn",
-            "disable_fast_image_processor": True,
             "context_length": 8192,
             "chunked_prefill_size": 256,
+            # Validated TXDA value (offline/concurrent examples, CI cases). The
+            # generic 0.8 leaves too little room for the fp32 full-vocab logits
+            # of the logprob checks on 35B-A3B ("Device memory malloc failed").
+            "mem_fraction_static": 0.6,
         }
     if _is_corex:
         return {

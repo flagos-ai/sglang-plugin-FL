@@ -44,13 +44,20 @@ def _graph_api(device: torch.device):
         )
         if not callable(value)
     ]
+    supported = _platform_for(device.type).support_cuda_graph()
     if missing:
         reason = f"torch.{device.type} does not expose graph capture API: " + ", ".join(
             missing
         )
-        if _platform_for(device.type).support_cuda_graph():
+        if supported:
             pytest.fail(reason)
         pytest.skip(reason)
+    if not supported:
+        # The API can exist without working capture (TsingMicro torch_txda
+        # exposes TXDAGraph, but captures an empty graph and later aborts in
+        # the caching allocator). The platform declaration is the contract:
+        # SGLang never captures graphs there.
+        pytest.skip(f"platform does not support graph capture on {device.type}")
 
     return graph_cls, graph_capture, synchronize
 

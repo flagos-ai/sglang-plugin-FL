@@ -1042,6 +1042,12 @@ def load_plugin():
                 "chunk_gated_delta_rule",
                 "fused_recurrent_gated_delta_rule_packed_decode",
             )
+        elif device_info is not None and device_info.vendor_name == "tsingmicro":
+            # TXDA has no own GDN decode kernel: let SGLang call its Triton
+            # packed-decode kernel directly instead of a pass-through dispatch
+            # hop on every decode step of every GDN layer.
+            fla_excluded_ops = ("fused_recurrent_gated_delta_rule_packed_decode",)
+            fla_excluded_gdn_ops = ("fused_recurrent_gated_delta_rule_packed_decode",)
         patch_fla_functions(
             excluded_ops=fla_excluded_ops,
             excluded_gdn_ops=fla_excluded_gdn_ops,
