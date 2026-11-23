@@ -261,6 +261,36 @@ def check_two_wheel_contract() -> None:
     )
 
 
+def assert_import_guard_semantics(guard_path: Path) -> None:
+    """The plugin-owned import guard must keep the scalar_type exemption.
+
+    Checked by BEHAVIOUR on the installed guard file, never by matching a
+    source string: importing the guard must install nothing, and its finder
+    must refuse to fabricate ``sgl_kernel.scalar_type`` (SGLang's pure-Python
+    fallback depends on that ImportError) while still serving the other
+    ``sgl_kernel`` submodules.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "sglang_fl_hygon_import_guard_check", guard_path
+    )
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
+    assert not any(
+        isinstance(finder, guard._PlaceholderFinder) for finder in sys.meta_path
+    ), "importing the guard module must not install placeholders"
+    finder = guard._PlaceholderFinder("sgl_kernel")
+    assert finder.find_spec(guard._SCALAR_TYPE, None) is None, (
+        "plugin import guard fabricates sgl_kernel.scalar_type"
+    )
+    assert finder.find_spec("sgl_kernel.utils", None) is not None, (
+        "plugin import guard no longer serves sgl_kernel submodules"
+    )
+    assert finder.find_spec("flashinfer", None) is None, "finder scope leaked"
+    assert finder.find_spec("json", None) is None, "finder scope leaked"
+
+
 def check_hcu_compat_markers() -> None:
     import importlib.metadata as md
 
@@ -273,10 +303,7 @@ def check_hcu_compat_markers() -> None:
     guard = (
         distribution_root / "sglang_fl/dispatch/backends/vendor/hygon/import_guard.py"
     )
-    text = guard.read_text()
-    assert 'fullname == "sgl_kernel.scalar_type"' in text, (
-        "plugin import guard lacks the scalar_type exemption"
-    )
+    assert_import_guard_semantics(guard)
     purelib = Path(sysconfig.get_paths()["purelib"])
     assert not (purelib / "_hcu_kernel_stub_finder.py").exists(), (
         "legacy image-written stub finder remains"

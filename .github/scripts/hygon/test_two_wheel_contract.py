@@ -643,6 +643,18 @@ class ReviewerCommentContractTests(unittest.TestCase):
         )
         self.assertFalse((DOCKER / "sglang-v0.5.18-hcu.patch").exists())
 
+    def test_r4627477929_the_stubs_live_in_the_plugin_wheel(self):
+        containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
+        for banned in ("/tmp/stubs", "stubs/", "SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK"):
+            self.assertNotIn(banned, containerfile)
+        self.assertFalse((DOCKER / "stubs").exists())
+        vendor = REPO_ROOT / "sglang_fl/dispatch/backends/vendor/hygon"
+        self.assertTrue((vendor / "early.py").is_file())
+        guard = (vendor / "import_guard.py").read_text()
+        self.assertIn("SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK", guard)
+        # the version-check switch is set only while a placeholder is active
+        self.assertIn('if root == "sgl_kernel":', guard)
+
     def test_r4627512386_the_excludes_removal_is_gated(self):
         # transitional state: the exclusion and its exact exception remain
         # until the real-index gate and the built image prove them redundant

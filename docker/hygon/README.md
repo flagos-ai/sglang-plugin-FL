@@ -408,6 +408,45 @@ excludes；disposable，不入仓库、不进镜像）。一条版本只对应�
   发布件在更早的提交派生时该断言会拒绝，release 模式需改为以钉定 SHA 为准
   后才能启用 pre-derived 路径。
 
+### 插件自有的 kernel import guard 与激活时序
+
+HCU Runtime 没有 `sgl-kernel` / FlashInfer wheel，而 SGLang 0.5.18 在加载层模块时
+会 eager import 它们。reviewer r4627477929 指出这些 stub 应属于 plugin repo：
+它们现在位于 `sglang_fl` wheel 内
+（`sglang_fl/dispatch/backends/vendor/hygon/early.py` + `import_guard.py`），
+镜像里不再写任何 stub 文件或 `.pth`。
+
+- **方案 A（early activation，已实现）**：Hygon 平台发现（`sglang_fl` 的 vendor
+  early hook）执行时，把只对 `sgl_kernel`、`flashinfer` 两个根生效的 placeholder
+  finder **追加**到 `sys.meta_path` 末尾——真实已安装的包永远优先；每个包可用
+  `SGLANG_FL_HYGON_SGL_KERNEL_STUB=0` / `SGLANG_FL_HYGON_FLASHINFER_STUB=0`
+  单独关闭。这不是 #197 那种全局 import-adjusting hook：finder 只回答这两个
+  根下的名字；
+- **语义与原镜像 stub 一致**：`sgl_kernel.utils.is_arch_support_pdl()` 返回
+  `False`；`sgl_kernel.scalar_type` 永不伪造（`find_spec` 返回 `None`，保住
+  SGLang 的纯 Python fallback）；其它对象可 import、调用即抛 `RuntimeError`；
+  不伪造 distribution metadata；`SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1` 只在
+  `sgl_kernel` placeholder 生效时写入，与 stubs 同进退；
+- **激活时序实证**（无卡；真实 `python -m sglang.launch_server` 冷启动，CPU
+  torch 2.9.0 + 伪造 HCU 设备信息）：`sglang_fl.activate_platform()` 首次执行于
+  `import sglang`（`sglang/__init__.py:21` → `sglang/srt/utils/__init__.py:2`
+  → `sglang/srt/utils/common.py:100` 的 `current_platform` 惰性解析），此时仅
+  19 个 sglang 模块已加载；激活之前 sgl_kernel/flashinfer 的 import 请求数为
+  0，直到 launch import、`load_plugins()` 与 `prepare_server_args()` 结束也
+  没有（guard 自身的 `_installed()` 探测除外）。对这 19 个模块的全分支
+  module-scope import 闭包做静态复核，同样为 0。激活之后 placeholder 对两个
+  根都生效：`is_arch_support_pdl()` 为 `False`，
+  `find_spec("sgl_kernel.scalar_type")` 为 `None`；
+- **卸载无残留**：guard 随 `sglang_fl` distribution 安装/卸载，没有 `.pth`、
+  没有物理 `sgl_kernel`/`flashinfer` 包（单测
+  `test_plugin_wheel_carries_the_guard_and_uninstall_leaves_nothing`）；
+- **构建后验收按行为检查**：`verify_runtime_immutable.py` 在镜像内导入已安装
+  的 guard 文件并断言上述语义，而不是匹配源码字符串。
+
+局限：CPU torch 跑不了 `torch.cuda` 相关的 import 期代码，engine import 链在
+“Torch not compiled with CUDA enabled”处停止；真实入口上的时序确认仍欠 Hygon
+硬件矩阵。
+
 ### clang wrapper 替代矩阵（reviewer r4627367002）
 
 Reviewer 不认可“塞进镜像的 clang 包装脚本”。候选改用**直接调用 Runtime 自带的
