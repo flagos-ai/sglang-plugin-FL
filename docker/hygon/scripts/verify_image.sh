@@ -297,8 +297,13 @@ if [ -n "$expected_sglang_sha256" ]; then
         echo "FATAL: provenance manifest not found: $sglang_provenance" >&2
         exit 1
     }
+    # The artifact is bound by its SHA256 above. It may have been derived -
+    # or published - at an earlier commit than this image, so the commit its
+    # provenance records must be part of the image's history, not equal to it.
+    python3 "$scripts/provenance_lineage.py" "$sglang_provenance" \
+        "$labeled_source_commit" --repo "$repo_root"
     python3 - "$sglang_provenance" "$expected_sglang_sha256" \
-        "$DERIVED_SGLANG_VERSION" "$labeled_source_commit" <<'PY'
+        "$DERIVED_SGLANG_VERSION" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -307,7 +312,6 @@ provenance = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 assert provenance["derived_sha256"] == sys.argv[2], (
     f"provenance derived_sha256 {provenance['derived_sha256']} != expected")
 assert provenance["derived_version"] == sys.argv[3], provenance["derived_version"]
-assert provenance["source_commit"] == sys.argv[4], provenance["source_commit"]
 assert provenance["patched_files_manifest"], "provenance carries no manifest"
 PY
     run -e DERIVED_SGLANG_VERSION="$DERIVED_SGLANG_VERSION" \
@@ -377,8 +381,11 @@ if [ -n "$expected_xgrammar_sha256" ]; then
         echo "FATAL: xgrammar provenance not found: $xgrammar_provenance" >&2
         exit 1
     }
+    # same lineage rule as the SGLang wheel: derived no later than the image
+    python3 "$scripts/provenance_lineage.py" "$xgrammar_provenance" \
+        "$labeled_source_commit" --repo "$repo_root"
     python3 - "$xgrammar_provenance" "$expected_xgrammar_sha256" \
-        "$DERIVED_XGRAMMAR_VERSION" "$labeled_source_commit" <<'PY'
+        "$DERIVED_XGRAMMAR_VERSION" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -386,7 +393,6 @@ from pathlib import Path
 provenance = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 assert provenance["derived_sha256"] == sys.argv[2], provenance["derived_sha256"]
 assert provenance["derived_version"] == sys.argv[3], provenance["derived_version"]
-assert provenance["source_commit"] == sys.argv[4], provenance["source_commit"]
 assert provenance["drop_distribution"] == "triton", provenance["drop_distribution"]
 assert provenance["dropped_requires_dist"] == [
     'triton; platform_system == "Linux" and platform_machine == "x86_64"'

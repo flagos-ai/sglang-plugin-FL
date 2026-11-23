@@ -403,10 +403,11 @@ excludes；disposable，不入仓库、不进镜像）。一条版本只对应�
   wheel 的现有布局一致）。本轮全部制品状态为 LOCAL DEVELOPMENT CANDIDATE，
   没有发布任何内容；reviewer r4627443492 要求的“wheel 来自
   resource.flagos.net”在制品 owner 发布之前属于 externally blocked；
-- 正式镜像只应消费已发布、不可变、SHA 钉定的 wheel。注意 `verify_image.sh`
-  目前断言 provenance 的 `source_commit` 等于镜像的 `source-commit` label；
-  发布件在更早的提交派生时该断言会拒绝，release 模式需改为以钉定 SHA 为准
-  后才能启用 pre-derived 路径。
+- 正式镜像只应消费已发布、不可变、SHA 钉定的 wheel。已发布件一定早于镜像的
+  提交派生，所以严格验收对 provenance 的 `source_commit` 要求的是**谱系**而
+  不是相等：派生提交必须存在于本仓库，且是镜像 `source-commit` 的祖先
+  （`scripts/provenance_lineage.py`）。wheel 的内容绑定仍由 SHA256 label 与
+  逐文件 manifest 负责，这部分没有放宽。
 
 ### 插件自有的 kernel import guard 与激活时序
 

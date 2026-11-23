@@ -174,9 +174,12 @@ to from this checkout's tools and the pinned inputs:
   the published input wheel already uses). Every entry is marked LOCAL
   DEVELOPMENT CANDIDATE until the artifact owner publishes it;
 - a release build consumes the PUBLISHED wheels by pinning these same
-  SHA256 values. Before that mode is used, the post-build acceptance's
-  `provenance.source_commit == image source-commit` assertion has to be
-  reworked: a published wheel is derived at an earlier commit.
+  SHA256 values. The post-build acceptance requires lineage, not equality:
+  the commit recorded in a wheel's provenance must exist in the repository
+  and be an ancestor of the image's source commit
+  (`docker/hygon/scripts/provenance_lineage.py`), so a wheel derived - or
+  published - before the image passes while one from an unrelated history
+  does not.
 
 ## Metadata-only dependency correction
 

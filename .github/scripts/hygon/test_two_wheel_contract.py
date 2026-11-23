@@ -19,6 +19,8 @@ Covers the product-candidate wiring that the next image build will run:
   declaration, missing entry points, shipped tests).
 """
 
+import json
+import os
 import re
 import subprocess
 import sys
@@ -295,7 +297,16 @@ class BuildProvenanceContractTests(unittest.TestCase):
         self.assertIn('--xgrammar-wheel-sha256 "$xgrammar_wheel_sha256"', wrapper)
         self.assertIn('--xgrammar-provenance "$xgrammar_provenance"', wrapper)
         verifier = (SCRIPTS / "verify_image.sh").read_text()
-        self.assertIn('provenance["source_commit"] == sys.argv[4]', verifier)
+        # The wheels are immutable artifacts: their provenance must belong to
+        # the image's history, not be equal to the image's own commit (a
+        # published wheel is always derived earlier).
+        self.assertEqual(
+            verifier.count('provenance_lineage.py" "$sglang_provenance"'), 1
+        )
+        self.assertEqual(
+            verifier.count('provenance_lineage.py" "$xgrammar_provenance"'), 1
+        )
+        self.assertNotIn('provenance["source_commit"] == sys.argv[4]', verifier)
         self.assertIn('!= "<no value>"', verifier)
 
 
@@ -991,6 +1002,246 @@ class PublicationManifestTests(unittest.TestCase):
         # the pre-derived path verifies the same pin as a fresh derive
         self.assertEqual(staging.count("$SGLANG_DERIVED_SHA256"), 2)
         self.assertEqual(staging.count("$XGRAMMAR_DERIVED_SHA256"), 2)
+
+
+class ProvenanceLineageTests(unittest.TestCase):
+    """A wheel may be derived (or published) before the image installing it.
+
+    The content binding is the SHA256 label plus the per-file manifest; the
+    commit recorded in the provenance only has to belong to the image's
+    history, so a pre-derived or published wheel passes the strict gate.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "provenance_lineage_test", SCRIPTS / "provenance_lineage.py"
+        )
+        cls.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.module)
+        cls.tmp = tempfile.TemporaryDirectory(prefix="provenance-lineage-test.")
+        cls.provenance_dir = Path(cls.tmp.name) / "provenance"
+        cls.provenance_dir.mkdir()
+        # a throwaway repository: first -> second on the main line, and one
+        # commit on a side branch that is not part of second's history
+        cls.repo = Path(cls.tmp.name) / "repo"
+        cls.repo.mkdir()
+        cls.git("init", "-q")
+        for name, value in (
+            ("user.name", "test"),
+            ("user.email", "test@example.com"),
+            ("commit.gpgsign", "false"),
+        ):
+            cls.git("config", name, value)
+        cls.git("commit", "-q", "--allow-empty", "-m", "first")
+        cls.first = cls.git("rev-parse", "HEAD")
+        cls.git("commit", "-q", "--allow-empty", "-m", "second")
+        cls.second = cls.git("rev-parse", "HEAD")
+        cls.git("checkout", "-q", "-b", "side", cls.first)
+        cls.git("commit", "-q", "--allow-empty", "-m", "side")
+        cls.side = cls.git("rev-parse", "HEAD")
+        cls.git("checkout", "-q", "-")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    @classmethod
+    def git(cls, *arguments):
+        return subprocess.run(
+            ["git", "-C", str(cls.repo), *arguments],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+    def provenance(self, source_commit):
+        path = self.provenance_dir / f"{source_commit}.json"
+        path.write_text(json.dumps({"source_commit": source_commit}))
+        return path
+
+    def violation(self, source_commit, image_commit):
+        return self.module.lineage_violation(
+            self.provenance(source_commit), image_commit, self.repo
+        )
+
+    def test_the_image_commit_and_earlier_commits_are_accepted(self):
+        self.assertIsNone(self.violation(self.second, self.second))
+        self.assertIsNone(self.violation(self.first, self.second))
+
+    def test_a_commit_outside_the_image_history_is_rejected(self):
+        self.assertIn("not an ancestor", self.violation(self.side, self.second))
+
+    def test_an_unknown_or_malformed_commit_is_rejected(self):
+        self.assertIn("not a commit of", self.violation("0" * 40, self.second))
+        self.assertIn("no full source_commit", self.violation("HEAD", self.second))
+        self.assertIn("not a full commit id", self.violation(self.first, "main"))
+
+    def test_an_unreadable_provenance_is_rejected(self):
+        broken = self.provenance_dir / "broken.json"
+        broken.write_text("{not json")
+        self.assertIn(
+            "cannot be read",
+            self.module.lineage_violation(broken, self.second, self.repo),
+        )
+        broken.write_text("[]")  # readable, but not a provenance object
+        self.assertIn(
+            "no full source_commit",
+            self.module.lineage_violation(broken, self.second, self.repo),
+        )
+        self.assertIn(
+            "cannot be read",
+            self.module.lineage_violation(
+                self.provenance_dir / "absent.json", self.second, self.repo
+            ),
+        )
+
+    def test_the_cli_fails_loudly(self):
+        script = SCRIPTS / "provenance_lineage.py"
+        command = [sys.executable, str(script)]
+        accepted = subprocess.run(
+            [
+                *command,
+                str(self.provenance(self.first)),
+                self.second,
+                "--repo",
+                str(self.repo),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        rejected = subprocess.run(
+            [
+                *command,
+                str(self.provenance(self.side)),
+                self.second,
+                "--repo",
+                str(self.repo),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(rejected.returncode, 1)
+        self.assertIn("FATAL: provenance was derived at", rejected.stderr)
+
+    @unittest.skipUnless(
+        (REPO_ROOT / ".git").exists(), "needs the git checkout this test runs in"
+    )
+    def test_this_checkout_satisfies_the_rule_for_its_own_head(self):
+        head = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        self.assertIsNone(
+            self.module.lineage_violation(self.provenance(head), head, REPO_ROOT)
+        )
+
+    def run_strict_blocks(self, provenance_commit, image_commit):
+        """Run verify_image.sh's two strict provenance blocks as written.
+
+        The blocks are cut out of the real script (up to their in-image
+        runs) and executed with a fake docker that answers the label
+        queries, so the shell wiring around the lineage check is exercised,
+        not just its text.
+        """
+        verifier = (SCRIPTS / "verify_image.sh").read_text()
+        blocks = []
+        for start_mark, end_mark in (
+            (
+                'labeled_source_commit="$(docker image inspect',
+                "run -e DERIVED_SGLANG_VERSION=",
+            ),
+            (
+                'labeled_xgrammar_sha256="$(docker image inspect',
+                "run -e DERIVED_XGRAMMAR_VERSION=",
+            ),
+        ):
+            start = verifier.index(start_mark)
+            # each block opens an `if` whose body ends at the in-image run
+            blocks.append(verifier[start : verifier.index(end_mark, start)] + "fi\n")
+        sha = "ab" * 32
+        common = {
+            "source_commit": provenance_commit,
+            "derived_sha256": sha,
+        }
+        sglang = self.provenance_dir / "sglang.json"
+        xgrammar = self.provenance_dir / "xgrammar.json"
+        sglang.write_text(
+            json.dumps(
+                {
+                    **common,
+                    "derived_version": "0.5.18+flagos.hcu1",
+                    "patched_files_manifest": {"sglang/a.py": "00"},
+                }
+            )
+        )
+        xgrammar.write_text(
+            json.dumps(
+                {
+                    **common,
+                    "derived_version": "0.2.1+flagos.hcu1",
+                    "drop_distribution": "triton",
+                    "dropped_requires_dist": [
+                        'triton; platform_system == "Linux" and platform_machine == "x86_64"'
+                    ],
+                    "bound_files_manifest": {"xgrammar/a.py": "00"},
+                }
+            )
+        )
+        script = self.provenance_dir / "strict-blocks.sh"
+        script.write_text(
+            "\n".join(
+                [
+                    "set -euo pipefail",
+                    "image=fake-image",
+                    'scripts="$1"; repo_root="$2"; sglang_provenance="$3"; xgrammar_provenance="$4"',
+                    f'expected_sglang_sha256="{sha}"; expected_xgrammar_sha256="{sha}"',
+                    'DERIVED_SGLANG_VERSION="0.5.18+flagos.hcu1"',
+                    'DERIVED_XGRAMMAR_VERSION="0.2.1+flagos.hcu1"',
+                    "docker() {",
+                    '    case "$*" in',
+                    '        *"org.flagos.ci.source-commit"*) printf \'%s\\n\' "$FAKE_IMAGE_COMMIT" ;;',
+                    '        *"wheel-sha256"*) printf \'%s\\n\' "' + sha + '" ;;',
+                    "        *) return 1 ;;",
+                    "    esac",
+                    "}",
+                    *blocks,
+                    "echo BLOCKS-DONE",
+                ]
+            )
+        )
+        return subprocess.run(
+            [
+                "bash",
+                str(script),
+                str(SCRIPTS),
+                str(self.repo),
+                str(sglang),
+                str(xgrammar),
+            ],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "FAKE_IMAGE_COMMIT": image_commit},
+        )
+
+    def test_the_strict_gate_accepts_a_wheel_derived_before_the_image(self):
+        # both wheels' blocks run to their end for a same-commit provenance
+        # and for one derived one commit earlier (the published-wheel case)
+        for derived_at in (self.second, self.first):
+            completed = self.run_strict_blocks(derived_at, self.second)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("BLOCKS-DONE", completed.stdout)
+
+    def test_the_strict_gate_rejects_a_wheel_from_another_history(self):
+        completed = self.run_strict_blocks(self.side, self.second)
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("FATAL: provenance was derived at", completed.stderr)
+        self.assertNotIn("BLOCKS-DONE", completed.stdout)
 
 
 if __name__ == "__main__":
