@@ -571,16 +571,22 @@ docker/hygon/no_excludes_gate.sh <staging-context-dir> [--evidence-dir DIR]
 
 ### 剩余兼容债速查（Docker 注释保持简短，完整证据口径在此）
 
-| 兼容块 | 为什么暂时存在 | 证据 | 移除条件 / owner |
-|---|---|---|---|
-| `ENV PYTHONPATH=/opt/flagtree` | Runtime 只经 BASH_ENV 向 bash 会话暴露 flagtree，直接 python 入口拿不到 triton | base 探针：无 bash profile 时 `find_spec("triton") is None` | Runtime 以 OCI ENV/.pth 等全入口暴露 flagtree |
-| 派生 xgrammar wheel `0.2.1+flagos.hcu1` | 官方 0.2.1 wheel 在 Linux/x86_64 无条件要求 standalone triton，但 HCU Runtime 的编译器能力由 `/opt/flagtree` 模块树提供且无 distribution metadata | 闭包扫描唯一声明者为 xgrammar；原 wheel 的离线 uv 对照会继续解析 triton，修正 wheel 不会；两次派生 SHA 均为 `c2deb285…1a2` 且 49 个非 RECORD 文件（含 11 个 native）逐字节不变 | xgrammar/upstream 或 FlagOS artifact owner 发布 metadata 正确且不可变的 HCU wheel 后，删除仓库派生步骤 |
-| `--excludes triton`（暂留） | 真索引当前不可用，尚不能用无 excludes 的真实 plan + build + verify 证明派生 wheel 已覆盖全部线上解析几何 | 早期探测为全前端 502；最新精确 dry-run 在 `pypi-proxy/simple/starlette/` 重试三次后仍为 502，固定 SGLang 制品 URL 同期为 404；离线门已通过，但按合同不足以授权删除 | Nexus 恢复后依次通过无 excludes 真 dry-run（选中 `xgrammar==0.2.1+flagos.hcu1`、无 triton、零 Runtime replacement）、候选构建、pip check 和完整 `verify_image.sh`，再单独删除 excludes 与精确豁免 |
-| HCU patch（折入派生 wheel `0.5.18+flagos.hcu1`，输入在 `tools/wheels/hygon/`） | SGLang 把一切 HIP 当 AMD ROCm，eager 导入 AMD AITER（HCU 没有） | 原始失败 `ModuleNotFoundError: No module named 'aiter'`；补丁 commit a5d492a | 上游 wheel 自带 HCU-vs-ROCm gating（届时删除派生步骤，改钉上游 wheel） |
-| 插件 early import guard（不伪造 `sgl_kernel.scalar_type`） | HCU 无 sgl-kernel/flashinfer wheel，但 SGLang 层模块 eager import；伪造 scalar_type 又会破坏纯 Python fallback | run 43311162022（`sgl_kernel.kvcacheio` ImportError）及 run 43361932722 / job 131677473082（伪造后 `uint4b8` AttributeError） | SGLang 改为 lazy/guarded import，或 HCU 提供经验证的真实 wheel；已从 Docker 移入 `sglang_fl` wheel |
-| `ENV LD_LIBRARY_PATH=/opt/dtk/...`（前插） | runner 主机是否注入 DTK loader 不一致，镜像需自足 | commit 06ff229（loader 合同失败记录点） | Runtime 经 OCI ENV/ld.so.conf 提供完整 loader 合同 |
-| `ENV ROCM_PATH=/opt/dtk` | FlagTree 用它选 clang；缺失时选中 clang-17 兼容树并报不支持的参数 | run 43426581773（失败）vs 43430350486（aillvm clang-18，绿） | Runtime/FlagTree 不再从该变量推导 clang |
-| `/opt/rocm → /opt/dtk` 符号链接 | SGLang HIP JIT builder 找 `/opt/rocm/bin/hipcc` | run 43417967624 / job 131868790147（`/opt/rocm/bin/hipcc: not found`） | SGLang 原生支持 DTK prefix，或 Runtime 官方别名 |
+容器文件里的 TEMP 块共用一句头注释：“TEMP Runtime compatibility bundle；这些
+设置暴露 Runtime 已携带但没有对所有入口稳定提供的能力；等待 Runtime owner 明确
+迁移方案；详细 observed failure、owner 和 removal gate 见 docker/hygon/README.md。”
+下表就是这张清单。CI 结论均按 job 级数据核对。
+
+| 兼容块 | observed failure（首错误） | 证据 | owner | removal gate |
+|---|---|---|---|---|
+| `ENV PYTHONPATH=/opt/flagtree`（Triton slot 选择） | 无 bash profile 的直接 python 入口 `find_spec("triton") is None` | base 探针；slot 合同见上节 | FlagOS Runtime | Runtime 以 OCI ENV / `.pth` 等对所有入口暴露 flagtree；是否改选 `/opt/triton` 另由硬件 A/B 决定 |
+| `ENV LD_LIBRARY_PATH=/opt/dtk/…`（前插，保留 base 原值） | 去掉该变量后 `from torch._C import *` → `ImportError: libgalaxyhip.so.5: cannot open shared object file: No such file or directory` | 当前 base digest 临时容器探针；commit 06ff229（把 DTK loader path 写入镜像 ENV） | FlagOS Runtime | Runtime 经 OCI ENV 或 `ld.so.conf` 提供完整 loader 合同 |
+| `ENV ROCM_PATH=/opt/dtk` | 未设置时 FlagTree 选中 `/opt/rocm/llvm/bin/clang`（clang 17.0.0）：`clang (LLVM option parsing): Unknown command line argument '-check-valu-data-forward-hazards=0'`，随后 `HSACOError: File operation failed: [Errno 2] No such file or directory: '<tmp>.amdgcn'` | CI run 43426581773 / job 131895138156（E2E inference 失败）；本地探针复现同一首错误 | FlagTree / FlagOS Runtime | FlagTree 不再由该变量推导 clang，或 Runtime 自身导出 `ROCM_PATH=/opt/dtk` |
+| `RUN ln -s /opt/dtk /opt/rocm` | SGLang HIP JIT builder 调用 `/opt/rocm/bin/hipcc`：`/bin/sh: 1: /opt/rocm/bin/hipcc: not found` | CI run 43417967624 / job 131868790147（E2E inference 失败）；未设 ROCM_PATH 时 FlagTree 的默认根同样是 `/opt/rocm` | SGLang（HIP JIT builder 假定 ROCm 前缀）/ FlagOS Runtime | SGLang 原生支持 DTK 前缀，或 Runtime 提供官方别名 |
+| 直接 Runtime clang（wrapper 已从候选移除） | 无卡探针通过；真实 kernel 编译尚未在硬件上验证 | 上文矩阵 | 本仓库（候选选择） | Hygon 硬件矩阵通过后才声明 wrapper 可删除；失败则改用 C 或 D2 |
+| 派生 xgrammar wheel `0.2.1+flagos.hcu1` | 官方 0.2.1 wheel 在 Linux/x86_64 无条件要求 standalone triton，但 HCU Runtime 的编译器能力由 `/opt/flagtree` 模块树提供且无 distribution metadata | 闭包扫描唯一声明者为 xgrammar；原 wheel 的离线 uv 对照会继续解析 triton，修正 wheel 不会；两次派生 SHA 均为 `c2deb285…1a2` 且 49 个非 RECORD 文件（含 11 个 native）逐字节不变 | xgrammar/upstream 或 FlagOS artifact owner | 发布 metadata 正确且不可变的 HCU wheel 后，删除仓库派生步骤 |
+| `--excludes triton`（暂留） | 无（过渡项） | 2026-11-23 的多次 `no_excludes_gate.sh` 重试均停在 `flagos-pypi-hygon/simple/torch/` HTTP 500；离线门已通过，但按合同不足以授权删除 | 本仓库 | `no_excludes_gate.sh` 通过 → 删除后候选构建 → pip check → 完整 `verify_image.sh`，再单独删除 excludes 与精确豁免 |
+| HCU patch（折入派生 wheel `0.5.18+flagos.hcu1`，输入在 `tools/wheels/hygon/`） | `ModuleNotFoundError: No module named 'aiter'`（SGLang 把一切 HIP 当 AMD ROCm，eager 导入 AMD AITER） | commit a5d492a | SGLang upstream | 上游 wheel 自带 HCU-vs-ROCm gating（届时删除派生步骤，改钉上游 wheel） |
+| 插件 import guard（不伪造 `sgl_kernel.scalar_type`） | `ModuleNotFoundError: No module named 'sgl_kernel.kvcacheio'`；伪造 scalar_type 后变成 `'function' object has no attribute 'uint4b8'` | CI run 43311162022 / job 131508435886 与 run 43361932722 / job 131677473082（均 functional 失败）；时序实证见上节 | SGLang / HCU kernel wheel owner | SGLang 改为 lazy/guarded import，或 HCU 提供经验证的真实 wheel |
 
 CI 侧（`.github/scripts/hygon/`）：测试 runner 依赖单源于
 `test-requirements.txt`；容器启动快照与全部安装后 Python 校验集中在

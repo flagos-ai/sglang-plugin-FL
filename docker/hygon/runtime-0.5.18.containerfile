@@ -99,29 +99,16 @@ RUN --mount=type=bind,source=artifacts,target=/tmp/artifacts,readonly \
       '/tmp/artifacts/sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl[srt_empty,runtime_common]' \
       '/tmp/artifacts/sglang_fl-0.1.0-py3-none-any.whl[hygon]'
 
-# --- TEMP: DTK loader path baked into the image ------------------------------
-# Runner hosts differ in whether they inject the DTK loader path; the paths
-# are image-internal (plus the hyhal bind mounts), so baking them makes the
-# image self-sufficient. Prepend-only: ${VAR:+} keeps any base value and
-# never produces an empty path element (verified by verify_image.sh).
-# Evidence: commit 06ff229 (recorded loader-contract failure site).
-# Owner: FlagOS Runtime (remove once it ships the loader contract).
+# --- TEMP Runtime compatibility bundle ---------------------------------------
+# TEMP Runtime compatibility bundle；这些设置暴露 Runtime 已携带但没有对所有入口
+# 稳定提供的能力；等待 Runtime owner 明确迁移方案；详细 observed failure、owner
+# 和 removal gate 见 docker/hygon/README.md。
+# 1/3 DTK loader path, prepended to whatever the base carries.
 ENV LD_LIBRARY_PATH=/opt/dtk/dcc/gcvm/lib:/opt/dtk/hip/lib:/opt/dtk/llvm/lib:/opt/dtk/lib:/opt/dtk/lib64:/opt/hyhal/lib:/opt/hyhal/lib64:/opt/dtk/dushmem/lib:/opt/dtk/opencl/lib:/opt/dtk/.hyhal/rocm_smi/lib:/opt/dtk/.hyhal/lib:/opt/dtk/.hyhal/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
 
-# --- TEMP: FlagTree derives its clang selection from ROCM_PATH ---------------
-# Without it the clang-17 compatibility tree gets selected and fails; with it
-# FlagTree selects the aillvm clang-18 under /opt/dtk.
-# Evidence: run 43426581773 (compatibility clang failure) vs run 43430350486
-# (aillvm clang-18 selected, green).
-# Owner: FlagOS Runtime / FlagTree (remove when clang selection stops using
-# this variable or the Runtime provides it).
+# 2/3 FlagTree derives its clang selection from this root.
 ENV ROCM_PATH=/opt/dtk
 
-# --- TEMP: SGLang's HIP JIT builder expects the /opt/rocm prefix -------------
-# The Runtime ships the complete DTK tree at /opt/dtk and no /opt/rocm alias.
-# Evidence: run 43417967624 / job 131868790147 - "/opt/rocm/bin/hipcc: not
-# found", "Failed to build JIT module sgl_kernel_jit_clamp_position_int64_t".
-# Owner: SGLang upstream / FlagOS Runtime (remove with native DTK-prefix
-# support or an official alias).
+# 3/3 The ROCm prefix alias SGLang's HIP JIT builder expects.
 RUN if [ ! -e /opt/rocm ] && [ ! -L /opt/rocm ]; then ln -s /opt/dtk /opt/rocm; fi \
     && test "$(readlink -f /opt/rocm)" = "$(readlink -f /opt/dtk)"

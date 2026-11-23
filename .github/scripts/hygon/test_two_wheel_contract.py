@@ -655,6 +655,37 @@ class ReviewerCommentContractTests(unittest.TestCase):
         # the version-check switch is set only while a placeholder is active
         self.assertIn('if root == "sgl_kernel":', guard)
 
+    def test_r4627488390_the_loader_path_is_prepended_inside_one_bundle(self):
+        containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
+        line = next(
+            text
+            for text in containerfile.splitlines()
+            if text.startswith("ENV LD_LIBRARY_PATH=")
+        )
+        self.assertTrue(
+            line.endswith("${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"),
+            "LD_LIBRARY_PATH must be prepended, never overwritten",
+        )
+        # the three Runtime compatibility items sit together under one header
+        header = containerfile.index("# --- TEMP Runtime compatibility bundle")
+        bundle = containerfile[header:]
+        order = [
+            bundle.index("ENV LD_LIBRARY_PATH="),
+            bundle.index("ENV ROCM_PATH=/opt/dtk"),
+            bundle.index("ln -s /opt/dtk /opt/rocm"),
+        ]
+        self.assertEqual(order, sorted(order))
+        for sentence in (
+            "这些设置暴露 Runtime 已携带但没有对所有入口",
+            "等待 Runtime owner 明确迁移方案",
+            "removal gate",
+            "docker/hygon/README.md",
+        ):
+            self.assertIn(sentence, bundle)
+        # the slot default and the install are not part of the bundle
+        self.assertNotIn("ENV PYTHONPATH=", bundle)
+        self.assertNotIn("uv pip install", bundle)
+
     def test_r4627512386_the_excludes_removal_is_gated(self):
         # transitional state: the exclusion and its exact exception remain
         # until the real-index gate and the built image prove them redundant
