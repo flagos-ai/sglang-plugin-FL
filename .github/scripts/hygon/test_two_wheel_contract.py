@@ -315,7 +315,10 @@ class PluginWheelAcceptanceTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.stage = tempfile.mkdtemp(prefix="hygon-2w-acceptance.")
+        # removed again in tearDownClass: the acceptance stage must not
+        # outlive the test run in $TMPDIR
+        cls._stage = tempfile.TemporaryDirectory(prefix="hygon-2w-acceptance.")
+        cls.stage = cls._stage.name
         subprocess.run(
             [
                 sys.executable,
@@ -330,6 +333,10 @@ class PluginWheelAcceptanceTests(unittest.TestCase):
             capture_output=True,
         )
         cls.wheel = Path(cls.stage) / "sglang_fl-0.1.0-py3-none-any.whl"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._stage.cleanup()
 
     def run_checker(self, wheel: Path) -> int:
         return subprocess.run(
