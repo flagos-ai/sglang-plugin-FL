@@ -1686,6 +1686,98 @@ class PluginWheelArtifactTests(unittest.TestCase):
         self.assertEqual(provenance["source_date_epoch"], int(epoch))
 
 
+FAKE_DOCKER = r"""#!/bin/bash
+# A fake `docker` for block-level runs of the build and acceptance scripts.
+# Every answer comes from FAKE_* environment variables; any other command
+# fails loudly.
+set -u
+if [ "$1" = manifest ] && [ "$2" = inspect ]; then
+    if [ "$FAKE_REMOTE" = present ]; then exit 0; fi
+    echo "$FAKE_REMOTE_MESSAGE" >&2
+    exit 1
+fi
+if [ "$1" = image ] && [ "$2" = inspect ]; then
+    shift 2
+    format=""
+    if [ "${1:-}" = --format ]; then format="$2"; shift 2; fi
+    reference="${1:-}"
+    present=1
+    for known in $FAKE_PRESENT; do
+        if [ "$reference" = "$known" ]; then present=0; fi
+    done
+    [ "$present" -eq 0 ] || exit 1
+    if [ "$reference" = "$FAKE_BASE" ]; then
+        identifier="$FAKE_BASE_ID"; layers="$FAKE_BASE_LAYERS"
+    else
+        identifier="$FAKE_IMAGE_ID"; layers="$FAKE_IMAGE_LAYERS"
+    fi
+    case "$format" in
+        "{{.Id}}") printf "%s\n" "$identifier" ;;
+        "{{range .RepoDigests}}{{println .}}{{end}}")
+            [ -z "$FAKE_REPO_DIGESTS" ] || printf "%s\n" "$FAKE_REPO_DIGESTS" ;;
+        "{{json .RootFS.Layers}}") printf "%s\n" "$layers" ;;
+        *".Config.Labels "*)
+            key="$(printf "%s" "$format" | sed -n 's/.*"\(org[^"]*\)".*/\1/p')"
+            value="$(printf "%s\n" "$FAKE_LABELS" | sed -n "s/^$key=//p")"
+            if [ -n "$value" ]; then printf "%s\n" "$value"; else printf "<no value>\n"; fi ;;
+        "") ;;
+        *) echo "fake docker: unsupported format $format" >&2; exit 97 ;;
+    esac
+    exit 0
+fi
+echo "fake docker: unsupported command $*" >&2
+exit 97
+"""
+
+FAKE_GIT = r"""#!/bin/bash
+# A fake `git` for block-level runs of the build script.
+case "$*" in
+    *rev-parse*) printf "%s\n" "$FAKE_HEAD" ;;
+    *status*) printf "%s" "$FAKE_DIRTY" ;;
+    *) echo "fake git: unsupported command $*" >&2; exit 97 ;;
+esac
+"""
+
+
+def block(text, start, end):
+    """The region of a script between a unique start marker and the next
+    end marker after it."""
+    assert text.count(start) == 1, f"start marker not unique: {start!r}"
+    first = text.index(start)
+    return text[first : text.index(end, first)]
+
+
+def run_block(lines, fake_env, *arguments):
+    """Write and run a block-level script with the fake docker and git first
+    on PATH; return the completed process."""
+    with tempfile.TemporaryDirectory(prefix="block-test.") as tmp:
+        root = Path(tmp)
+        (root / "bin").mkdir()
+        for name, source in (("docker", FAKE_DOCKER), ("git", FAKE_GIT)):
+            program = root / "bin" / name
+            program.write_text(source)
+            program.chmod(0o755)
+        script = root / "block.sh"
+        script.write_text("\n".join(lines) + "\necho BLOCK-DONE\n")
+        return subprocess.run(
+            ["bash", str(script), *(str(argument) for argument in arguments)],
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                "PATH": f"{root / 'bin'}:{os.environ['PATH']}",
+                "FAKE_REMOTE": "free",
+                "FAKE_REMOTE_MESSAGE": "unknown: artifact not found",
+                "FAKE_PRESENT": "",
+                "FAKE_LABELS": "",
+                "FAKE_BASE": "",
+                "FAKE_IMAGE_ID": "",
+                "FAKE_IMAGE_LAYERS": "",
+                **fake_env,
+            },
+        )
+
+
 def tiny_wheel(path, name, version, extra=None):
     """A minimal wheel: dist-info (METADATA, WHEEL, RECORD), one package
     file and whatever extra members are given."""
@@ -2348,68 +2440,266 @@ class StagedWheelhouseTests(unittest.TestCase):
         self.assertFalse((context / "wheelhouse").exists())
 
 
-class InstalledPluginWheelComparisonTests(unittest.TestCase):
-    """verify_image.sh compares the installed sglang_fl with the staged wheel.
+class CandidateContractTests(unittest.TestCase):
+    """verify_image.sh holds an image to the resolver mode it declares."""
 
-    The comparison program is cut out of the real script and run with the
-    interpreter of a virtual environment that has the wheel installed.
-    """
+    BASE = "registry.example/runtime@sha256:" + "e" * 64
+    BASE_ID = "sha256:" + "e" * 64
+    BASE_LAYERS = json.dumps(["sha256:" + "1" * 64, "sha256:" + "2" * 64])
+    IMAGE_ID = "sha256:" + "f" * 64
+    IMAGE_LAYERS = json.dumps(
+        ["sha256:" + "1" * 64, "sha256:" + "2" * 64, "sha256:" + "3" * 64]
+    )
+    SOURCE_IMAGE = "registry.example/dev/green@sha256:" + "9" * 64
+    LABELS = {
+        "mode": "org.flagos.ci.resolver-mode",
+        "release_ready": "org.flagos.ci.release-ready",
+        "cache_source": "org.flagos.ci.resolver-cache-source",
+        "manifest_sha": "org.flagos.ci.wheelhouse-manifest-sha256",
+        "base_id": "org.flagos.ci.base-local-image-id",
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        cls.verifier = (SCRIPTS / "verify_image.sh").read_text()
+        cls._tmp = tempfile.TemporaryDirectory(prefix="candidate-contract-test.")
+        cls.addClassCleanup(cls._tmp.cleanup)
+        cls.manifest = Path(cls._tmp.name) / "wheelhouse-manifest.json"
+        cls.manifest.write_text(
+            json.dumps({"cache_source": {"image": cls.SOURCE_IMAGE}})
+        )
+        cls.manifest_sha = hashlib.sha256(cls.manifest.read_bytes()).hexdigest()
+
+    def candidate_labels(self, **override):
+        values = {
+            "mode": "offline-wheelhouse",
+            "release_ready": "false",
+            "cache_source": self.SOURCE_IMAGE,
+            "manifest_sha": self.manifest_sha,
+            "base_id": self.BASE_ID,
+        }
+        values.update(override)
+        return {
+            self.LABELS[key]: value
+            for key, value in values.items()
+            if value is not None
+        }
+
+    def verify(self, labels, manifest=True, layers=IMAGE_LAYERS):
+        block_text = block(
+            self.verifier,
+            "label() { docker image inspect",
+            "\n# The required (prepended) DTK loader prefix",
+        )
+        lines = [
+            "set -euo pipefail",
+            "image=fake-image",
+            f'BASE_IMAGE="{self.BASE}"',
+            f'wheelhouse_manifest="{self.manifest if manifest else ""}"',
+            block_text,
+        ]
+        return run_block(
+            lines,
+            {
+                "FAKE_BASE": self.BASE,
+                "FAKE_BASE_ID": self.BASE_ID,
+                "FAKE_BASE_LAYERS": self.BASE_LAYERS,
+                "FAKE_IMAGE_ID": self.IMAGE_ID,
+                "FAKE_IMAGE_LAYERS": layers,
+                "FAKE_PRESENT": f"{self.BASE} fake-image",
+                "FAKE_LABELS": "\n".join(
+                    f"{key}={value}" for key, value in labels.items()
+                ),
+            },
+        )
+
+    def test_an_offline_wheelhouse_candidate_with_its_manifest_is_accepted(self):
+        completed = self.verify(self.candidate_labels())
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn(
+            "all 2 Runtime base layers lead the 3 image layers", completed.stdout
+        )
+        self.assertIn("BLOCK-DONE", completed.stdout)
+
+    def test_an_index_image_needs_no_manifest_and_takes_none(self):
+        labels = {
+            "org.flagos.ci.resolver-mode": "index",
+            self.LABELS["base_id"]: self.BASE_ID,
+        }
+        accepted = self.verify(labels, manifest=False)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        refused = self.verify(labels)
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("resolved from the indexes", refused.stderr)
+
+    def test_a_candidate_verified_without_its_manifest_is_refused(self):
+        completed = self.verify(self.candidate_labels(), manifest=False)
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("needs --wheelhouse-manifest", completed.stderr)
+
+    def test_the_candidate_contract_rejects_every_deviation(self):
+        for name, override, message in (
+            (
+                "not declared release-ready=false",
+                dict(release_ready="true"),
+                "release-ready=false",
+            ),
+            (
+                "release-ready label missing",
+                dict(release_ready=None),
+                "release-ready=false",
+            ),
+            (
+                "another cache source",
+                dict(cache_source="registry.example/dev/other@sha256:" + "8" * 64),
+                "resolver-cache-source is not the manifest",
+            ),
+            (
+                "another wheelhouse manifest",
+                dict(manifest_sha="0" * 64),
+                "wheelhouse-manifest-sha256 does not match",
+            ),
+            (
+                "another local base",
+                dict(base_id="sha256:" + "0" * 64),
+                "base-local-image-id",
+            ),
+            (
+                "no resolver mode",
+                dict(mode=None),
+                "lacks a valid org.flagos.ci.resolver-mode",
+            ),
+            (
+                "an unknown resolver mode",
+                dict(mode="wheel"),
+                "lacks a valid org.flagos.ci.resolver-mode",
+            ),
+        ):
+            with self.subTest(name):
+                completed = self.verify(self.candidate_labels(**override))
+                self.assertEqual(completed.returncode, 1, completed.stderr)
+                self.assertIn(message, completed.stderr)
+                self.assertNotIn("BLOCK-DONE", completed.stdout)
+
+    def test_an_image_without_the_complete_runtime_base_is_refused(self):
+        for layers in (
+            json.dumps(
+                ["sha256:" + "9" * 64, "sha256:" + "2" * 64, "sha256:" + "3" * 64]
+            ),
+            json.dumps(["sha256:" + "1" * 64]),
+        ):
+            with self.subTest(layers):
+                completed = self.verify(self.candidate_labels(), layers=layers)
+                self.assertEqual(completed.returncode, 1)
+                self.assertIn(
+                    "does not carry the complete Runtime base", completed.stderr
+                )
+
+    def test_the_verifier_compares_every_staged_wheel_member_by_member(self):
+        verifier = self.verifier
+        self.assertEqual(verifier.count("/scripts/verify_installed_wheel.py"), 4)
+        for option in (
+            "--wheel /wheel.whl --own-tree sglang\n",
+            "--wheel /wheel.whl --own-tree xgrammar\n",
+            "--wheel /wheel.whl --own-tree sglang_fl --min-members 100",
+            "--wheelhouse-manifest /wheelhouse/wheelhouse-manifest.json",
+            "--runtime /evidence/runtime-distributions-before.json",
+        ):
+            self.assertIn(option, verifier)
+        # the closure check is bound to the candidate mode only
+        self.assertIn('if [ -n "$wheelhouse_manifest" ]; then', verifier)
+        # and the residue scan knows every build input
+        for residue in (
+            "/wheelhouse",
+            "wheelhouse-manifest.json",
+            "runtime-constraints.txt",
+        ):
+            self.assertIn(residue, verifier[verifier.index("build residue") :])
+
+
+class InstalledWheelComparisonTests(unittest.TestCase):
+    """verify_installed_wheel.py compares an installed distribution with its
+    wheel, and an offline-wheelhouse closure with its manifest."""
 
     @classmethod
     def setUpClass(cls):
         import venv
 
-        cls._tmp = tempfile.TemporaryDirectory(prefix="plugin-installed-test.")
+        cls._tmp = tempfile.TemporaryDirectory(prefix="wheel-installed-test.")
         cls.addClassCleanup(cls._tmp.cleanup)
         tmp = Path(cls._tmp.name)
-        cls.wheel = synthetic_plugin_wheel(tmp / "sglang_fl-0.1.0-py3-none-any.whl")
         home = tmp / "venv"
         venv.EnvBuilder(with_pip=True, clear=True).create(home)
         cls.python = home / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-        subprocess.run(
-            [
-                str(cls.python),
-                "-m",
-                "pip",
-                "install",
-                "-q",
-                "--no-deps",
-                "--no-index",
-                str(cls.wheel),
-            ],
-            check=True,
-            capture_output=True,
-        )
         cls.purelib = Path(
-            subprocess.run(
-                [
-                    str(cls.python),
-                    "-c",
-                    "import sysconfig; print(sysconfig.get_paths()['purelib'])",
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout.strip()
+            cls.python_code("import sysconfig; print(sysconfig.get_paths()['purelib'])")
         )
-        verifier = (SCRIPTS / "verify_image.sh").read_text()
-        start = verifier.index('run --volume "$sglang_fl_wheel":/sglang_fl.whl:ro')
-        body_start = verifier.index("<<'PY'\n", start) + len("<<'PY'\n")
-        body_end = verifier.index("\nPY\n", body_start)
-        # the container path becomes the real wheel on this host
-        cls.program = verifier[body_start:body_end].replace(
-            '"/sglang_fl.whl"', repr(str(cls.wheel))
+        # the verifier imports packaging: the fresh environment gets the copy
+        # this test interpreter uses
+        import packaging
+
+        shutil.copytree(Path(packaging.__file__).parent, cls.purelib / "packaging")
+        cls.verifier = SCRIPTS / "verify_installed_wheel.py"
+        cls.wheel = synthetic_plugin_wheel(tmp / "sglang_fl-0.1.0-py3-none-any.whl")
+        cls.pip("install", "-q", "--no-deps", "--no-index", str(cls.wheel))
+
+    @classmethod
+    def python_code(cls, code):
+        return subprocess.run(
+            [str(cls.python), "-c", code], capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+    @classmethod
+    def pip(cls, *arguments):
+        subprocess.run(
+            [str(cls.python), "-m", "pip", *arguments], check=True, capture_output=True
         )
 
-    def compare(self):
+    def compare(self, wheel=None):
         return subprocess.run(
-            [str(self.python), "-"], input=self.program, capture_output=True, text=True
+            [
+                str(self.python),
+                str(self.verifier),
+                "--wheel",
+                str(wheel or self.wheel),
+                "--own-tree",
+                "sglang_fl",
+                "--min-members",
+                "100",
+            ],
+            capture_output=True,
+            text=True,
         )
 
     def test_an_untouched_installation_is_the_wheel(self):
         completed = self.compare()
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertIn("are the staged wheel's content", completed.stdout)
+        self.assertIn(
+            "installed sglang-fl==0.1.0: 123 wheel members are byte-identical",
+            completed.stdout,
+        )
+
+    def test_the_mounted_file_name_does_not_decide_the_identity(self):
+        # the verifier mounts every wheel as /wheel.whl
+        mounted = Path(self._tmp.name) / "mounted" / "wheel.whl"
+        mounted.parent.mkdir(exist_ok=True)
+        shutil.copy(self.wheel, mounted)
+        completed = self.compare(mounted)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_a_wheel_that_is_not_installed_is_detected(self):
+        absent = tiny_wheel(
+            Path(self._tmp.name) / "absent" / "absent-1.0-py3-none-any.whl",
+            "absent",
+            "1.0",
+        )
+        completed = subprocess.run(
+            [str(self.python), str(self.verifier), "--wheel", str(absent)],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("absent: installed None, wheel 1.0", completed.stderr)
 
     def test_a_changed_installed_file_is_detected(self):
         target = self.purelib / "sglang_fl/mod_007.py"
@@ -2419,10 +2709,19 @@ class InstalledPluginWheelComparisonTests(unittest.TestCase):
             completed = self.compare()
         finally:
             target.write_bytes(original)
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn(
-            "differ from the staged wheel: ['sglang_fl/mod_007.py']", completed.stderr
-        )
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("1 changed ['sglang_fl/mod_007.py']", completed.stderr)
+
+    def test_a_missing_installed_file_is_detected(self):
+        target = self.purelib / "sglang_fl/mod_007.py"
+        original = target.read_bytes()
+        target.unlink()
+        try:
+            completed = self.compare()
+        finally:
+            target.write_bytes(original)
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("1 missing ['sglang_fl/mod_007.py']", completed.stderr)
 
     def test_an_extra_file_under_the_package_is_detected(self):
         planted = self.purelib / "sglang_fl" / "planted.py"
@@ -2431,9 +2730,196 @@ class InstalledPluginWheelComparisonTests(unittest.TestCase):
             completed = self.compare()
         finally:
             planted.unlink()
-        self.assertNotEqual(completed.returncode, 0)
+        self.assertEqual(completed.returncode, 1)
         self.assertIn(
-            "not in the staged wheel: ['sglang_fl/planted.py']", completed.stderr
+            "not in sglang_fl-0.1.0-py3-none-any.whl: ['sglang_fl/planted.py']",
+            completed.stderr,
+        )
+
+    def test_a_wheel_with_too_few_members_cannot_pass_the_plugin_gate(self):
+        small = tiny_wheel(
+            Path(self._tmp.name) / "small" / "sglang_fl-0.1.0-py3-none-any.whl",
+            "sglang_fl",
+            "0.1.0",
+        )
+        completed = self.compare(small)
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("fewer than 100", completed.stderr)
+
+    def test_another_version_of_the_distribution_is_detected(self):
+        other = tiny_wheel(
+            Path(self._tmp.name) / "other" / "sglang_fl-0.2.0-py3-none-any.whl",
+            "sglang_fl",
+            "0.2.0",
+        )
+        completed = self.compare(other)
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("installed 0.1.0, wheel 0.2.0", completed.stderr)
+
+    def test_installer_rewrites_of_console_scripts_are_tolerated_bodies_are_not(
+        self,
+    ):
+        module = load_script("verify_installed_wheel")
+        body = b"import demo\nprint('tool')\n"
+        wheel_form = b"#!python\n" + body
+        plain_shebang = b"#!/tmp/venv/bin/python3\n" + body
+        trampoline = (
+            b"#!/bin/sh\n"
+            b'\'\'\'exec\' "$(dirname -- "$(realpath -- "$0")")"/\'python3\' "$0" "$@"\n'
+            b"' '''\n" + body
+        )
+        self.assertEqual(
+            module.strip_script_prologue(plain_shebang),
+            module.strip_script_prologue(wheel_form),
+        )
+        self.assertEqual(
+            module.strip_script_prologue(trampoline),
+            module.strip_script_prologue(wheel_form),
+        )
+        self.assertNotEqual(
+            module.strip_script_prologue(
+                trampoline.replace(b"print('tool')", b"print('x')")
+            ),
+            module.strip_script_prologue(wheel_form),
+        )
+        # end to end: pip rewrites the shebang of the console script it
+        # installs and the distribution still compares equal; the uv
+        # trampoline does too, a changed body does not
+        wheel = tiny_wheel(
+            Path(self._tmp.name) / "tool" / "demo-1.0-py3-none-any.whl",
+            "demo",
+            "1.0",
+            {"demo-1.0.data/scripts/demo-tool": wheel_form},
+        )
+        self.pip("install", "-q", "--no-deps", "--no-index", str(wheel))
+
+        def compare():
+            return subprocess.run(
+                [str(self.python), str(self.verifier), "--wheel", str(wheel)],
+                capture_output=True,
+                text=True,
+            )
+
+        completed = compare()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        script = (
+            Path(
+                self.python_code(
+                    "import sysconfig; print(sysconfig.get_path('scripts'))"
+                )
+            )
+            / "demo-tool"
+        )
+        self.assertTrue(script.read_bytes().startswith(b"#!"))
+        script.write_bytes(trampoline)
+        completed = compare()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        script.write_bytes(trampoline.replace(b"print('tool')", b"print('x')"))
+        completed = compare()
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("1 changed ['demo-1.0.data/scripts/demo-tool']", completed.stderr)
+
+    def wheelhouse(self):
+        """Install two wheelhouse wheels next to the three explicit wheels;
+        return (wheelhouse dir, the Runtime baseline)."""
+        module = load_script("wheelhouse")
+        tmp = Path(self._tmp.name) / "closure"
+        root = write_synthetic_wheelhouse(
+            module, tmp / "wheelhouse", (("alpha", "1.0"), ("beta", "2.0+local.1"))
+        )
+        for name, version in (("alpha", "1.0"), ("beta", "2.0+local.1")):
+            self.pip(
+                "install",
+                "-q",
+                "--no-deps",
+                "--no-index",
+                str(root / f"{name}-{version}-py3-none-any.whl"),
+            )
+        for name, version in (
+            ("sglang", "0.5.18+flagos.hcu1"),
+            ("xgrammar", "0.2.1+flagos.hcu1"),
+        ):
+            wheel = tiny_wheel(
+                tmp / "explicit" / f"{name}-{version}-py3-none-any.whl", name, version
+            )
+            self.pip("install", "-q", "--no-deps", "--no-index", str(wheel))
+        # everything that is not part of the closure is "the Runtime"
+        closure = ["alpha", "beta", "sglang", "sglang-fl", "xgrammar", "gamma"]
+        baseline = tmp / "runtime.json"
+        baseline.write_text(
+            self.python_code(
+                "import importlib.metadata as md, json\n"
+                "from packaging.utils import canonicalize_name\n"
+                f"closure = {closure!r}\n"
+                "print(json.dumps({canonicalize_name(d.metadata['Name']): d.version "
+                "for d in md.distributions() if d.metadata['Name'] "
+                "and canonicalize_name(d.metadata['Name']) not in closure}))\n"
+            )
+        )
+        return root, baseline
+
+    def closure(self, manifest, baseline):
+        return subprocess.run(
+            [
+                str(self.python),
+                str(self.verifier),
+                "--wheelhouse-manifest",
+                str(manifest),
+                "--runtime",
+                str(baseline),
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_the_closure_binds_to_the_wheelhouse_manifest(self):
+        module = load_script("wheelhouse")
+        root, baseline = self.wheelhouse()
+        completed = self.closure(root / "wheelhouse-manifest.json", baseline)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn(
+            "2 wheelhouse wheels consumed, 6 installed members", completed.stdout
+        )
+        # a manifest that lists another version than the one installed
+        other = write_synthetic_wheelhouse(
+            module,
+            Path(self._tmp.name) / "other" / "wheelhouse",
+            (("alpha", "1.1"), ("beta", "2.0+local.1")),
+        )
+        completed = self.closure(other / "wheelhouse-manifest.json", baseline)
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("alpha==1.0: the wheelhouse holds 1.1", completed.stderr)
+        # an added distribution that is neither explicit nor wheelhouse
+        gamma = tiny_wheel(
+            Path(self._tmp.name) / "extra" / "gamma-5.0-py3-none-any.whl",
+            "gamma",
+            "5.0",
+        )
+        self.pip("install", "-q", "--no-deps", "--no-index", str(gamma))
+        completed = self.closure(root / "wheelhouse-manifest.json", baseline)
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn(
+            "gamma==5.0: neither an explicit wheel nor a wheelhouse wheel",
+            completed.stderr,
+        )
+        self.pip("uninstall", "-q", "-y", "gamma")
+        # a consumed wheel whose installed content was changed
+        target = self.purelib / "beta" / "__init__.py"
+        original = target.read_bytes()
+        target.write_text("tampered\n")
+        try:
+            completed = self.closure(root / "wheelhouse-manifest.json", baseline)
+        finally:
+            target.write_bytes(original)
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("beta is not the content of", completed.stderr)
+        # a missing explicit wheel
+        self.pip("uninstall", "-q", "-y", "xgrammar")
+        completed = self.closure(root / "wheelhouse-manifest.json", baseline)
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn(
+            "xgrammar==0.2.1+flagos.hcu1: the explicit wheel is not installed",
+            completed.stderr,
         )
 
 

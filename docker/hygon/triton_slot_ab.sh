@@ -102,12 +102,19 @@ if [ -n "$context" ] && [ -d "$context/artifacts" ]; then
     verify_args=(
         --sglang-wheel-sha256 "$(label org.flagos.ci.sglang-wheel-sha256)"
         --sglang-provenance "$context/artifacts/${sglang_wheel%.whl}.provenance.json"
+        --sglang-wheel "$context/artifacts/$sglang_wheel"
         --xgrammar-wheel-sha256 "$(label org.flagos.ci.xgrammar-wheel-sha256)"
         --xgrammar-provenance "$context/artifacts/${xgrammar_wheel%.whl}.provenance.json"
+        --xgrammar-wheel "$context/artifacts/$xgrammar_wheel"
         --sglang-fl-wheel "$context/artifacts/$plugin_wheel"
         --sglang-fl-wheel-sha256 "$(label org.flagos.ci.sglang-fl-wheel-sha256)"
         --sglang-fl-provenance "$context/artifacts/${plugin_wheel%.whl}.provenance.json"
     )
+    # an offline-wheelhouse candidate verifies its closure against the
+    # manifest its build consumed
+    if [ -s "$context/wheelhouse/wheelhouse-manifest.json" ]; then
+        verify_args+=(--wheelhouse-manifest "$context/wheelhouse/wheelhouse-manifest.json")
+    fi
     echo "strict content binding: enabled (provenance from $context)"
 else
     echo "WARNING: no --context given; the arms run the weaker identity gate"

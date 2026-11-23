@@ -29,7 +29,11 @@
 #      directory (parent and child process; full import deferred to HCU CI)
 #   8. image-level ENV/label contract: the compatibility ENVs, the
 #      LD_LIBRARY_PATH prepend semantics, the provenance labels, the
-#      neutral WORKDIR, and the absence of any CI working directory
+#      declared resolver mode and candidate contract, the Runtime's complete
+#      parent layers, every installed wheel compared member by member with
+#      the staged artifact (the whole closure for an offline-wheelhouse
+#      candidate), the neutral WORKDIR, and the absence of any CI working
+#      directory or build residue
 #
 # Usage: verify_image.sh <image>
 
@@ -40,35 +44,54 @@ set -euo pipefail
 #   verify_image.sh <image> --sglang-wheel-sha256 <hex> --sglang-provenance <json> \
 #       --xgrammar-wheel-sha256 <hex> --xgrammar-provenance <json> \
 #       --sglang-fl-wheel <whl> --sglang-fl-wheel-sha256 <hex> \
-#       --sglang-fl-provenance <json>
+#       --sglang-fl-provenance <json> \
+#       [--sglang-wheel <whl> --xgrammar-wheel <whl>] \
+#       [--wheelhouse-manifest <json>]
 #
 # The strict form is what build_two_wheel.sh runs: the expected wheel
 # digests and provenance files bind the acceptance to the exact artifact
 # content (patched-file manifests for the derived wheels; the wheel itself
 # for sglang_fl, whose installed files are compared member by member).
-# Without them only the weaker identity gate (label present + installed
-# version) runs, and the report says so.
+# --sglang-wheel / --xgrammar-wheel add the same member-by-member comparison
+# for the two derived wheels: the whole installed payload, native libraries
+# included, must be the staged wheel. --wheelhouse-manifest is required for
+# an offline-wheelhouse candidate and rejected otherwise: its whole closure
+# is verified against it. Without the strict arguments only the weaker
+# identity gate (label present + installed version) runs, and the report
+# says so.
 image="${1:?usage: verify_image.sh <image> [strict artifact arguments]}"
 shift || true
 expected_sglang_sha256=""
 sglang_provenance=""
+sglang_wheel=""
 expected_xgrammar_sha256=""
 xgrammar_provenance=""
+xgrammar_wheel=""
 sglang_fl_wheel=""
 expected_sglang_fl_sha256=""
 sglang_fl_provenance=""
+wheelhouse_manifest=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --sglang-wheel-sha256) expected_sglang_sha256="${2:?}"; shift 2 ;;
         --sglang-provenance) sglang_provenance="${2:?}"; shift 2 ;;
+        --sglang-wheel) sglang_wheel="${2:?}"; shift 2 ;;
         --xgrammar-wheel-sha256) expected_xgrammar_sha256="${2:?}"; shift 2 ;;
         --xgrammar-provenance) xgrammar_provenance="${2:?}"; shift 2 ;;
+        --xgrammar-wheel) xgrammar_wheel="${2:?}"; shift 2 ;;
         --sglang-fl-wheel) sglang_fl_wheel="${2:?}"; shift 2 ;;
         --sglang-fl-wheel-sha256) expected_sglang_fl_sha256="${2:?}"; shift 2 ;;
         --sglang-fl-provenance) sglang_fl_provenance="${2:?}"; shift 2 ;;
+        --wheelhouse-manifest) wheelhouse_manifest="${2:?}"; shift 2 ;;
         *) echo "FATAL: unknown argument $1" >&2; exit 1 ;;
     esac
 done
+# A staged wheel is compared under the digest its label names.
+if [ -n "$sglang_wheel" ] && [ -z "$expected_sglang_sha256" ] \
+    || [ -n "$xgrammar_wheel" ] && [ -z "$expected_xgrammar_sha256" ]; then
+    echo "FATAL: --sglang-wheel/--xgrammar-wheel must come with the expected wheel digest" >&2
+    exit 1
+fi
 plugin_args=0
 for value in "$sglang_fl_wheel" "$expected_sglang_fl_sha256" "$sglang_fl_provenance"; do
     [ -n "$value" ] && plugin_args=$((plugin_args + 1))
@@ -113,6 +136,72 @@ case "$TRITON_SLOT" in
         exit 1
         ;;
 esac
+
+# --- Resolver mode and candidate contract --------------------------------------
+# Every image says how its closure was resolved (org.flagos.ci.resolver-mode)
+# and which local Runtime object it was built from. The offline-wheelhouse
+# mode is a DEVELOPMENT CANDIDATE by construction: it must declare itself
+# release-ready=false and carry the identity of the resolver cache its
+# wheelhouse was derived from; its closure is compared with the very
+# manifest the build consumed (phase 8).
+label() { docker image inspect --format "{{index .Config.Labels \"$1\"}}" "$image"; }
+RESOLVER_MODE="$(label org.flagos.ci.resolver-mode)"
+case "$RESOLVER_MODE" in
+    index)
+        [ -z "$wheelhouse_manifest" ] || {
+            echo "FATAL: --wheelhouse-manifest was given for an image resolved from the indexes (mode $RESOLVER_MODE)" >&2
+            exit 1
+        }
+        ;;
+    offline-wheelhouse)
+        [ -s "$wheelhouse_manifest" ] || {
+            echo "FATAL: an offline-wheelhouse candidate needs --wheelhouse-manifest: its closure is verified against it" >&2
+            exit 1
+        }
+        [ "$(label org.flagos.ci.release-ready)" = "false" ] || {
+            echo "FATAL: an offline-wheelhouse candidate must carry org.flagos.ci.release-ready=false" >&2
+            exit 1
+        }
+        # the labels must name the build inputs the verifier holds
+        expected_cache_source="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["cache_source"]["image"])' "$wheelhouse_manifest")"
+        [ "$(label org.flagos.ci.resolver-cache-source)" = "$expected_cache_source" ] || {
+            echo "FATAL: org.flagos.ci.resolver-cache-source is not the manifest's cache source ($expected_cache_source)" >&2
+            exit 1
+        }
+        [ "$(label org.flagos.ci.wheelhouse-manifest-sha256)" = "$(sha256sum "$wheelhouse_manifest" | awk '{print $1}')" ] || {
+            echo "FATAL: org.flagos.ci.wheelhouse-manifest-sha256 does not match $wheelhouse_manifest" >&2
+            exit 1
+        }
+        ;;
+    *)
+        echo "FATAL: $image lacks a valid org.flagos.ci.resolver-mode label (got '$RESOLVER_MODE'; build it with build_two_wheel.sh)" >&2
+        exit 1
+        ;;
+esac
+BASE_LOCAL_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$BASE_IMAGE")"
+[ "$(label org.flagos.ci.base-local-image-id)" = "$BASE_LOCAL_IMAGE_ID" ] || {
+    echo "FATAL: org.flagos.ci.base-local-image-id ($(label org.flagos.ci.base-local-image-id)) is not the local object of $BASE_IMAGE ($BASE_LOCAL_IMAGE_ID)" >&2
+    exit 1
+}
+# The image is built FROM the declared base, so its RootFS must start with
+# every layer of that base: the candidate carries the complete Runtime, and
+# a push ships all of it.
+base_layers="$(docker image inspect --format '{{json .RootFS.Layers}}' "$BASE_IMAGE")"
+image_layers="$(docker image inspect --format '{{json .RootFS.Layers}}' "$image")"
+python3 - "$base_layers" "$image_layers" <<'PY'
+import json
+import sys
+
+base, image = (json.loads(argument) for argument in sys.argv[1:3])
+if image[: len(base)] != base:
+    raise SystemExit(
+        f"FATAL: the image does not carry the complete Runtime base: "
+        f"{len(base)} base layers expected as the RootFS prefix, "
+        f"{len(image)} layers found"
+    )
+print(f"parent layers: all {len(base)} Runtime base layers lead the "
+      f"{len(image)} image layers")
+PY
 
 # The required (prepended) DTK loader prefix and whatever the base image
 # itself carries; both feed the phase-8 probe.
@@ -421,8 +510,23 @@ assert version == expected, f"installed sglang is {version!r}, expected {expecte
 purelib = pathlib.Path(sysconfig.get_paths()["purelib"])
 dist_infos = sorted(p.name for p in purelib.glob("sglang-*.dist-info"))
 assert dist_infos == [f"sglang-{version}.dist-info"], dist_infos
-print("installed sglang distribution:", version, "(", dist_infos[0], ")")
+    print("installed sglang distribution:", version, "(", dist_infos[0], ")")
 PY
+fi
+# Beyond the patched files: the WHOLE derived wheel must be installed as
+# is - every other member, native payload included, byte for byte.
+if [ -n "$sglang_wheel" ]; then
+    [ "$(sha256sum "$sglang_wheel" | awk '{print $1}')" = "$labeled_wheel_sha256" ] || {
+        echo "FATAL: staged sglang wheel does not hash to the labeled digest $labeled_wheel_sha256" >&2
+        exit 1
+    }
+    run --volume "$sglang_wheel":/wheel.whl:ro \
+        --volume "$scripts":/scripts:ro \
+        --entrypoint python "$image" /scripts/verify_installed_wheel.py \
+        --wheel /wheel.whl --own-tree sglang
+else
+    echo "WARNING: no --sglang-wheel given; only the patched-file manifest was"
+    echo "compared, the rest of the installed SGLang payload was NOT"
 fi
 
 # The corrected xgrammar artifact follows the same content-binding contract.
@@ -518,6 +622,21 @@ assert not [
 print("installed xgrammar distribution:", version, "(triton metadata absent)")
 PY
 fi
+# The whole corrected wheel, not only the provenance manifest: every other
+# member, native payload included, must be installed byte for byte.
+if [ -n "$xgrammar_wheel" ]; then
+    [ "$(sha256sum "$xgrammar_wheel" | awk '{print $1}')" = "$labeled_xgrammar_sha256" ] || {
+        echo "FATAL: staged xgrammar wheel does not hash to the labeled digest $labeled_xgrammar_sha256" >&2
+        exit 1
+    }
+    run --volume "$xgrammar_wheel":/wheel.whl:ro \
+        --volume "$scripts":/scripts:ro \
+        --entrypoint python "$image" /scripts/verify_installed_wheel.py \
+        --wheel /wheel.whl --own-tree xgrammar
+else
+    echo "WARNING: no --xgrammar-wheel given; the installed xgrammar payload was"
+    echo "NOT compared with the staged wheel beyond its provenance manifest"
+fi
 
 # The plugin wheel follows the same contract as the two platform wheels:
 # the OCI label must equal the staged wheel's digest, its provenance must
@@ -552,62 +671,57 @@ provenance = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 assert provenance["distribution"] == "sglang_fl", provenance["distribution"]
 assert provenance["sha256"] == sys.argv[2], provenance["sha256"]
 PY
-    run --volume "$sglang_fl_wheel":/sglang_fl.whl:ro \
-        --entrypoint python "$image" - <<'PY'
-import hashlib
-import pathlib
-import sysconfig
-import zipfile
-
-purelib = pathlib.Path(sysconfig.get_paths()["purelib"])
-# RECORD is rewritten by the installer; every other member is the wheel's
-# own bytes
-compared = 0
-mismatches = []
-with zipfile.ZipFile("/sglang_fl.whl") as archive:
-    members = [m for m in archive.infolist() if not m.filename.endswith("/")]
-    expected = {m.filename for m in members}
-    for member in members:
-        if member.filename.endswith(".dist-info/RECORD"):
-            continue
-        installed = purelib / member.filename
-        actual = (
-            hashlib.sha256(installed.read_bytes()).hexdigest()
-            if installed.is_file()
-            else None
-        )
-        if actual != hashlib.sha256(archive.read(member)).hexdigest():
-            mismatches.append(member.filename)
-        compared += 1
-assert compared > 100, compared
-assert not mismatches, (
-    f"installed sglang_fl files differ from the staged wheel: {mismatches}")
-extra = sorted(
-    p.relative_to(purelib).as_posix()
-    for p in (purelib / "sglang_fl").rglob("*")
-    if p.is_file()
-    and "__pycache__" not in p.parts
-    and p.relative_to(purelib).as_posix() not in expected
-)
-assert not extra, f"files under sglang_fl that are not in the staged wheel: {extra}"
-print(f"installed sglang_fl: {compared} files are the staged wheel's content;"
-      " no extra files")
-PY
+    # RECORD is rewritten by the installer; every other member is the wheel's
+    # own bytes, and nothing else may live under the installed package.
+    run --volume "$sglang_fl_wheel":/wheel.whl:ro \
+        --volume "$scripts":/scripts:ro \
+        --entrypoint python "$image" /scripts/verify_installed_wheel.py \
+        --wheel /wheel.whl --own-tree sglang_fl --min-members 100
 else
     echo "WARNING: no --sglang-fl-wheel/--sglang-fl-wheel-sha256/--sglang-fl-provenance given;"
     echo "the installed sglang_fl was NOT compared with a staged artifact"
 fi
 
-# The released image keeps the Runtime's neutral WORKDIR and carries no CI
-# working directory or build residue.
+# The offline-wheelhouse candidate binds its WHOLE closure to the manifest
+# the build consumed: every distribution added on top of the Runtime is one
+# of the three explicit wheels or a wheelhouse wheel at its exact version,
+# and every consumed wheelhouse wheel is installed with its own content.
+if [ -n "$wheelhouse_manifest" ]; then
+    # the manifest travels inside the wheelhouse directory mount, next to
+    # the wheels it describes
+    run --volume "$(dirname "$wheelhouse_manifest")":/wheelhouse:ro \
+        --volume "$refdir":/evidence:ro \
+        --volume "$scripts":/scripts:ro \
+        --entrypoint python "$image" /scripts/verify_installed_wheel.py \
+        --wheelhouse-manifest /wheelhouse/wheelhouse-manifest.json \
+        --runtime /evidence/runtime-distributions-before.json
+fi
+
+# The image keeps the Runtime's neutral WORKDIR and carries no CI working
+# directory, test tooling or build residue: no wheelhouse, resolver cache,
+# wheel archive, constraints, exclusion, resolver plan, provenance or
+# checkout anywhere (the interpreter bundle's own ensurepip wheels are the
+# only legitimate wheel files).
 workdir="$(docker image inspect --format '{{.Config.WorkingDir}}' "$image")"
 [ "$workdir" = "$BASE_WORKDIR" ] || {
     echo "FATAL: WORKDIR drifted from the Runtime base: '$workdir' != '$BASE_WORKDIR'" >&2
     exit 1
 }
-run --entrypoint bash "$image" -c \
-    'test ! -e /opt/sglang-ci && test ! -e /tmp/artifacts && test ! -e /tmp/wheels && test ! -e /tmp/stubs && test ! -e /root/.cache/uv' \
-    || { echo "FATAL: CI working directory or build residue in the image" >&2; exit 1; }
+run --entrypoint bash "$image" -c '
+    for path in /opt/sglang-ci /tmp/artifacts /tmp/wheels /tmp/stubs /wheelhouse /root/.cache/uv; do
+        if [ -e "$path" ]; then echo "build residue: $path"; exit 1; fi
+    done
+    found="$(find / -xdev \( -path /proc -o -path /sys -o -path "*/ensurepip/_bundled" \) -prune -o \
+        \( -name "*.whl" -o -name "runtime-constraints.txt" -o -name "runtime-0.5.18.excludes.txt" \
+           -o -name "*.provenance.json" -o -name "publication-manifest.json" \
+           -o -name "wheelhouse-manifest.json" -o -name "uv-dry-run.txt" \
+           -o -name "sglang-resolver-additions.txt" -o -name ".git" \) -print 2>/dev/null | head -n 1)"
+    if [ -n "$found" ]; then echo "build residue: $found"; exit 1; fi
+    if python -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec(\"pytest\") is None else 1)"
+    then :; else echo "test tooling in the image: pytest"; exit 1; fi
+' || { echo "FATAL: CI working directory, build residue or test tooling in the image" >&2; exit 1; }
+echo "residue check: no CI working directory, wheelhouse, wheel archive, constraints,"
+echo "  resolver plan, provenance, checkout or test runner in the image"
 
 # LD_LIBRARY_PATH prepend semantics, proven inside the image:
 # required DTK paths first, base value preserved, no empty path element.
@@ -634,7 +748,8 @@ PY
 
 echo "ENV/label contract: PYTHONPATH=$TRITON_SLOT, LD_LIBRARY_PATH (prepend), ROCM_PATH,"
 echo "FlagTree default clang selection, plugin-owned import guard, provenance"
-echo "labels, neutral WORKDIR ('$workdir'), no /opt/sglang-ci residue"
+echo "labels, resolver mode $RESOLVER_MODE, neutral WORKDIR ('$workdir'),"
+echo "no build residue"
 
 echo "ACCEPTED: $image passed all post-build gates (reference data was"
 echo "collected dynamically from $BASE_IMAGE and disposed with $refdir)"
