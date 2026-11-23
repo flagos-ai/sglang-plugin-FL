@@ -269,7 +269,7 @@ def test_image_verifier_checks_the_guard_by_behaviour():
 
 def test_image_verifier_rejects_a_guard_that_fabricates_scalar_type(tmp_path):
     text = GUARD_PATH.read_text()
-    assert 'if fullname == _SCALAR_TYPE:' in text
+    assert "if fullname == _SCALAR_TYPE:" in text
     tampered = tmp_path / "import_guard.py"
     tampered.write_text(text.replace("if fullname == _SCALAR_TYPE:", "if False:"))
     verifier = _load_image_verifier()
@@ -277,60 +277,98 @@ def test_image_verifier_rejects_a_guard_that_fabricates_scalar_type(tmp_path):
         verifier.assert_import_guard_semantics(tampered)
 
 
-def test_plugin_wheel_carries_the_guard_and_uninstall_leaves_nothing(tmp_path):
-    """installed-wheel footprint: the guard ships INSIDE sglang_fl, there is
-    no startup hook (.pth) and no physical sgl_kernel/flashinfer package, and
-    uninstalling the distribution removes everything it added."""
-    import venv
+GUARD = "sglang_fl/dispatch/backends/vendor/hygon/import_guard.py"
+EARLY = "sglang_fl/dispatch/backends/vendor/hygon/early.py"
+WHEEL = "sglang_fl-0.1.0-py3-none-any.whl"
 
+
+def _build_plugin_wheel(tmp_path):
+    """Build the plugin wheel from this checkout with what the interpreter
+    already has: an isolated build environment would fetch setuptools from
+    PyPI, which the operations runtime container cannot reach. A host
+    interpreter that lacks the build requirements falls back to it."""
+    pytest.importorskip("build")
     built = tmp_path / "dist"
+    build = [sys.executable, "-m", "build", "--wheel", "--outdir", str(built)]
     completed = subprocess.run(
-        [sys.executable, "-m", "build", "--wheel", "--outdir", str(built), str(REPO_ROOT)],
-        capture_output=True,
-        text=True,
+        [*build, "--no-isolation", str(REPO_ROOT)], capture_output=True, text=True
     )
+    if completed.returncode != 0:
+        completed = subprocess.run(
+            [*build, str(REPO_ROOT)], capture_output=True, text=True
+        )
     assert completed.returncode == 0, completed.stderr[-800:]
-    wheel = built / "sglang_fl-0.1.0-py3-none-any.whl"
-    with zipfile.ZipFile(wheel) as archive:
+    return built / WHEEL
+
+
+def test_plugin_wheel_carries_the_guard_and_nothing_else(tmp_path):
+    """wheel footprint: the guard ships INSIDE sglang_fl, there is no startup
+    hook (.pth) and the archive owns no other top-level name."""
+    with zipfile.ZipFile(_build_plugin_wheel(tmp_path)) as archive:
         names = archive.namelist()
-    assert "sglang_fl/dispatch/backends/vendor/hygon/early.py" in names
-    assert "sglang_fl/dispatch/backends/vendor/hygon/import_guard.py" in names
+    assert EARLY in names
+    assert GUARD in names
     assert not [n for n in names if n.endswith(".pth")], names
     top_level = {n.split("/")[0] for n in names}
     assert top_level == {"sglang_fl", "sglang_fl-0.1.0.dist-info"}, top_level
 
-    home = tmp_path / "venv"
-    venv.EnvBuilder(with_pip=True, clear=True).create(home)
-    python = home / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    subprocess.run(
-        # --ignore-requires-python: this test only installs and loads the
-        # guard file (plain Python); the package itself needs >=3.10
-        [
-            str(python), "-m", "pip", "install", "--no-deps", "--no-index", "-q",
-            "--ignore-requires-python", str(wheel),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    purelib = Path(
-        subprocess.run(
-            [str(python), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
-    )
-    before = {p.name for p in purelib.iterdir()}
-    assert {"sglang_fl", "sglang_fl-0.1.0.dist-info"} <= before
+
+def test_installed_plugin_carries_the_guard_and_leaves_nothing_outside_record():
+    """installed-wheel footprint, in the environment CI runs in (the
+    operations runtime image - a fresh venv cannot be created there, its
+    interpreter has no usable base prefix): the guard ships INSIDE the
+    installed sglang_fl, there is no startup hook (.pth) and no physical
+    sgl_kernel/flashinfer package, every file under the package is listed in
+    RECORD so an uninstall takes it all, and the INSTALLED guard behaves like
+    the removed Docker stubs."""
+    import importlib.metadata as md
+    import sysconfig
+
+    purelib = Path(sysconfig.get_paths()["purelib"])
+    try:
+        root = Path(md.distribution("sglang-fl").locate_file(""))
+    except md.PackageNotFoundError:
+        root = None
+    if root != purelib:
+        # a checkout's egg-info is not the installed wheel; in installed-wheel
+        # test mode a wrong resolution is a failure, never a skip
+        if os.environ.get("SGLANG_FL_TEST_SOURCE") == "wheel":
+            pytest.fail(f"sglang_fl does not resolve from site-packages: {root}")
+        pytest.skip("needs the installed sglang_fl wheel (operations runtime image)")
+    distribution = md.distribution("sglang-fl")
+    owned = {str(path) for path in distribution.files or ()}
+    for required in (EARLY, GUARD):
+        assert required in owned and (root / required).is_file(), required
     assert not [p for p in purelib.glob("*.pth") if "hcu" in p.name or "stub" in p.name]
-    assert not (purelib / "sgl_kernel").exists()
-    assert not (purelib / "flashinfer").exists()
+    for forbidden in ("sgl_kernel", "flashinfer", "sglang-kernel"):
+        assert not (purelib / forbidden).exists(), forbidden
+        with pytest.raises(md.PackageNotFoundError):
+            md.distribution(forbidden)
+    # nothing under the package is outside RECORD: an uninstall removes all
+    on_disk = {
+        path.relative_to(purelib).as_posix()
+        for path in (purelib / "sglang_fl").rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts
+    }
+    assert on_disk <= owned, sorted(on_disk - owned)[:5]
+    # and the distribution owns nothing outside its package and dist-info
+    stray = sorted(
+        path
+        for path in owned
+        if not path.startswith(("sglang_fl/", "sglang_fl-0.1.0.dist-info/"))
+    )
+    assert not stray, stray[:5]
 
     # the INSTALLED guard behaves like the removed Docker stubs
     code = (
         "import importlib.util, os, sys\n"
-        "import sglang_fl.dispatch.backends.vendor.hygon.import_guard as g\n"
+        "import importlib.metadata as md, pathlib\n"
+        "root = pathlib.Path(md.distribution('sglang-fl').locate_file(''))\n"
+        "spec = importlib.util.spec_from_file_location(\n"
+        "    'installed_guard',\n"
+        "    root / 'sglang_fl/dispatch/backends/vendor/hygon/import_guard.py')\n"
+        "g = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(g)\n"
         "assert g.install_import_guards() == ['sgl_kernel', 'flashinfer']\n"
         "from sgl_kernel.utils import is_arch_support_pdl\n"
         "assert is_arch_support_pdl() is False\n"
@@ -343,37 +381,12 @@ def test_plugin_wheel_carries_the_guard_and_uninstall_leaves_nothing(tmp_path):
         "    assert 'sgl_kernel is not installed on HCU' in str(error)\n"
         "else:\n"
         "    raise AssertionError('placeholder call did not raise')\n"
-        "print('installed-guard-ok')\n"
-    )
-    # loading the submodule must not pull sglang_fl/__init__ (torch); import
-    # it the way the image acceptance does: by file, from the installed dist
-    code = code.replace(
-        "import sglang_fl.dispatch.backends.vendor.hygon.import_guard as g\n",
-        "import importlib.metadata as md, pathlib\n"
-        "root = pathlib.Path(md.distribution('sglang-fl').locate_file(''))\n"
-        "path = root / 'sglang_fl/dispatch/backends/vendor/hygon/import_guard.py'\n"
-        "spec = importlib.util.spec_from_file_location('installed_guard', path)\n"
-        "g = importlib.util.module_from_spec(spec)\n"
-        "spec.loader.exec_module(g)\n",
-    )
-    # ... and assert sglang_fl itself resolves from site-packages
-    code = code.replace(
-        "print('installed-guard-ok')\n",
         "origin = importlib.util.find_spec('sglang_fl').origin\n"
         "assert origin and 'site-packages' in origin, origin\n"
-        "print('installed-guard-ok')\n",
+        "print('installed-guard-ok')\n"
     )
+    # -I: the checkout (cwd, PYTHONPATH) must not shadow the installed wheel
     ran = subprocess.run(
-        [str(python), "-I", "-c", code], capture_output=True, text=True
+        [sys.executable, "-I", "-c", code], capture_output=True, text=True
     )
     assert ran.returncode == 0 and "installed-guard-ok" in ran.stdout, ran.stderr[-800:]
-
-    subprocess.run(
-        [str(python), "-m", "pip", "uninstall", "-y", "-q", "sglang-fl"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    after = {p.name for p in purelib.iterdir()}
-    assert "sglang_fl" not in after and "sglang_fl-0.1.0.dist-info" not in after
-    assert after <= before, sorted(after - before)
