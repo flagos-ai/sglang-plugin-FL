@@ -408,6 +408,61 @@ excludes；disposable，不入仓库、不进镜像）。一条版本只对应�
   发布件在更早的提交派生时该断言会拒绝，release 模式需改为以钉定 SHA 为准
   后才能启用 pre-derived 路径。
 
+### clang wrapper 替代矩阵（reviewer r4627367002）
+
+Reviewer 不认可“塞进镜像的 clang 包装脚本”。候选改用**直接调用 Runtime 自带的
+`/opt/dtk/aillvm/bin/clang-18`**，依据是下面的无卡真实编译探针；**wrapper 能否
+最终删除，以 Hygon 硬件矩阵上的真实 kernel 编译为准，验证前不作此声明。**
+
+探针：在解析出的 Runtime digest
+`acccfccbde7681de6615ae2b411a9c642b14edbd3f4bdb74d75477028878a9f6` 的临时容器内，
+调用 FlagTree HCU backend **自己的** `make_amdgcn` + `make_hsaco` 编译含
+`__ocml_fabs_f32` 的验收 IR（`scripts/hcu-device-lib-check.ll`，gfx936），
+`scripts/flagtree_compile_probe.py` 记录 clang 路径、argv、cc1 载入的 device
+bitcode 和产物 SHA256。“旧布局”指模拟的更早 Runtime：没有 `/opt/dtk/amdgcn`，
+device libs 只在 `/opt/dtk/dcc/dccgcn/bitcode`（build-infra #1786 的现场）。
+
+| 变体 | 相对 A 的唯一差异 | 当前布局 | 旧布局 |
+|---|---|---|---|
+| **A 直接 Runtime clang（候选采用）** | —（FlagTree 默认参数，含 1 个空串参数） | 通过：asm `10a0c529…`，HSACO `ea37ba47…`（3040 B），device bitcode 取自 `/opt/dtk/amdgcn/bitcode` | **失败**：`clang-18: error: cannot find ROCm device library; provide its path via '--rocm-path' or '--rocm-device-lib-path', or pass '-nogpulib' to build without ROCm device library`（即 #1786） |
+| B 已删除的 wrapper（对照基线） | `TRITON_HIP_CLANG_PATH` 指向包装脚本：丢弃空串参数并追加 `--rocm-device-lib-path=/opt/dtk/dcc/dccgcn/bitcode` | 通过，产物与 A 逐字节相同（bitcode 取自 `/opt/dtk/dcc/dccgcn/bitcode`） | 通过，产物与 A（当前布局）相同 |
+| C 目录别名 | 新增 `/opt/dtk/amdgcn/bitcode → /opt/dtk/dcc/dccgcn/bitcode` 符号链接，不改任何 Runtime 文件 | 不适用（标准路径已存在） | 通过，产物相同 |
+| D1 backend 追加 `-nogpulib` 并去掉空串参数 | FlagTree 源码改动（原型副本） | **失败**：asm 不同（`991c06b4…`，cc1 未载入任何 device bitcode），链接步 `ld.lld: error: undefined symbol: __ocml_fabs_f32` | 未跑 |
+| D2 backend 显式传 `--rocm-device-lib-path=<backend 自算的 libdir>` 并去掉空串参数 | FlagTree 源码改动（原型副本） | 通过，产物相同 | 通过，产物相同 |
+
+A 的 IR→assembly argv（当前布局）：
+
+```text
+clang -target amdgcn-amd-amdhsa -mcpu=gfx936:xnack- -mllvm=-check-valu-data-forward-hazards=0 \
+  -mllvm=-disable-cluster-lds-memops=true -mllvm=-hcu-pre-emit-load-store-opt=false '' \
+  -mllvm=-support-768-vgprs=true -mllvm=-enable-hcu-approx-fp-math=true \
+  -mllvm=-hcu-update-wait-by-reverse-search=true -O3 <probe>.ll -S -o <out>.amdgcn
+```
+
+结论与去向：
+
+- 当前 Runtime 上 A 成立，是因为 device libs 同时存在于 clang 自动探测的标准
+  路径 `/opt/dtk/amdgcn/bitcode`；backend 把 device libs 链进 IR 之后，交给
+  clang 的 IR 仍声明 `__ocml_*` / `__ockl_*`，clang 这一步自己也必须找到它们；
+- A 对 Runtime 布局敏感（旧布局即 #1786）。若硬件矩阵或未来的 Runtime 上 A
+  失败，不需要恢复 wrapper：C（目录别名）与 D2 都产出与 A 相同的产物；
+- D 是根治方案，需要 FlagTree / FlagOS Runtime owner 落地：候选补丁在
+  [`upstream/flagtree-0.7.0+hcu3.6-explicit-device-lib-dir.patch`](upstream/flagtree-0.7.0+hcu3.6-explicit-device-lib-dir.patch)，
+  本仓库从不应用它；
+- 构建后验收与 CI 环境门要求直接选中 Runtime clang，并拒绝
+  `TRITON_HIP_CLANG_PATH` 等覆盖（探针负例已验证：旧布局、存在覆盖两种情况均
+  FATAL）。
+
+复跑探针（`verify_image.sh` 第 4 阶段即此命令；矩阵脚本本身属 disposable
+证据，不提交）：
+
+```bash
+docker run --rm --platform linux/amd64 \
+  --volume "$PWD/docker/hygon/scripts":/scripts:ro \
+  --entrypoint python <candidate-image> /scripts/flagtree_compile_probe.py \
+  --probe /scripts/hcu-device-lib-check.ll
+```
+
 ### Triton 编译器 slot：`/opt/flagtree` vs `/opt/triton`（reviewer r4627164234）
 
 Runtime 自带两套编译器树，容器文件只是用 `ENV PYTHONPATH` 选其一：
@@ -487,14 +542,6 @@ docker/hygon/no_excludes_gate.sh <staging-context-dir> [--evidence-dir DIR]
 | `ENV LD_LIBRARY_PATH=/opt/dtk/...`（前插） | runner 主机是否注入 DTK loader 不一致，镜像需自足 | commit 06ff229（loader 合同失败记录点） | Runtime 经 OCI ENV/ld.so.conf 提供完整 loader 合同 |
 | `ENV ROCM_PATH=/opt/dtk` | FlagTree 用它选 clang；缺失时选中 clang-17 兼容树并报不支持的参数 | run 43426581773（失败）vs 43430350486（aillvm clang-18，绿） | Runtime/FlagTree 不再从该变量推导 clang |
 | `/opt/rocm → /opt/dtk` 符号链接 | SGLang HIP JIT builder 找 `/opt/rocm/bin/hipcc` | run 43417967624 / job 131868790147（`/opt/rocm/bin/hipcc: not found`） | SGLang 原生支持 DTK prefix，或 Runtime 官方别名 |
-
-Reviewer 明确反对的 clang wrapper 已删除。旧失败 build-infra #1786 发生在
-更早的 Runtime；在本轮解析出的 base digest `acccfccb…878a9f6` 上，直接使用
-`/opt/dtk/aillvm/bin/clang-18` 对含 `__ocml_fabs_f32` 的验收 IR 完成
-IR→assembly→HSACO 两步编译（无 `TRITON_HIP_CLANG_PATH`、无显式
-`--rocm-device-lib-path`，exit 0）。构建后验收与 CI 环境门现均要求直接选择
-Runtime clang，并拒绝旧 wrapper 环境变量。该无卡证明允许删除包装脚本；真实
-kernel 路径的等价性仍须随 Hygon 硬件矩阵验证。
 
 CI 侧（`.github/scripts/hygon/`）：测试 runner 依赖单源于
 `test-requirements.txt`；容器启动快照与全部安装后 Python 校验集中在

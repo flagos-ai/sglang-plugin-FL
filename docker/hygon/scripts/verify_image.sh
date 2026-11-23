@@ -20,7 +20,8 @@
 #      two-wheel contract, HCU compat markers   [verify_runtime_immutable]
 #   2. vendor module provenance vs the base reference
 #   3. kernel-wheel stub import smoke
-#   4. direct Runtime clang HSACO compile through the DTK device libraries
+#   4. FlagTree's real HCU compile path (its own make_amdgcn/make_hsaco)
+#      through the Runtime clang and DTK device libraries, GPU-less
 #   5. SGLang import smoke (sentinel verdict from the log)
 #   6. Triton slot contract for the slot the image declares + entrypoint
 #      matrix (sh, bash, child process) + no resolver-installed triton dist
@@ -175,16 +176,12 @@ assert guard._SKIP_VERSION_CHECK in __import__("os").environ
 print("plugin-owned kernel import guard semantics: OK")
 PY
 
-echo "=== [4/8] Direct Runtime clang HSACO compile through DTK device libraries ==="
+echo "=== [4/8] FlagTree HCU compile path (GPU-less, FlagTree's own stage functions) ==="
+# The probe drives FlagTree's make_amdgcn/make_hsaco with FlagTree's default
+# configuration: the real per-kernel code path, real clang argv, no wrapper.
 run --volume "$scripts":/scripts:ro \
-    --entrypoint bash "$image" <<'EOF'
-/opt/dtk/aillvm/bin/clang-18 -target amdgcn-amd-amdhsa -mcpu=gfx936:xnack- -O3 \
-       /scripts/hcu-device-lib-check.ll -S -o /tmp/hcu-device-lib-check.s \
-&& /opt/dtk/aillvm/bin/clang-18 -target amdgcn-amd-amdhsa -mcpu=gfx936:xnack- -O3 \
-       /tmp/hcu-device-lib-check.s -x assembler -o /tmp/hcu-device-lib-check.hsaco \
-&& test -s /tmp/hcu-device-lib-check.hsaco \
-&& echo "direct Runtime clang hsaco compile through DTK device libraries: OK"
-EOF
+    --entrypoint python "$image" /scripts/flagtree_compile_probe.py \
+    --probe /scripts/hcu-device-lib-check.ll
 
 echo "=== [5/8] SGLang import smoke ==="
 smoke_log="$refdir/sglang-import-smoke.log"
@@ -489,7 +486,7 @@ print(f"LD_LIBRARY_PATH: {len(required)} DTK paths in front, "
 PY
 
 echo "ENV/label contract: PYTHONPATH=$TRITON_SLOT, LD_LIBRARY_PATH (prepend), ROCM_PATH,"
-echo "direct Runtime clang, plugin-owned import guard, provenance"
+echo "FlagTree default clang selection, plugin-owned import guard, provenance"
 echo "labels, neutral WORKDIR ('$workdir'), no /opt/sglang-ci residue"
 
 echo "ACCEPTED: $image passed all post-build gates (reference data was"

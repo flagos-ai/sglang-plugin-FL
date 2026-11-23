@@ -579,6 +579,38 @@ class ReviewerCommentContractTests(unittest.TestCase):
         self.assertNotIn("docker push", ab)
         self.assertIn("NOT run here", ab)
 
+    def test_r4627367002_clang_wrapper_is_gone_and_flagtrees_own_path_is_probed(self):
+        for name in (
+            "runtime-0.5.18.containerfile",
+            "build_two_wheel.sh",
+            "stage_wheels.sh",
+        ):
+            text = (DOCKER / name).read_text()
+            self.assertNotIn("hcu-clang", text, name)
+            self.assertNotIn("TRITON_HIP_CLANG_PATH", text, name)
+        self.assertFalse((DOCKER / "hcu-clang").exists())
+        # the acceptance drives FlagTree's own stage functions, not a
+        # hand-written clang command line
+        verify = (DOCKER / "scripts" / "verify_image.sh").read_text()
+        self.assertIn("/scripts/flagtree_compile_probe.py", verify)
+        probe = (DOCKER / "scripts" / "flagtree_compile_probe.py").read_text()
+        self.assertIn("HIPBackend.make_amdgcn(", probe)
+        self.assertIn("HIPBackend.make_hsaco(", probe)
+        # the owner-side fix candidate is kept, and is never applied here
+        upstream = (
+            DOCKER
+            / "upstream"
+            / ("flagtree-0.7.0+hcu3.6-explicit-device-lib-dir.patch")
+        )
+        self.assertTrue(upstream.is_file())
+        self.assertIn("never applied here", upstream.read_text()[:200])
+        for name in (
+            "runtime-0.5.18.containerfile",
+            "build_two_wheel.sh",
+            "stage_wheels.sh",
+        ):
+            self.assertNotIn("upstream/", (DOCKER / name).read_text())
+
     def test_r4627443492_wheels_are_pinned_artifacts_with_a_publication_manifest(self):
         staging = (DOCKER / "stage_wheels.sh").read_text()
         self.assertIn(

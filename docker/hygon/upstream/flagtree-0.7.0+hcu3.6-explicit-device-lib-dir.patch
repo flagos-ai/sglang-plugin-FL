@@ -1,0 +1,69 @@
+# CANDIDATE FIX FOR THE FLAGTREE / FLAGOS RUNTIME OWNER - never applied here.
+#
+# Base: FlagTree 0.7.0+hcu3.6 as shipped in the operations Runtime
+#       flagos-runtime-hygon-dtk26.04@sha256:acccfccb...878a9f6
+#       (triton/backends/hcu/compiler_hcu.py,
+#        sha256 3d6fe9044081a587938b6f2350d0173e6c4a0daf477038e9d4fa68b0acaccadb)
+# Problem (build-infra #1786): the HCU backend links the ROCm device
+#   libraries into the IR itself (HIPOptions.extern_libs, make_llir) but
+#   hands clang IR that still declares __ocml_* / __ockl_* calls, so clang
+#   must link the device libraries too. The backend leaves that to clang's
+#   ROCm auto-detection, which fails on DTK releases that keep the libraries
+#   at <rocm>/dcc/dccgcn/bitcode instead of <rocm>/amdgcn/bitcode:
+#     clang-18: error: cannot find ROCm device library; provide its path via
+#     '--rocm-path' or '--rocm-device-lib-path', or pass '-nogpulib' ...
+#   The two-wheel image used to work around it with a clang wrapper script.
+# Fix: pass the SAME device-library directory the backend links explicitly
+#   (--rocm-device-lib-path), resolving both known layouts, and stop
+#   emitting the empty-string argument of the disabled wdra option.
+# GPU-less evidence (FlagTree's own make_amdgcn/make_hsaco on an
+#   OCML-referencing kernel, gfx936): current Runtime layout and a simulated
+#   older layout (no <rocm>/amdgcn) both compile; the code object is
+#   byte-identical (sha256 ea37ba47...) to the unpatched backend's output
+#   where the unpatched backend works. A -nogpulib variant was rejected:
+#   ld.lld: error: undefined symbol: __ocml_fabs_f32.
+#
+--- a/triton/backends/hcu/compiler_hcu.py
++++ b/triton/backends/hcu/compiler_hcu.py
+@@ -120,7 +120,7 @@
+ 
+         # default_libdir = Path(__file__).parent / 'lib'
+         # HCU toolchain uses this path.
+-        default_libdir = Path(HIPBackend.path_to_rocm()) / 'amdgcn/bitcode/'
++        default_libdir = HIPBackend.device_libdir()
+         extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
+         for lib in ["ocml", "ockl", "hip", "opencl"]:  # Add hip and opencl for HCU toolchain.
+             extern_libs[lib] = str(default_libdir / f'{lib}.bc')
+@@ -272,6 +272,17 @@
+         return str(candidates[0])
+ 
+     @staticmethod
++    def device_libdir():
++        """Directory holding the ROCm device libraries this backend links into
++        the IR and hands to clang. ROCm ships it at <rocm>/amdgcn/bitcode; DTK
++        releases without that alias keep it at <rocm>/dcc/dccgcn/bitcode."""
++        rocm = Path(HIPBackend.path_to_rocm())
++        for candidate in (rocm / 'amdgcn' / 'bitcode', rocm / 'dcc' / 'dccgcn' / 'bitcode'):
++            if (candidate / 'ocml.bc').is_file():
++                return candidate
++        return rocm / 'amdgcn' / 'bitcode'
++
++    @staticmethod
+     def path_to_rocm_llvm():
+         rocm_path = Path(HIPBackend.path_to_rocm())
+         llvm_subdir = "aillvm" if rocm_path.name == "dtk" else "llvm"
+@@ -376,9 +387,13 @@
+             "-mllvm=-disable-cluster-lds-memops=true",
+             # Note: when register spill after ds_read_matrix, result is wrong for compiler backend. disable current.
+             "-mllvm=-hcu-pre-emit-load-store-opt=false",
+-            "-mllvm=-vgpr-greedy-alloc-mode=local-wave" if options.wdra_enabled else "",
++            *(["-mllvm=-vgpr-greedy-alloc-mode=local-wave"] if options.wdra_enabled else []),
+             *options_args,
+             "-O3",
++            # clang lowers IR that still declares __ocml_*/__ockl_* calls, so it must
++            # link the SAME device libraries make_llir uses; pass their directory
++            # explicitly instead of relying on clang's ROCm auto-detection.
++            f"--rocm-device-lib-path={os.path.dirname(dict(options.extern_libs)['ocml'])}",
+         ]
+ 
+         return clang_args
