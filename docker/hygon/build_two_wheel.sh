@@ -7,9 +7,11 @@
 # here (pre-build, against the resolved base digest) or in
 # docker/hygon/scripts/verify_image.sh (post-build):
 #
-#   1. docker/hygon/stage_wheels.sh - build the plugin wheel from this
-#      checkout, fetch+verify the fixed flagos SGLang wheel, assemble the
-#      disposable build context;
+#   1. docker/hygon/stage_wheels.sh - stage the plugin wheel (built from
+#      this checkout for a development candidate, or the published wheel
+#      pinned by SGLANG_FL_WHEEL / SGLANG_FL_SHA256 for a release), fetch
+#      and verify the fixed flagos SGLang wheel, derive the two platform
+#      wheels, assemble the disposable build context;
 #   2. resolve the Runtime's moving semver tag (the containerfile default)
 #      to its repo digest - every later step uses that digest;
 #   3. collect the Runtime reference data (freeze, site-file hashes,
@@ -23,8 +25,8 @@
 #      and build the candidate image FROM THE RESOLVED DIGEST (passed as
 #      the BASE_IMAGE build arg), carrying its provenance as OCI labels
 #      (org.flagos.ci.base-digest / source-commit /
-#      sglang-wheel-sha256 / xgrammar-wheel-sha256 / triton-slot) so
-#      acceptance binds to
+#      sglang-wheel-sha256 / xgrammar-wheel-sha256 / sglang-fl-wheel-sha256 /
+#      triton-slot) so acceptance binds to
 #      the exact staged artifacts rather than only their version strings or
 #      the checkout;
 #   6. run the post-build acceptance (docker/hygon/scripts/verify_image.sh)
@@ -33,14 +35,18 @@
 # A failed acceptance aborts this script; --push (the only documented way
 # to publish from here) is reached only after acceptance passes.
 #
-# Provenance: a releasable build requires a completely clean worktree -
-# the plugin wheel is built from this checkout and the build context
-# carries docker/hygon, so any staged, unstaged or untracked file could
-# silently enter the artifact while the labels name the recorded HEAD.
+# Provenance: a releasable build requires a completely clean worktree - the
+# build context carries docker/hygon, so any staged, unstaged or untracked
+# file could silently enter the artifact while the labels name the recorded
+# HEAD. A release (--push) additionally requires the plugin wheel to be the
+# PUBLISHED artifact (SGLANG_FL_WHEEL + SGLANG_FL_SHA256): a wheel built
+# from the checkout is a development candidate, however reproducible it is.
 # --allow-dirty is a dev-only escape that cannot push and whose output is
 # not releasable evidence.
 #
 # Usage: build_two_wheel.sh [--push] [--allow-dirty] <tag>
+#   release input (read by stage_wheels.sh):
+#     SGLANG_FL_WHEEL=<published sglang_fl wheel>  SGLANG_FL_SHA256=<its digest>
 
 set -euo pipefail
 
@@ -52,6 +58,7 @@ DERIVED_SGLANG_VERSION="0.5.18+flagos.hcu1"
 DERIVED_SGLANG_WHEEL_NAME="sglang-${DERIVED_SGLANG_VERSION}-cp310-cp310-linux_x86_64.whl"
 DERIVED_XGRAMMAR_VERSION="0.2.1+flagos.hcu1"
 DERIVED_XGRAMMAR_WHEEL_NAME="xgrammar-${DERIVED_XGRAMMAR_VERSION}-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+PLUGIN_WHEEL_NAME="sglang_fl-0.1.0-py3-none-any.whl"
 # The compiler slot the containerfile selects (ENV PYTHONPATH). The only
 # other value is the A/B experiment's /opt/triton (triton_slot_ab.sh),
 # which is never built here: the production default stays /opt/flagtree.
@@ -112,6 +119,20 @@ rm -f "$staging_log"
     echo "FATAL: could not locate the staged build context" >&2
     exit 1
 }
+# The plugin wheel is either the PUBLISHED artifact (release input) or a
+# development candidate built from the checkout. Only the published one may
+# be pushed, whatever its provenance says about the commit.
+plugin_provenance="$context/artifacts/${PLUGIN_WHEEL_NAME%.whl}.provenance.json"
+[ -s "$plugin_provenance" ] || {
+    echo "FATAL: plugin-wheel provenance missing from the context: $plugin_provenance" >&2
+    exit 1
+}
+plugin_mode="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["mode"])' "$plugin_provenance")"
+if [ "$push" -eq 1 ] && [ "$plugin_mode" != "published" ]; then
+    echo "FATAL: --push requires the published sglang_fl wheel: stage with SGLANG_FL_WHEEL and SGLANG_FL_SHA256 (mode is '$plugin_mode'; a wheel built from the checkout is a development candidate)" >&2
+    exit 1
+fi
+echo "plugin wheel mode: $plugin_mode"
 
 echo "=== [2/6] Resolving the moving tag to a repo digest ==="
 docker pull --platform linux/amd64 "$BASE_IMAGE" >/dev/null
@@ -183,12 +204,14 @@ echo "=== [5/6] Building the candidate image ==="
 # image binds to the exact wheel artifact it installs.
 derived_wheel_sha256="$(sha256sum "$context/artifacts/$DERIVED_SGLANG_WHEEL_NAME" | awk '{print $1}')"
 xgrammar_wheel_sha256="$(sha256sum "$context/artifacts/$DERIVED_XGRAMMAR_WHEEL_NAME" | awk '{print $1}')"
+plugin_wheel_sha256="$(sha256sum "$context/artifacts/$PLUGIN_WHEEL_NAME" | awk '{print $1}')"
 docker build --platform linux/amd64 \
     --build-arg "BASE_IMAGE=$RESOLVED_BASE" \
     --label "org.flagos.ci.base-digest=$RESOLVED_BASE" \
     --label "org.flagos.ci.source-commit=$source_commit" \
     --label "org.flagos.ci.sglang-wheel-sha256=$derived_wheel_sha256" \
     --label "org.flagos.ci.xgrammar-wheel-sha256=$xgrammar_wheel_sha256" \
+    --label "org.flagos.ci.sglang-fl-wheel-sha256=$plugin_wheel_sha256" \
     --label "org.flagos.ci.triton-slot=$TRITON_SLOT" \
     -f "$context/runtime-0.5.18.containerfile" \
     -t "$tag" "$context"
@@ -221,11 +244,16 @@ if [ ! -s "$xgrammar_provenance" ]; then
     echo "FATAL: xgrammar provenance missing from the context: $xgrammar_provenance" >&2
     exit 1
 fi
+# The plugin wheel is bound the same way: label, provenance lineage and -
+# through the wheel file itself - every installed sglang_fl file.
 bash "$scripts/verify_image.sh" "$tag" \
     --sglang-wheel-sha256 "$derived_wheel_sha256" \
     --sglang-provenance "$derived_provenance" \
     --xgrammar-wheel-sha256 "$xgrammar_wheel_sha256" \
-    --xgrammar-provenance "$xgrammar_provenance"
+    --xgrammar-provenance "$xgrammar_provenance" \
+    --sglang-fl-wheel "$context/artifacts/$PLUGIN_WHEEL_NAME" \
+    --sglang-fl-wheel-sha256 "$plugin_wheel_sha256" \
+    --sglang-fl-provenance "$plugin_provenance"
 
 echo "=== Reproducibility record ==="
 echo "source-commit:  $source_commit"
@@ -233,6 +261,7 @@ echo "runtime tag:    $BASE_IMAGE (moving; resolved at build time)"
 echo "resolved base:  $RESOLVED_BASE (baked as org.flagos.ci.base-digest)"
 echo "sglang wheel:   sha256=$derived_wheel_sha256 (org.flagos.ci.sglang-wheel-sha256; derived 0.5.18+flagos.hcu1)"
 echo "xgrammar wheel: sha256=$xgrammar_wheel_sha256 (org.flagos.ci.xgrammar-wheel-sha256; derived 0.2.1+flagos.hcu1)"
+echo "plugin wheel:   sha256=$plugin_wheel_sha256 (org.flagos.ci.sglang-fl-wheel-sha256; mode=$plugin_mode)"
 echo "triton slot:    $TRITON_SLOT (org.flagos.ci.triton-slot; production default)"
 echo "image-tag:      $tag"
 echo "image-id:       $(docker image inspect --format '{{.Id}}' "$tag")"

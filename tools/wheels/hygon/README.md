@@ -171,8 +171,16 @@ to from this checkout's tools and the pinned inputs:
   `publication-manifest.json`: per artifact the distribution, version,
   filename, size, SHA256 and the suggested Nexus location
   (`flagos-pypi-hygon`, `packages/<name>/<version>/<file>` - the layout
-  the published input wheel already uses). Every entry is marked LOCAL
+  the published input wheel already uses). An artifact is marked LOCAL
   DEVELOPMENT CANDIDATE until the artifact owner publishes it;
+- the third published artifact is the plugin wheel itself. Staging builds
+  `sglang_fl` from the checkout only as a development candidate, with zip
+  timestamps taken from the commit (`SOURCE_DATE_EPOCH`), so two builds of
+  one commit are identical for a given build backend. A release consumes
+  the published wheel instead: `SGLANG_FL_WHEEL=<path>` together with
+  `SGLANG_FL_SHA256=<digest>` and its sibling provenance
+  (`docker/hygon/scripts/stage_plugin_wheel.py`); `build_two_wheel.sh
+  --push` refuses anything else;
 - a release build consumes the PUBLISHED wheels by pinning these same
   SHA256 values. The post-build acceptance requires lineage, not equality:
   the commit recorded in a wheel's provenance must exist in the repository

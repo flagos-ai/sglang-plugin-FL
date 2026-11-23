@@ -396,6 +396,19 @@ excludes；disposable，不入仓库、不进镜像）。一条版本只对应�
 - 已派生好的 wheel（发布件，或有 SHA 佐证的本地副本）用
   `SGLANG_DERIVED_WHEEL` / `XGRAMMAR_DERIVED_WHEEL` 指定：staging 复制它与
   相邻的 provenance JSON，并比对同一钉定值，不在镜像内解包、patch、重打包；
+- 插件 wheel `sglang_fl-0.1.0` 由 `scripts/stage_plugin_wheel.py` 进 staging，
+  有两种不能混用的身份：
+  - **开发候选**（默认）：从当前 checkout 构建，zip 时间戳取自提交
+    （`SOURCE_DATE_EPOCH` = 提交时间），同一提交两次构建逐字节相同。此前的
+    差异只在 6 个 dist-info 成员的时间戳上。可复现不等于可发布：这种镜像不能
+    push；
+  - **release 输入**：`SGLANG_FL_WHEEL=<已发布的 wheel>` 加
+    `SGLANG_FL_SHA256=<其钉定 digest>`，wheel 旁边必须有记录了构建提交
+    `source_commit` 的 provenance JSON。staging 只校验和复制，不构建；
+  - `build_two_wheel.sh --push` 在插件 wheel 不是已发布制品时直接拒绝。镜像
+    label `org.flagos.ci.sglang-fl-wheel-sha256` 记录它的 digest；严格验收逐个
+    比较已安装的 `sglang_fl` 文件与 wheel 内容（installer 改写的 RECORD
+    除外），并对其 provenance 做与派生 wheel 相同的谱系检查；
 - staging 末尾写出 `publication-manifest.json`
   （`tools/wheels/hygon/publication_manifest.py`）：每个制品的 distribution、
   version、文件名、字节数、SHA256 与建议的 Nexus 仓库/路径

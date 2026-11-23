@@ -42,6 +42,7 @@ BOUND_LABELS = (
     "org.flagos.ci.source-commit",
     "org.flagos.ci.sglang-wheel-sha256",
     "org.flagos.ci.xgrammar-wheel-sha256",
+    "org.flagos.ci.sglang-fl-wheel-sha256",
     EXPERIMENT_LABEL,
 )
 TREES = ("/opt/flagtree", "/opt/triton", "<site-packages>")

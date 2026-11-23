@@ -6,9 +6,13 @@
 #
 # This entry only prepares a build context; it never builds the full image
 # and never touches the repository working tree:
-#   1. build the sglang-plugin-FL wheel from the current checkout
-#      (standard `python -m build --wheel`, output redirected to the
-#      staging area, so no dist/ appears in the repository);
+#   1. stage the sglang-plugin-FL wheel (scripts/stage_plugin_wheel.py).
+#      DEVELOPMENT CANDIDATE: built from the current checkout with zip
+#      timestamps taken from the commit (SOURCE_DATE_EPOCH), so two builds
+#      of one commit are identical for a given build backend. RELEASE INPUT:
+#      an already published, immutable wheel given by SGLANG_FL_WHEEL and
+#      pinned by SGLANG_FL_SHA256. Either way a provenance JSON (mode,
+#      sha256, source_commit) travels with the wheel;
 #   2. run the plugin-wheel acceptance checks (METADATA, hygon extra
 #      anchors, both SGLang entry-point groups, Hygon attention backend
 #      and dispatch config presence, no tests, no triton declaration);
@@ -103,14 +107,38 @@ for area in "$stage" "$context"; do
     esac
 done
 
-echo "=== Building the sglang-plugin-FL wheel ==="
-python3 -m build --wheel --outdir "$stage" "$repo_root" >/dev/null
-plugin_wheel="$stage/sglang_fl-0.1.0-py3-none-any.whl"
+echo "=== Staging the sglang-plugin-FL wheel ==="
+PLUGIN_WHEEL_NAME="sglang_fl-0.1.0-py3-none-any.whl"
+if [ -n "${SGLANG_FL_WHEEL:-}" ]; then
+    # RELEASE INPUT: the published, immutable sglang_fl wheel, pinned by its
+    # SHA256 and accompanied by its provenance (scripts/stage_plugin_wheel.py
+    # verifies both). Nothing is built in this mode.
+    [ -n "${SGLANG_FL_SHA256:-}" ] || {
+        echo "FATAL: SGLANG_FL_WHEEL requires SGLANG_FL_SHA256 (the pinned digest of the published wheel)" >&2
+        exit 1
+    }
+    python3 "$repo_root/docker/hygon/scripts/stage_plugin_wheel.py" --dest "$stage" \
+        --mode published --wheel "$SGLANG_FL_WHEEL" --sha256 "$SGLANG_FL_SHA256"
+else
+    # DEVELOPMENT CANDIDATE: built from this checkout with reproducible zip
+    # timestamps. Not releasable: build_two_wheel.sh refuses to push it.
+    [ -z "${SGLANG_FL_SHA256:-}" ] || {
+        echo "FATAL: SGLANG_FL_SHA256 is given without SGLANG_FL_WHEEL" >&2
+        exit 1
+    }
+    python3 "$repo_root/docker/hygon/scripts/stage_plugin_wheel.py" --dest "$stage" \
+        --mode built-from-checkout --repo-root "$repo_root"
+fi
+plugin_wheel="$stage/$PLUGIN_WHEEL_NAME"
+plugin_provenance="${PLUGIN_WHEEL_NAME%.whl}.provenance.json"
 test -s "$plugin_wheel"
+test -s "$stage/$plugin_provenance"
 
 echo "=== Plugin wheel acceptance ==="
 python3 "$repo_root/docker/hygon/scripts/check_plugin_wheel.py" \
     "$plugin_wheel" --repo-root "$repo_root"
+plugin_mode="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["mode"])' \
+    "$stage/$plugin_provenance")"
 
 echo "=== Fetching and verifying the original SGLang wheel ==="
 sglang_wheel="$stage/$SGLANG_WHEEL_NAME"
@@ -217,6 +245,9 @@ derived_xgrammar_sha256="$(sha256_of "$derived_xgrammar_wheel")"
 echo "=== Assembling the build context ==="
 mkdir -p "$context/artifacts"
 cp "$plugin_wheel" "$context/artifacts/"
+# the plugin wheel's provenance travels with the context like the derived
+# wheels': the post-build acceptance binds the OCI label to it
+cp "$stage/$plugin_provenance" "$context/artifacts/$plugin_provenance"
 cp "$derived_wheel" "$context/artifacts/$DERIVED_SGLANG_WHEEL_NAME"
 # the provenance JSON travels with the context (NOT into the image): the
 # post-build acceptance binds the OCI label and the installed patched
@@ -247,7 +278,7 @@ python3 "$repo_root/tools/wheels/hygon/publication_manifest.py" --context "$cont
 echo "=== Reproducibility record ==="
 commit="$(git -C "$repo_root" rev-parse HEAD)"
 echo "source-commit:  $commit"
-echo "plugin-wheel:   $(basename "$plugin_wheel") sha256=$(sha256sum "$plugin_wheel" | awk '{print $1}')"
+echo "plugin-wheel:   $PLUGIN_WHEEL_NAME sha256=$(sha256_of "$plugin_wheel") mode=$plugin_mode (release input must be 'published')"
 echo "sglang-input:   $SGLANG_WHEEL_NAME sha256=$SGLANG_WHEEL_SHA256"
 echo "hcu-patch:      sha256=$patch_sha256"
 echo "sglang-derived: $DERIVED_SGLANG_WHEEL_NAME sha256=$derived_sha256"

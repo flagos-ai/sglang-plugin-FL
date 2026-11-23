@@ -92,6 +92,30 @@ def describe(path: Path) -> dict:
                 **{key: provenance[key] for key in keys if key in provenance},
                 "provenance_file": provenance_path.name,
             }
+        return entry
+    # the plugin wheel: staged by docker/hygon/scripts/stage_plugin_wheel.py
+    # either as a development candidate or as the published artifact
+    provenance_path = path.with_suffix(".provenance.json")
+    if provenance_path.is_file():
+        provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+        if provenance.get("mode") == "published":
+            entry["status"] = (
+                "PUBLISHED sglang_fl ARTIFACT - consumed by its SHA256 pin "
+                "(SGLANG_FL_WHEEL)"
+            )
+            entry["built_from"] = (
+                "the published wheel (SGLANG_FL_WHEEL); nothing is built here"
+            )
+        else:
+            entry["built_from"] = (
+                "this repository checkout (python -m build --wheel; "
+                "SOURCE_DATE_EPOCH = commit time)"
+            )
+        entry["provenance"] = {
+            key: provenance[key]
+            for key in ("mode", "source_commit", "sha256")
+            if key in provenance
+        }
     else:
         entry["built_from"] = "this repository checkout (python -m build --wheel)"
     return entry

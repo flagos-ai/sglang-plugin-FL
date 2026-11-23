@@ -55,7 +55,8 @@ tag_b="${positional[2]}"
 
 label() { docker image inspect --format "{{index .Config.Labels \"$1\"}}" "$candidate"; }
 for required in org.flagos.ci.base-digest org.flagos.ci.source-commit \
-                org.flagos.ci.sglang-wheel-sha256 org.flagos.ci.xgrammar-wheel-sha256; do
+                org.flagos.ci.sglang-wheel-sha256 org.flagos.ci.xgrammar-wheel-sha256 \
+                org.flagos.ci.sglang-fl-wheel-sha256; do
     value="$(label "$required")"
     [ -n "$value" ] && [ "$value" != "<no value>" ] || {
         echo "FATAL: $candidate lacks the $required label (build it with build_two_wheel.sh)" >&2
@@ -97,17 +98,21 @@ verify_args=()
 if [ -n "$context" ] && [ -d "$context/artifacts" ]; then
     sglang_wheel="sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl"
     xgrammar_wheel="xgrammar-0.2.1+flagos.hcu1-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+    plugin_wheel="sglang_fl-0.1.0-py3-none-any.whl"
     verify_args=(
         --sglang-wheel-sha256 "$(label org.flagos.ci.sglang-wheel-sha256)"
         --sglang-provenance "$context/artifacts/${sglang_wheel%.whl}.provenance.json"
         --xgrammar-wheel-sha256 "$(label org.flagos.ci.xgrammar-wheel-sha256)"
         --xgrammar-provenance "$context/artifacts/${xgrammar_wheel%.whl}.provenance.json"
+        --sglang-fl-wheel "$context/artifacts/$plugin_wheel"
+        --sglang-fl-wheel-sha256 "$(label org.flagos.ci.sglang-fl-wheel-sha256)"
+        --sglang-fl-provenance "$context/artifacts/${plugin_wheel%.whl}.provenance.json"
     )
     echo "strict content binding: enabled (provenance from $context)"
 else
     echo "WARNING: no --context given; the arms run the weaker identity gate"
     echo "(the candidate's own strict acceptance is not repeated here)"
-    fi
+fi
 for tag in "$tag_a" "$tag_b"; do
     bash "$scripts/verify_image.sh" "$tag" ${verify_args[@]+"${verify_args[@]}"}
 done

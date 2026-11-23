@@ -19,9 +19,12 @@ Covers the product-candidate wiring that the next image build will run:
   declaration, missing entry points, shipped tests).
 """
 
+import hashlib
+import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -289,6 +292,62 @@ class BuildProvenanceContractTests(unittest.TestCase):
             "dirty dev builds must never publish",
         )
 
+    def test_push_refuses_a_plugin_wheel_built_from_the_checkout(self):
+        """Run the release gate of build_two_wheel.sh as written."""
+        wrapper = (DOCKER / "build_two_wheel.sh").read_text()
+        start = wrapper.index('plugin_provenance="$context/artifacts/')
+        end = wrapper.index('echo "plugin wheel mode: $plugin_mode"')
+        gate = wrapper[start:end]
+        with tempfile.TemporaryDirectory(prefix="push-gate-test.") as tmp:
+            context = Path(tmp) / "context"
+            (context / "artifacts").mkdir(parents=True)
+            provenance = (
+                context / "artifacts/sglang_fl-0.1.0-py3-none-any.provenance.json"
+            )
+            script = Path(tmp) / "gate.sh"
+            script.write_text(
+                "\n".join(
+                    [
+                        "set -euo pipefail",
+                        'context="$1"; push="$2"',
+                        'PLUGIN_WHEEL_NAME="sglang_fl-0.1.0-py3-none-any.whl"',
+                        gate,
+                        'echo "GATE-PASSED mode=$plugin_mode"',
+                    ]
+                )
+            )
+
+            def run(push):
+                return subprocess.run(
+                    ["bash", str(script), str(context), push],
+                    capture_output=True,
+                    text=True,
+                )
+
+            # a release needs the published wheel; a dev build may use the
+            # checkout build
+            for mode, push, accepted in (
+                ("built-from-checkout", "1", False),
+                ("published", "1", True),
+                ("built-from-checkout", "0", True),
+            ):
+                provenance.write_text(json.dumps({"mode": mode}))
+                completed = run(push)
+                if accepted:
+                    self.assertEqual(completed.returncode, 0, completed.stderr)
+                    self.assertIn(f"GATE-PASSED mode={mode}", completed.stdout)
+                else:
+                    self.assertNotEqual(completed.returncode, 0)
+                    self.assertIn(
+                        "--push requires the published sglang_fl wheel",
+                        completed.stderr,
+                    )
+            # a context without the plugin provenance is rejected outright
+            provenance.unlink()
+            completed = run("0")
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("plugin-wheel provenance missing", completed.stderr)
+
     def test_head_and_label_are_reasserted_after_the_build(self):
         wrapper = (DOCKER / "build_two_wheel.sh").read_text()
         self.assertIn("HEAD moved during the build", wrapper)
@@ -308,6 +367,23 @@ class BuildProvenanceContractTests(unittest.TestCase):
         )
         self.assertNotIn('provenance["source_commit"] == sys.argv[4]', verifier)
         self.assertIn('!= "<no value>"', verifier)
+
+    def test_the_plugin_wheel_is_a_pinned_artifact_of_the_image(self):
+        wrapper = (DOCKER / "build_two_wheel.sh").read_text()
+        for pin in (
+            '--label "org.flagos.ci.sglang-fl-wheel-sha256=$plugin_wheel_sha256"',
+            '--sglang-fl-wheel "$context/artifacts/$PLUGIN_WHEEL_NAME"',
+            '--sglang-fl-wheel-sha256 "$plugin_wheel_sha256"',
+            '--sglang-fl-provenance "$plugin_provenance"',
+        ):
+            self.assertIn(pin, wrapper)
+        staging = (DOCKER / "stage_wheels.sh").read_text()
+        # the release input is the published wheel, pinned by its digest ...
+        self.assertIn("SGLANG_FL_WHEEL", staging)
+        self.assertIn("SGLANG_FL_SHA256", staging)
+        self.assertIn("--mode published --wheel", staging)
+        # ... and the checkout build stays a development candidate
+        self.assertIn("--mode built-from-checkout --repo-root", staging)
 
 
 class PluginWheelAcceptanceTests(unittest.TestCase):
@@ -545,6 +621,7 @@ class StageContextSurvivalTests(unittest.TestCase):
         for relative in (
             "artifacts/sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl",
             "artifacts/sglang_fl-0.1.0-py3-none-any.whl",
+            "artifacts/sglang_fl-0.1.0-py3-none-any.provenance.json",
             "artifacts/xgrammar-0.2.1+flagos.hcu1-cp310-cp310-"
             "manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
             "artifacts/xgrammar-0.2.1+flagos.hcu1-cp310-cp310-"
@@ -568,6 +645,28 @@ class StageContextSurvivalTests(unittest.TestCase):
             any((self.context / "artifacts").glob("xgrammar-0.2.1-cp310*")),
             "the original xgrammar wheel was staged for the image",
         )
+
+    def test_plugin_wheel_provenance_binds_the_development_build(self):
+        wheel = self.context / "artifacts/sglang_fl-0.1.0-py3-none-any.whl"
+        provenance = json.loads(
+            (
+                self.context / "artifacts/sglang_fl-0.1.0-py3-none-any.provenance.json"
+            ).read_text()
+        )
+        # a staging without SGLANG_FL_WHEEL is a development candidate
+        self.assertEqual(provenance["mode"], "built-from-checkout")
+        self.assertEqual(provenance["distribution"], "sglang_fl")
+        self.assertEqual(
+            provenance["sha256"], hashlib.sha256(wheel.read_bytes()).hexdigest()
+        )
+        head = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        self.assertEqual(provenance["source_commit"], head)
+        self.assertIn("mode=built-from-checkout", self.output)
 
     @classmethod
     def tearDownClass(cls):
@@ -908,7 +1007,9 @@ class PublicationManifestTests(unittest.TestCase):
         import publication_manifest
 
         cls.module = publication_manifest
-        cls.tmp = tempfile.mkdtemp(prefix="pub-manifest-test.")
+        cls._tmp = tempfile.TemporaryDirectory(prefix="pub-manifest-test.")
+        cls.addClassCleanup(cls._tmp.cleanup)
+        cls.tmp = cls._tmp.name
         artifacts = Path(cls.tmp) / "artifacts"
         artifacts.mkdir()
         cls.wheels = {}
@@ -1009,6 +1110,39 @@ class PublicationManifestTests(unittest.TestCase):
         # the pre-derived path verifies the same pin as a fresh derive
         self.assertEqual(staging.count("$SGLANG_DERIVED_SHA256"), 2)
         self.assertEqual(staging.count("$XGRAMMAR_DERIVED_SHA256"), 2)
+
+    def test_the_plugin_wheel_reports_how_it_was_staged(self):
+        provenance = self.wheels["sglang_fl"].with_suffix(".provenance.json")
+        by_name = {
+            entry["distribution"]: entry
+            for entry in self.module.build(Path(self.tmp))["artifacts"]
+        }
+        # no provenance next to the wheel: nothing is known beyond the name
+        self.assertIn("checkout", by_name["sglang_fl"]["built_from"])
+        self.assertNotIn("provenance", by_name["sglang_fl"])
+        for mode, status, origin in (
+            (
+                "built-from-checkout",
+                "LOCAL DEVELOPMENT CANDIDATE",
+                "SOURCE_DATE_EPOCH",
+            ),
+            ("published", "PUBLISHED sglang_fl ARTIFACT", "SGLANG_FL_WHEEL"),
+        ):
+            provenance.write_text(
+                json.dumps(
+                    {"mode": mode, "source_commit": "2" * 40, "sha256": "3" * 64}
+                )
+            )
+            entry = {
+                item["distribution"]: item
+                for item in self.module.build(Path(self.tmp))["artifacts"]
+            }["sglang_fl"]
+            self.assertIn(status, entry["status"])
+            self.assertIn(origin, entry["built_from"])
+            self.assertEqual(
+                entry["provenance"],
+                {"mode": mode, "source_commit": "2" * 40, "sha256": "3" * 64},
+            )
 
 
 class ProvenanceLineageTests(unittest.TestCase):
@@ -1249,6 +1383,366 @@ class ProvenanceLineageTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 1)
         self.assertIn("FATAL: provenance was derived at", completed.stderr)
         self.assertNotIn("BLOCKS-DONE", completed.stdout)
+
+    def run_plugin_block(self, label, pin, provenance_sha, provenance_commit):
+        """Run verify_image.sh's strict plugin-wheel block as written."""
+        verifier = (SCRIPTS / "verify_image.sh").read_text()
+        start = verifier.index('labeled_plugin_sha256="$(docker image inspect')
+        end = verifier.index('run --volume "$sglang_fl_wheel"', start)
+        wheel = self.provenance_dir / "plugin.whl"
+        provenance = self.provenance_dir / "plugin.json"
+        provenance.write_text(
+            json.dumps(
+                {
+                    "distribution": "sglang_fl",
+                    "sha256": provenance_sha,
+                    "source_commit": provenance_commit,
+                }
+            )
+        )
+        script = self.provenance_dir / "plugin-block.sh"
+        script.write_text(
+            "\n".join(
+                [
+                    "set -euo pipefail",
+                    "image=fake-image",
+                    'scripts="$1"; repo_root="$2"; sglang_fl_wheel="$3"; '
+                    'sglang_fl_provenance="$4"',
+                    'expected_sglang_fl_sha256="$5"; labeled_source_commit="$6"',
+                    "docker() {",
+                    '    case "$*" in',
+                    "        *org.flagos.ci.sglang-fl-wheel-sha256*) "
+                    "printf '%s\\n' \"$FAKE_LABEL\" ;;",
+                    "        *) return 1 ;;",
+                    "    esac",
+                    "}",
+                    verifier[start:end] + "fi\n",
+                    "echo PLUGIN-BLOCK-DONE",
+                ]
+            )
+        )
+        return subprocess.run(
+            [
+                "bash",
+                str(script),
+                str(SCRIPTS),
+                str(self.repo),
+                str(wheel),
+                str(provenance),
+                pin,
+                self.second,
+            ],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "FAKE_LABEL": label},
+        )
+
+    def staged_plugin_wheel_sha(self) -> str:
+        """Write the staged wheel the block sees and return its digest."""
+        wheel = self.provenance_dir / "plugin.whl"
+        wheel.write_bytes(b"the staged sglang_fl wheel")
+        return hashlib.sha256(wheel.read_bytes()).hexdigest()
+
+    def test_the_plugin_wheel_block_accepts_the_pinned_artifact(self):
+        wheel_sha = self.staged_plugin_wheel_sha()
+        # label, pin, provenance and staged file agree; the wheel may have
+        # been built at the image commit or earlier
+        for commit in (self.second, self.first):
+            completed = self.run_plugin_block(wheel_sha, wheel_sha, wheel_sha, commit)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("PLUGIN-BLOCK-DONE", completed.stdout)
+
+    def test_the_plugin_wheel_block_rejects_every_other_combination(self):
+        wheel_sha = self.staged_plugin_wheel_sha()
+        other = "0" * 64
+        for name, arguments, message in (
+            ("label", dict(label=other), "!= expected"),
+            (
+                "staged wheel",
+                dict(label=other, pin=other, provenance_sha=other),
+                "does not hash to",
+            ),
+            ("provenance", dict(provenance_sha=other), "AssertionError"),
+            ("lineage", dict(provenance_commit=self.side), "FATAL: provenance"),
+        ):
+            with self.subTest(name):
+                completed = self.run_plugin_block(
+                    label=arguments.get("label", wheel_sha),
+                    pin=arguments.get("pin", wheel_sha),
+                    provenance_sha=arguments.get("provenance_sha", wheel_sha),
+                    provenance_commit=arguments.get("provenance_commit", self.first),
+                )
+                self.assertEqual(completed.returncode, 1, completed.stderr)
+                self.assertIn(message, completed.stderr)
+                self.assertNotIn("PLUGIN-BLOCK-DONE", completed.stdout)
+
+
+def synthetic_plugin_wheel(path: Path, files: int = 120) -> Path:
+    """A minimal sglang_fl wheel with enough members for the content gate."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "sglang_fl-0.1.0.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: sglang_fl\nVersion: 0.1.0\n",
+        )
+        archive.writestr(
+            "sglang_fl-0.1.0.dist-info/WHEEL",
+            "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        )
+        archive.writestr(
+            "sglang_fl-0.1.0.dist-info/RECORD", "sglang_fl-0.1.0.dist-info/METADATA,,\n"
+        )
+        archive.writestr("sglang_fl/__init__.py", '"""synthetic"""\n')
+        for number in range(files):
+            archive.writestr(f"sglang_fl/mod_{number:03d}.py", f"value = {number}\n")
+    return path
+
+
+class PluginWheelArtifactTests(unittest.TestCase):
+    """sglang_fl is an artifact with the same contract as the platform wheels.
+
+    A development candidate is built from the checkout with reproducible
+    timestamps; a release input is the published wheel, pinned by its SHA256
+    and accompanied by the provenance of the commit it was built from.
+    """
+
+    WHEEL = "sglang_fl-0.1.0-py3-none-any.whl"
+    PROVENANCE = "sglang_fl-0.1.0-py3-none-any.provenance.json"
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(SCRIPTS))
+        import stage_plugin_wheel
+
+        cls.module = stage_plugin_wheel
+        cls._tmp = tempfile.TemporaryDirectory(prefix="plugin-artifact-test.")
+        cls.addClassCleanup(cls._tmp.cleanup)
+        cls.tmp = Path(cls._tmp.name)
+        cls.commit = "1" * 40
+        cls.published = cls.tmp / "published"
+        cls.wheel = synthetic_plugin_wheel(cls.published / cls.WHEEL)
+        cls.sha = cls.module.sha256_file(cls.wheel)
+        (cls.published / cls.PROVENANCE).write_text(
+            json.dumps({"source_commit": cls.commit, "sha256": cls.sha})
+        )
+
+    def stage(self, sha=None, wheel=None) -> Path:
+        dest = Path(tempfile.mkdtemp(prefix="stage.", dir=self.tmp))
+        return self.module.stage_published(wheel or self.wheel, sha or self.sha, dest)
+
+    def test_the_published_wheel_is_staged_with_its_pin_and_lineage(self):
+        staged = self.stage()
+        self.assertEqual(self.module.sha256_file(staged), self.sha)
+        provenance = json.loads(staged.with_suffix(".provenance.json").read_text())
+        self.assertEqual(
+            provenance,
+            {
+                "distribution": "sglang_fl",
+                "version": "0.1.0",
+                "mode": "published",
+                "sha256": self.sha,
+                "source_commit": self.commit,
+            },
+        )
+
+    def test_content_other_than_the_pin_is_rejected(self):
+        with self.assertRaisesRegex(self.module.StageError, "SHA256 mismatch"):
+            self.stage(sha="0" * 64)
+
+    def test_a_pin_that_is_not_a_digest_is_rejected(self):
+        with self.assertRaisesRegex(self.module.StageError, "not a SHA256 digest"):
+            self.stage(sha="latest")
+
+    def test_another_artifact_cannot_stand_in(self):
+        other = synthetic_plugin_wheel(
+            self.tmp / "other" / "sglang_fl-9.9.9-py3-none-any.whl"
+        )
+        with self.assertRaisesRegex(
+            self.module.StageError, "not the expected artifact"
+        ):
+            self.module.stage_published(
+                other, self.module.sha256_file(other), self.tmp / "x"
+            )
+
+    def test_the_published_wheel_needs_its_provenance(self):
+        orphan = self.tmp / "orphan" / self.WHEEL
+        orphan.parent.mkdir()
+        shutil.copy(self.wheel, orphan)
+        with self.assertRaisesRegex(
+            self.module.StageError, "provenance of the published wheel"
+        ):
+            self.stage(wheel=orphan)
+
+    def test_the_provenance_must_vouch_for_this_wheel_and_its_commit(self):
+        untrusted = self.tmp / "untrusted"
+        untrusted.mkdir()
+        wheel = shutil.copy(self.wheel, untrusted / self.WHEEL)
+        provenance = untrusted / self.PROVENANCE
+        provenance.write_text(json.dumps({"source_commit": "HEAD"}))
+        with self.assertRaisesRegex(self.module.StageError, "no full source_commit"):
+            self.stage(wheel=wheel)
+        provenance.write_text(
+            json.dumps({"source_commit": self.commit, "sha256": "0" * 64})
+        )
+        with self.assertRaisesRegex(self.module.StageError, "describes another wheel"):
+            self.stage(wheel=wheel)
+        # a provenance without a digest is fine: the pin is the trust anchor
+        provenance.write_text(json.dumps({"source_commit": self.commit}))
+        self.assertEqual(self.module.sha256_file(self.stage(wheel=wheel)), self.sha)
+
+    def test_the_cli_reports_the_mode_and_fails_loudly(self):
+        script = SCRIPTS / "stage_plugin_wheel.py"
+        command = [
+            sys.executable,
+            str(script),
+            "--mode",
+            "published",
+            "--wheel",
+            str(self.wheel),
+        ]
+        accepted = subprocess.run(
+            [*command, "--dest", str(self.tmp / "cli-ok"), "--sha256", self.sha],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertIn(
+            f"plugin-wheel: sglang_fl==0.1.0 sha256={self.sha} mode=published",
+            accepted.stdout,
+        )
+        rejected = subprocess.run(
+            [*command, "--dest", str(self.tmp / "cli-bad"), "--sha256", "0" * 64],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(rejected.returncode, 1)
+        self.assertIn("FATAL: SHA256 mismatch", rejected.stderr)
+        # the pin is mandatory
+        unpinned = subprocess.run(
+            [*command, "--dest", str(self.tmp / "cli-unpinned")],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(unpinned.returncode, 1)
+        self.assertIn(
+            "FATAL: --mode published needs --wheel and --sha256", unpinned.stderr
+        )
+
+    @unittest.skipUnless(
+        (REPO_ROOT / ".git").exists() and importlib.util.find_spec("build"),
+        "needs the git checkout and the build module",
+    )
+    def test_development_builds_of_one_commit_are_identical(self):
+        first = self.module.build_from_checkout(REPO_ROOT, self.tmp / "build-1")
+        second = self.module.build_from_checkout(REPO_ROOT, self.tmp / "build-2")
+        first_sha = self.module.sha256_file(first)
+        self.assertEqual(first_sha, self.module.sha256_file(second))
+        head = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        epoch = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "log", "-1", "--format=%ct", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        provenance = json.loads(first.with_suffix(".provenance.json").read_text())
+        self.assertEqual(provenance["mode"], "built-from-checkout")
+        self.assertEqual(provenance["sha256"], first_sha)
+        self.assertEqual(provenance["source_commit"], head)
+        self.assertEqual(provenance["source_date_epoch"], int(epoch))
+
+
+class InstalledPluginWheelComparisonTests(unittest.TestCase):
+    """verify_image.sh compares the installed sglang_fl with the staged wheel.
+
+    The comparison program is cut out of the real script and run with the
+    interpreter of a virtual environment that has the wheel installed.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import venv
+
+        cls._tmp = tempfile.TemporaryDirectory(prefix="plugin-installed-test.")
+        cls.addClassCleanup(cls._tmp.cleanup)
+        tmp = Path(cls._tmp.name)
+        cls.wheel = synthetic_plugin_wheel(tmp / "sglang_fl-0.1.0-py3-none-any.whl")
+        home = tmp / "venv"
+        venv.EnvBuilder(with_pip=True, clear=True).create(home)
+        cls.python = home / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        subprocess.run(
+            [
+                str(cls.python),
+                "-m",
+                "pip",
+                "install",
+                "-q",
+                "--no-deps",
+                "--no-index",
+                str(cls.wheel),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        cls.purelib = Path(
+            subprocess.run(
+                [
+                    str(cls.python),
+                    "-c",
+                    "import sysconfig; print(sysconfig.get_paths()['purelib'])",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+        )
+        verifier = (SCRIPTS / "verify_image.sh").read_text()
+        start = verifier.index('run --volume "$sglang_fl_wheel":/sglang_fl.whl:ro')
+        body_start = verifier.index("<<'PY'\n", start) + len("<<'PY'\n")
+        body_end = verifier.index("\nPY\n", body_start)
+        # the container path becomes the real wheel on this host
+        cls.program = verifier[body_start:body_end].replace(
+            '"/sglang_fl.whl"', repr(str(cls.wheel))
+        )
+
+    def compare(self):
+        return subprocess.run(
+            [str(self.python), "-"], input=self.program, capture_output=True, text=True
+        )
+
+    def test_an_untouched_installation_is_the_wheel(self):
+        completed = self.compare()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("are the staged wheel's content", completed.stdout)
+
+    def test_a_changed_installed_file_is_detected(self):
+        target = self.purelib / "sglang_fl/mod_007.py"
+        original = target.read_bytes()
+        target.write_text("value = 'tampered'\n")
+        try:
+            completed = self.compare()
+        finally:
+            target.write_bytes(original)
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn(
+            "differ from the staged wheel: ['sglang_fl/mod_007.py']", completed.stderr
+        )
+
+    def test_an_extra_file_under_the_package_is_detected(self):
+        planted = self.purelib / "sglang_fl" / "planted.py"
+        planted.write_text("value = 1\n")
+        try:
+            completed = self.compare()
+        finally:
+            planted.unlink()
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn(
+            "not in the staged wheel: ['sglang_fl/planted.py']", completed.stderr
+        )
 
 
 if __name__ == "__main__":

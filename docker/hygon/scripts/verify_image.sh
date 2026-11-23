@@ -38,28 +38,45 @@ set -euo pipefail
 # Usage:
 #   verify_image.sh <image>
 #   verify_image.sh <image> --sglang-wheel-sha256 <hex> --sglang-provenance <json> \
-#       --xgrammar-wheel-sha256 <hex> --xgrammar-provenance <json>
+#       --xgrammar-wheel-sha256 <hex> --xgrammar-provenance <json> \
+#       --sglang-fl-wheel <whl> --sglang-fl-wheel-sha256 <hex> \
+#       --sglang-fl-provenance <json>
 #
-# The strict form is what build_two_wheel.sh runs: the expected derived
-# wheel digest and its provenance manifest (patched-file hashes) bind the
-# acceptance to the exact artifact content. Without them only the weaker
-# identity gate (label present + installed version) runs, and the report
-# says so.
+# The strict form is what build_two_wheel.sh runs: the expected wheel
+# digests and provenance files bind the acceptance to the exact artifact
+# content (patched-file manifests for the derived wheels; the wheel itself
+# for sglang_fl, whose installed files are compared member by member).
+# Without them only the weaker identity gate (label present + installed
+# version) runs, and the report says so.
 image="${1:?usage: verify_image.sh <image> [strict artifact arguments]}"
 shift || true
 expected_sglang_sha256=""
 sglang_provenance=""
 expected_xgrammar_sha256=""
 xgrammar_provenance=""
+sglang_fl_wheel=""
+expected_sglang_fl_sha256=""
+sglang_fl_provenance=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --sglang-wheel-sha256) expected_sglang_sha256="${2:?}"; shift 2 ;;
         --sglang-provenance) sglang_provenance="${2:?}"; shift 2 ;;
         --xgrammar-wheel-sha256) expected_xgrammar_sha256="${2:?}"; shift 2 ;;
         --xgrammar-provenance) xgrammar_provenance="${2:?}"; shift 2 ;;
+        --sglang-fl-wheel) sglang_fl_wheel="${2:?}"; shift 2 ;;
+        --sglang-fl-wheel-sha256) expected_sglang_fl_sha256="${2:?}"; shift 2 ;;
+        --sglang-fl-provenance) sglang_fl_provenance="${2:?}"; shift 2 ;;
         *) echo "FATAL: unknown argument $1" >&2; exit 1 ;;
     esac
 done
+plugin_args=0
+for value in "$sglang_fl_wheel" "$expected_sglang_fl_sha256" "$sglang_fl_provenance"; do
+    [ -n "$value" ] && plugin_args=$((plugin_args + 1))
+done
+if [ "$plugin_args" -ne 0 ] && [ "$plugin_args" -ne 3 ]; then
+    echo "FATAL: --sglang-fl-wheel, --sglang-fl-wheel-sha256 and --sglang-fl-provenance must be given together" >&2
+    exit 1
+fi
 if [ -n "$expected_sglang_sha256" ] && [ -z "$sglang_provenance" ] \
     || [ -z "$expected_sglang_sha256" ] && [ -n "$sglang_provenance" ]; then
     echo "FATAL: --sglang-wheel-sha256 and --sglang-provenance must be given together" >&2
@@ -455,6 +472,85 @@ assert not [
 ]
 print("installed xgrammar distribution:", version, "(triton metadata absent)")
 PY
+fi
+
+# The plugin wheel follows the same contract as the two platform wheels:
+# the OCI label must equal the staged wheel's digest, its provenance must
+# belong to the image's history, and every installed sglang_fl file must be
+# the wheel's own content (RECORD is installer-owned).
+labeled_plugin_sha256="$(docker image inspect --format '{{index .Config.Labels "org.flagos.ci.sglang-fl-wheel-sha256"}}' "$image")"
+if [ -n "$expected_sglang_fl_sha256" ]; then
+    [ "$labeled_plugin_sha256" = "$expected_sglang_fl_sha256" ] || {
+        echo "FATAL: org.flagos.ci.sglang-fl-wheel-sha256=$labeled_plugin_sha256 != expected $expected_sglang_fl_sha256" >&2
+        exit 1
+    }
+    [ -s "$sglang_fl_provenance" ] || {
+        echo "FATAL: plugin-wheel provenance not found: $sglang_fl_provenance" >&2
+        exit 1
+    }
+    [ -s "$sglang_fl_wheel" ] || {
+        echo "FATAL: staged sglang_fl wheel not found: $sglang_fl_wheel" >&2
+        exit 1
+    }
+    [ "$(sha256sum "$sglang_fl_wheel" | awk '{print $1}')" = "$expected_sglang_fl_sha256" ] || {
+        echo "FATAL: staged sglang_fl wheel does not hash to $expected_sglang_fl_sha256" >&2
+        exit 1
+    }
+    python3 "$scripts/provenance_lineage.py" "$sglang_fl_provenance" \
+        "$labeled_source_commit" --repo "$repo_root"
+    python3 - "$sglang_fl_provenance" "$expected_sglang_fl_sha256" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+provenance = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert provenance["distribution"] == "sglang_fl", provenance["distribution"]
+assert provenance["sha256"] == sys.argv[2], provenance["sha256"]
+PY
+    run --volume "$sglang_fl_wheel":/sglang_fl.whl:ro \
+        --entrypoint python "$image" - <<'PY'
+import hashlib
+import pathlib
+import sysconfig
+import zipfile
+
+purelib = pathlib.Path(sysconfig.get_paths()["purelib"])
+# RECORD is rewritten by the installer; every other member is the wheel's
+# own bytes
+compared = 0
+mismatches = []
+with zipfile.ZipFile("/sglang_fl.whl") as archive:
+    members = [m for m in archive.infolist() if not m.filename.endswith("/")]
+    expected = {m.filename for m in members}
+    for member in members:
+        if member.filename.endswith(".dist-info/RECORD"):
+            continue
+        installed = purelib / member.filename
+        actual = (
+            hashlib.sha256(installed.read_bytes()).hexdigest()
+            if installed.is_file()
+            else None
+        )
+        if actual != hashlib.sha256(archive.read(member)).hexdigest():
+            mismatches.append(member.filename)
+        compared += 1
+assert compared > 100, compared
+assert not mismatches, (
+    f"installed sglang_fl files differ from the staged wheel: {mismatches}")
+extra = sorted(
+    p.relative_to(purelib).as_posix()
+    for p in (purelib / "sglang_fl").rglob("*")
+    if p.is_file()
+    and "__pycache__" not in p.parts
+    and p.relative_to(purelib).as_posix() not in expected
+)
+assert not extra, f"files under sglang_fl that are not in the staged wheel: {extra}"
+print(f"installed sglang_fl: {compared} files are the staged wheel's content;"
+      " no extra files")
+PY
+else
+    echo "WARNING: no --sglang-fl-wheel/--sglang-fl-wheel-sha256/--sglang-fl-provenance given;"
+    echo "the installed sglang_fl was NOT compared with a staged artifact"
 fi
 
 # The released image keeps the Runtime's neutral WORKDIR and carries no CI
