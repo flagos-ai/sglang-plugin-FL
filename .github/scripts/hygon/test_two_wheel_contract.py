@@ -38,6 +38,17 @@ DOCKER = REPO_ROOT / "docker" / "hygon"
 SCRIPTS = DOCKER / "scripts"
 
 
+def load_script(name: str):
+    """Import one of docker/hygon/scripts/*.py under its own name."""
+    if str(SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS))
+    spec = importlib.util.spec_from_file_location(name, SCRIPTS / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def uv_args(chunk: str) -> list[str]:
     """Collect the resolver arguments of one uv invocation block."""
     lines = []
@@ -1656,6 +1667,383 @@ class PluginWheelArtifactTests(unittest.TestCase):
         self.assertEqual(provenance["sha256"], first_sha)
         self.assertEqual(provenance["source_commit"], head)
         self.assertEqual(provenance["source_date_epoch"], int(epoch))
+
+
+def tiny_wheel(path, name, version, extra=None):
+    """A minimal wheel: dist-info (METADATA, WHEEL, RECORD), one package
+    file and whatever extra members are given."""
+    dist_info = f"{name}-{version}.dist-info"
+    members = {
+        f"{dist_info}/METADATA": f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+        f"{dist_info}/WHEEL": "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        f"{name}/__init__.py": '"""synthetic"""\n',
+    }
+    members.update(extra or {})
+    members[f"{dist_info}/RECORD"] = "".join(
+        f"{member},,\n" for member in sorted(members)
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for member, content in members.items():
+            archive.writestr(
+                member, content.encode() if isinstance(content, str) else content
+            )
+    return path
+
+
+def write_synthetic_wheelhouse(module, root, wheels):
+    """A wheelhouse with a manifest the module's verify() accepts."""
+    records = []
+    for name, version in wheels:
+        wheel = tiny_wheel(root / f"{name}-{version}-py3-none-any.whl", name, version)
+        url = f"https://files.example.invalid/{wheel.name}"
+        records.append(
+            {
+                "filename": wheel.name,
+                "name": name,
+                "version": version,
+                "sha256": module.sha256_file(wheel),
+                "size": wheel.stat().st_size,
+                "source_url": url,
+                "download_url": url,
+                "verified": "synthetic test wheel",
+            }
+        )
+    source = "registry.example/dev/app@sha256:" + "7" * 64
+    (root / module.MANIFEST_NAME).write_text(
+        json.dumps(module.build_manifest(records, source, []), indent=2, sort_keys=True)
+    )
+    return root
+
+
+class WheelhouseTests(unittest.TestCase):
+    """The offline wheelhouse is rebuilt from a green image's uv cache and
+    verified against it; nothing is repacked."""
+
+    SOURCE_IMAGE = "registry.example/dev/app@sha256:" + "7" * 64
+    ORJSON = {
+        "orjson-3.13.0.dist-info/METADATA": (
+            "Metadata-Version: 2.1\nName: orjson\nVersion: 3.13.0\n"
+        ),
+        "orjson/__init__.py": "x = 1\n",
+    }
+    CT = {
+        "compressed_tensors-0.17.0+flagos.dist-info/METADATA": (
+            "Metadata-Version: 2.1\nName: compressed-tensors\nVersion: 0.17.0+flagos\n"
+        ),
+        "compressed_tensors/__init__.py": "x = 2\n",
+    }
+    ORJSON_WHEEL = "orjson-3.13.0-py3-none-any.whl"
+    CT_WHEEL = "compressed_tensors-0.17.0+flagos-py3-none-any.whl"
+    ORJSON_ID = "tYIbTVCg0zyAL5w5"
+    CT_ID = "_zQAbIxLNj_FqERs"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_script("wheelhouse")
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="wheelhouse-test.")
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.cache = self.root / "cache"
+        self.sources = self.root / "sources"
+        self.out = self.root / "wheelhouse"
+        self.sources.mkdir()
+
+    def cache_entry(self, archive_id, filename, files, url=None, bucket="pypi"):
+        """Write a wheel, its uv cache entry and its unpacked cache tree;
+        return the manifest record the fetch should produce."""
+        wheel = self.sources / filename
+        with zipfile.ZipFile(wheel, "w", zipfile.ZIP_DEFLATED) as archive:
+            for member, content in files.items():
+                archive.writestr(member, content)
+        stem = filename[: -len(".whl")]
+        name, version = stem.rsplit("-", 3)[0].split("-", 1)
+        sha = hashlib.sha256(wheel.read_bytes()).hexdigest()
+        url = url or f"https://files.example.invalid/{filename}"
+        self.assertLess(len(url), 128)
+        # uv 0.11.30 layout: 2-byte prefix, archive id, then length-prefixed
+        # Sha256 header / filename / URL and the quoted etag
+        data = (
+            b"\x94\xb0"
+            + archive_id.encode()
+            + b"\x91\x92\xa6Sha256\xd9\x40"
+            + sha.encode()
+            + b"\xd9"
+            + bytes([len(filename)])
+            + filename.encode()
+            + b" "
+            + bytes([len(url)])
+            + url.encode()
+            + b'"'
+            + b"0" * 32
+        )
+        entry = self.cache / "wheels-v6" / bucket / name
+        entry.mkdir(parents=True, exist_ok=True)
+        (entry / f"{version}-py3-none-any.http").write_bytes(data)
+        for member, content in files.items():
+            path = self.cache / "archive-v0" / archive_id / member
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content.encode())
+        return {
+            "filename": filename,
+            "name": name,
+            "version": version,
+            "sha256": sha,
+            "size": wheel.stat().st_size,
+            "source_url": url,
+            "download_url": url,
+        }
+
+    def entry_path(self, name, version):
+        return self.cache / f"wheels-v6/pypi/{name}/{version}-py3-none-any.http"
+
+    def local_fetch(self, url, destination):
+        """A download that serves the prepared wheel files instead of the
+        network."""
+        destination.write_bytes((self.sources / url.rsplit("/", 1)[-1]).read_bytes())
+
+    def fetch(self, **overrides):
+        return self.module.fetch(
+            self.cache,
+            self.out,
+            self.SOURCE_IMAGE,
+            "https://mirror.example.invalid/simple",
+            2,
+            **overrides,
+        )
+
+    def test_inventory_reads_every_recorded_wheel(self):
+        orjson = self.cache_entry(self.ORJSON_ID, self.ORJSON_WHEEL, self.ORJSON)
+        compressed = self.cache_entry(
+            self.CT_ID, self.CT_WHEEL, self.CT, bucket="index"
+        )
+        entries = self.module.inventory(self.cache)
+        self.assertEqual(
+            [
+                (entry["filename"], entry["sha256"], entry["bucket"])
+                for entry in entries
+            ],
+            [
+                (compressed["filename"], compressed["sha256"], "index"),
+                (orjson["filename"], orjson["sha256"], "pypi"),
+            ],
+        )
+        self.assertEqual(entries[1]["archive_id"], self.ORJSON_ID)
+        self.assertEqual(entries[1]["version"], "3.13.0")
+        self.assertEqual(entries[0]["version"], "0.17.0+flagos")
+        self.assertEqual(entries[0]["source_url"], compressed["source_url"])
+
+    def test_direct_url_wheels_are_never_wheelhouse_entries(self):
+        self.cache_entry(self.ORJSON_ID, self.ORJSON_WHEEL, self.ORJSON, bucket="url")
+        with self.assertRaisesRegex(self.module.WheelhouseError, "no registry wheel"):
+            self.module.inventory(self.cache)
+
+    def test_an_entry_whose_archive_disagrees_is_rejected(self):
+        self.cache_entry(self.ORJSON_ID, self.ORJSON_WHEEL, self.ORJSON)
+        tree = self.cache / "archive-v0" / self.ORJSON_ID
+        (tree / "orjson-3.13.0.dist-info").rename(tree / "other-9.9.dist-info")
+        with self.assertRaisesRegex(self.module.WheelhouseError, "dist-info of"):
+            self.module.inventory(self.cache)
+
+    def test_an_entry_without_a_wheel_url_is_rejected(self):
+        self.cache_entry(self.ORJSON_ID, self.ORJSON_WHEEL, self.ORJSON)
+        path = self.entry_path("orjson", "3.13.0")
+        path.write_bytes(path.read_bytes().replace(b"https://", b"https-x//", 1))
+        with self.assertRaisesRegex(self.module.WheelhouseError, "one wheel URL"):
+            self.module.inventory(self.cache)
+
+    def test_fetch_rebuilds_the_recorded_wheels_and_their_manifest(self):
+        orjson = self.cache_entry(self.ORJSON_ID, self.ORJSON_WHEEL, self.ORJSON)
+        compressed = self.cache_entry(self.CT_ID, self.CT_WHEEL, self.CT)
+        manifest = self.fetch(fetch_url=self.local_fetch)
+        self.assertEqual(manifest["count"], 2)
+        self.assertEqual(manifest["cache_source"]["image"], self.SOURCE_IMAGE)
+        self.assertEqual(manifest["resolver_mode"], "offline-wheelhouse")
+        self.assertEqual(manifest["excluded_explicit_requirements"], [])
+        for record in (orjson, compressed):
+            self.assertEqual(
+                self.module.sha256_file(self.out / record["filename"]),
+                record["sha256"],
+            )
+        by_name = {wheel["name"]: wheel for wheel in manifest["wheels"]}
+        self.assertEqual(by_name["orjson"]["source_url"], orjson["source_url"])
+        self.assertEqual(by_name["orjson"]["download_url"], orjson["source_url"])
+        self.assertEqual(by_name["orjson"]["cache_archive_id"], self.ORJSON_ID)
+        self.assertIn("registry SHA256", by_name["orjson"]["verified"])
+        # the manifest on disk passes verification
+        self.assertEqual(self.module.verify(self.out)["count"], 2)
+
+    def test_the_originals_of_the_explicit_wheels_stay_out(self):
+        original = "xgrammar-0.2.1-cp310-cp310-manylinux_2_28_x86_64.whl"
+        xgrammar = self.cache_entry(
+            self.CT_ID,
+            original,
+            {
+                "xgrammar-0.2.1.dist-info/METADATA": (
+                    "Metadata-Version: 2.1\nName: xgrammar\nVersion: 0.2.1\n"
+                ),
+                "xgrammar/__init__.py": "x = 3\n",
+            },
+        )
+        orjson = self.cache_entry(self.ORJSON_ID, self.ORJSON_WHEEL, self.ORJSON)
+        manifest = self.fetch(fetch_url=self.local_fetch)
+        self.assertEqual(
+            [wheel["filename"] for wheel in manifest["wheels"]], [orjson["filename"]]
+        )
+        self.assertEqual(
+            manifest["excluded_explicit_requirements"],
+            [
+                {
+                    key: xgrammar[key]
+                    for key in ("filename", "name", "sha256", "source_url", "version")
+                }
+            ],
+        )
+
+    def test_a_wheel_that_does_not_hash_to_the_registry_digest_is_rejected(self):
+        record = self.cache_entry(self.ORJSON_ID, self.ORJSON_WHEEL, self.ORJSON)
+        (self.sources / record["filename"]).write_bytes(b"not the wheel")
+        with self.assertRaisesRegex(self.module.WheelhouseError, "SHA256"):
+            self.fetch(fetch_url=self.local_fetch)
+        self.assertEqual(list(self.out.iterdir()), [])
+
+    def test_content_other_than_the_cached_tree_is_rejected(self):
+        # the digest is honest for a wheel whose payload differs from what the
+        # green build unpacked: the cache tree is the second witness
+        record = self.cache_entry(self.ORJSON_ID, self.ORJSON_WHEEL, self.ORJSON)
+        wheel = self.sources / record["filename"]
+        with zipfile.ZipFile(wheel, "w") as archive:
+            archive.writestr("orjson/__init__.py", "x = 99\n")
+            archive.writestr(
+                "orjson-3.13.0.dist-info/METADATA",
+                self.ORJSON["orjson-3.13.0.dist-info/METADATA"],
+            )
+        path = self.entry_path("orjson", "3.13.0")
+        data = bytearray(path.read_bytes())
+        position = data.index(record["sha256"].encode())
+        data[position : position + 64] = (
+            hashlib.sha256(wheel.read_bytes()).hexdigest().encode()
+        )
+        path.write_bytes(data)
+        with self.assertRaisesRegex(
+            self.module.WheelhouseError, "differ from the cached"
+        ):
+            self.fetch(fetch_url=self.local_fetch)
+
+    def test_a_wheel_that_lies_about_its_metadata_is_rejected(self):
+        lying = dict(self.ORJSON)
+        lying["orjson-3.13.0.dist-info/METADATA"] = (
+            "Metadata-Version: 2.1\nName: orjson\nVersion: 3.12.0\n"
+        )
+        self.cache_entry(self.ORJSON_ID, self.ORJSON_WHEEL, lying)
+        # name and version come from the filename; the wheel's METADATA
+        # disagrees with it although the cache tree is identical
+        with self.assertRaisesRegex(self.module.WheelhouseError, "METADATA says"):
+            self.fetch(fetch_url=self.local_fetch)
+
+    def test_the_mirror_completes_a_generic_wheel_when_the_recorded_url_is_dead(
+        self,
+    ):
+        record = self.cache_entry(
+            self.ORJSON_ID,
+            self.ORJSON_WHEEL,
+            self.ORJSON,
+            url="https://dead.example.invalid/" + self.ORJSON_WHEEL,
+        )
+        mirror = f"file://{self.sources / self.ORJSON_WHEEL}"
+        manifest = self.fetch(
+            pause=lambda seconds: None, lookup=lambda index, entry: mirror
+        )
+        wheel = manifest["wheels"][0]
+        self.assertEqual(wheel["download_url"], mirror)
+        self.assertEqual(wheel["source_url"], record["source_url"])
+
+    def test_a_wheel_that_cannot_be_established_leaves_no_wheelhouse(self):
+        self.cache_entry(
+            self.ORJSON_ID,
+            self.ORJSON_WHEEL,
+            self.ORJSON,
+            url="https://dead.example.invalid/" + self.ORJSON_WHEEL,
+        )
+        with self.assertRaisesRegex(
+            self.module.WheelhouseError, "could not be established"
+        ):
+            self.fetch(pause=lambda seconds: None, lookup=lambda index, entry: None)
+        self.assertEqual(list(self.out.iterdir()), [])
+
+    def test_an_occupied_output_directory_is_refused(self):
+        self.cache_entry(self.ORJSON_ID, self.ORJSON_WHEEL, self.ORJSON)
+        self.out.mkdir()
+        (self.out / "leftover.whl").write_bytes(b"x")
+        with self.assertRaisesRegex(self.module.WheelhouseError, "not empty"):
+            self.fetch(fetch_url=self.local_fetch)
+
+    def test_verify_rejects_a_changed_extra_or_missing_file(self):
+        orjson = self.cache_entry(self.ORJSON_ID, self.ORJSON_WHEEL, self.ORJSON)
+        compressed = self.cache_entry(self.CT_ID, self.CT_WHEEL, self.CT)
+        self.fetch(fetch_url=self.local_fetch)
+        self.assertEqual(self.module.verify(self.out)["count"], 2)
+        # changed
+        target = self.out / orjson["filename"]
+        keep = target.read_bytes()
+        target.write_bytes(b"tampered")
+        with self.assertRaisesRegex(
+            self.module.WheelhouseError, "changed since the manifest"
+        ):
+            self.module.verify(self.out)
+        target.write_bytes(keep)
+        # extra
+        (self.out / "surprise.whl").write_bytes(b"x")
+        with self.assertRaisesRegex(self.module.WheelhouseError, "unexpected"):
+            self.module.verify(self.out)
+        (self.out / "surprise.whl").unlink()
+        # missing
+        moved = self.out / compressed["filename"]
+        keep = moved.read_bytes()
+        moved.unlink()
+        with self.assertRaisesRegex(self.module.WheelhouseError, "missing"):
+            self.module.verify(self.out)
+        moved.write_bytes(keep)
+        self.assertEqual(self.module.verify(self.out)["count"], 2)
+
+    def test_bind_plan_accepts_only_the_wheelhouse_closure(self):
+        orjson = self.cache_entry(self.ORJSON_ID, self.ORJSON_WHEEL, self.ORJSON)
+        self.cache_entry(self.CT_ID, self.CT_WHEEL, self.CT)
+        self.fetch(fetch_url=self.local_fetch)
+        plan, consumed = self.root / "plan.txt", self.root / "consumed.txt"
+
+        def bound(lines):
+            plan.write_text("\n".join(lines) + "\n")
+            return self.module.bind_plan(self.out, plan, consumed)
+
+        report = bound(
+            [
+                "sglang==0.5.18+flagos.hcu1",
+                "sglang-fl==0.1.0",
+                "xgrammar==0.2.1+flagos.hcu1",
+                "orjson==3.13.0",
+            ]
+        )
+        self.assertEqual(report, {"consumed": 1, "unused": ["compressed-tensors"]})
+        self.assertIn(
+            f"orjson==3.13.0 {orjson['sha256']} {orjson['filename']}",
+            consumed.read_text(),
+        )
+        for lines in (
+            ["orjson==3.12.0"],
+            ["datasets==5.2.0"],
+            ["xgrammar==0.2.1"],
+            ["sglang==0.5.18+flagos"],
+        ):
+            with self.subTest(lines), self.assertRaises(self.module.WheelhouseError):
+                bound(lines)
+
+    def test_the_cli_fails_loudly(self):
+        self.assertEqual(
+            self.module.main(["verify", "--wheelhouse", str(self.root / "absent")]), 1
+        )
 
 
 class ImportSmokeVerdictTests(unittest.TestCase):
