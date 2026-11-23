@@ -37,7 +37,7 @@ def uv_args(chunk: str) -> list[str]:
     lines = []
     for line in chunk.splitlines():
         stripped = line.strip().rstrip("\\").strip()
-        if stripped.startswith(("--", "-r ")) or stripped.startswith("'/tmp/wheels/"):
+        if stripped.startswith(("--", "'/tmp/wheels/")):
             lines.append(stripped)
         elif stripped.startswith(">") or stripped.startswith("&&"):
             break
@@ -99,10 +99,12 @@ class StagingCouplingTests(unittest.TestCase):
         )
         # Every COPYed build input is removed by the RUN that consumes it.
         self.assertIn(
-            "rm -rf /tmp/wheels /tmp/runtime-constraints.txt /tmp/requirements.txt"
+            "rm -rf /tmp/wheels /tmp/runtime-constraints.txt"
             " /tmp/runtime-0.5.18.excludes.txt",
             containerfile,
         )
+        self.assertNotIn("/tmp/requirements.txt", containerfile)
+        self.assertFalse((DOCKER / "requirements.txt").exists())
         self.assertIn("rm -rf /tmp/stubs", containerfile)
         # The HCU gating patch is folded into the derived SGLang wheel
         # BEFORE staging: no patch may be referenced or applied here.
@@ -165,13 +167,13 @@ class StagingCouplingTests(unittest.TestCase):
 
         real = uv_args(parts[1])
         self.assertNotIn("--dry-run", real)
+        self.assertFalse(any(argument.startswith("-r ") for argument in real))
         self.assertEqual(real.count("--index-strategy unsafe-first-match"), 1)
         self.assertNotIn("first-index", " ".join(real))
         self.assertEqual(real.count('--index "$TENCENT_INDEX"'), 1)
         for required in (
             "--excludes /tmp/runtime-0.5.18.excludes.txt",
             "--constraints /tmp/runtime-constraints.txt",
-            "-r /tmp/requirements.txt",
             "'/tmp/wheels/sglang-0.5.18+flagos.hcu1-cp310-cp310-"
             "linux_x86_64.whl[srt_empty,runtime_common]'",
             "'/tmp/wheels/sglang_fl-0.1.0-py3-none-any.whl[hygon]'",
@@ -480,7 +482,6 @@ class StageContextSurvivalTests(unittest.TestCase):
             "artifacts/sglang_fl-0.1.0-py3-none-any.whl",
             "artifacts/runtime-0.5.18.excludes.txt",
             "runtime-0.5.18.containerfile",
-            "docker/hygon/requirements.txt",
             "docker/hygon/scripts/validate_uv_plan.py",
         ):
             self.assertTrue((self.context / relative).is_file(), f"missing {relative}")

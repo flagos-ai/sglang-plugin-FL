@@ -130,7 +130,7 @@ docker run --rm --platform linux/amd64 \
 echo "=== [4/6] Resolver dry-run plan gate (same resolved digest) ==="
 # /plan inside this container is the disposable plan dir; the file mounts
 # reproduce the exact /tmp paths the containerfile install consumes:
-# the constraints and requirements as files, the staged wheels under
+# the generated Runtime constraints, the staged wheels under
 # /tmp/wheels, the single-item exclusion list. dry-run.sh is the containerfile
 # install command plus --dry-run and the output redirect (compared by the
 # two-wheel contract unit tests).
@@ -146,7 +146,6 @@ cat > "$plan/dry-run.sh" <<'EOF'
       --default-index "$PROXY_INDEX" \
       --index-strategy unsafe-first-match \
       --constraints /tmp/runtime-constraints.txt \
-      -r /tmp/requirements.txt \
       --excludes /tmp/runtime-0.5.18.excludes.txt \
       '/tmp/wheels/sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl[srt_empty,runtime_common]' \
       '/tmp/wheels/sglang_fl-0.1.0-py3-none-any.whl[hygon]' \
@@ -157,7 +156,6 @@ docker run --rm --platform linux/amd64 \
     -e FLAGOS_INDEX -e TENCENT_INDEX -e PROXY_INDEX \
     --volume "$plan":/plan \
     --volume "$plan/runtime-constraints.txt":/tmp/runtime-constraints.txt:ro \
-    --volume "$context/docker/hygon/requirements.txt":/tmp/requirements.txt:ro \
     --volume "$context/artifacts":/tmp/wheels:ro \
     --volume "$context/artifacts/runtime-0.5.18.excludes.txt":/tmp/runtime-0.5.18.excludes.txt:ro \
     --volume "$scripts":/scripts:ro \

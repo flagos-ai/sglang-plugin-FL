@@ -354,14 +354,13 @@ docker/hygon/scripts/verify_image.sh <tag>
   数据采集、dry-run 门、`docker build` 全部用同一 digest，并把 digest 记
   进 `org.flagos.ci.base-digest` label，验收从该 label 回读基底——tag 再
   移动也不影响已构建镜像的可复现验收；
-- 顶层 resolver 输入是 `docker/hygon/requirements.txt`（显式 `-r` 安装，
-  只收实证 pin；当前仅 `datasets==5.2.0`：runtime 自带 fsspec 2026.9.0，
-  平台 index 上的更旧 datasets 都对 fsspec 封顶导致 ResolutionImpossible，
-  5.2.0 是首个放开 fsspec 的版本）。这与 Runtime 动态 constraints 是两件
-  事：后者由 `build_two_wheel.sh` 从解析出的 digest 生成，只保护 Runtime
-  distributions 不被 resolver 替换，仅作构建临时输入（/tmp，同一 RUN 内
-  消费并删除），不留在最终镜像；
-- 构建期临时文件（constraints、requirements、两 wheel、excludes、stubs）
+- `datasets==5.2.0` 已按 Runtime owner 的 review 意见进入插件的 Hygon extra：
+  Runtime 自带 fsspec 2026.9.0，平台 index 上的更旧 datasets 都对 fsspec 封顶
+  而导致 ResolutionImpossible，5.2.0 是首个放开该上限的测试版本。Runtime
+  动态 constraints 则由 `build_two_wheel.sh` 从解析出的 digest 生成，只保护
+  Runtime distributions 不被 resolver 替换，仅作构建临时输入（/tmp，同一
+  RUN 内消费并删除），不留在最终镜像；
+- 构建期临时文件（constraints、两 wheel、excludes、stubs）
   全部 COPY 到 `/tmp`，由消费它们的同一 `RUN` 删除；镜像不设 `WORKDIR`
   （继承 Runtime 的 `/app`），不含 `/opt/sglang-ci` 或任何构建痕迹。HCU
   patch 不再进入镜像：它折入派生 wheel（staging 期严格差异门禁保证只有

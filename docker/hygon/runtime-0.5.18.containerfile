@@ -54,13 +54,12 @@ ARG FLAGOS_INDEX=https://resource.flagos.net/repository/flagos-pypi-hygon/simple
 ARG TENCENT_INDEX=https://mirrors.cloud.tencent.com/pypi/simple
 ARG PROXY_INDEX=https://resource.flagos.net/repository/pypi-proxy/simple
 
-# Resolver inputs, consumed and removed by the install RUN below.
+# Runtime constraints are consumed and removed by the install RUN below.
 # runtime-constraints.txt freezes the pristine Runtime inventory (canonical
 # name==version) and is generated from the resolved base by
-# build_two_wheel.sh - never committed; requirements.txt is the reviewed,
-# evidence-backed pin file (see its header).
+# build_two_wheel.sh - never committed. Product requirements, including the
+# datasets compatibility pin, are carried by the reviewed wheel metadata.
 COPY artifacts/runtime-constraints.txt /tmp/runtime-constraints.txt
-COPY docker/hygon/requirements.txt /tmp/requirements.txt
 
 # The two reviewed application wheels and the single-item resolver exclusion
 # list are staged by docker/hygon/stage_wheels.sh; their SHA256s are part of
@@ -89,11 +88,10 @@ RUN /usr/local/bin/uv pip install --python /flagos/bin/python3 \
       --default-index "$PROXY_INDEX" \
       --index-strategy unsafe-first-match \
       --constraints /tmp/runtime-constraints.txt \
-      -r /tmp/requirements.txt \
       --excludes /tmp/runtime-0.5.18.excludes.txt \
       '/tmp/wheels/sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl[srt_empty,runtime_common]' \
       '/tmp/wheels/sglang_fl-0.1.0-py3-none-any.whl[hygon]' \
-      && rm -rf /tmp/wheels /tmp/runtime-constraints.txt /tmp/requirements.txt /tmp/runtime-0.5.18.excludes.txt
+      && rm -rf /tmp/wheels /tmp/runtime-constraints.txt /tmp/runtime-0.5.18.excludes.txt
 
 # --- TEMP: import stubs for kernel wheels HCU does not ship ------------------
 # SGLang 0.5.18 imports sgl_kernel / flashinfer eagerly at module scope; HCU

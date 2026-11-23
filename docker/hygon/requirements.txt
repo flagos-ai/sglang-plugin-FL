@@ -1,5 +1,0 @@
-# Requirements installed with the two application wheels. Only evidence-backed
-# pins; SGLang's own METADATA pins its direct dependencies, and the dynamic
-# runtime-constraints.txt (build_two_wheel.sh) protects the Runtime instead.
-# RCA detail: docker/hygon/README.md.
-datasets==5.2.0

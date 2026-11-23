@@ -33,7 +33,7 @@ cuda = ["sglang==0.5.18"]
 # image resolver must satisfy. Runtime-owned distributions (torch, numpy,
 # flagtree, flagcx) are frozen by the image's dynamic runtime constraints
 # and are deliberately not restated here; SGLang closure dependencies
-# (xgrammar, compressed-tensors, loguru, datasets, transformers,
+# (xgrammar, compressed-tensors, loguru, transformers,
 # apache-tvm-ffi, ...) arrive through the SGLang wheel's own requirements
 # and must not be duplicated in the plugin extra.
 hygon = [
@@ -47,6 +47,12 @@ hygon = [
     # resolver run against different indexes from selecting another build
     # whose libentry contract mismatches the Runtime's FlagTree Triton.
     "flag-gems==5.4.0",
+    # Product compatibility pin requested by the Runtime owner. SGLang's
+    # closure reaches datasets, while this Runtime supplies fsspec 2026.9.0;
+    # datasets==5.2.0 is the first tested release without the older fsspec
+    # upper bound. Keeping the pin in the selected platform extra makes it
+    # part of the wheel contract instead of a hidden Docker requirement.
+    "datasets==5.2.0",
     # Triton is intentionally absent here. The Hygon Runtime provides the
     # compiler as the /opt/flagtree module tree (Triton 3.6.0, selected by
     # the image-level PYTHONPATH), not as a pip distribution; its FlagGems

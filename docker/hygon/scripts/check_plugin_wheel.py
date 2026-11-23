@@ -6,8 +6,9 @@ enters any image build context:
 
   - METADATA Name/Version match the project,
   - the ``hygon`` optional dependency group exists, carries the exact
-    compatibility anchors (flagos SGLang pin, runtime FlagGems line), and
-    contains exactly two requirements,
+    compatibility anchors (flagos SGLang pin, runtime FlagGems line and the
+    reviewed datasets/fsspec compatibility pin), and contains exactly three
+    requirements,
   - no Requires-Dist anywhere in the wheel names ``triton`` (the Runtime
     provides the Triton compiler as the /opt/flagtree module tree, not as
     a pip distribution),
@@ -31,8 +32,9 @@ EXPECTED_EXTRA_ANCHORS = (
     # the derived HCU wheel (tools/wheels/hygon/derive_sglang_wheel.py)
     "sglang==0.5.18+flagos.hcu1",
     "flag-gems==5.4.0",
+    "datasets==5.2.0",
 )
-EXPECTED_EXTRA_COUNT = 2
+EXPECTED_EXTRA_COUNT = 3
 EXCLUDED_DISTRIBUTION = "triton"
 EXPECTED_ENTRY_POINTS = {
     "sglang.srt.platforms": ("sglang_fl", "sglang_fl:activate_platform"),

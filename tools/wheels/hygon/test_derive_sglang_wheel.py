@@ -714,7 +714,11 @@ def test_hygon_extra_selects_the_derived_version(tmp_path):
         for line in metadata.get_all("Requires-Dist", ())
         if 'extra == "hygon"' in line
     )
-    assert hygon == ["flag-gems==5.4.0", f"sglang=={DERIVED_VERSION}"]
+    assert hygon == [
+        "datasets==5.2.0",
+        "flag-gems==5.4.0",
+        f"sglang=={DERIVED_VERSION}",
+    ]
     cuda = [
         line.split(";")[0].strip()
         for line in metadata.get_all("Requires-Dist", ())
