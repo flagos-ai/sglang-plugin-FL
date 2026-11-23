@@ -917,6 +917,8 @@ class TritonSlotContractTests(unittest.TestCase):
         # no phase may still hard-code the production slot
         phase6 = verify[verify.index("=== [6/8]") : verify.index("=== [7/8]")]
         self.assertNotIn("/opt/flagtree", phase6)
+        # the slot contract helper must be reachable inside the phase-6 container
+        self.assertIn('--volume "$scripts":/scripts:ro', phase6)
         collector = (SCRIPTS / "collect_runtime_reference.py").read_text()
         self.assertIn("--selected-slot", collector)
         self.assertIn("assert_slot_root", collector)
@@ -1654,6 +1656,86 @@ class PluginWheelArtifactTests(unittest.TestCase):
         self.assertEqual(provenance["sha256"], first_sha)
         self.assertEqual(provenance["source_commit"], head)
         self.assertEqual(provenance["source_date_epoch"], int(epoch))
+
+
+class ImportSmokeVerdictTests(unittest.TestCase):
+    """Phase 5 decides by the log and stops waiting once the verdict is final."""
+
+    ABORT = (
+        "PlatformFL initialized: vendor=hygon, device=cuda, dist_backend=nccl, count=0\n"
+        "terminate called after throwing an instance of 'c10::AcceleratorError'\n"
+        "  what():  HIP error: no ROCm-capable device is detected\n"
+        "Search for `hipErrorNoDevice' in the HIP documentation.\n"
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls.verifier = (SCRIPTS / "verify_image.sh").read_text()
+
+    def region(self, start, end):
+        first = self.verifier.index(start)
+        return self.verifier[first : self.verifier.index(end, first)]
+
+    def verdict_in(self, log):
+        """Run the phase's own verdict predicate against a log."""
+        function = self.region("smoke_verdict_in_log() {", "\nsmoke_container=")
+        with tempfile.TemporaryDirectory(prefix="smoke-verdict-test.") as tmp:
+            path = Path(tmp) / "smoke.log"
+            path.write_text(log)
+            script = Path(tmp) / "verdict.sh"
+            script.write_text(
+                "\n".join(
+                    [
+                        "set -euo pipefail",
+                        f'smoke_log="{path}"',
+                        function,
+                        "smoke_verdict_in_log",
+                    ]
+                )
+                + "\n"
+            )
+            completed = subprocess.run(
+                ["bash", str(script)], capture_output=True, text=True
+            )
+        self.assertNotIn("SyntaxError", completed.stderr)
+        return completed.returncode == 0
+
+    def test_the_python_verdicts_and_the_device_abort_are_final_verdicts(self):
+        self.assertTrue(
+            self.verdict_in("warnings\nSMOKE-PASS sglang 0.5.18+flagos.hcu1\n")
+        )
+        self.assertTrue(
+            self.verdict_in(
+                "traceback\nSMOKE-TOLERATED sglang import blocked by device libraries only\n"
+            )
+        )
+        self.assertTrue(self.verdict_in(self.ABORT))
+
+    def test_a_mention_of_the_device_error_inside_a_failed_import_is_no_verdict(
+        self,
+    ):
+        # the smoke script classifies the exception itself: a traceback that
+        # merely mentions the device error and then fails is not a verdict
+        self.assertFalse(
+            self.verdict_in(
+                "Traceback\nImportError: HIP error: no ROCm-capable device is detected\n"
+                "sglang import failed for reasons other than missing device libraries\n"
+            )
+        )
+        self.assertFalse(self.verdict_in(""))
+        self.assertFalse(
+            self.verdict_in(
+                self.ABORT.replace("c10::AcceleratorError", "std::bad_alloc")
+            )
+        )
+
+    def test_the_phase_waits_for_a_verdict_within_a_bound(self):
+        phase5 = self.region("=== [5/8] SGLang import smoke ===", "=== [6/8]")
+        self.assertIn("docker run -d --platform linux/amd64", phase5)
+        self.assertIn("for _ in $(seq 1 180); do", phase5)
+        self.assertIn('docker rm -f "$smoke_container"', phase5)
+        self.assertIn("produced no verdict within 30 minutes", phase5)
+        self.assertIn("failed for reasons other than missing device libraries", phase5)
 
 
 class InstalledPluginWheelComparisonTests(unittest.TestCase):

@@ -201,15 +201,59 @@ run --volume "$scripts":/scripts:ro \
     --probe /scripts/hcu-device-lib-check.ll
 
 echo "=== [5/8] SGLang import smoke ==="
+# The verdict is a log sentinel (scripts/sglang_import_smoke.py): a GPU-less
+# builder cannot initialize the device libraries, so the exit code says
+# nothing. With the DTK loader path baked into the image the import may die
+# inside the C++ runtime ("terminate called ... no ROCm-capable device is
+# detected"); torch's terminate handler then needs tens of minutes on an
+# emulated builder to symbolize a stack trace nobody reads. The container is
+# therefore started detached and stopped once its log holds a FINAL verdict:
+# the Python verdict (SMOKE-*) or that abort signature, after which the
+# process cannot continue. No verdict within the bound fails the phase.
 smoke_log="$refdir/sglang-import-smoke.log"
-run --volume "$scripts":/scripts:ro \
-    --entrypoint python "$image" /scripts/sglang_import_smoke.py \
-    > "$smoke_log" 2>&1 || true
+smoke_verdict_in_log() {
+    grep -qE "SMOKE-PASS|SMOKE-TOLERATED" "$smoke_log" \
+        || { grep -q "^terminate called after throwing an instance of 'c10::AcceleratorError'$" "$smoke_log" \
+            && grep -q "^  what():  HIP error: no ROCm-capable device is detected$" "$smoke_log"; }
+}
+smoke_container="$(docker run -d --platform linux/amd64 \
+    --volume "$scripts":/scripts:ro \
+    --entrypoint python "$image" /scripts/sglang_import_smoke.py)"
+smoke_verdict=""
+for _ in $(seq 1 180); do
+    docker logs "$smoke_container" > "$smoke_log" 2>&1 || true
+    if smoke_verdict_in_log; then
+        smoke_verdict="sentinel"
+        break
+    fi
+    if [ "$(docker inspect --format '{{.State.Running}}' "$smoke_container")" != "true" ]; then
+        smoke_verdict="exited"
+        break
+    fi
+    sleep 10
+done
+docker logs "$smoke_container" > "$smoke_log" 2>&1 || true
+docker rm -f "$smoke_container" >/dev/null 2>&1 || true
 cat "$smoke_log"
-grep -qE "SMOKE-PASS|SMOKE-TOLERATED|no ROCm-capable device is detected" "$smoke_log"
+case "$smoke_verdict" in
+    sentinel)
+        echo "SGLang import smoke: final verdict read from the log (the C++ runtime"
+        echo "aborted for want of a device, as expected on a GPU-less builder)"
+        ;;
+    exited)
+        smoke_verdict_in_log \
+            || { echo "FATAL: sglang import failed for reasons other than missing device libraries" >&2; exit 1; }
+        ;;
+    *)
+        echo "FATAL: the SGLang import smoke produced no verdict within 30 minutes" >&2
+        exit 1
+        ;;
+esac
 
 echo "=== [6/8] Triton slot contract + entrypoint matrix (slot: $TRITON_SLOT) ==="
-run -e TRITON_SLOT="$TRITON_SLOT" --entrypoint bash "$image" <<'SLOT_EOF'
+run -e TRITON_SLOT="$TRITON_SLOT" \
+    --volume "$scripts":/scripts:ro \
+    --entrypoint bash "$image" <<'SLOT_EOF'
 python -c 'import os, triton; p = triton.__file__; assert p and p.startswith(os.environ["TRITON_SLOT"] + "/"), p; print("triton (sh):", p)' \
 && bash -c 'python -c "import os, triton; assert triton.__file__.startswith(os.environ[\"TRITON_SLOT\"] + \"/\"), triton.__file__; print(\"triton (bash):\", triton.__file__)"' \
 && python - "$TRITON_SLOT" <<'PY'
@@ -349,7 +393,8 @@ dist_infos = sorted(p.name for p in purelib.glob("sglang-*.dist-info"))
 assert dist_infos == [f"sglang-{version}.dist-info"], dist_infos
 manifest = json.loads(pathlib.Path("/provenance.json").read_text())[
     "patched_files_manifest"]
-site = purelib / "sglang"
+# the manifest keys are site-packages relative (they start with "sglang/")
+site = purelib
 mismatches = []
 for rel, expected_hash in sorted(manifest.items()):
     installed = hashlib.sha256((site / rel).read_bytes()).hexdigest()
