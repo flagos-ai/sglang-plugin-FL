@@ -552,7 +552,9 @@ def test_real_record_is_standard_quoted_csv(real_derived, real_input_wheel):
 
     record_rel = f"sglang-{DERIVED_VERSION}.dist-info/RECORD"
     with zipfile.ZipFile(real_derived) as archive:
-        record = archive.read(record_rel).decode("utf-8")
+        record_bytes = archive.read(record_rel)
+        record = record_bytes.decode("utf-8")
+    assert b"\r" not in record_bytes
     rows = [row for row in csv.reader(io.StringIO(record, newline="")) if row]
     assert rows, "RECORD is empty"
     bad = [row for row in rows if len(row) != 3]
@@ -567,6 +569,9 @@ def test_real_record_is_standard_quoted_csv(real_derived, real_input_wheel):
     assert {row[0] for row in rows} == names
     quoted_lines = [line for line in record.splitlines() if line.startswith('"')]
     assert len(quoted_lines) == len(comma_paths)
+    serialized = io.StringIO(newline="")
+    csv.writer(serialized, lineterminator="\n").writerows(rows)
+    assert serialized.getvalue().encode("utf-8") == record_bytes
 
 
 def test_compression_kinds_are_preserved(real_derived, real_input_wheel):
@@ -580,6 +585,36 @@ def test_compression_kinds_are_preserved(real_derived, real_input_wheel):
         derived_kinds = Counter(i.compress_type for i in archive.infolist())
     assert derived_kinds == input_kinds, (derived_kinds, input_kinds)
     assert input_kinds[zipfile.ZIP_STORED] == 6
+
+    with (
+        zipfile.ZipFile(real_input_wheel) as original,
+        zipfile.ZipFile(real_derived) as derived,
+    ):
+        original_dist = verify_mod.wheel_dist_info(original)
+        derived_dist = verify_mod.wheel_dist_info(derived)
+        original_by_normalized_name = {
+            (
+                derived_dist + info.filename[len(original_dist) :]
+                if info.filename == original_dist
+                or info.filename.startswith(original_dist + "/")
+                else info.filename
+            ): info.compress_type
+            for info in original.infolist()
+        }
+        derived_by_name = {
+            info.filename: info.compress_type for info in derived.infolist()
+        }
+    assert derived_by_name == original_by_normalized_name
+
+
+def test_record_and_verifier_use_standard_csv_implementation():
+    derive_source = (TOOLS_DIR / "derive_sglang_wheel.py").read_text(encoding="utf-8")
+    verifier_source = (TOOLS_DIR / "verify_derived_sglang_wheel.py").read_text(
+        encoding="utf-8"
+    )
+    assert "csv.writer(" in derive_source
+    assert 'lineterminator="\\n"' in derive_source
+    assert ".rsplit(" not in verifier_source
 
 
 def test_provenance_manifest_binds_patched_files(real_derived):
