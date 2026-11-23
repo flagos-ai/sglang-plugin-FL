@@ -30,10 +30,15 @@ thw = "thw"
 muh = "muh"
 # MIS means multi-item scoring in SGLang (enable_mis / --enable-mis).
 mis = "mis"
+# DTK LLVM option on FlagTree's HCU compile path
+# (-mllvm=-check-valu-data-forward-hazards=0), quoted verbatim in evidence.
+valu = "valu"
 
 [default.extend-identifiers]
 # Recorded Hygon runtime commit; preserve the exact SHA in validation evidence.
 "8029ba2" = "8029ba2"
+# Recorded SHA256 of the HSACO the FlagTree HCU compile probe produces.
+"ea37ba47" = "ea37ba47"
 
 [files]
 # Machine-generated validation evidence: real upstream file names recorded

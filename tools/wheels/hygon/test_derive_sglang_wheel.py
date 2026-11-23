@@ -7,7 +7,7 @@ Error branches (minimal SYNTHETIC wheel + a synthetic git patch):
   2. wrong distribution name / version is rejected;
   3. derived version equal to the input (or not this round's exact value)
      is rejected;
-  4. an unapplicable patch is rejected;
+  4. an inapplicable patch is rejected;
   5. an unexpected change to a non-allowlist file is rejected by the gates;
   6. any native payload byte change is rejected;
   7. METADATA/filename/dist-info version inconsistency is rejected;
@@ -334,7 +334,7 @@ def test_derived_version_must_differ_and_be_this_rounds_value(tmp_path):
         )
 
 
-def test_unapplicable_patch_is_rejected(tmp_path):
+def test_inapplicable_patch_is_rejected(tmp_path):
     wheel = build_synth_wheel(
         tmp_path / INPUT_NAME,
         mutations={
