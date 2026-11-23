@@ -597,6 +597,19 @@ class ReviewerCommentContractTests(unittest.TestCase):
         )
         self.assertFalse((DOCKER / "sglang-v0.5.18-hcu.patch").exists())
 
+    def test_r4627512386_the_excludes_removal_is_gated(self):
+        # transitional state: the exclusion and its exact exception remain
+        # until the real-index gate and the built image prove them redundant
+        self.assertTrue((DOCKER / "runtime-0.5.18.excludes.txt").is_file())
+        exceptions = (SCRIPTS / "pip_check_exceptions.py").read_text()
+        self.assertIn('("xgrammar", "triton")', exceptions)
+        gate = (DOCKER / "no_excludes_gate.sh").read_text()
+        self.assertIn("plan B", gate)
+        self.assertIn("identical", gate)
+        self.assertIn("validate_uv_plan.py", gate)
+        self.assertNotIn("docker push", gate)
+        self.assertNotIn("docker build", gate)
+
     def test_r4627527485_the_datasets_pin_is_wheel_metadata(self):
         pyproject = (REPO_ROOT / "pyproject.toml").read_text()
         self.assertIn('"datasets==5.2.0"', pyproject)
@@ -604,6 +617,67 @@ class ReviewerCommentContractTests(unittest.TestCase):
         containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
         self.assertNotIn("-r /tmp", containerfile)
         self.assertNotIn("requirements.txt", containerfile)
+
+
+class UvInstallContractTests(unittest.TestCase):
+    """The containerfile's install arguments, extracted once for other gates."""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(SCRIPTS))
+        import uv_install_contract
+
+        cls.module = uv_install_contract
+        cls.args = uv_install_contract.install_arguments(
+            (DOCKER / "runtime-0.5.18.containerfile").read_text()
+        )
+
+    def test_matches_the_hand_written_dry_run_twin(self):
+        build = (DOCKER / "build_two_wheel.sh").read_text()
+        heredoc = re.search(
+            r"cat > \"\$plan/dry-run\.sh\" <<'EOF'\n(.*?)\nEOF\n", build, re.DOTALL
+        )
+        self.assertIsNotNone(heredoc)
+        import shlex
+
+        # uv_args keeps continuation lines whole; the extractor emits tokens
+        twin = shlex.split(
+            " ".join(
+                uv_args(heredoc.group(1).split("/usr/local/bin/uv pip install")[1])
+            )
+        )
+        containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
+        arg_defaults = {
+            match.group(1): match.group(2)
+            for match in re.finditer(r"^ARG (\w+)=(\S+)$", containerfile, re.MULTILINE)
+        }
+        twin = [
+            arg_defaults.get(token.lstrip("$"), token)
+            if token.startswith("$")
+            else token
+            for token in twin
+        ]
+        self.assertEqual(
+            [a for a in twin if a != "--dry-run"],
+            self.args,
+            "uv_install_contract.py and the dry-run twin diverge",
+        )
+
+    def test_stops_at_the_end_of_the_run_instruction(self):
+        self.assertEqual(
+            self.args[-1], "/tmp/artifacts/sglang_fl-0.1.0-py3-none-any.whl[hygon]"
+        )
+        self.assertEqual(self.args[0], "--python")
+        self.assertNotIn("\\", self.args)
+        self.assertFalse(any(a.startswith("#") or a == "ENV" for a in self.args))
+        self.assertIn("--excludes", self.args)
+
+    def test_index_args_are_substituted(self):
+        self.assertIn(
+            "https://resource.flagos.net/repository/flagos-pypi-hygon/simple",
+            self.args,
+        )
+        self.assertNotIn("$FLAGOS_INDEX", " ".join(self.args))
 
 
 class PublicationManifestTests(unittest.TestCase):

@@ -406,6 +406,29 @@ excludes；disposable，不入仓库、不进镜像）。一条版本只对应�
   发布件在更早的提交派生时该断言会拒绝，release 模式需改为以钉定 SHA 为准
   后才能启用 pre-derived 路径。
 
+### `--excludes triton` 的退役门
+
+修正元数据的 xgrammar wheel 去掉了闭包里唯一活跃的 `triton` 依赖，因此过渡期的
+`--excludes triton`（及记录它的 pip-check 精确豁免）在删除前必须先被证明已成
+no-op。`docker/hygon/no_excludes_gate.sh` 对**真实索引**、同一解析 digest、同一份
+staged artifacts 跑两次 `uv pip install --dry-run`：
+
+- plan A：containerfile 的安装参数原样（由 `scripts/uv_install_contract.py` 从
+  containerfile 提取，仍带 `--excludes`）；
+- plan B：同一命令去掉 `--excludes <file>`。
+
+两个 plan 都要过常规 plan 门（选中 `xgrammar==0.2.1+flagos.hcu1`、无 standalone
+triton、零 Runtime distribution 被替换），且必须逐行相同，plan B 还必须选中
+`datasets==5.2.0`。
+
+```bash
+docker/hygon/no_excludes_gate.sh <staging-context-dir> [--evidence-dir DIR]
+```
+
+删除 `runtime-0.5.18.excludes.txt` 与精确豁免的条件（缺一不可）：gate 通过 →
+删除后的候选构建 → `pip check` → 完整 `verify_image.sh`。索引不可用时 gate 失败
+并保留全部 resolver 输出；不改索引优先级、不伪造已安装 triton metadata 绕过。
+
 ### 剩余兼容债速查（Docker 注释保持简短，完整证据口径在此）
 
 | 兼容块 | 为什么暂时存在 | 证据 | 移除条件 / owner |
