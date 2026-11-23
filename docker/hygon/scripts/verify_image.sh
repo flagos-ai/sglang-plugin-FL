@@ -104,8 +104,24 @@ run --volume "$refdir":/evidence:ro \
     /scripts/verify_module_provenance.py \
     --reference /evidence/runtime-0.5.18.provenance.json
 
-echo "=== [3/8] Kernel-wheel stub import smoke ==="
+echo "=== [3/8] Plugin-owned kernel import-guard smoke ==="
 run --entrypoint python "$image" - <<'PY'
+import importlib.metadata as md
+import importlib.util
+import pathlib
+
+# Load the guard file without importing sglang_fl/__init__.py: the no-device
+# host cannot initialize DTK torch, while the guard itself deliberately has no
+# torch dependency. HCU activation timing remains a hardware-matrix gate.
+dist = md.distribution("sglang-fl")
+root = pathlib.Path(dist.locate_file("")).resolve()
+guard_path = root / "sglang_fl/dispatch/backends/vendor/hygon/import_guard.py"
+spec = importlib.util.spec_from_file_location("hygon_import_guard_acceptance", guard_path)
+guard = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(guard)
+active = guard.install_import_guards()
+assert active == ["sgl_kernel", "flashinfer"], active
+
 from sgl_kernel.kvcacheio import save_kv_cache
 from flashinfer.sampling import top_k_renorm_prob
 
@@ -114,11 +130,23 @@ import sgl_kernel.utils
 import flashinfer
 
 assert sgl_kernel.utils.is_arch_support_pdl() is False
+assert importlib.util.find_spec("sgl_kernel.scalar_type") is None
+try:
+    md.version("sglang-kernel")
+except md.PackageNotFoundError:
+    pass
+else:
+    raise AssertionError("placeholder fabricated sglang-kernel metadata")
 try:
     save_kv_cache()
 except RuntimeError as e:
-    assert "stub" in str(e)
-print("kernel-wheel import stubs + submodule finder installed")
+    assert "sgl_kernel is not installed on HCU" in str(e)
+try:
+    top_k_renorm_prob()
+except RuntimeError as e:
+    assert "flashinfer is not installed on HCU" in str(e)
+assert guard._SKIP_VERSION_CHECK in __import__("os").environ
+print("plugin-owned kernel import guard semantics: OK")
 PY
 
 echo "=== [4/8] Wrapper HSACO compile through the DTK device libraries ==="
@@ -178,7 +206,6 @@ EOF
 echo "=== [8/8] Image-level ENV/label contract ==="
 env_json="$(docker image inspect --format '{{json .Config.Env}}' "$image")"
 for var in PYTHONPATH=/opt/flagtree \
-           SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1 \
            ROCM_PATH=/opt/dtk \
            TRITON_HIP_CLANG_PATH=/opt/hcu-clang/clang-18-device-libs; do
     grep -q "\"$var\"" <<<"$env_json" || {
@@ -310,7 +337,7 @@ print(f"LD_LIBRARY_PATH: {len(required)} DTK paths in front, "
 PY
 
 echo "ENV/label contract: PYTHONPATH, LD_LIBRARY_PATH (prepend), ROCM_PATH,"
-echo "TRITON_HIP_CLANG_PATH, SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK, provenance"
+echo "TRITON_HIP_CLANG_PATH, plugin-owned import guard, provenance"
 echo "labels, neutral WORKDIR ('$workdir'), no /opt/sglang-ci residue"
 
 echo "ACCEPTED: $image passed all post-build gates (reference data was"

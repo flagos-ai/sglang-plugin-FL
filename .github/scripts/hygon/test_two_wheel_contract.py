@@ -105,7 +105,11 @@ class StagingCouplingTests(unittest.TestCase):
         )
         self.assertNotIn("/tmp/requirements.txt", containerfile)
         self.assertFalse((DOCKER / "requirements.txt").exists())
-        self.assertIn("rm -rf /tmp/stubs", containerfile)
+        self.assertNotIn("docker/hygon/stubs", containerfile)
+        self.assertFalse(
+            any(path.is_file() for path in (DOCKER / "stubs").rglob("*"))
+        )
+        self.assertNotIn("SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK", containerfile)
         # The HCU gating patch is folded into the derived SGLang wheel
         # BEFORE staging: no patch may be referenced or applied here.
         self.assertNotIn("hcu.patch", containerfile)

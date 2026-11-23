@@ -93,34 +93,6 @@ RUN /usr/local/bin/uv pip install --python /flagos/bin/python3 \
       '/tmp/wheels/sglang_fl-0.1.0-py3-none-any.whl[hygon]' \
       && rm -rf /tmp/wheels /tmp/runtime-constraints.txt /tmp/runtime-0.5.18.excludes.txt
 
-# --- TEMP: import stubs for kernel wheels HCU does not ship ------------------
-# SGLang 0.5.18 imports sgl_kernel / flashinfer eagerly at module scope; HCU
-# provides neither vendor wheel and the plugin dispatches the executed ops to
-# the FlagOS backends. The stub finder keeps import-time references alive and
-# turns unexpected calls into explicit errors; no dist-info is emitted so pip
-# metadata stays byte-compatible (the wheel-version probe is disabled via the
-# ENV below). The finder deliberately does NOT fake sgl_kernel.scalar_type:
-# that module must raise a real ImportError so SGLang enters its pure-Python
-# fallback.
-# Evidence: run 43311162022 (sgl_kernel.kvcacheio ImportError, 10 failed);
-# run 43361932722 (scalar_type stubbed -> uint4b8 AttributeError).
-# Owner: SGLang upstream / HCU vendor wheel (remove with lazy imports or a
-# real wheel; delete the ENV below together with the stubs).
-COPY docker/hygon/stubs/ /tmp/stubs/
-RUN PURELIB="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" \
-    && mkdir -p "$PURELIB/sgl_kernel/utils" "$PURELIB/flashinfer" \
-    && cp /tmp/stubs/sgl_kernel/__init__.py "$PURELIB/sgl_kernel/__init__.py" \
-    && cp /tmp/stubs/sgl_kernel/utils/__init__.py "$PURELIB/sgl_kernel/utils/__init__.py" \
-    && cp /tmp/stubs/flashinfer/__init__.py "$PURELIB/flashinfer/__init__.py" \
-    && cp /tmp/stubs/_hcu_kernel_stub_finder.py "$PURELIB/_hcu_kernel_stub_finder.py" \
-    && cp /tmp/stubs/zz-hcu-kernel-stub-hook.pth "$PURELIB/zz-hcu-kernel-stub-hook.pth" \
-    && rm -rf /tmp/stubs \
-    && echo "stub files written"
-
-# Companion of the stub design above: a stub has no dist-info version, so the
-# engine's wheel-version probe would fail; skip it (iluvatar precedent).
-ENV SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1
-
 # --- TEMP: DTK loader path baked into the image ------------------------------
 # Runner hosts differ in whether they inject the DTK loader path; the paths
 # are image-internal (plus the hyhal bind mounts), so baking them makes the

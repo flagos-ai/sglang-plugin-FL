@@ -25,9 +25,10 @@ Checks:
   5. two-wheel contract  -- sglang and sglang_fl distributions, versions,
      entry points, and the plugin resolving from its installed
      distribution root
-  6. HCU compat markers  -- the clang wrapper + ENV and the stub finder
-     with the scalar_type exemption (the applied HCU patch's SHA256 is
-     checked as an OCI label by verify_image.sh, not in-image)
+  6. HCU compat markers  -- the clang wrapper + ENV and the plugin-owned
+     early import guard with the scalar_type exemption (the derived SGLang
+     wheel's SHA256 is checked as an OCI label by verify_image.sh, not
+     in-image)
 
 It also prints the additions manifest as an audit trail; it is output,
 never an input.
@@ -58,10 +59,11 @@ EXPECTED_ENTRY_POINTS = {
     "sglang.srt.plugins": ("sglang_fl", "sglang_fl:load_plugin"),
 }
 REQUIRED_PLUGIN_PAYLOAD = (
+    "sglang_fl/dispatch/backends/vendor/hygon/early.py",
+    "sglang_fl/dispatch/backends/vendor/hygon/import_guard.py",
     "sglang_fl/dispatch/backends/vendor/hygon/impl/attention_backend.py",
     "sglang_fl/dispatch/config/hygon.yaml",
 )
-STUB_FINDER = "site-packages/_hcu_kernel_stub_finder.py"
 CLANG_WRAPPER = Path("/opt/hcu-clang/clang-18-device-libs")
 
 
@@ -215,17 +217,31 @@ def check_two_wheel_contract() -> None:
 
 
 def check_hcu_compat_markers() -> None:
+    import importlib.metadata as md
+
     wrapper_env = os.environ.get("TRITON_HIP_CLANG_PATH", "")
     assert CLANG_WRAPPER.is_file(), f"clang wrapper missing: {CLANG_WRAPPER}"
     assert wrapper_env == str(CLANG_WRAPPER), (
         f"TRITON_HIP_CLANG_PATH={wrapper_env!r} != {CLANG_WRAPPER}"
     )
-    finder = Path(sysconfig.get_paths()["purelib"]) / "_hcu_kernel_stub_finder.py"
-    text = finder.read_text()
-    assert 'fullname == "sgl_kernel.scalar_type"' in text, (
-        "stub finder lacks the scalar_type exemption"
+    dist = md.distribution("sglang-fl")
+    distribution_root = Path(dist.locate_file("")).resolve()
+    guard = (
+        distribution_root
+        / "sglang_fl/dispatch/backends/vendor/hygon/import_guard.py"
     )
-    print("[6/6] HCU compat markers: clang wrapper + scalar_type fallback")
+    text = guard.read_text()
+    assert 'fullname == "sgl_kernel.scalar_type"' in text, (
+        "plugin import guard lacks the scalar_type exemption"
+    )
+    purelib = Path(sysconfig.get_paths()["purelib"])
+    assert not (purelib / "_hcu_kernel_stub_finder.py").exists(), (
+        "legacy image-written stub finder remains"
+    )
+    assert not (purelib / "zz-hcu-kernel-stub-hook.pth").exists(), (
+        "legacy startup hook remains"
+    )
+    print("[6/6] HCU compat markers: clang wrapper + plugin early import guard")
 
 
 def report_additions(runtime_names: set[str]) -> None:

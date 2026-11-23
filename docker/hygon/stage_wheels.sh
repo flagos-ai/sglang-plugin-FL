@@ -116,8 +116,8 @@ cp "$derived_wheel" "$context/artifacts/$DERIVED_SGLANG_WHEEL_NAME"
 cp "$derive_out/$derived_provenance" "$context/artifacts/$derived_provenance"
 cp "$repo_root/docker/hygon/runtime-0.5.18.excludes.txt" \
    "$context/artifacts/runtime-0.5.18.excludes.txt"
-# The staged containerfile references docker/hygon/ (stubs and the clang
-# wrapper), so the whole platform directory travels with
+# The staged containerfile references docker/hygon/ (the clang wrapper and
+# external acceptance scripts), so the whole platform directory travels with
 # the context. The HCU patch is NOT part of the image inputs anymore: it
 # is consumed by the derive step above (its input lives in
 # tools/wheels/hygon/).

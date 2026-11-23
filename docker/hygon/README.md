@@ -360,7 +360,7 @@ docker/hygon/scripts/verify_image.sh <tag>
   动态 constraints 则由 `build_two_wheel.sh` 从解析出的 digest 生成，只保护
   Runtime distributions 不被 resolver 替换，仅作构建临时输入（/tmp，同一
   RUN 内消费并删除），不留在最终镜像；
-- 构建期临时文件（constraints、两 wheel、excludes、stubs）
+- 构建期临时文件（constraints、两 wheel、excludes）
   全部 COPY 到 `/tmp`，由消费它们的同一 `RUN` 删除；镜像不设 `WORKDIR`
   （继承 Runtime 的 `/app`），不含 `/opt/sglang-ci` 或任何构建痕迹。HCU
   patch 不再进入镜像：它折入派生 wheel（staging 期严格差异门禁保证只有
@@ -377,16 +377,14 @@ docker/hygon/scripts/verify_image.sh <tag>
 - wheel 的 METADATA/entry point/payload 验收在 staging 期
   （`scripts/check_plugin_wheel.py`）与验收期（六门之五）各跑一次。
 
-### 兼容块速查（containerfile 内仅留一行注释，证据口径在此）
+### 剩余兼容债速查（Docker 注释保持简短，完整证据口径在此）
 
 | 兼容块 | 为什么暂时存在 | 证据 | 移除条件 / owner |
 |---|---|---|---|
 | `ENV PYTHONPATH=/opt/flagtree` | Runtime 只经 BASH_ENV 向 bash 会话暴露 flagtree，直接 python 入口拿不到 triton | base 探针：无 bash profile 时 `find_spec("triton") is None` | Runtime 以 OCI ENV/.pth 等全入口暴露 flagtree |
 | `--excludes triton` | xgrammar 的 Requires-Dist 会拉独立 triton，与 flagtree 3.6 形成双 Triton | run 44465620210 全矩阵绿（无 triton distribution，模块在 /opt/flagtree） | Runtime 提供 metadata 一致的 triton，或上游不再声明 |
 | HCU patch（折入派生 wheel `0.5.18+flagos.hcu1`，输入在 `tools/wheels/hygon/`） | SGLang 把一切 HIP 当 AMD ROCm，eager 导入 AMD AITER（HCU 没有） | 原始失败 `ModuleNotFoundError: No module named 'aiter'`；补丁 commit a5d492a | 上游 wheel 自带 HCU-vs-ROCm gating（届时删除派生步骤，改钉上游 wheel） |
-| sgl_kernel/flashinfer stubs | SGLang 大量模块 scope 上 eager import 这两个 vendor wheel | run 43311162022 / job 131508435886（`sgl_kernel.kvcacheio` ImportError，10 败） | 上游改 lazy import，或 HCU 有经验证的官方 vendor wheel |
-| stub 不伪造 `sgl_kernel.scalar_type` | 伪造会破坏 SGLang 纯 Python scalar fallback | run 43361932722 / job 131677473082（`uint4b8` AttributeError） | stub finder 退役或上游不再依赖该 ImportError |
-| `SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1` | stub 无 dist-info 版本，引擎版本探针必失败 | iluvatar 先例 | 与 stubs 同进退 |
+| 插件 early import guard（不伪造 `sgl_kernel.scalar_type`） | HCU 无 sgl-kernel/flashinfer wheel，但 SGLang 层模块 eager import；伪造 scalar_type 又会破坏纯 Python fallback | run 43311162022（`sgl_kernel.kvcacheio` ImportError）及 run 43361932722 / job 131677473082（伪造后 `uint4b8` AttributeError） | SGLang 改为 lazy/guarded import，或 HCU 提供经验证的真实 wheel；已从 Docker 移入 `sglang_fl` wheel |
 | `ENV LD_LIBRARY_PATH=/opt/dtk/...`（前插） | runner 主机是否注入 DTK loader 不一致，镜像需自足 | commit 06ff229（loader 合同失败记录点） | Runtime 经 OCI ENV/ld.so.conf 提供完整 loader 合同 |
 | `ENV ROCM_PATH=/opt/dtk` | FlagTree 用它选 clang；缺失时选中 clang-17 兼容树并报不支持的参数 | run 43426581773（失败）vs 43430350486（aillvm clang-18，绿） | Runtime/FlagTree 不再从该变量推导 clang |
 | `/opt/rocm → /opt/dtk` 符号链接 | SGLang HIP JIT builder 找 `/opt/rocm/bin/hipcc` | run 43417967624 / job 131868790147（`/opt/rocm/bin/hipcc: not found`） | SGLang 原生支持 DTK prefix，或 Runtime 官方别名 |

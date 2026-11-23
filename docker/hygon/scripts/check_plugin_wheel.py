@@ -41,6 +41,8 @@ EXPECTED_ENTRY_POINTS = {
     "sglang.srt.plugins": ("sglang_fl", "sglang_fl:load_plugin"),
 }
 REQUIRED_PAYLOAD = (
+    "sglang_fl/dispatch/backends/vendor/hygon/early.py",
+    "sglang_fl/dispatch/backends/vendor/hygon/import_guard.py",
     "sglang_fl/dispatch/backends/vendor/hygon/impl/attention_backend.py",
     "sglang_fl/dispatch/config/hygon.yaml",
 )
