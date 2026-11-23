@@ -91,11 +91,16 @@ stage_pre_derived() {  # <provided wheel> <destination dir> <derived wheel name>
 }
 
 stage="$(mktemp -d "${TMPDIR:-/tmp}/hygon-two-wheel-stage.XXXXXX")"
-# The final build context must SURVIVE this script (the printed docker
-# build command references it), so it lives outside the trapped cleanup
-# area; only the intermediate staging area is disposable.
+# The final build context must SURVIVE a successful run of this script (the
+# printed docker build command references it); a failed or interrupted run
+# leaves nothing behind in $TMPDIR.
 context="$(mktemp -d "${TMPDIR:-/tmp}/hygon-two-wheel-context.XXXXXX")"
-trap 'rm -rf "$stage"' EXIT
+cleanup() {
+    local status=$?
+    rm -rf "$stage"
+    [ "$status" -eq 0 ] || rm -rf "$context"
+}
+trap cleanup EXIT
 
 # Keep both areas strictly outside the repository.
 for area in "$stage" "$context"; do
