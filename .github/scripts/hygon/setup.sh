@@ -50,9 +50,9 @@ if [ -n "${GITHUB_ENV:-}" ]; then
   printf 'SGLANG_HYGON_DIAGNOSTIC_TRITON_ATTENTION=1\n' >> "$GITHUB_ENV"
 fi
 
-# The image bakes the DTK prefix contract (ROCM_PATH, the /opt/rocm alias
-# and the FlagTree clang wrapper, see the containerfile); this job only
-# verifies it. The FlagTree wrapper selection check runs inside
+# The image bakes the DTK prefix contract (ROCM_PATH and the /opt/rocm alias,
+# see the containerfile); this job only verifies it. The direct Runtime clang
+# selection check runs inside
 # verify_environment.py below.
 if [ "$(readlink -f /opt/rocm)" != "$(readlink -f /opt/dtk)" ]; then
   echo "::error::/opt/rocm is missing or does not resolve to the DTK SDK" >&2

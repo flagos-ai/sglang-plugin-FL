@@ -410,16 +410,16 @@ def _verify_sgl_kernel_scalar_type_fallback() -> None:
     print("[hygon-env] SGLang scalar fallback intact (sgl_kernel.scalar_type absent)")
 
 
-def _verify_flagtree_clang_wrapper() -> None:
-    """FlagTree must select the baked DTK device-lib clang wrapper."""
+def _verify_flagtree_clang() -> None:
+    """FlagTree must select the Runtime's native DTK clang directly."""
     from triton.backends.hcu.compiler_hcu import HIPBackend
 
     actual = Path(HIPBackend.path_to_rocm_clang())
-    expected = Path(os.environ["TRITON_HIP_CLANG_PATH"])
+    expected = Path("/opt/dtk/aillvm/bin/clang-18")
     if actual != expected:
-        raise RuntimeError(
-            f"FlagTree selected {actual}, expected the baked wrapper {expected}"
-        )
+        raise RuntimeError(f"FlagTree selected {actual}, expected Runtime {expected}")
+    if "TRITON_HIP_CLANG_PATH" in os.environ:
+        raise RuntimeError("legacy TRITON_HIP_CLANG_PATH wrapper override remains")
     print(f"[hygon-env] FlagTree HCU compiler: {actual}")
 
 
@@ -736,7 +736,7 @@ def verify(
     else:
         _require_import("flagcx")
         _verify_sgl_kernel_scalar_type_fallback()
-        _verify_flagtree_clang_wrapper()
+        _verify_flagtree_clang()
     if require_gpu:
         _verify_gpu(torch, min_gpus)
     else:

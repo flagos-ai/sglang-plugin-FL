@@ -20,7 +20,7 @@
 #      two-wheel contract, HCU compat markers   [verify_runtime_immutable]
 #   2. vendor module provenance vs the base reference
 #   3. kernel-wheel stub import smoke
-#   4. wrapper HSACO compile through the DTK device libraries (GPU-less)
+#   4. direct Runtime clang HSACO compile through the DTK device libraries
 #   5. SGLang import smoke (sentinel verdict from the log)
 #   6. Triton entrypoint matrix (sh, bash, child process) + no triton dist
 #   7. installed-wheel resolution contract from an empty working
@@ -149,15 +149,15 @@ assert guard._SKIP_VERSION_CHECK in __import__("os").environ
 print("plugin-owned kernel import guard semantics: OK")
 PY
 
-echo "=== [4/8] Wrapper HSACO compile through the DTK device libraries ==="
+echo "=== [4/8] Direct Runtime clang HSACO compile through DTK device libraries ==="
 run --volume "$scripts":/scripts:ro \
     --entrypoint bash "$image" <<'EOF'
 /opt/dtk/aillvm/bin/clang-18 -target amdgcn-amd-amdhsa -mcpu=gfx936:xnack- -O3 \
        /scripts/hcu-device-lib-check.ll -S -o /tmp/hcu-device-lib-check.s \
-&& /opt/hcu-clang/clang-18-device-libs -target amdgcn-amd-amdhsa -mcpu=gfx936:xnack- -O3 \
+&& /opt/dtk/aillvm/bin/clang-18 -target amdgcn-amd-amdhsa -mcpu=gfx936:xnack- -O3 \
        /tmp/hcu-device-lib-check.s -x assembler -o /tmp/hcu-device-lib-check.hsaco \
 && test -s /tmp/hcu-device-lib-check.hsaco \
-&& echo "wrapper hsaco compile through DTK device libraries: OK"
+&& echo "direct Runtime clang hsaco compile through DTK device libraries: OK"
 EOF
 
 echo "=== [5/8] SGLang import smoke ==="
@@ -206,8 +206,7 @@ EOF
 echo "=== [8/8] Image-level ENV/label contract ==="
 env_json="$(docker image inspect --format '{{json .Config.Env}}' "$image")"
 for var in PYTHONPATH=/opt/flagtree \
-           ROCM_PATH=/opt/dtk \
-           TRITON_HIP_CLANG_PATH=/opt/hcu-clang/clang-18-device-libs; do
+           ROCM_PATH=/opt/dtk; do
     grep -q "\"$var\"" <<<"$env_json" || {
         echo "FATAL: image ENV lacks $var" >&2
         exit 1
@@ -337,7 +336,7 @@ print(f"LD_LIBRARY_PATH: {len(required)} DTK paths in front, "
 PY
 
 echo "ENV/label contract: PYTHONPATH, LD_LIBRARY_PATH (prepend), ROCM_PATH,"
-echo "TRITON_HIP_CLANG_PATH, plugin-owned import guard, provenance"
+echo "direct Runtime clang, plugin-owned import guard, provenance"
 echo "labels, neutral WORKDIR ('$workdir'), no /opt/sglang-ci residue"
 
 echo "ACCEPTED: $image passed all post-build gates (reference data was"

@@ -4,7 +4,7 @@
 # uv resolver install of the two real application wheels, and the HCU/DTK
 # compatibility layer. Every acceptance gate - the resolver dry-run plan,
 # runtime zero-drift, site-packages hashes, the pip-check diff, the wheel
-# contract, the stub/wrapper/import smoke and the Triton provenance - runs
+# contract, plugin-guard/direct-clang/import smoke and Triton provenance - runs
 # OUTSIDE this recipe: docker/hygon/build_two_wheel.sh stages the inputs and
 # plan-gates the build, docker/hygon/scripts/verify_image.sh accepts the
 # finished image against reference data collected dynamically from the same
@@ -119,22 +119,3 @@ ENV ROCM_PATH=/opt/dtk
 # support or an official alias).
 RUN if [ ! -e /opt/rocm ] && [ ! -L /opt/rocm ]; then ln -s /opt/dtk /opt/rocm; fi \
     && test "$(readlink -f /opt/rocm)" = "$(readlink -f /opt/dtk)"
-
-# --- TEMP: DTK device-library path passed to clang explicitly ----------------
-# FlagTree 0.7.0's hcu backend asks clang to discover the DTK device libraries
-# on its own and that discovery fails on the BW1000 runner; this wrapper is
-# injected at the seam FlagTree documents (TRITON_HIP_CLANG_PATH) and appends
-# --rocm-device-lib-path=/opt/dtk/dcc/dccgcn/bitcode. One workaround
-# implementation, not the only legal one; runtime-owned /opt/flagtree files
-# stay untouched and the post-build verifier compiles a real OCML-referencing
-# kernel through the wrapper on a GPU-less host.
-# Evidence: build-infra #1786 ("cannot find ROCm device library"); after the
-# wrapper, mtp_logprobs 10/10 and the full run 44465620210 matrix.
-# Owner: FlagTree / FlagOS Runtime (remove when the compile path passes the
-# device-lib arguments natively, with real kernel-compile evidence).
-COPY docker/hygon/hcu-clang/clang-18-device-libs /opt/hcu-clang/clang-18-device-libs
-RUN chmod +x /opt/hcu-clang/clang-18-device-libs \
-    && test -f /opt/dtk/dcc/dccgcn/bitcode/ocml.bc \
-    && test -f /opt/dtk/dcc/dccgcn/bitcode/ockl.bc \
-    && /opt/dtk/aillvm/bin/clang-18 --version | head -n 1
-ENV TRITON_HIP_CLANG_PATH=/opt/hcu-clang/clang-18-device-libs

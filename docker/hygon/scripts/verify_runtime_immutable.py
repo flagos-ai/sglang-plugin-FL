@@ -25,7 +25,7 @@ Checks:
   5. two-wheel contract  -- sglang and sglang_fl distributions, versions,
      entry points, and the plugin resolving from its installed
      distribution root
-  6. HCU compat markers  -- the clang wrapper + ENV and the plugin-owned
+  6. HCU compat markers  -- the Runtime clang path and the plugin-owned
      early import guard with the scalar_type exemption (the derived SGLang
      wheel's SHA256 is checked as an OCI label by verify_image.sh, not
      in-image)
@@ -64,7 +64,7 @@ REQUIRED_PLUGIN_PAYLOAD = (
     "sglang_fl/dispatch/backends/vendor/hygon/impl/attention_backend.py",
     "sglang_fl/dispatch/config/hygon.yaml",
 )
-CLANG_WRAPPER = Path("/opt/hcu-clang/clang-18-device-libs")
+RUNTIME_CLANG = Path("/opt/dtk/aillvm/bin/clang-18")
 
 
 def installed_distributions() -> dict[str, str]:
@@ -219,10 +219,9 @@ def check_two_wheel_contract() -> None:
 def check_hcu_compat_markers() -> None:
     import importlib.metadata as md
 
-    wrapper_env = os.environ.get("TRITON_HIP_CLANG_PATH", "")
-    assert CLANG_WRAPPER.is_file(), f"clang wrapper missing: {CLANG_WRAPPER}"
-    assert wrapper_env == str(CLANG_WRAPPER), (
-        f"TRITON_HIP_CLANG_PATH={wrapper_env!r} != {CLANG_WRAPPER}"
+    assert RUNTIME_CLANG.is_file(), f"Runtime clang missing: {RUNTIME_CLANG}"
+    assert "TRITON_HIP_CLANG_PATH" not in os.environ, (
+        "legacy clang wrapper override remains in the image"
     )
     dist = md.distribution("sglang-fl")
     distribution_root = Path(dist.locate_file("")).resolve()
@@ -241,7 +240,7 @@ def check_hcu_compat_markers() -> None:
     assert not (purelib / "zz-hcu-kernel-stub-hook.pth").exists(), (
         "legacy startup hook remains"
     )
-    print("[6/6] HCU compat markers: clang wrapper + plugin early import guard")
+    print("[6/6] HCU compat markers: Runtime clang + plugin early import guard")
 
 
 def report_additions(runtime_names: set[str]) -> None:

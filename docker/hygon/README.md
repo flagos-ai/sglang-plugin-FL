@@ -388,7 +388,14 @@ docker/hygon/scripts/verify_image.sh <tag>
 | `ENV LD_LIBRARY_PATH=/opt/dtk/...`（前插） | runner 主机是否注入 DTK loader 不一致，镜像需自足 | commit 06ff229（loader 合同失败记录点） | Runtime 经 OCI ENV/ld.so.conf 提供完整 loader 合同 |
 | `ENV ROCM_PATH=/opt/dtk` | FlagTree 用它选 clang；缺失时选中 clang-17 兼容树并报不支持的参数 | run 43426581773（失败）vs 43430350486（aillvm clang-18，绿） | Runtime/FlagTree 不再从该变量推导 clang |
 | `/opt/rocm → /opt/dtk` 符号链接 | SGLang HIP JIT builder 找 `/opt/rocm/bin/hipcc` | run 43417967624 / job 131868790147（`/opt/rocm/bin/hipcc: not found`） | SGLang 原生支持 DTK prefix，或 Runtime 官方别名 |
-| clang wrapper（`/opt/hcu-clang/clang-18-device-libs` + `TRITON_HIP_CLANG_PATH`） | FlagTree 0.7.0 hcu 后端让 clang 自行发现 DTK device-lib，BW1000 上发现失败；wrapper 显式传 `--rocm-device-lib-path` | build-infra #1786；wrapper 后 mtp_logprobs 10/10、run 44465620210 全绿 | #1786 由 Runtime/FlagTree 修复（需真实 kernel 编译证据） |
+
+Reviewer 明确反对的 clang wrapper 已删除。旧失败 build-infra #1786 发生在
+更早的 Runtime；在本轮解析出的 base digest `acccfccb…878a9f6` 上，直接使用
+`/opt/dtk/aillvm/bin/clang-18` 对含 `__ocml_fabs_f32` 的验收 IR 完成
+IR→assembly→HSACO 两步编译（无 `TRITON_HIP_CLANG_PATH`、无显式
+`--rocm-device-lib-path`，exit 0）。构建后验收与 CI 环境门现均要求直接选择
+Runtime clang，并拒绝旧 wrapper 环境变量。该无卡证明允许删除包装脚本；真实
+kernel 路径的等价性仍须随 Hygon 硬件矩阵验证。
 
 CI 侧（`.github/scripts/hygon/`）：测试 runner 依赖单源于
 `test-requirements.txt`；容器启动快照与全部安装后 Python 校验集中在

@@ -1090,34 +1090,42 @@ class WheelContractCheckTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "must remain absent"):
                 verifier._verify_sgl_kernel_scalar_type_fallback()
 
-    def test_flagtree_selects_the_baked_clang_wrapper(self):
-        compiler_hcu = ModuleType("triton.backends.hcu.compiler_hcu")
-        compiler_hcu.HIPBackend = SimpleNamespace(
-            path_to_rocm_clang=lambda: "/opt/hcu-clang/clang-18-device-libs"
-        )
-        with (
-            patch.dict(sys.modules, {"triton.backends.hcu.compiler_hcu": compiler_hcu}),
-            patch.dict(
-                os.environ,
-                {"TRITON_HIP_CLANG_PATH": "/opt/hcu-clang/clang-18-device-libs"},
-            ),
-        ):
-            verifier._verify_flagtree_clang_wrapper()
-
-    def test_flagtree_selecting_another_clang_fails(self):
+    def test_flagtree_selects_the_runtime_clang(self):
         compiler_hcu = ModuleType("triton.backends.hcu.compiler_hcu")
         compiler_hcu.HIPBackend = SimpleNamespace(
             path_to_rocm_clang=lambda: "/opt/dtk/aillvm/bin/clang-18"
         )
+        with patch.dict(
+            sys.modules, {"triton.backends.hcu.compiler_hcu": compiler_hcu}
+        ), patch.dict(os.environ, {}, clear=True):
+            verifier._verify_flagtree_clang()
+
+    def test_flagtree_selecting_another_clang_fails(self):
+        compiler_hcu = ModuleType("triton.backends.hcu.compiler_hcu")
+        compiler_hcu.HIPBackend = SimpleNamespace(
+            path_to_rocm_clang=lambda: "/usr/bin/clang"
+        )
         with (
             patch.dict(sys.modules, {"triton.backends.hcu.compiler_hcu": compiler_hcu}),
             patch.dict(
                 os.environ,
-                {"TRITON_HIP_CLANG_PATH": "/opt/hcu-clang/clang-18-device-libs"},
+                {},
+                clear=True,
             ),
         ):
-            with self.assertRaisesRegex(RuntimeError, "expected the baked wrapper"):
-                verifier._verify_flagtree_clang_wrapper()
+            with self.assertRaisesRegex(RuntimeError, "expected Runtime"):
+                verifier._verify_flagtree_clang()
+
+    def test_legacy_clang_wrapper_override_is_rejected(self):
+        compiler_hcu = ModuleType("triton.backends.hcu.compiler_hcu")
+        compiler_hcu.HIPBackend = SimpleNamespace(
+            path_to_rocm_clang=lambda: "/opt/dtk/aillvm/bin/clang-18"
+        )
+        with patch.dict(
+            sys.modules, {"triton.backends.hcu.compiler_hcu": compiler_hcu}
+        ), patch.dict(os.environ, {"TRITON_HIP_CLANG_PATH": "/legacy/wrapper"}):
+            with self.assertRaisesRegex(RuntimeError, "legacy"):
+                verifier._verify_flagtree_clang()
 
 
 if __name__ == "__main__":

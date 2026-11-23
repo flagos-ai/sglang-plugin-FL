@@ -240,14 +240,15 @@ class ImageAndSetupTests(unittest.TestCase):
         self.assertIn("python .github/scripts/hygon/verify_environment.py", source)
         self.assertIn('locate_file("")', verifier_source)
         self.assertIn("attention_backend", verifier_source)
-        # The DTK prefix contract (ROCM_PATH, /opt/rocm, the clang wrapper) is
+        # The DTK prefix contract (ROCM_PATH, /opt/rocm, direct Runtime clang) is
         # baked into the image; the job only verifies it and never rewrites.
         self.assertNotIn("enable_flagtree_device_lib_fallback.py", source)
         self.assertNotIn("enable_sglang_scalar_fallback.py", source)
-        self.assertIn("TRITON_HIP_CLANG_PATH", verifier_source)
+        self.assertIn("/opt/dtk/aillvm/bin/clang-18", verifier_source)
         self.assertIn("/opt/rocm/bin/hipcc --version", source)
         self.assertIn("readlink -f /opt/rocm", source)
-        self.assertIn("/opt/dtk/aillvm/bin/clang-18", image_source)
+        self.assertNotIn("TRITON_HIP_CLANG_PATH", image_source)
+        self.assertNotIn("/opt/hcu-clang", image_source)
         self.assertIn("SGLANG_HYGON_DIAGNOSTIC_TRITON_ATTENTION=1", source)
 
 
