@@ -119,9 +119,7 @@ class StagingCouplingTests(unittest.TestCase):
         self.assertNotIn("/tmp/requirements.txt", containerfile)
         self.assertFalse((DOCKER / "requirements.txt").exists())
         self.assertNotIn("docker/hygon/stubs", containerfile)
-        self.assertFalse(
-            any(path.is_file() for path in (DOCKER / "stubs").rglob("*"))
-        )
+        self.assertFalse(any(path.is_file() for path in (DOCKER / "stubs").rglob("*")))
         self.assertNotIn("SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK", containerfile)
         # The HCU gating patch is folded into the derived SGLang wheel
         # BEFORE staging: no patch may be referenced or applied here.
@@ -216,9 +214,7 @@ class StagingCouplingTests(unittest.TestCase):
             real,
             "dry-run and real install arguments diverge",
         )
-        self.assertIn(
-            '--volume "$context/artifacts":/tmp/artifacts:ro', build_wrapper
-        )
+        self.assertIn('--volume "$context/artifacts":/tmp/artifacts:ro', build_wrapper)
         self.assertIn("cat /plan/uv-dry-run.txt >&2", heredoc.group(1))
 
     def test_no_committed_runtime_snapshots(self):
@@ -428,8 +424,7 @@ class UvPlanParserTests(unittest.TestCase):
         cls.tmp = tempfile.mkdtemp(prefix="uv-plan-test.")
         # Real (tiny) wheels so the file:// plan lines have METADATA to read.
         cls.sglang_wheel = (
-            Path(cls.tmp)
-            / "sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl"
+            Path(cls.tmp) / "sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl"
         )
         with zipfile.ZipFile(cls.sglang_wheel, "w") as archive:
             archive.writestr(

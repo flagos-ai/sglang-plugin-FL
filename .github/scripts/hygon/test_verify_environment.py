@@ -1097,9 +1097,10 @@ class WheelContractCheckTests(unittest.TestCase):
         compiler_hcu.HIPBackend = SimpleNamespace(
             path_to_rocm_clang=lambda: "/opt/dtk/aillvm/bin/clang-18"
         )
-        with patch.dict(
-            sys.modules, {"triton.backends.hcu.compiler_hcu": compiler_hcu}
-        ), patch.dict(os.environ, {}, clear=True):
+        with (
+            patch.dict(sys.modules, {"triton.backends.hcu.compiler_hcu": compiler_hcu}),
+            patch.dict(os.environ, {}, clear=True),
+        ):
             verifier._verify_flagtree_clang()
 
     def test_flagtree_selecting_another_clang_fails(self):
@@ -1123,9 +1124,10 @@ class WheelContractCheckTests(unittest.TestCase):
         compiler_hcu.HIPBackend = SimpleNamespace(
             path_to_rocm_clang=lambda: "/opt/dtk/aillvm/bin/clang-18"
         )
-        with patch.dict(
-            sys.modules, {"triton.backends.hcu.compiler_hcu": compiler_hcu}
-        ), patch.dict(os.environ, {"TRITON_HIP_CLANG_PATH": "/legacy/wrapper"}):
+        with (
+            patch.dict(sys.modules, {"triton.backends.hcu.compiler_hcu": compiler_hcu}),
+            patch.dict(os.environ, {"TRITON_HIP_CLANG_PATH": "/legacy/wrapper"}),
+        ):
             with self.assertRaisesRegex(RuntimeError, "legacy"):
                 verifier._verify_flagtree_clang()
 
