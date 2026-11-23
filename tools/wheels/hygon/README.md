@@ -181,6 +181,14 @@ to from this checkout's tools and the pinned inputs:
   `SGLANG_FL_SHA256=<digest>` and its sibling provenance
   (`docker/hygon/scripts/stage_plugin_wheel.py`); `build_two_wheel.sh
   --push` refuses anything else;
+- when the FlagOS indexes are unreachable, the DEVELOPMENT CANDIDATE can
+  resolve its closure from an offline wheelhouse instead
+  (`docker/hygon/build_wheelhouse.sh`: the wheels a last-green image's uv
+  cache recorded, re-downloaded as upstream bytes and verified against the
+  registry digest and the cache's unpacked tree). The staged artifacts stay
+  exactly the three wheels above; the wheelhouse is never a release input
+  and never enters the image (docker/hygon/README.md, "Offline wheelhouse
+  development candidate" / 离线 wheelhouse 开发候选);
 - a release build consumes the PUBLISHED wheels by pinning these same
   SHA256 values. The post-build acceptance requires lineage, not equality:
   the commit recorded in a wheel's provenance must exist in the repository

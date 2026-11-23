@@ -340,9 +340,14 @@ patch 而来——与本仓库构建的 `sglang_fl`）、以及 HCU/DTK 兼容�
 ```bash
 # 组装构建 + 构建后验收 + 可选推送（唯一发布入口：验收是发布门，
 # --push 只在验收通过后可达；staging + tag→digest 解析 + 从解析出的
-# digest 动态采集 runtime-constraints + dry-run 计划门 + docker build
-# 带 provenance label + verify_image.sh 八阶段验收）
+# digest 动态采集 runtime-constraints + 由配方生成的 dry-run 计划门 +
+# docker build 带 provenance label + verify_image.sh 八阶段验收）
 docker/hygon/build_two_wheel.sh [--push] <tag>
+
+# 离线 wheelhouse 开发候选（TEMP；见下文“离线 wheelhouse 开发候选”）
+docker/hygon/build_wheelhouse.sh --cache-source <绿镜像 repo@sha256:…> --out <仓库外目录>
+docker/hygon/build_two_wheel.sh --offline-wheelhouse <wheelhouse 目录> \
+    --runtime-image <Runtime repo@sha256:…> [--push-candidate] <候选 tag>
 
 # 也可对已构建镜像单独验收（基底从镜像自身的 OCI label 读取）
 docker/hygon/scripts/verify_image.sh <tag>
@@ -353,7 +358,9 @@ docker/hygon/scripts/verify_image.sh <tag>
   而失效）。`build_two_wheel.sh` 构建前把 tag 解析成 repo digest：参考
   数据采集、dry-run 门、`docker build` 全部用同一 digest，并把 digest 记
   进 `org.flagos.ci.base-digest` label，验收从该 label 回读基底——tag 再
-  移动也不影响已构建镜像的可复现验收；
+  移动也不影响已构建镜像的可复现验收。离线 wheelhouse 候选不走 tag：
+  `--runtime-image` 必须是 `name@sha256:<digest>`，且该对象必须已在本地
+  Docker store 里并通过身份核对（见下文）；
 - `datasets==5.2.0` 已按 Runtime owner 的 review 意见进入插件的 Hygon extra：
   Runtime 自带 fsspec 2026.9.0，平台 index 上的更旧 datasets 都对 fsspec 封顶
   而导致 ResolutionImpossible，5.2.0 是首个放开该上限的测试版本。Runtime
@@ -382,6 +389,20 @@ docker/hygon/scripts/verify_image.sh <tag>
   LD_LIBRARY_PATH 前插语义、中性 WORKDIR、无 CI 工作目录残留）。Triton 相关
   各门按镜像 label `org.flagos.ci.triton-slot` 声明的 slot 取**该 slot 的真实
   合同**（见下文），没有为实验放宽的统一口径；
+- 严格验收还把三个 wheel **整体**与已安装内容逐成员比对
+  （`scripts/verify_installed_wheel.py`；installer 改写的 RECORD 除外，console
+  script 只允许 shebang/启动跳板不同）：派生 SGLang 不再只核对 patch 文件，
+  native payload 在内的每个成员都必须是 staged wheel 的字节；`sglang_fl`、
+  `sglang` 的包目录里不允许出现 wheel 之外的文件；
+- dry-run 计划门不再手抄安装命令：`scripts/uv_install_contract.py` 直接读配方
+  里的 `RUN`，`--dry-run` 是与真实安装唯一的语义差异；同一模块把 `RUN` 自己的
+  bind mount 与 network 模式翻译成 dry-run 容器的 `--volume`/`--network`；
+- 每个 `build_two_wheel.sh` 产出的镜像都带 `org.flagos.ci.resolver-mode`
+  （`index` 或 `offline-wheelhouse`）与 `org.flagos.ci.base-local-image-id`，
+  验收要求镜像的 RootFS 以声明基底的**全部**层为前缀（候选携带完整
+  Runtime，推送会上传 registry 缺失的每一层），并扫描镜像内不存在
+  wheelhouse、wheel 归档、constraints、resolver plan、provenance、checkout 或
+  测试 runner；
 - wheel 的 METADATA/entry point/payload 验收在 staging 期
   （`scripts/check_plugin_wheel.py`）与验收期（六门之五）各跑一次。
 
@@ -421,6 +442,59 @@ excludes；disposable，不入仓库、不进镜像）。一条版本只对应�
   不是相等：派生提交必须存在于本仓库，且是镜像 `source-commit` 的祖先
   （`scripts/provenance_lineage.py`）。wheel 的内容绑定仍由 SHA256 label 与
   逐文件 manifest 负责，这部分没有放宽。
+
+### 离线 wheelhouse 开发候选（TEMP）
+
+FlagOS 包索引不可用时（2026-11-23：`flagos-pypi-hygon/simple/torch/` 持续
+HTTP 500，`packages/sglang/…` 与 `simple/sglang/` 404），release 路径的镜像内
+安装无法解析。TEMP 候选模式让开发候选在完全离线的条件下解析闭包，产出可验收、
+可上硬件矩阵的镜像；它不替代 release 路径。
+
+- **wheelhouse 来源**：`build_wheelhouse.sh --cache-source <repo@sha256:…>`。
+  来源必须已在本地 Docker store 里并通过身份核对（image ID 或 RepoDigests
+  等于该 digest；不 pull、不看 tag）。脚本导出其 `/root/.cache/uv`，
+  `scripts/wheelhouse.py` 读出上一次绿构建下载过的每个 registry wheel 的记录
+  （原始 URL、文件名、registry 声明的 SHA256、解包树），按原始 URL 重新下载
+  **上游原始字节**（通用 wheel 的原始 URL 不可达时才用腾讯镜像的精确文件
+  链接补齐），再逐个做三重校验：SHA256 等于 cache 记录的 registry digest；每个
+  成员与 cache 解包树逐字节相同；METADATA Name/Version 等于文件名。没有
+  “从解包树重新打包”的回退：身份立不住的 wheel 直接失败，且不留下半成品；
+- **旧镜像的 site-packages 不是安装输入**，只用 cache 对“当时下载了什么”的
+  记录。`wheelhouse-manifest.json` 记 cache 来源镜像与每个 wheel 的 filename、
+  规范名、完整版本、SHA256、来源 URL 和实际下载 URL；三个显式 wheel 在绿构建
+  里的原件（如原始 xgrammar 0.2.1）不进 wheelhouse，记在
+  `excluded_explicit_requirements`；
+- **staging**：`HYGON_WHEELHOUSE=<目录>` 让 `stage_wheels.sh` 先按 manifest 复核
+  wheelhouse（少文件、多文件、内容变化都失败），再把它复制进构建上下文；
+- **配方**：`runtime-0.5.18.offline-wheelhouse.containerfile` 与 release 配方在
+  resolver 来源之外逐条指令相同（契约测试保证）：`PYTHONPATH=/opt/flagtree`、
+  三个 wheel 路径、constraints、excludes、Runtime 兼容 bundle 全部一致，差别只是
+  `--index…/--default-index…/--index-strategy…` 换成
+  `--no-index --find-links /wheelhouse`、`RUN --network=none` 和 wheelhouse 的
+  只读 bind mount。没有 `# syntax=` 指令：固定的 frontend 镜像在 docker.io 上，
+  离线构建不依赖它；
+- **构建入口**：`build_two_wheel.sh --offline-wheelhouse <dir> --runtime-image
+  <name@sha256:…>`。`--runtime-image` 必须是 digest 形式且本地存在，不回落到
+  任何 tag；远端 manifest 已被清理不是阻塞（构建用核对过身份的本地对象，
+  push 上传父层），该状态只记录不设门。dry-run 在同基底、同挂载、
+  `--network none` 的容器里执行，并把计划绑定到 wheelhouse：计划里的每个闭包
+  包都必须是 wheelhouse 里同版本的 wheel。`--push` 拒绝此模式；
+- **labels**：`org.flagos.ci.release-ready=false`、
+  `resolver-mode=offline-wheelhouse`、`resolver-cache-source=<cache 来源镜像的
+  repo@sha256:…>`、`base-digest`、`base-local-image-id`、`source-commit`、三个
+  wheel 的 SHA256、`triton-slot=/opt/flagtree`、`wheelhouse-manifest-sha256`。
+  验收逐项核对这些 label 与手上的构建输入，并把 Runtime 之上新增的每个
+  distribution 绑定到“三个显式 wheel 或 wheelhouse 里同版本的 wheel”；
+- **发布**：只有 `--push-candidate`。tag 必须是
+  `harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-hygon-2w-offline-<source 短 sha>-<UTC 时间>`
+  且 registry 里尚不存在（无法确认是否空闲同样拒绝）。推送后
+  `scripts/verify_remote_candidate.sh` 直接读 registry：tag 解析到的 RepoDigest
+  （CI 消费的就是它）、每个平台 manifest 的 config digest、每个 blob（config 与
+  所有层）都存在于 registry，并按 digest 重新 pull 与本地已验收镜像比对 RootFS
+  与 labels；
+- **边界**：不是 release 路径，不消费已发布的 wheel，也不构成真实索引下
+  `--excludes` 可以退役的证据（`no_excludes_gate.sh` 仍未在真实索引上通过）。
+  镜像是否满足发布要求由 reviewer / Runtime owner 裁定。
 
 ### 插件自有的 kernel import guard 与激活时序
 
@@ -599,6 +673,8 @@ docker/hygon/no_excludes_gate.sh <staging-context-dir> [--evidence-dir DIR]
 | 直接 Runtime clang（wrapper 已从候选移除） | 无卡探针通过；真实 kernel 编译尚未在硬件上验证 | 上文矩阵 | 本仓库（候选选择） | Hygon 硬件矩阵通过后才声明 wrapper 可删除；失败则改用 C 或 D2 |
 | 派生 xgrammar wheel `0.2.1+flagos.hcu1` | 官方 0.2.1 wheel 在 Linux/x86_64 无条件要求 standalone triton，但 HCU Runtime 的编译器能力由 `/opt/flagtree` 模块树提供且无 distribution metadata | 闭包扫描唯一声明者为 xgrammar；原 wheel 的离线 uv 对照会继续解析 triton，修正 wheel 不会；两次派生 SHA 均为 `c2deb285…1a2` 且 49 个非 RECORD 文件（含 11 个 native）逐字节不变 | xgrammar/upstream 或 FlagOS artifact owner | 发布 metadata 正确且不可变的 HCU wheel 后，删除仓库派生步骤 |
 | `--excludes triton`（暂留） | 无（过渡项） | 2026-11-23 的多次 `no_excludes_gate.sh` 重试均停在 `flagos-pypi-hygon/simple/torch/` HTTP 500；离线门已通过，但按合同不足以授权删除 | 本仓库 | `no_excludes_gate.sh` 通过 → 删除后候选构建 → pip check → 完整 `verify_image.sh`，再单独删除 excludes 与精确豁免 |
+| 离线 wheelhouse resolver（TEMP；`runtime-0.5.18.offline-wheelhouse.containerfile`，见上文“离线 wheelhouse 开发候选”） | release 路径的镜像内 `uv pip install` 停在 `flagos-pypi-hygon/simple/torch/` HTTP 500（2026-11-23，当天 30 次 gate 尝试全部停在该地址），随后 `packages/sglang/…` 与 `simple/sglang/` 也返回 404 | wheelhouse 的每个 wheel 都与绿镜像 uv cache 记录的 registry SHA256 和解包树一致（`build_wheelhouse.sh` 三重校验）；离线 dry-run 的 129 个闭包 wheel 版本与硬件全绿镜像逐一相同 | 本仓库（构建工具）；根因在制品服务（Nexus owner） | Nexus 恢复后 `no_excludes_gate.sh` 通过，且 release 路径在真实索引上完成候选构建与完整验收；届时删除离线配方、`--offline-wheelhouse`/`--push-candidate` 与 wheelhouse 工具 |
+| 候选基底固定为旧 Runtime `03e598b3…`（TEMP） | 当前 moving tag `2.3.0` 指向的 Runtime 带 `amdsmi==7.0.2`，与 runner 的 `/opt/hyhal/lib/libamd_smi.so` ABI 不匹配：`undefined symbol: amdsmi_get_gpu_enumeration_info` | run 44665785767 / job 136054960644；build-infra#1960；已知全绿对照 run 44497585856 用的是旧 Runtime | FlagOS Runtime | Runtime owner 发布 amdsmi ABI 修复后的 Runtime；候选改回 moving tag 并重跑完整硬件矩阵 |
 | HCU patch（折入派生 wheel `0.5.18+flagos.hcu1`，输入在 `tools/wheels/hygon/`） | `ModuleNotFoundError: No module named 'aiter'`（SGLang 把一切 HIP 当 AMD ROCm，eager 导入 AMD AITER） | commit a5d492a | SGLang upstream | 上游 wheel 自带 HCU-vs-ROCm gating（届时删除派生步骤，改钉上游 wheel） |
 | 插件 import guard（不伪造 `sgl_kernel.scalar_type`） | `ModuleNotFoundError: No module named 'sgl_kernel.kvcacheio'`；伪造 scalar_type 后变成 `'function' object has no attribute 'uint4b8'` | CI run 43311162022 / job 131508435886 与 run 43361932722 / job 131677473082（均 functional 失败）；时序实证见上节 | SGLang / HCU kernel wheel owner | SGLang 改为 lazy/guarded import，或 HCU 提供经验证的真实 wheel |
 
