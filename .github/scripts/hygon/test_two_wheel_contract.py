@@ -36,6 +36,8 @@ import unittest
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DOCKER = REPO_ROOT / "docker" / "hygon"
 SCRIPTS = DOCKER / "scripts"
+RELEASE_RECIPE = DOCKER / "runtime-0.5.18.containerfile"
+OFFLINE_RECIPE = DOCKER / "runtime-0.5.18.offline-wheelhouse.containerfile"
 
 
 def load_script(name: str):
@@ -959,36 +961,51 @@ class UvInstallContractTests(unittest.TestCase):
             (DOCKER / "runtime-0.5.18.containerfile").read_text()
         )
 
-    def test_matches_the_hand_written_dry_run_twin(self):
-        build = (DOCKER / "build_two_wheel.sh").read_text()
-        heredoc = re.search(
-            r"cat > \"\$plan/dry-run\.sh\" <<'EOF'\n(.*?)\nEOF\n", build, re.DOTALL
-        )
-        self.assertIsNotNone(heredoc)
+    def test_matches_the_release_recipe(self):
+        containerfile = RELEASE_RECIPE.read_text()
         import shlex
 
         # uv_args keeps continuation lines whole; the extractor emits tokens
-        twin = shlex.split(
-            " ".join(
-                uv_args(heredoc.group(1).split("/usr/local/bin/uv pip install")[1])
-            )
+        extracted = shlex.split(
+            " ".join(uv_args(containerfile.split("/usr/local/bin/uv pip install")[1]))
         )
-        containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
         arg_defaults = {
             match.group(1): match.group(2)
             for match in re.finditer(r"^ARG (\w+)=(\S+)$", containerfile, re.MULTILINE)
         }
-        twin = [
+        extracted = [
             arg_defaults.get(token.lstrip("$"), token)
             if token.startswith("$")
             else token
-            for token in twin
+            for token in extracted
         ]
+        self.assertEqual(self.args, extracted)
+
+    def test_run_options_reproduce_the_recipe_mounts_and_network(self):
+        contract = self.module
         self.assertEqual(
-            [a for a in twin if a != "--dry-run"],
-            self.args,
-            "uv_install_contract.py and the dry-run twin diverge",
+            contract.run_options(RELEASE_RECIPE.read_text(), Path("/ctx")),
+            ["--volume", "/ctx/artifacts:/tmp/artifacts:ro"],
         )
+        self.assertEqual(
+            contract.run_options(OFFLINE_RECIPE.read_text(), Path("/ctx")),
+            [
+                "--network",
+                "none",
+                "--volume",
+                "/ctx/artifacts:/tmp/artifacts:ro",
+                "--volume",
+                "/ctx/wheelhouse:/wheelhouse:ro",
+            ],
+        )
+        # a bind mount needs the context it resolves against
+        with self.assertRaises(SystemExit):
+            contract.run_options(OFFLINE_RECIPE.read_text())
+        with self.assertRaises(SystemExit):
+            contract.run_options(
+                "RUN --mount=type=cache,target=/x \\\n    /usr/local/bin/uv pip install\n",
+                Path("/ctx"),
+            )
 
     def test_stops_at_the_end_of_the_run_instruction(self):
         self.assertEqual(
@@ -1716,6 +1733,132 @@ def write_synthetic_wheelhouse(module, root, wheels):
     return root
 
 
+class OfflineRecipeTests(unittest.TestCase):
+    """The offline-wheelhouse recipe differs from the release recipe in the
+    resolver source only."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.contract = load_script("uv_install_contract")
+        cls.release = RELEASE_RECIPE.read_text()
+        cls.offline = OFFLINE_RECIPE.read_text()
+
+    @staticmethod
+    def instructions(text):
+        """Tokenized non-comment instructions, continuations joined."""
+        pending, result = [], []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#"):
+                pending.append(stripped)
+                if not stripped.endswith("\\"):
+                    result.append(
+                        " ".join(part.rstrip("\\").strip() for part in pending).split()
+                    )
+                    pending = []
+        return result
+
+    def test_the_recipes_are_identical_outside_the_resolver_source(self):
+        def skeleton(text):
+            kept = []
+            for tokens in self.instructions(text):
+                if tokens[0] == "ARG" and tokens[1].partition("=")[0] in (
+                    "BASE_IMAGE",
+                    "FLAGOS_INDEX",
+                    "TENCENT_INDEX",
+                    "PROXY_INDEX",
+                ):
+                    continue
+                if "/usr/local/bin/uv" in tokens:
+                    continue
+                kept.append(tokens)
+            return kept
+
+        self.assertEqual(skeleton(self.offline), skeleton(self.release))
+        # the release recipe defaults to the moving tag; the candidate has no
+        # default at all, its base is always an explicit digest
+        self.assertEqual(
+            [
+                tokens
+                for tokens in self.instructions(self.offline)
+                if tokens[0] == "ARG"
+            ],
+            [["ARG", "BASE_IMAGE"]],
+        )
+        self.assertNotIn("2.3.0", self.offline)
+
+    def test_the_offline_run_is_the_release_run_with_a_wheelhouse_source(self):
+        release = self.contract.install_arguments(self.release)
+        offline = self.contract.install_arguments(self.offline)
+
+        def without_index(arguments):
+            kept, skip = [], False
+            for argument in arguments:
+                if skip:
+                    skip = False
+                elif argument in ("--index", "--default-index", "--index-strategy"):
+                    skip = True
+                else:
+                    kept.append(argument)
+            return kept
+
+        source = offline[offline.index("--no-index") : offline.index("/wheelhouse") + 1]
+        self.assertEqual(source, ["--no-index", "--find-links", "/wheelhouse"])
+        rest = [argument for argument in offline if argument not in source]
+        self.assertEqual(rest, without_index(release))
+        for banned in ("--no-deps", "--index", "--default-index", "--index-strategy"):
+            self.assertNotIn(banned, offline)
+
+    def test_the_offline_run_has_no_network_and_mounts_every_input_read_only(self):
+        self.assertEqual(
+            self.contract.run_options(self.offline, "/ctx"),
+            [
+                "--network",
+                "none",
+                "--volume",
+                "/ctx/artifacts:/tmp/artifacts:ro",
+                "--volume",
+                "/ctx/wheelhouse:/wheelhouse:ro",
+            ],
+        )
+        self.assertIn("RUN --network=none", self.offline)
+
+    def test_the_offline_recipe_depends_on_nothing_external(self):
+        # the pinned frontend image lives on docker.io; the builder's own
+        # Dockerfile frontend is enough and keeps the build offline
+        self.assertIsNone(re.search(r"^# syntax=", self.offline, re.MULTILINE))
+        for banned in (
+            "COPY",
+            "WORKDIR",
+            "/opt/sglang-ci",
+            "git apply",
+            "hcu.patch",
+            "pip check",
+            "requirements.txt",
+            "/tmp/stubs",
+            "TRITON_HIP_CLANG_PATH",
+            "hcu-clang",
+            "upstream/",
+            "SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK",
+        ):
+            self.assertNotIn(banned, self.offline, banned)
+        self.assertIn("ENV PYTHONPATH=/opt/flagtree", self.offline)
+        # the candidate installs the very wheel files the release installs
+        wheels = [
+            argument
+            for argument in self.contract.install_arguments(self.offline)
+            if argument.startswith("/tmp/artifacts/")
+        ]
+        self.assertEqual(
+            wheels,
+            [
+                argument
+                for argument in self.contract.install_arguments(self.release)
+                if argument.startswith("/tmp/artifacts/")
+            ],
+        )
+
+
 class WheelhouseTests(unittest.TestCase):
     """The offline wheelhouse is rebuilt from a green image's uv cache and
     verified against it; nothing is repacked."""
@@ -2124,6 +2267,85 @@ class ImportSmokeVerdictTests(unittest.TestCase):
         self.assertIn('docker rm -f "$smoke_container"', phase5)
         self.assertIn("produced no verdict within 30 minutes", phase5)
         self.assertIn("failed for reasons other than missing device libraries", phase5)
+
+
+_STAGED = {}
+
+
+def staged(**environment):
+    """Run stage_wheels.sh once per environment (it builds the plugin wheel
+    and derives both platform wheels); the context outlives the call."""
+    key = tuple(sorted(environment.items()))
+    if key not in _STAGED:
+        completed = subprocess.run(
+            ["bash", str(DOCKER / "stage_wheels.sh")],
+            capture_output=True,
+            text=True,
+            timeout=900,
+            env={**os.environ, **environment},
+        )
+        match = re.search(r"^context:\s+(\S+)", completed.stdout, re.MULTILINE)
+        _STAGED[key] = (completed, Path(match.group(1)) if match else None)
+    return _STAGED[key]
+
+
+class StagedWheelhouseTests(unittest.TestCase):
+    """stage_wheels.sh carries an external wheelhouse into the build context."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_script("wheelhouse")
+        cls._tmp = tempfile.TemporaryDirectory(prefix="staged-wheelhouse-test.")
+        cls.addClassCleanup(cls._tmp.cleanup)
+        cls.wheelhouse = write_synthetic_wheelhouse(
+            cls.module,
+            Path(cls._tmp.name) / "wheelhouse",
+            (("alpha", "1.0"), ("beta", "2.0+local.1")),
+        )
+        cls.completed, cls.context = staged(HYGON_WHEELHOUSE=str(cls.wheelhouse))
+        if cls.context is not None:
+            cls.addClassCleanup(shutil.rmtree, cls.context, ignore_errors=True)
+
+    def test_the_context_carries_the_verified_wheelhouse(self):
+        completed = self.completed
+        self.assertEqual(completed.returncode, 0, completed.stderr[-2000:])
+        copied = self.context / "wheelhouse"
+        self.assertEqual(self.module.verify(copied)["count"], 2)
+        for wheel in self.wheelhouse.iterdir():
+            self.assertEqual(wheel.read_bytes(), (copied / wheel.name).read_bytes())
+        digest = hashlib.sha256(
+            (copied / "wheelhouse-manifest.json").read_bytes()
+        ).hexdigest()
+        self.assertIn(
+            f"resolver:       offline-wheelhouse (2 wheels, manifest sha256={digest}",
+            completed.stdout,
+        )
+        self.assertIn(f"--offline-wheelhouse {self.wheelhouse}", completed.stdout)
+
+    def test_a_tampered_wheelhouse_stops_the_staging(self):
+        wheel = next(self.wheelhouse.glob("beta-*.whl"))
+        keep = wheel.read_bytes()
+        wheel.write_bytes(b"tampered")
+        try:
+            completed = subprocess.run(
+                ["bash", str(DOCKER / "stage_wheels.sh")],
+                capture_output=True,
+                text=True,
+                timeout=900,
+                env={**os.environ, "HYGON_WHEELHOUSE": str(self.wheelhouse)},
+            )
+        finally:
+            wheel.write_bytes(keep)
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("changed since the manifest", completed.stderr)
+        self.assertNotIn("context:", completed.stdout)
+
+    def test_without_a_wheelhouse_staging_stays_on_the_index_path(self):
+        completed, context = staged()
+        self.assertEqual(completed.returncode, 0, completed.stderr[-2000:])
+        self.addClassCleanup(shutil.rmtree, context, ignore_errors=True)
+        self.assertIn("resolver:       index", completed.stdout)
+        self.assertFalse((context / "wheelhouse").exists())
 
 
 class InstalledPluginWheelComparisonTests(unittest.TestCase):

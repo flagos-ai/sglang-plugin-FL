@@ -33,6 +33,9 @@
 #   6. assemble a temporary build context under $TMPDIR with the two
 #      application wheels, the corrected dependency wheel, their provenance,
 #      the still-transitional resolver exclusion and the minimal containerfile;
+#      with HYGON_WHEELHOUSE=<dir> (the offline-wheelhouse DEVELOPMENT
+#      CANDIDATE) the external wheelhouse is verified against its own
+#      manifest and copied in as well (docker/hygon/build_wheelhouse.sh);
 #   7. write the publication manifest (disposable): filename, version,
 #      SHA256 and suggested Nexus path per artifact;
 #   8. print the reproducibility record (source commit, input/derived wheel
@@ -111,6 +114,24 @@ for area in "$stage" "$context"; do
             ;;
     esac
 done
+
+# Offline-wheelhouse development candidate: HYGON_WHEELHOUSE is an external
+# wheelhouse (docker/hygon/build_wheelhouse.sh). Its identity is checked
+# against its own manifest before anything is built or derived; the context
+# assembly copies it in, where the offline recipe
+# (runtime-0.5.18.offline-wheelhouse.containerfile) bind-mounts it read-only
+# for the install RUN. Nothing of it enters an image layer.
+wheelhouse_count=0
+wheelhouse_manifest_sha256="n/a"
+if [ -n "${HYGON_WHEELHOUSE:-}" ]; then
+    [ -d "$HYGON_WHEELHOUSE" ] || {
+        echo "FATAL: HYGON_WHEELHOUSE is not a directory: $HYGON_WHEELHOUSE" >&2
+        exit 1
+    }
+    python3 "$repo_root/docker/hygon/scripts/wheelhouse.py" verify \
+        --wheelhouse "$HYGON_WHEELHOUSE"
+    echo "wheelhouse verified against its manifest: $HYGON_WHEELHOUSE"
+fi
 
 echo "=== Staging the sglang-plugin-FL wheel ==="
 PLUGIN_WHEEL_NAME="sglang_fl-0.1.0-py3-none-any.whl"
@@ -277,6 +298,17 @@ if [ -e "$context/docker/hygon/sglang-v0.5.18-hcu.patch" ]; then
     exit 1
 fi
 
+# The offline-wheelhouse candidate carries its verified wheelhouse into the
+# context (see the HYGON_WHEELHOUSE check at the top of this script).
+if [ -n "${HYGON_WHEELHOUSE:-}" ]; then
+    cp -R "$HYGON_WHEELHOUSE" "$context/wheelhouse"
+    wheelhouse_manifest="$context/wheelhouse/wheelhouse-manifest.json"
+    wheelhouse_count="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["count"])' \
+        "$wheelhouse_manifest")"
+    wheelhouse_manifest_sha256="$(sha256_of "$wheelhouse_manifest")"
+    echo "wheelhouse staged: $wheelhouse_count wheels (manifest sha256=$wheelhouse_manifest_sha256)"
+fi
+
 echo "=== Publication manifest (disposable evidence; nothing is published here) ==="
 python3 "$repo_root/tools/wheels/hygon/publication_manifest.py" --context "$context"
 
@@ -290,9 +322,19 @@ echo "sglang-derived: $DERIVED_SGLANG_WHEEL_NAME sha256=$derived_sha256"
 echo "xgrammar-input: $XGRAMMAR_WHEEL_NAME sha256=$XGRAMMAR_WHEEL_SHA256"
 echo "xgrammar-derived: $DERIVED_XGRAMMAR_WHEEL_NAME sha256=$derived_xgrammar_sha256"
 echo "pinned-content: both derived wheels match their pinned digests (one version, one content)"
+if [ -n "${HYGON_WHEELHOUSE:-}" ]; then
+    echo "resolver:       offline-wheelhouse ($wheelhouse_count wheels, manifest sha256=$wheelhouse_manifest_sha256; development candidate only, never a release input)"
+else
+    echo "resolver:       index (the published indexes; the release path)"
+fi
 echo "context:        $context (survives this script; remove manually when done)"
 echo "build command:"
-echo "  docker/hygon/build_two_wheel.sh <tag>"
-echo "  (requires a clean worktree; resolves the runtime tag to one digest,"
-echo "   collects runtime-constraints.txt from it, runs the dry-run plan"
-echo "   gate, copies the constraints into this context, then builds it)"
+echo "  (requires a clean worktree; collects runtime-constraints.txt from the"
+echo "   base, runs the dry-run plan gate, copies the constraints into this"
+echo "   context, then builds it)"
+if [ -n "${HYGON_WHEELHOUSE:-}" ]; then
+    echo "  docker/hygon/build_two_wheel.sh --offline-wheelhouse $HYGON_WHEELHOUSE"
+    echo "      --runtime-image <runtime name@sha256:digest> [--push-candidate] <tag>"
+else
+    echo "  docker/hygon/build_two_wheel.sh [--push] <tag>"
+fi
