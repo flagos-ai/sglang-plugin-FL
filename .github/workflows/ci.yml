@@ -168,7 +168,7 @@ jobs:
           echo "probe platform restriction active: hygon only"
 
   # ============================================================
-  # Jobs 6a-6f: per-platform testing (routed by discover)
+  # Jobs 6a-6g: per-platform testing (routed by discover)
   # ============================================================
   test-nvidia:
     needs: discover
@@ -259,6 +259,19 @@ jobs:
       run_benchmark: ${{ fromJson(needs.discover.outputs.run_benchmark) }}
     secrets: inherit
 
+  # MetaX C550 runs SGLang 0.5.18 empty mode; gated in platforms.yml until the
+  # CI image is published and pinned in metax.yml.
+  test-metax:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'metax')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: metax
+      ci_stage: pr
+      run_e2e: ${{ fromJson(needs.discover.outputs.run_e2e) }}
+      run_benchmark: ${{ fromJson(needs.discover.outputs.run_benchmark) }}
+    secrets: inherit
+
   # ============================================================
   # ci-gate — single aggregate status check (branch-protection
   # candidate; ported from vllm-plugin-FL #581).
@@ -285,6 +298,7 @@ jobs:
       - test-hygon
       - test-kunlunxin
       - test-enflame
+      - test-metax
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -303,6 +317,7 @@ jobs:
           HYGON_RESULT:     ${{ needs.test-hygon.result }}
           KUNLUNXIN_RESULT: ${{ needs.test-kunlunxin.result }}
           ENFLAME_RESULT:   ${{ needs.test-enflame.result }}
+          METAX_RESULT:     ${{ needs.test-metax.result }}
         run: |
           set -euo pipefail
 
@@ -340,6 +355,7 @@ jobs:
           check_optional "test-hygon"   "$HYGON_RESULT"
           check_optional "test-kunlunxin" "$KUNLUNXIN_RESULT"
           check_optional "test-enflame" "$ENFLAME_RESULT"
+          check_optional "test-metax"   "$METAX_RESULT"
 
           if [ $fail -ne 0 ]; then
             echo "ci-gate: FAILED"
