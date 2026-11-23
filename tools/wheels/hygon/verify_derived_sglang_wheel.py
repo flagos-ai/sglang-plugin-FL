@@ -40,7 +40,9 @@ Usage:
 
 import argparse
 import base64
+import csv
 import hashlib
+import io
 import json
 import subprocess
 import sys
@@ -362,21 +364,28 @@ def verify(
                     f"{reverse.stderr}"
                 )
 
-            # --- G10: derived RECORD hash/size validity -------------------
+            # --- G10: derived RECORD is standard CSV and valid -------------
+            # RECORD is comma-separated CSV: paths with literal commas
+            # (triton config JSONs like lora_expand,K=1024,...) MUST be
+            # quoted; every row parses back to exactly three fields
             record_rel = f"{out_dist}/RECORD"
             record_entries = {}
-            for line in (
-                derived_files[record_rel].read_text(encoding="utf-8").splitlines()
-            ):
-                if not line:
+            record_rows = list(
+                csv.reader(
+                    io.StringIO(
+                        derived_files[record_rel].read_text(encoding="utf-8"),
+                        newline="",
+                    )
+                )
+            )
+            for row in record_rows:
+                if not row:
                     continue
-                # paths may contain literal commas (e.g. triton config
-                # JSONs like lora_expand,K=1024,...); the digest and size
-                # fields never do, so split from the right
-                fields = line.rsplit(",", 2)
-                if len(fields) != 3:
-                    raise GateFailure(f"malformed RECORD line: {line!r}")
-                record_entries[fields[0]] = (fields[1], fields[2])
+                if len(row) != 3:
+                    raise GateFailure(
+                        f"RECORD row is not exactly three CSV fields: {row!r}"
+                    )
+                record_entries[row[0]] = (row[1], row[2])
             if set(record_entries) != set(derived_files):
                 missing = sorted(set(derived_files) - set(record_entries))
                 extra = sorted(set(record_entries) - set(derived_files))

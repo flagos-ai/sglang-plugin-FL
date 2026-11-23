@@ -87,19 +87,29 @@ def repo_root() -> Path:
 
 
 def rebuild_record(root: Path, dist_info: str) -> bytes:
-    """RECORD lines for the final tree, sorted by path (stable order).
+    """RECORD for the final tree as STANDARD CSV, sorted by path.
 
-    Unlike the published wheel's RECORD - which still references the stale
-    ``sglang-0.5.18.dist-info/`` prefix although its archive ships the
-    ``+flagos`` directory - the rebuilt RECORD names the real new
+    Paths may contain literal commas (the wheel ships triton config JSONs
+    like ``lora_expand,K=1024,...json``); RECORD is comma-separated CSV,
+    so ``csv.writer`` quotes those fields. The published input wheel
+    writes them unquoted, which pip tolerates with per-line warnings -
+    the derived RECORD is standards-conformant instead (csv.reader
+    round-trips every row to exactly three fields).
+
+    Unlike the published wheel's RECORD - which still references the
+    stale ``sglang-0.5.18.dist-info/`` prefix although its archive ships
+    the ``+flagos`` directory - the rebuilt RECORD names the real new
     dist-info directory.
     """
     import base64
+    import csv
+    import io
 
-    lines = []
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer, lineterminator="\n")
     for rel in sorted(collect_files(root)):
         if rel == f"{dist_info}/RECORD":
-            lines.append(f"{rel},,")
+            writer.writerow([rel, "", ""])
             continue
         data = (root / rel).read_bytes()
         digest = (
@@ -107,8 +117,8 @@ def rebuild_record(root: Path, dist_info: str) -> bytes:
             .rstrip(b"=")
             .decode("ascii")
         )
-        lines.append(f"{rel},sha256={digest},{len(data)}")
-    return ("\n".join(lines) + "\n").encode("utf-8")
+        writer.writerow([rel, f"sha256={digest}", str(len(data))])
+    return buffer.getvalue().encode("utf-8")
 
 
 def rewrite_metadata_version(metadata: bytes, old: str, new: str) -> bytes:
@@ -160,10 +170,19 @@ def build_wheel(
             out_info = zipfile.ZipInfo(out_name, date_time=info.date_time)
             out_info.external_attr = info.external_attr
             out_info.create_system = info.create_system
-            out_info.compress_type = zipfile.ZIP_DEFLATED
-            zout.writestr(
-                out_info, data, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9
-            )
+            # preserve each member's compression kind (the input wheel
+            # ships its dist-info entries STORED); only DEFLATED members
+            # get the fixed level that keeps the repack deterministic
+            out_info.compress_type = info.compress_type
+            if info.compress_type == zipfile.ZIP_DEFLATED:
+                zout.writestr(
+                    out_info,
+                    data,
+                    compress_type=zipfile.ZIP_DEFLATED,
+                    compresslevel=9,
+                )
+            else:
+                zout.writestr(out_info, data, compress_type=info.compress_type)
 
 
 def derive(
@@ -275,20 +294,30 @@ def derive(
         out_path.unlink(missing_ok=True)
         raise DeriveFailure(f"derived wheel rejected by the strict gates: {failure}")
 
+    # per-file manifest of the patched files, read back from the FINISHED
+    # wheel: image acceptance compares the installed files against this,
+    # binding the image to the exact artifact content (not just version)
+    patched_manifest = {}
+    with zipfile.ZipFile(out_path) as zout:
+        for rel in patch_files:
+            patched_manifest[rel] = hashlib.sha256(zout.read(rel)).hexdigest()
+
     provenance = {
         "input_wheel": input_wheel.name,
         "input_sha256": expected_input_sha256,
         "patch": patch.name,
         "patch_sha256": patch_sha256,
         "patch_files": patch_files,
+        "patched_files_manifest": patched_manifest,
         "derived_wheel": out_name,
         "derived_version": derived_version,
         "derived_sha256": report["derived_sha256"],
         "package_version_source_updated": package_version_updated,
         "source_commit": source_commit,
         "deterministic_packaging": (
-            "input member order; per-member date/mode/compression preserved; "
-            "DEFLATE level 9; sorted RECORD"
+            "input member order; per-member date/mode/compression kind "
+            "preserved (STORED members stay STORED); DEFLATE level 9; "
+            "sorted CSV RECORD"
         ),
     }
     provenance_path = out_path.with_suffix(".provenance.json")

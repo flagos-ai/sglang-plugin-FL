@@ -58,7 +58,7 @@ docker exec hygon-sglang-0518 /usr/bin/env \
 ## 安装前应用 SGLang 源码补丁
 
 必须对 **SGLang v0.5.18 源码**应用
-[`sglang-v0.5.18-hcu.patch`](sglang-v0.5.18-hcu.patch)，然后再安装 SGLang。
+[`sglang-v0.5.18-hcu.patch`](../tools/wheels/hygon/sglang-v0.5.18-hcu.patch)，然后再安装 SGLang。
 仅安装或更新插件无法修复这一上游导入问题：量化注册表在插件补丁执行前就会
 根据 HIP 标记导入 AMD Quark/AITER 内核；HCU 同样使用 HIP，但不提供这些内核。
 
@@ -68,8 +68,8 @@ docker exec hygon-sglang-0518 /usr/bin/env \
 export PLUGIN_ROOT=/opt/sglang-plugin-fl
 export SGLANG_SOURCE_ROOT=/opt/sglang-0.5.18
 cd "$SGLANG_SOURCE_ROOT"
-git apply --check "$PLUGIN_ROOT/docker/hygon/sglang-v0.5.18-hcu.patch"
-git apply "$PLUGIN_ROOT/docker/hygon/sglang-v0.5.18-hcu.patch"
+git apply --check "$PLUGIN_ROOT/tools/wheels/hygon/sglang-v0.5.18-hcu.patch"
+git apply "$PLUGIN_ROOT/tools/wheels/hygon/sglang-v0.5.18-hcu.patch"
 ```
 
 之后按容器配方安装该 SGLang 源码与插件。补丁仅让海光跳过三个不适用的 AMD
@@ -331,8 +331,10 @@ benchmark 保持显式启用。上面的 MTP 结果来自手动实机验收；�
 ## 两-wheel CI 镜像：构建与构建后验收
 
 `runtime-0.5.18.containerfile` 只做镜像组装：Runtime 基底（moving semver
-tag，见下）、一次 uv 解析安装两个真实 wheel（`sglang-0.5.18+flagos` 与
-本仓库构建的 `sglang_fl`）、以及 HCU/DTK 兼容层。所有验收都不在镜像构建
+tag，见下）、一次 uv 解析安装两个真实 wheel（派生 HCU wheel
+`sglang-0.5.18+flagos.hcu1`——由 `tools/wheels/hygon/derive_sglang_wheel.py` 在
+staging 期从 SHA 钉定的 `sglang-0.5.18+flagos` 输入 wheel 折入 reviewed HCU
+patch 而来——与本仓库构建的 `sglang_fl`）、以及 HCU/DTK 兼容层。所有验收都不在镜像构建
 期执行：
 
 ```bash
@@ -359,11 +361,13 @@ docker/hygon/scripts/verify_image.sh <tag>
   事：后者由 `build_two_wheel.sh` 从解析出的 digest 生成，只保护 Runtime
   distributions 不被 resolver 替换，仅作构建临时输入（/tmp，同一 RUN 内
   消费并删除），不留在最终镜像；
-- 构建期临时文件（constraints、requirements、两 wheel、excludes、HCU
-  patch、stubs）全部 COPY 到 `/tmp`，由消费它们的同一 `RUN` 删除；镜像不
-  设 `WORKDIR`（继承 Runtime 的 `/app`），不含 `/opt/sglang-ci` 或任何
-  构建痕迹；已应用的 HCU patch SHA256 记为 `org.flagos.ci.hcu-patch-sha256`
-  label，由验收核对；
+- 构建期临时文件（constraints、requirements、两 wheel、excludes、stubs）
+  全部 COPY 到 `/tmp`，由消费它们的同一 `RUN` 删除；镜像不设 `WORKDIR`
+  （继承 Runtime 的 `/app`），不含 `/opt/sglang-ci` 或任何构建痕迹。HCU
+  patch 不再进入镜像：它折入派生 wheel（staging 期严格差异门禁保证只有
+  patch 文件、METADATA Version 行、dist-info 目录名与 RECORD 变化）；派生
+  wheel 的 SHA256 记为 `org.flagos.ci.sglang-wheel-sha256` label，验收期核
+  对已安装 distribution 版本即 `0.5.18+flagos.hcu1`；
 - 参考数据（freeze、site-packages 哈希、pip-check 基线、provenance）每次
   从 label 指向的 digest 现场采集，只存在于 `mktemp`/CI artifact，不提交
   仓库，也不进镜像；
@@ -380,7 +384,7 @@ docker/hygon/scripts/verify_image.sh <tag>
 |---|---|---|---|
 | `ENV PYTHONPATH=/opt/flagtree` | Runtime 只经 BASH_ENV 向 bash 会话暴露 flagtree，直接 python 入口拿不到 triton | base 探针：无 bash profile 时 `find_spec("triton") is None` | Runtime 以 OCI ENV/.pth 等全入口暴露 flagtree |
 | `--excludes triton` | xgrammar 的 Requires-Dist 会拉独立 triton，与 flagtree 3.6 形成双 Triton | run 44465620210 全矩阵绿（无 triton distribution，模块在 /opt/flagtree） | Runtime 提供 metadata 一致的 triton，或上游不再声明 |
-| HCU patch（`sglang-v0.5.18-hcu.patch`） | SGLang 把一切 HIP 当 AMD ROCm，eager 导入 AMD AITER（HCU 没有） | 原始失败 `ModuleNotFoundError: No module named 'aiter'`；补丁 commit a5d492a | 上游 wheel 自带 HCU-vs-ROCm gating |
+| HCU patch（折入派生 wheel `0.5.18+flagos.hcu1`，输入在 `tools/wheels/hygon/`） | SGLang 把一切 HIP 当 AMD ROCm，eager 导入 AMD AITER（HCU 没有） | 原始失败 `ModuleNotFoundError: No module named 'aiter'`；补丁 commit a5d492a | 上游 wheel 自带 HCU-vs-ROCm gating（届时删除派生步骤，改钉上游 wheel） |
 | sgl_kernel/flashinfer stubs | SGLang 大量模块 scope 上 eager import 这两个 vendor wheel | run 43311162022 / job 131508435886（`sgl_kernel.kvcacheio` ImportError，10 败） | 上游改 lazy import，或 HCU 有经验证的官方 vendor wheel |
 | stub 不伪造 `sgl_kernel.scalar_type` | 伪造会破坏 SGLang 纯 Python scalar fallback | run 43361932722 / job 131677473082（`uint4b8` AttributeError） | stub finder 退役或上游不再依赖该 ImportError |
 | `SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1` | stub 无 dist-info 版本，引擎版本探针必失败 | iluvatar 先例 | 与 stubs 同进退 |

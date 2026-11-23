@@ -33,11 +33,35 @@
 
 set -euo pipefail
 
-image="${1:?usage: verify_image.sh <image>}"
+# Usage:
+#   verify_image.sh <image>
+#   verify_image.sh <image> --sglang-wheel-sha256 <hex> --sglang-provenance <json>
+#
+# The strict form is what build_two_wheel.sh runs: the expected derived
+# wheel digest and its provenance manifest (patched-file hashes) bind the
+# acceptance to the exact artifact content. Without them only the weaker
+# identity gate (label present + installed version) runs, and the report
+# says so.
+image="${1:?usage: verify_image.sh <image> [--sglang-wheel-sha256 H] [--sglang-provenance P]}"
+shift || true
+expected_sglang_sha256=""
+sglang_provenance=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --sglang-wheel-sha256) expected_sglang_sha256="${2:?}"; shift 2 ;;
+        --sglang-provenance) sglang_provenance="${2:?}"; shift 2 ;;
+        *) echo "FATAL: unknown argument $1" >&2; exit 1 ;;
+    esac
+done
+if [ -n "$expected_sglang_sha256" ] && [ -z "$sglang_provenance" ] \
+    || [ -z "$expected_sglang_sha256" ] && [ -n "$sglang_provenance" ]; then
+    echo "FATAL: --sglang-wheel-sha256 and --sglang-provenance must be given together" >&2
+    exit 1
+fi
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 scripts="$here"
 repo_root="$(cd "$here/../../.." && pwd)"
-patch_file="$repo_root/docker/hygon/sglang-v0.5.18-hcu.patch"
+DERIVED_SGLANG_VERSION="0.5.18+flagos.hcu1"
 
 # The acceptance binds to the image itself: the base digest comes from the
 # OCI label build_two_wheel.sh bakes in, never from the checkout.
@@ -167,14 +191,89 @@ grep -q '"LD_LIBRARY_PATH=/opt/dtk' <<<"$env_json" || {
     exit 1
 }
 
-# Provenance labels: the base digest is consumed above; the applied HCU
-# patch SHA256 must be exactly the reviewed patch in this checkout.
-patch_sha256="$(sha256sum "$patch_file" | awk '{print $1}')"
-labeled_sha256="$(docker image inspect --format '{{index .Config.Labels "org.flagos.ci.hcu-patch-sha256"}}' "$image")"
-[ "$labeled_sha256" = "$patch_sha256" ] || {
-    echo "FATAL: org.flagos.ci.hcu-patch-sha256=$labeled_sha256 != reviewed patch $patch_sha256" >&2
+# Provenance labels: the base digest is consumed above; the installed
+# SGLang must be the DERIVED HCU wheel - the reviewed gating patch folded
+# into the pinned flagos wheel BEFORE assembly (the former Dockerfile
+# patch + patch-label gate).
+labeled_wheel_sha256="$(docker image inspect --format '{{index .Config.Labels "org.flagos.ci.sglang-wheel-sha256"}}' "$image")"
+[ -n "$labeled_wheel_sha256" ] || {
+    echo "FATAL: $image lacks the org.flagos.ci.sglang-wheel-sha256 label" >&2
     exit 1
 }
+if [ -n "$expected_sglang_sha256" ]; then
+    # STRICT CONTENT BINDING (the form build_two_wheel.sh runs): the OCI
+    # label must equal the digest of the exact staged derived wheel, the
+    # provenance manifest must describe that same artifact, and every
+    # patched file inside the image must match the manifest byte-for-byte.
+    # A same-version, different-content wheel cannot pass this gate.
+    [ "$labeled_wheel_sha256" = "$expected_sglang_sha256" ] || {
+        echo "FATAL: org.flagos.ci.sglang-wheel-sha256=$labeled_wheel_sha256 != expected $expected_sglang_sha256" >&2
+        exit 1
+    }
+    [ -s "$sglang_provenance" ] || {
+        echo "FATAL: provenance manifest not found: $sglang_provenance" >&2
+        exit 1
+    }
+    python3 - "$sglang_provenance" "$expected_sglang_sha256" \
+        "$DERIVED_SGLANG_VERSION" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+provenance = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert provenance["derived_sha256"] == sys.argv[2], (
+    f"provenance derived_sha256 {provenance['derived_sha256']} != expected")
+assert provenance["derived_version"] == sys.argv[3], provenance["derived_version"]
+assert provenance["patched_files_manifest"], "provenance carries no manifest"
+PY
+    run -e DERIVED_SGLANG_VERSION="$DERIVED_SGLANG_VERSION" \
+        --volume "$sglang_provenance":/provenance.json:ro \
+        --entrypoint python "$image" - <<'PY'
+import hashlib
+import importlib.metadata as md
+import json
+import os
+import pathlib
+import sysconfig
+
+version = md.version("sglang")
+expected = os.environ["DERIVED_SGLANG_VERSION"]
+assert version == expected, f"installed sglang is {version!r}, expected {expected!r}"
+purelib = pathlib.Path(sysconfig.get_paths()["purelib"])
+dist_infos = sorted(p.name for p in purelib.glob("sglang-*.dist-info"))
+assert dist_infos == [f"sglang-{version}.dist-info"], dist_infos
+manifest = json.loads(pathlib.Path("/provenance.json").read_text())[
+    "patched_files_manifest"]
+site = purelib / "sglang"
+mismatches = []
+for rel, expected_hash in sorted(manifest.items()):
+    installed = hashlib.sha256((site / rel).read_bytes()).hexdigest()
+    if installed != expected_hash:
+        mismatches.append(rel)
+assert not mismatches, f"installed patched files differ from the manifest: {mismatches}"
+print(f"installed sglang distribution: {version} ({dist_infos[0]}); "
+      f"{len(manifest)} patched files match the derived-wheel manifest")
+PY
+else
+    echo "WARNING: no --sglang-wheel-sha256/--sglang-provenance given;"
+    echo "running the weaker identity gate only (label present + installed"
+    echo "version + dist-info directory); content binding was NOT checked"
+    run -e DERIVED_SGLANG_VERSION="$DERIVED_SGLANG_VERSION" \
+        --entrypoint python "$image" - <<'PY'
+import importlib.metadata as md
+import os
+import pathlib
+import sysconfig
+
+version = md.version("sglang")
+expected = os.environ["DERIVED_SGLANG_VERSION"]
+assert version == expected, f"installed sglang is {version!r}, expected {expected!r}"
+purelib = pathlib.Path(sysconfig.get_paths()["purelib"])
+dist_infos = sorted(p.name for p in purelib.glob("sglang-*.dist-info"))
+assert dist_infos == [f"sglang-{version}.dist-info"], dist_infos
+print("installed sglang distribution:", version, "(", dist_infos[0], ")")
+PY
+fi
 
 # The released image keeps the Runtime's neutral WORKDIR and carries no CI
 # working directory or build residue.

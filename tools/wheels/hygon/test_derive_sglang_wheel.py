@@ -31,6 +31,7 @@ tests FAIL (not skip) when it cannot be secured.
 
 import base64
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -137,6 +138,9 @@ SYNTH_FILES = {
     "sglang/srt/layers/sampler.py": b"sampler line 1\nsampler line 2\nsampler line 3\n",
     "sglang/srt/layers/activation.py": b"activation A\nactivation B\n",
     "sglang/srt/bystander.py": b"bystander content\n",
+    # a comma-in-path member, mirroring the real wheel's triton config
+    # JSONs (lora_expand,K=1024,...json): RECORD must quote it
+    "sglang/kernels/ops/config,K=64,S=1.json": b'{"K": 64}\n',
     "sglang/native/payload.so": b"\x7fELF-fake-native-payload",
 }
 SYNTH_METADATA = (
@@ -165,10 +169,15 @@ diff --git a/python/sglang/srt/layers/activation.py b/python/sglang/srt/layers/a
 
 
 def synth_record(root: Path) -> bytes:
-    lines = []
+    """Standard-CSV RECORD via csv.writer (comma paths get quoted)."""
+    import csv
+    import io
+
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer, lineterminator="\n")
     for rel in sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()):
         if rel == "sglang-0.5.18+flagos.dist-info/RECORD":
-            lines.append(f"{rel},,")
+            writer.writerow([rel, "", ""])
             continue
         data = (root / rel).read_bytes()
         digest = (
@@ -176,8 +185,8 @@ def synth_record(root: Path) -> bytes:
             .rstrip(b"=")
             .decode("ascii")
         )
-        lines.append(f"{rel},sha256={digest},{len(data)}")
-    return ("\n".join(lines) + "\n").encode("utf-8")
+        writer.writerow([rel, f"sha256={digest}", str(len(data))])
+    return buffer.getvalue().encode("utf-8")
 
 
 def build_synth_wheel(path: Path, mutations=None) -> Path:
@@ -399,25 +408,59 @@ def test_version_inconsistency_is_rejected(synth_env):
 
 def test_record_hash_error_is_rejected(synth_env):
     # corrupt one RECORDED digest while the file content stays intact:
-    # only the RECORD-validity gate can catch this
+    # only the RECORD-validity gate can catch this (csv-aware surgery)
+    import csv
+    import io
+
     record_rel = f"sglang-{DERIVED_VERSION}.dist-info/RECORD"
     with zipfile.ZipFile(synth_env["derived"]) as archive:
-        record = archive.read(record_rel).decode("utf-8")
-    corrupted = []
-    for line in record.splitlines():
-        path = line.rsplit(",", 2)[0]
-        if path == "sglang/srt/bystander.py":
-            fields = line.rsplit(",", 2)
-            line = (
-                fields[0] + ",sha256=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA," + fields[2]
+        rows = [
+            row
+            for row in csv.reader(
+                io.StringIO(archive.read(record_rel).decode("utf-8"), newline="")
             )
-        corrupted.append(line)
+            if row
+        ]
+    for row in rows:
+        if row[0] == "sglang/srt/bystander.py":
+            row[1] = "sha256=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerows(rows)
     tampered = repack_tampered(
         synth_env["derived"],
-        {record_rel: ("\n".join(corrupted) + "\n")},
+        {record_rel: buffer.getvalue()},
         rebuild_record=False,
     )
     with pytest.raises(verify_mod.GateFailure, match="RECORD hash/size"):
+        verify_mod.verify(
+            synth_env["input"],
+            tampered,
+            synth_env["patch"],
+            _sha256(synth_env["input"]),
+        )
+
+
+def test_unquoted_comma_record_row_is_rejected(synth_env):
+    # REGRESSION (review round 1): a RECORD whose comma-in-path row is
+    # written UNQUOTED is not standard CSV; the verifier must reject it
+    # instead of parsing permissively from the right
+    record_rel = f"sglang-{DERIVED_VERSION}.dist-info/RECORD"
+    with zipfile.ZipFile(synth_env["derived"]) as archive:
+        record = archive.read(record_rel).decode("utf-8")
+    unquoted = []
+    for line in record.splitlines():
+        if line.startswith('"sglang/kernels/ops/config,K=64,S=1.json",'):
+            # strip the quotes from the path field: 5 raw fields instead
+            # of the required 3
+            line = line[1:].split('",', 1)[0] + "," + line.split('",', 1)[1]
+        unquoted.append(line)
+    tampered = repack_tampered(
+        synth_env["derived"],
+        {record_rel: "\n".join(unquoted) + "\n"},
+        rebuild_record=False,
+    )
+    with pytest.raises(verify_mod.GateFailure, match="three CSV fields"):
         verify_mod.verify(
             synth_env["input"],
             tampered,
@@ -500,6 +543,62 @@ def test_forward_patch_not_reapplicable_reverse_applies(real_input_wheel, real_d
         assert reverse.returncode == 0, reverse.stderr
 
 
+def test_real_record_is_standard_quoted_csv(real_derived, real_input_wheel):
+    """Every RECORD row parses as CSV to exactly three fields, and the
+    real wheel's comma-in-path members (536 triton config JSONs) are
+    properly quoted and round-trip."""
+    import csv
+    import io
+
+    record_rel = f"sglang-{DERIVED_VERSION}.dist-info/RECORD"
+    with zipfile.ZipFile(real_derived) as archive:
+        record = archive.read(record_rel).decode("utf-8")
+    rows = [row for row in csv.reader(io.StringIO(record, newline="")) if row]
+    assert rows, "RECORD is empty"
+    bad = [row for row in rows if len(row) != 3]
+    assert not bad, f"{len(bad)} rows are not three CSV fields, e.g. {bad[:2]}"
+    comma_paths = [row[0] for row in rows if "," in row[0]]
+    assert len(comma_paths) >= 500, (
+        f"expected the real wheel's comma-path members, got {len(comma_paths)}"
+    )
+    # quoted on disk and consistent with the actual member set
+    with zipfile.ZipFile(real_derived) as archive:
+        names = set(archive.namelist())
+    assert {row[0] for row in rows} == names
+    quoted_lines = [line for line in record.splitlines() if line.startswith('"')]
+    assert len(quoted_lines) == len(comma_paths)
+
+
+def test_compression_kinds_are_preserved(real_derived, real_input_wheel):
+    """The repack preserves every member's compression kind: the input
+    wheel ships 6 STORED dist-info entries and 4307 DEFLATED ones."""
+    from collections import Counter
+
+    with zipfile.ZipFile(real_input_wheel) as archive:
+        input_kinds = Counter(i.compress_type for i in archive.infolist())
+    with zipfile.ZipFile(real_derived) as archive:
+        derived_kinds = Counter(i.compress_type for i in archive.infolist())
+    assert derived_kinds == input_kinds, (derived_kinds, input_kinds)
+    assert input_kinds[zipfile.ZIP_STORED] == 6
+
+
+def test_provenance_manifest_binds_patched_files(real_derived):
+    """The provenance JSON carries per-file hashes of every patched file,
+    read back from the finished wheel - the data the image acceptance
+    binds the installed files against."""
+    provenance = json.loads(
+        real_derived.with_suffix(".provenance.json").read_text(encoding="utf-8")
+    )
+    manifest = provenance["patched_files_manifest"]
+    assert sorted(manifest) == sorted(
+        verify_mod.parse_patch_files(TOOLS_DIR / "sglang-v0.5.18-hcu.patch")
+    )
+    with zipfile.ZipFile(real_derived) as archive:
+        for rel, expected_hash in manifest.items():
+            actual = hashlib.sha256(archive.read(rel)).hexdigest()
+            assert actual == expected_hash, rel
+
+
 # --------------------------------------------------------------------------
 # 12-13: staging and containerfile contracts (repository text)
 
@@ -531,8 +630,16 @@ def test_containerfile_has_no_patch_machinery():
     build_wrapper = (DOCKER / "build_two_wheel.sh").read_text()
     assert "hcu-patch-sha256" not in build_wrapper
     assert "sglang-wheel-sha256" in build_wrapper
+    # content binding: the wrapper hands the expected digest and the
+    # provenance manifest to the acceptance; the verifier asserts the OCI
+    # label equals the digest and checks the installed patched files
+    # against the manifest
+    assert '--sglang-wheel-sha256 "$derived_wheel_sha256"' in build_wrapper
+    assert '--sglang-provenance "$derived_provenance"' in build_wrapper
     verify = (DOCKER / "scripts/verify_image.sh").read_text()
     assert "hcu-patch-sha256" not in verify
+    assert "--sglang-wheel-sha256" in verify
+    assert "patched_files_manifest" in verify
     assert DERIVED_VERSION in verify
     # the patch input moved to the tools directory; the empty-image
     # source-build line consumes it from there

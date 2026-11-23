@@ -62,7 +62,7 @@ EXPECTED_FLAGTREE = "0.6.1+hcu3.6"
 # component: removed at image build time, FlagTree's /opt/flagtree
 # (image-level PYTHONPATH) is the only Triton in any entrypoint.
 RUNTIME_IMAGE_RELEASES = {
-    "sglang": "0.5.18+flagos",
+    "sglang": "0.5.18+flagos.hcu1",
     "sglang-fl": "0.1.0",
     "torch": "2.9.0+das.opt1.dtk2604",
     "flag-gems": "5.4.0",

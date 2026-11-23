@@ -37,7 +37,11 @@ cuda = ["sglang==0.5.18"]
 # apache-tvm-ffi, ...) arrive through the SGLang wheel's own requirements
 # and must not be duplicated in the plugin extra.
 hygon = [
-    "sglang==0.5.18+flagos",
+    # The derived HCU SGLang wheel: the exact published flagos wheel with
+    # the reviewed HCU gating patch folded in BEFORE image assembly (see
+    # tools/wheels/hygon/derive_sglang_wheel.py), so the product image
+    # installs a normal wheel and never patches site-packages.
+    "sglang==0.5.18+flagos.hcu1",
     # Compatibility assertion only: the operations Runtime supplies this
     # distribution (flag-gems==5.4.0); restating the exact line keeps a
     # resolver run against different indexes from selecting another build

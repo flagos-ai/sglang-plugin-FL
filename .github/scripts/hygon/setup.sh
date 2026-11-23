@@ -2,7 +2,7 @@
 # Copyright 2026 BAAI. All rights reserved.
 # Prepare the Hygon two-wheel image for CI validation.
 #
-# The image ships the real application wheels (sglang 0.5.18+flagos and
+# The image ships the real application wheels (the derived HCU sglang wheel and
 # sglang_fl 0.1.0); this job only installs the pinned test runner and
 # verifies the installed-wheel contract. All Python verification goes
 # through .github/scripts/hygon/verify_environment.py (snapshot capture

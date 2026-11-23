@@ -168,7 +168,7 @@ class ImageAndSetupTests(unittest.TestCase):
     def test_expected_image_passes_the_pregate_without_ci_packages(self):
         # check.sh runs --check-image before setup.sh installs the test
         # runner, so the sglang gate must not require CI packages.
-        verify_image_metadata(lambda name: "0.5.18+flagos")
+        verify_image_metadata(lambda name: "0.5.18+flagos.hcu1")
 
     def test_expected_image_requires_ci_packages_after_install(self):
         with self.assertRaisesRegex(RuntimeError, "missing pytest"):

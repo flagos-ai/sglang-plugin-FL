@@ -28,7 +28,8 @@ from email.parser import Parser
 from pathlib import Path
 
 EXPECTED_EXTRA_ANCHORS = (
-    "sglang==0.5.18+flagos",
+    # the derived HCU wheel (tools/wheels/hygon/derive_sglang_wheel.py)
+    "sglang==0.5.18+flagos.hcu1",
     "flag-gems==5.4.0",
 )
 EXPECTED_EXTRA_COUNT = 2

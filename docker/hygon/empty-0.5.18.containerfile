@@ -17,7 +17,7 @@ ARG SGLANG_VERSION=0.5.18
 ARG SGLANG_SOURCE_URL
 ARG SGLANG_SOURCE_SHA256
 ARG PIP_INDEX_URL=https://pypi.org/simple
-COPY docker/hygon/sglang-v0.5.18-hcu.patch /opt/sglang-v0.5.18-hcu.patch
+COPY tools/wheels/hygon/sglang-v0.5.18-hcu.patch /opt/sglang-v0.5.18-hcu.patch
 RUN mkdir -p /opt/sglang-0.5.18 && \
     curl -fL --retry 3 "${SGLANG_SOURCE_URL:-https://codeload.github.com/sgl-project/sglang/tar.gz/refs/tags/v${SGLANG_VERSION}}" \
         -o /tmp/sglang.tar.gz && \

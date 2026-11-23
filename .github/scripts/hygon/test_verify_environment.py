@@ -835,7 +835,7 @@ class RuntimeEvidenceTests(unittest.TestCase):
 
     def test_runtime_image_versions_pin_the_operations_runtime(self):
         versions = {
-            "sglang": "0.5.18+flagos",
+            "sglang": "0.5.18+flagos.hcu1",
             "sglang-fl": "0.1.0",
             "torch": "2.9.0+das.opt1.dtk2604",
             "flag-gems": "5.4.0",
@@ -857,7 +857,7 @@ class RuntimeEvidenceTests(unittest.TestCase):
 
     def test_runtime_image_rejects_standalone_triton(self):
         versions = {
-            "sglang": "0.5.18+flagos",
+            "sglang": "0.5.18+flagos.hcu1",
             "sglang-fl": "0.1.0",
             "torch": "2.9.0+das.opt1.dtk2604",
             "flag-gems": "5.4.0",
@@ -872,7 +872,7 @@ class RuntimeEvidenceTests(unittest.TestCase):
 
     def test_runtime_image_rejects_replaced_torch(self):
         versions = {
-            "sglang": "0.5.18+flagos",
+            "sglang": "0.5.18+flagos.hcu1",
             "sglang-fl": "0.1.0",
             "torch": "2.10.0+replaced",
             "flag-gems": "5.4.0",
@@ -897,14 +897,14 @@ class RuntimeEvidenceTests(unittest.TestCase):
             "torch": "2.9.0+das.opt1.dtk2604",
             "flag-gems": "5.4.0",
             "xgrammar": "0.2.1",
-            "sglang": "0.5.18+flagos",
+            "sglang": "0.5.18+flagos.hcu1",
         }
         snapshot = self._snapshot_file(before)
         distributions = [
             self._dist("torch", "2.9.0+das.opt1.dtk2604"),
             self._dist("flag-gems", "5.4.0"),
             self._dist("xgrammar", "0.2.1"),
-            self._dist("sglang", "0.5.18+flagos"),
+            self._dist("sglang", "0.5.18+flagos.hcu1"),
             self._dist("pytest", "9.1.1"),
             self._dist("iniconfig", "2.3.1"),
             self._dist("pluggy", "1.7.0"),

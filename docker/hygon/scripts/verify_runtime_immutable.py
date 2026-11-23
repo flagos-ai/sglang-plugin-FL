@@ -51,7 +51,7 @@ from packaging.utils import canonicalize_name
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pip_check_exceptions import pip_check_violations  # noqa: E402
 
-EXPECTED_SGLANG = "0.5.18+flagos"
+EXPECTED_SGLANG = "0.5.18+flagos.hcu1"
 EXPECTED_PLUGIN = "0.1.0"
 EXPECTED_ENTRY_POINTS = {
     "sglang.srt.platforms": ("sglang_fl", "sglang_fl:activate_platform"),

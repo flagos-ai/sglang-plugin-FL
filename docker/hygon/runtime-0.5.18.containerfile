@@ -64,8 +64,13 @@ COPY docker/hygon/requirements.txt /tmp/requirements.txt
 
 # The two reviewed application wheels and the single-item resolver exclusion
 # list are staged by docker/hygon/stage_wheels.sh; their SHA256s are part of
-# the staging reproducibility record.
-COPY artifacts/sglang-0.5.18+flagos-cp310-cp310-linux_x86_64.whl /tmp/wheels/sglang-0.5.18+flagos-cp310-cp310-linux_x86_64.whl
+# the staging reproducibility record. The SGLang wheel is the DERIVED HCU
+# wheel: the exact published flagos wheel with the reviewed HCU gating patch
+# folded in before staging (tools/wheels/hygon/derive_sglang_wheel.py;
+# strict diff gates prove only the patch's files, the METADATA Version line,
+# the dist-info directory name and RECORD differ from the pinned input).
+# The image therefore never patches site-packages.
+COPY artifacts/sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl /tmp/wheels/sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl
 COPY artifacts/sglang_fl-0.1.0-py3-none-any.whl /tmp/wheels/sglang_fl-0.1.0-py3-none-any.whl
 COPY artifacts/runtime-0.5.18.excludes.txt /tmp/runtime-0.5.18.excludes.txt
 
@@ -86,35 +91,9 @@ RUN /usr/local/bin/uv pip install --python /flagos/bin/python3 \
       --constraints /tmp/runtime-constraints.txt \
       -r /tmp/requirements.txt \
       --excludes /tmp/runtime-0.5.18.excludes.txt \
-      '/tmp/wheels/sglang-0.5.18+flagos-cp310-cp310-linux_x86_64.whl[srt_empty,runtime_common]' \
+      '/tmp/wheels/sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl[srt_empty,runtime_common]' \
       '/tmp/wheels/sglang_fl-0.1.0-py3-none-any.whl[hygon]' \
       && rm -rf /tmp/wheels /tmp/runtime-constraints.txt /tmp/requirements.txt /tmp/runtime-0.5.18.excludes.txt
-
-# --- TEMP: HCU-vs-ROCm gating patch on the installed SGLang wheel ------------
-# SGLang 0.5.18 treats every HIP runtime as AMD ROCm in three eagerly-imported
-# Quark modules and then imports AMD AITER, which HCU does not ship; the
-# reviewed patch gates those sites. --check/--reverse-check make a future
-# wheel change fail visibly; the applied patch's SHA256 is recorded as the
-# org.flagos.ci.hcu-patch-sha256 OCI label (build_two_wheel.sh) and verified
-# post-build.
-# Evidence: original "ModuleNotFoundError: No module named 'aiter'"; patch
-# commit a5d492a.
-# Owner: SGLang upstream (remove once a wheel carries the HCU gating).
-COPY docker/hygon/sglang-v0.5.18-hcu.patch /tmp/sglang-v0.5.18-hcu.patch
-RUN PURELIB="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')" \
-    && cd "$PURELIB" \
-    && git apply --check -p2 /tmp/sglang-v0.5.18-hcu.patch \
-    && git apply -p2 /tmp/sglang-v0.5.18-hcu.patch \
-    && git apply --reverse --check -p2 /tmp/sglang-v0.5.18-hcu.patch \
-    && python -m compileall -q \
-         sglang/srt/layers/quantization/quark/schemes/quark_w4a4_mxfp4.py \
-         sglang/srt/layers/quantization/quark/schemes/quark_w4a4_mxfp4_moe.py \
-         sglang/srt/layers/quantization/quark_int4fp8_moe.py \
-         sglang/srt/layers/attention/triton_backend.py \
-         sglang/srt/layers/activation.py \
-         sglang/srt/layers/layernorm.py \
-         sglang/srt/layers/sampler.py \
-    && rm -f /tmp/sglang-v0.5.18-hcu.patch
 
 # --- TEMP: import stubs for kernel wheels HCU does not ship ------------------
 # SGLang 0.5.18 imports sgl_kernel / flashinfer eagerly at module scope; HCU

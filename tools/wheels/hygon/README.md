@@ -94,17 +94,43 @@ reproduces the derived wheel's patched files byte-for-byte.
   `sglang-0.5.18+flagos.dist-info` directory. The derived RECORD is
   rebuilt against the real tree, so it names the actual new dist-info
   directory.
-- RECORD paths may contain literal commas (triton config JSONs like
-  `lora_expand,K=1024,...json`); parsing splits from the right.
+- RECORD is comma-separated CSV: the wheel ships 536 members whose paths
+  contain literal commas (triton config JSONs like
+  `lora_expand,K=1024,...json`). The published wheel writes them
+  UNQUOTED (pip tolerates it with per-line warnings); the derived RECORD
+  quotes them via ``csv.writer`` so every row parses back through
+  ``csv.reader`` to exactly three fields. The verifier REJECTS unquoted
+  comma rows (regression-tested).
+- 6 dist-info members are STORED in the input wheel; the deterministic
+  repack preserves each member's compression kind (STORED stays STORED,
+  DEFLATED members are recompressed at level 9).
+
+## Provenance and image binding
+
+The provenance JSON written next to the wheel carries, besides the
+input/patch/derived SHA256s, a per-file manifest of every patched file
+(hashes read back from the FINISHED wheel). `stage_wheels.sh` ships the
+manifest with the build context and `build_two_wheel.sh` hands both the
+expected wheel digest and the manifest to `verify_image.sh`, which
+asserts the `org.flagos.ci.sglang-wheel-sha256` OCI label equals the
+digest and that the INSTALLED patched files match the manifest
+byte-for-byte - a same-version, different-content wheel cannot pass.
 
 ## Publication policy
 
 The derived wheel uses a NEW local version (`0.5.18+flagos.hcu1`). Never
 overwrite or republish `0.5.18+flagos`, never change only the filename,
-and never let one name/version pair carry different content. Where the
-derived wheel is published (the Hygon platform index) is an owner decision
-for the design review; until then `stage_wheels.sh` derives it locally in
-the disposable build context and the wheel is never committed.
+and never let one name/version pair carry different content: once `hcu1`
+is published, any content change requires `hcu2` - the version never gets
+reused.
+
+Long-term ownership direction for the design review: the derive tooling
+stays in this repository as the artifact PRODUCTION tool, but release
+images should consume an already-published, immutable, SHA-pinned
+derived wheel from the artifact service (same pinning discipline as the
+input wheel) instead of deriving during image assembly. Staging-time
+derivation is the development-candidate mode used until that publication
+exists.
 
 Generated wheels, unpack trees, manifests and provenance JSONs are build
 evidence: keep them under `$TMPDIR`/CI artifacts, out of the repository.

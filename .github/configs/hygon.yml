@@ -3,7 +3,7 @@
 
 platform: hygon
 
-# Docker image for this hardware: SGLang 0.5.18+flagos two-wheel image on the
+# Docker image for this hardware: SGLang 0.5.18+flagos.hcu1 two-wheel image on the
 # operations runtime, assembled by docker/hygon/runtime-0.5.18.containerfile
 # from the Runtime's moving semver tag (each build resolves it to one digest;
 # compatibility blocks documented in docker/hygon/README.md). CI consumes the

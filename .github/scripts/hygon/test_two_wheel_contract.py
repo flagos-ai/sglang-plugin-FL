@@ -49,12 +49,23 @@ class StagingCouplingTests(unittest.TestCase):
         containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
         staging = (DOCKER / "stage_wheels.sh").read_text()
         for wheel in (
-            "sglang-0.5.18+flagos-cp310-cp310-linux_x86_64.whl",
             "sglang_fl-0.1.0-py3-none-any.whl",
             "runtime-0.5.18.excludes.txt",
         ):
             self.assertIn(wheel, containerfile, f"containerfile never stages {wheel}")
             self.assertIn(wheel, staging, f"stage_wheels.sh never assembles {wheel}")
+        # the derived HCU SGLang wheel: literal in the containerfile,
+        # composed from DERIVED_SGLANG_VERSION in staging (which also
+        # derives it via tools/wheels/hygon/derive_sglang_wheel.py)
+        derived = "sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl"
+        self.assertIn(derived, containerfile)
+        self.assertIn('DERIVED_SGLANG_VERSION="0.5.18+flagos.hcu1"', staging)
+        self.assertIn(
+            'DERIVED_SGLANG_WHEEL_NAME="sglang-${DERIVED_SGLANG_VERSION}'
+            '-cp310-cp310-linux_x86_64.whl"',
+            staging,
+        )
+        self.assertIn("tools/wheels/hygon/derive_sglang_wheel.py", staging)
 
     def test_containerfile_is_assembly_only(self):
         containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
@@ -92,8 +103,11 @@ class StagingCouplingTests(unittest.TestCase):
             " /tmp/runtime-0.5.18.excludes.txt",
             containerfile,
         )
-        self.assertIn("rm -f /tmp/sglang-v0.5.18-hcu.patch", containerfile)
         self.assertIn("rm -rf /tmp/stubs", containerfile)
+        # The HCU gating patch is folded into the derived SGLang wheel
+        # BEFORE staging: no patch may be referenced or applied here.
+        self.assertNotIn("hcu.patch", containerfile)
+        self.assertNotIn("git apply", containerfile)
 
     def test_containerfile_base_is_the_moving_semver_tag(self):
         containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
@@ -158,8 +172,8 @@ class StagingCouplingTests(unittest.TestCase):
             "--excludes /tmp/runtime-0.5.18.excludes.txt",
             "--constraints /tmp/runtime-constraints.txt",
             "-r /tmp/requirements.txt",
-            "'/tmp/wheels/sglang-0.5.18+flagos-cp310-cp310-linux_x86_64"
-            ".whl[srt_empty,runtime_common]'",
+            "'/tmp/wheels/sglang-0.5.18+flagos.hcu1-cp310-cp310-"
+            "linux_x86_64.whl[srt_empty,runtime_common]'",
             "'/tmp/wheels/sglang_fl-0.1.0-py3-none-any.whl[hygon]'",
         ):
             self.assertIn(required, real, f"install lost contract flag {required!r}")
@@ -382,12 +396,13 @@ class UvPlanParserTests(unittest.TestCase):
         cls.tmp = tempfile.mkdtemp(prefix="uv-plan-test.")
         # Real (tiny) wheels so the file:// plan lines have METADATA to read.
         cls.sglang_wheel = (
-            Path(cls.tmp) / "sglang-0.5.18+flagos-cp310-cp310-linux_x86_64.whl"
+            Path(cls.tmp)
+            / "sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl"
         )
         with zipfile.ZipFile(cls.sglang_wheel, "w") as archive:
             archive.writestr(
-                "sglang-0.5.18+flagos.dist-info/METADATA",
-                "Metadata-Version: 2.1\nName: sglang\nVersion: 0.5.18+flagos\n",
+                "sglang-0.5.18+flagos.hcu1.dist-info/METADATA",
+                "Metadata-Version: 2.1\nName: sglang\nVersion: 0.5.18+flagos.hcu1\n",
             )
         cls.plugin_wheel = Path(cls.tmp) / "sglang_fl-0.1.0-py3-none-any.whl"
         with zipfile.ZipFile(cls.plugin_wheel, "w") as archive:
@@ -419,7 +434,7 @@ class UvPlanParserTests(unittest.TestCase):
         planned = self.validate_uv_plan.parse_plan(self.real_output())
         self.assertEqual(planned["datasets"], "5.2.0")
         self.assertEqual(planned["xgrammar"], "0.2.1")  # canonicalized
-        self.assertEqual(planned["sglang"], "0.5.18+flagos")
+        self.assertEqual(planned["sglang"], "0.5.18+flagos.hcu1")
         self.assertEqual(planned["sglang-fl"], "0.1.0")
         self.assertNotIn("triton", planned)
 
@@ -461,7 +476,7 @@ class StageContextSurvivalTests(unittest.TestCase):
 
     def test_context_carries_artifacts_and_containerfile(self):
         for relative in (
-            "artifacts/sglang-0.5.18+flagos-cp310-cp310-linux_x86_64.whl",
+            "artifacts/sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl",
             "artifacts/sglang_fl-0.1.0-py3-none-any.whl",
             "artifacts/runtime-0.5.18.excludes.txt",
             "runtime-0.5.18.containerfile",
@@ -469,6 +484,16 @@ class StageContextSurvivalTests(unittest.TestCase):
             "docker/hygon/scripts/validate_uv_plan.py",
         ):
             self.assertTrue((self.context / relative).is_file(), f"missing {relative}")
+        # the ORIGINAL wheel and the patch are derive inputs only; neither
+        # may travel with the image build context
+        self.assertFalse(
+            (self.context / "docker/hygon/sglang-v0.5.18-hcu.patch").exists(),
+            "HCU patch entered the build context",
+        )
+        self.assertFalse(
+            any((self.context / "artifacts").glob("sglang-0.5.18+flagos-cp310*")),
+            "the original (non-derived) SGLang wheel was staged for the image",
+        )
 
     @classmethod
     def tearDownClass(cls):
