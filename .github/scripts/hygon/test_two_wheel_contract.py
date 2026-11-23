@@ -38,6 +38,11 @@ DOCKER = REPO_ROOT / "docker" / "hygon"
 SCRIPTS = DOCKER / "scripts"
 RELEASE_RECIPE = DOCKER / "runtime-0.5.18.containerfile"
 OFFLINE_RECIPE = DOCKER / "runtime-0.5.18.offline-wheelhouse.containerfile"
+DRY_RUN_HEREDOC = r"cat > \"\$plan/dry-run\.sh\" <<'EOF'\n(.*?)\nEOF\n"
+CANDIDATE_TAG = (
+    "harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-hygon-2w-offline-"
+    "{commit}-20260101T000000Z"
+)
 
 
 def load_script(name: str):
@@ -182,18 +187,17 @@ class StagingCouplingTests(unittest.TestCase):
             path = SCRIPTS / script
             self.assertTrue(path.is_file(), f"referenced script missing: {path}")
 
-    def test_uv_install_contract_and_dry_run_mirror_it(self):
-        """The single real install and the pre-build dry-run must agree.
+    def test_the_release_install_keeps_the_full_flag_contract(self):
+        """The release recipe's single uv install carries the index contract.
 
         --index-strategy first-index was measured insufficient on the real
         runtime (the Hygon index has xgrammar but not ==0.2.1, and
         first-index stops at the name instead of falling through to PyPI);
-        the install must use unsafe-first-match with the full flag
-        contract, and build_two_wheel.sh's dry-run.sh must carry exactly
-        the same arguments plus --dry-run (it plan-gates the build against
-        the same resolved base digest).
+        the install must use unsafe-first-match with the full flag contract.
+        The pre-build dry-run is generated from this very instruction
+        (GeneratedDryRunTests).
         """
-        containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
+        containerfile = RELEASE_RECIPE.read_text()
         marker = "/usr/local/bin/uv pip install"
         parts = containerfile.split(marker)
         self.assertEqual(len(parts), 2, "expected exactly one uv invocation")
@@ -205,6 +209,7 @@ class StagingCouplingTests(unittest.TestCase):
         self.assertEqual(real.count("--index-strategy unsafe-first-match"), 1)
         self.assertNotIn("first-index", " ".join(real))
         self.assertEqual(real.count('--index "$TENCENT_INDEX"'), 1)
+        self.assertNotIn("--no-index", real)
         for required in (
             "--excludes /tmp/artifacts/runtime-0.5.18.excludes.txt",
             "--constraints /tmp/artifacts/runtime-constraints.txt",
@@ -215,25 +220,6 @@ class StagingCouplingTests(unittest.TestCase):
             "'/tmp/artifacts/sglang_fl-0.1.0-py3-none-any.whl[hygon]'",
         ):
             self.assertIn(required, real, f"install lost contract flag {required!r}")
-
-        build_wrapper = (DOCKER / "build_two_wheel.sh").read_text()
-        heredoc = re.search(
-            r"cat > \"\$plan/dry-run\.sh\" <<'EOF'\n(.*?)\nEOF\n",
-            build_wrapper,
-            re.DOTALL,
-        )
-        self.assertIsNotNone(heredoc, "build_two_wheel.sh lost the dry-run heredoc")
-        # Split the heredoc at the same marker so both extractions start
-        # from the identical remainder-of-marker-line form.
-        dry_run = uv_args(heredoc.group(1).split(marker)[1])
-        self.assertIn("--dry-run", dry_run)
-        self.assertEqual(
-            [a for a in dry_run if a != "--dry-run"],
-            real,
-            "dry-run and real install arguments diverge",
-        )
-        self.assertIn('--volume "$context/artifacts":/tmp/artifacts:ro', build_wrapper)
-        self.assertIn("cat /plan/uv-dry-run.txt >&2", heredoc.group(1))
 
     def test_no_committed_runtime_snapshots(self):
         for name in (
@@ -1825,6 +1811,117 @@ def write_synthetic_wheelhouse(module, root, wheels):
     return root
 
 
+class GeneratedDryRunTests(unittest.TestCase):
+    """The pre-build dry-run is generated from the recipe that is built.
+
+    build_two_wheel.sh carries no hand-written twin of the install command:
+    uv_install_contract.py reads the recipe's RUN instruction into
+    /plan/args, and the generated dry-run.sh passes exactly those arguments
+    to uv plus --dry-run.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.contract = load_script("uv_install_contract")
+        cls.build = (DOCKER / "build_two_wheel.sh").read_text()
+
+    def heredoc(self):
+        match = re.search(DRY_RUN_HEREDOC, self.build, re.DOTALL)
+        self.assertIsNotNone(match, "build_two_wheel.sh lost the dry-run heredoc")
+        return match.group(1)
+
+    def execute(self, recipe, uv_exit=0):
+        """Run the generated script with a fake uv and a fake plan validator
+        under the recipe's arguments; return the process and what each got."""
+        with tempfile.TemporaryDirectory(prefix="dry-run-test.") as tmp:
+            root = Path(tmp)
+            for relative in ("usr/local/bin", "scripts", "plan", "bin"):
+                (root / relative).mkdir(parents=True)
+            uv = root / "usr/local/bin/uv"
+            uv.write_text(
+                "#!/bin/bash\n"
+                f'printf "%s\\n" "$@" > {root}/plan/uv-argv.txt\n'
+                'echo "fake uv output"\n'
+                f"exit {uv_exit}\n"
+            )
+            (root / "scripts/validate_uv_plan.py").write_text(
+                "import sys\n"
+                f"open({str(root / 'plan/validator-argv.txt')!r}, 'w')"
+                ".write('\\n'.join(sys.argv[1:]))\n"
+            )
+            shim = root / "bin/python"
+            shim.write_text('#!/bin/bash\nexec python3 "$@"\n')
+            for program in (uv, shim):
+                program.chmod(0o755)
+            (root / "plan/args").write_text(
+                "\n".join(self.contract.install_arguments(recipe.read_text())) + "\n"
+            )
+            script = (
+                self.heredoc()
+                .replace("/usr/local/bin/uv", str(uv))
+                .replace("/scripts/", f"{root}/scripts/")
+                .replace("/plan", str(root / "plan"))
+            )
+            (root / "dry-run.sh").write_text(script + "\n")
+            completed = subprocess.run(
+                ["bash", str(root / "dry-run.sh")],
+                capture_output=True,
+                text=True,
+                env={**os.environ, "PATH": f"{root / 'bin'}:{os.environ['PATH']}"},
+            )
+
+            def received(name):
+                path = root / "plan" / name
+                return path.read_text().splitlines() if path.exists() else None
+
+            return completed, received("uv-argv.txt"), received("validator-argv.txt")
+
+    def test_each_recipe_dry_runs_with_its_own_arguments_plus_dry_run(self):
+        for recipe in (RELEASE_RECIPE, OFFLINE_RECIPE):
+            with self.subTest(recipe=recipe.name):
+                completed, argv, validated = self.execute(recipe)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                expected = self.contract.install_arguments(recipe.read_text())
+                # the only semantic difference from the recipe's RUN
+                self.assertEqual(argv, ["pip", "install", "--dry-run", *expected])
+                # the uv output and the plan dir reach the plan validator
+                self.assertTrue(validated[0].endswith("/uv-dry-run.txt"), validated)
+                self.assertTrue(validated[1].endswith("/plan"), validated)
+
+    def test_a_failing_dry_run_surfaces_the_uv_output(self):
+        completed, _, validated = self.execute(OFFLINE_RECIPE, uv_exit=2)
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("fake uv output", completed.stderr)
+        self.assertIsNone(validated)
+
+    def test_the_wrapper_generates_the_dry_run_from_the_recipe_it_builds(self):
+        build = self.build
+        self.assertIn(
+            'python3 "$scripts/uv_install_contract.py" "$recipe" > "$plan/args"', build
+        )
+        self.assertIn('--run-options --context "$context" "$recipe"', build)
+        heredoc = self.heredoc()
+        self.assertEqual(heredoc.count("uv pip install"), 1)
+        self.assertIn('uv pip install --dry-run "${ARGS[@]}"', heredoc)
+        self.assertIn("< /plan/args", heredoc)
+        self.assertIn("cat /plan/uv-dry-run.txt >&2", heredoc)
+        for flag in (
+            "--index",
+            "--excludes",
+            "--constraints",
+            "--no-index",
+            "/tmp/artifacts",
+            "sglang",
+        ):
+            self.assertNotIn(flag, heredoc, "a hand-written copy crept back")
+        # one recipe drives the dry-run and the docker build alike
+        self.assertEqual(build.count('-f "$recipe"'), 1)
+        self.assertEqual(build.count('--build-arg "BASE_IMAGE=$RESOLVED_BASE"'), 1)
+        # the offline candidate additionally binds its plan to the wheelhouse
+        self.assertIn("wheelhouse.py bind-plan", build)
+        self.assertIn("--wheelhouse /wheelhouse", build)
+
+
 class OfflineRecipeTests(unittest.TestCase):
     """The offline-wheelhouse recipe differs from the release recipe in the
     resolver source only."""
@@ -2440,6 +2537,285 @@ class StagedWheelhouseTests(unittest.TestCase):
         self.assertFalse((context / "wheelhouse").exists())
 
 
+class BuildModeGateTests(unittest.TestCase):
+    """build_two_wheel.sh decides the resolver mode and the publication path
+    before anything is staged."""
+
+    COMMIT = "a" * 40
+    RUNTIME = "registry.example/runtime@sha256:" + "b" * 64
+
+    @classmethod
+    def setUpClass(cls):
+        cls.wrapper = (DOCKER / "build_two_wheel.sh").read_text()
+        cls._tmp = tempfile.TemporaryDirectory(prefix="mode-gate-test.")
+        cls.addClassCleanup(cls._tmp.cleanup)
+        cls.directory = Path(cls._tmp.name) / "wheelhouse"
+        cls.directory.mkdir()
+
+    def gates(self, **options):
+        wrapper = self.wrapper
+        region = wrapper[wrapper.index("publish=$((push + push_candidate))") :]
+        block_text = region[: region.index('echo "=== [1/6] Staging')]
+        settings = {
+            "push": 0,
+            "push_candidate": 0,
+            "allow_dirty": 0,
+            "wheelhouse": "",
+            "runtime_image": "",
+            "tag": "dev/image:1",
+            "head": self.COMMIT,
+            "dirty": "",
+            "remote": "free",
+            "message": "unknown: artifact not found",
+        }
+        settings.update(options)
+        settings["tag"] = settings["tag"].format(commit=self.COMMIT[:12])
+        lines = [
+            "set -euo pipefail",
+            'repo_root="$1"',
+            re.search(r"^CANDIDATE_TAG_PATTERN=.*$", wrapper, re.MULTILINE).group(0),
+            re.search(r"^INDEX_MODE=.*$", wrapper, re.MULTILINE).group(0),
+            re.search(r"^OFFLINE_MODE=.*$", wrapper, re.MULTILINE).group(0),
+            "RELEASE_RECIPE=unused; OFFLINE_RECIPE=unused",
+            "push={push}; push_candidate={push_candidate}; allow_dirty={allow_dirty}".format(
+                **settings
+            ),
+            'wheelhouse="{wheelhouse}"; runtime_image="{runtime_image}"; tag="{tag}"'.format(
+                **settings
+            ),
+            block_text,
+        ]
+        return run_block(
+            lines,
+            {
+                "FAKE_HEAD": settings["head"],
+                "FAKE_DIRTY": settings["dirty"],
+                "FAKE_REMOTE": settings["remote"],
+                "FAKE_REMOTE_MESSAGE": settings["message"],
+            },
+            str(self._tmp.name),
+        )
+
+    def candidate(self, **options):
+        candidate = {
+            "push_candidate": 1,
+            "wheelhouse": str(self.directory),
+            "runtime_image": self.RUNTIME,
+            "tag": CANDIDATE_TAG,
+        }
+        candidate.update(options)
+        return self.gates(**candidate)
+
+    def test_the_release_path_is_the_index_mode(self):
+        for push in (0, 1):
+            with self.subTest(push=push):
+                completed = self.gates(push=push)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertIn("BLOCK-DONE", completed.stdout)
+
+    def test_the_candidate_path_passes_its_gates(self):
+        completed = self.candidate()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("candidate tag is free in the registry", completed.stdout)
+        self.assertIn("BLOCK-DONE", completed.stdout)
+
+    def test_every_inconsistent_mode_is_refused(self):
+        directory, runtime = str(self.directory), self.RUNTIME
+        for name, options, message in (
+            (
+                "offline without a runtime digest",
+                dict(wheelhouse=directory),
+                "requires --runtime-image",
+            ),
+            (
+                "release push of an offline build",
+                dict(push=1, wheelhouse=directory, runtime_image=runtime),
+                "cannot consume an offline wheelhouse",
+            ),
+            (
+                "runtime image without a wheelhouse",
+                dict(runtime_image=runtime),
+                "--runtime-image goes with --offline-wheelhouse",
+            ),
+            (
+                "candidate push without a wheelhouse",
+                dict(push_candidate=1, tag=CANDIDATE_TAG),
+                "publishes the offline-wheelhouse development candidate only",
+            ),
+            ("both publications", dict(push=1, push_candidate=1), "mutually exclusive"),
+            (
+                "dirty candidate push",
+                dict(
+                    push_candidate=1,
+                    allow_dirty=1,
+                    wheelhouse=directory,
+                    runtime_image=runtime,
+                    tag=CANDIDATE_TAG,
+                ),
+                "--allow-dirty cannot be combined",
+            ),
+            (
+                "dirty release push",
+                dict(push=1, allow_dirty=1),
+                "--allow-dirty cannot be combined",
+            ),
+            (
+                "missing wheelhouse directory",
+                dict(wheelhouse="/nonexistent/dir", runtime_image=runtime),
+                "not a directory",
+            ),
+        ):
+            with self.subTest(name):
+                completed = self.gates(**options)
+                self.assertEqual(completed.returncode, 1, completed.stderr)
+                self.assertIn(message, completed.stderr)
+                self.assertNotIn("BLOCK-DONE", completed.stdout)
+
+    def test_a_publishable_build_needs_a_clean_worktree(self):
+        for completed in (
+            self.gates(push=1, dirty=" M docker/hygon/x\n"),
+            self.candidate(dirty=" M docker/hygon/x\n"),
+        ):
+            self.assertEqual(completed.returncode, 1)
+            self.assertIn("worktree is dirty", completed.stderr)
+        # a dirty dev build that publishes nothing stays possible
+        completed = self.gates(allow_dirty=1, dirty=" M x\n")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("NOT releasable", completed.stdout)
+
+    def test_a_candidate_tag_names_the_commit_and_is_never_overwritten(self):
+        for name, options, message in (
+            ("free-form tag", dict(tag="dev/candidate:1"), "a candidate tag must be"),
+            (
+                "an existing release tag",
+                dict(
+                    tag=(
+                        "harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:"
+                        "0.5.18-hygon-two-wheel-20261118"
+                    )
+                ),
+                "a candidate tag must be",
+            ),
+            (
+                "another commit in the tag",
+                dict(tag=CANDIDATE_TAG.format(commit="b" * 12)),
+                "names commit",
+            ),
+            ("an existing remote tag", dict(remote="present"), "refusing to overwrite"),
+            (
+                "an unreachable registry",
+                dict(remote="error", message="dial tcp: i/o timeout"),
+                "cannot tell whether",
+            ),
+        ):
+            with self.subTest(name):
+                completed = self.candidate(**options)
+                self.assertEqual(completed.returncode, 1, completed.stderr)
+                self.assertIn(message, completed.stderr)
+                self.assertNotIn("BLOCK-DONE", completed.stdout)
+
+
+class RuntimeBindingTests(unittest.TestCase):
+    """The candidate's Runtime base is an explicit digest, verified against
+    the local Docker store; no tag is ever consulted."""
+
+    DIGEST = "sha256:" + "c" * 64
+    REFERENCE = "registry.example/runtime@" + DIGEST
+
+    @classmethod
+    def setUpClass(cls):
+        cls.wrapper = (DOCKER / "build_two_wheel.sh").read_text()
+
+    def bind(
+        self,
+        reference=None,
+        present=True,
+        identifier=None,
+        repo_digests="",
+        remote="free",
+    ):
+        wrapper = self.wrapper
+        offline = block(
+            wrapper,
+            "    # The candidate names its Runtime explicitly",
+            'BASE_LOCAL_IMAGE_ID="$(docker image inspect',
+        )
+        # the slice ends with the `fi` that closes the mode branch
+        offline = offline[: offline.rindex("\nfi\n") + 1]
+        lines = [
+            "set -euo pipefail",
+            re.search(r"^RUNTIME_REFERENCE_PATTERN=.*$", wrapper, re.MULTILINE).group(
+                0
+            ),
+            f'runtime_image="{reference or self.REFERENCE}"',
+            block(
+                wrapper,
+                "registry_ref_state() {",
+                '\n\nif [ "$push_candidate" -eq 1 ]; then\n    state="$(registry_ref_state',
+            ).rstrip("\n"),
+            offline,
+            block(
+                wrapper,
+                'BASE_LOCAL_IMAGE_ID="$(docker image inspect',
+                'refdir="$(mktemp -d',
+            ),
+        ]
+        identifier = identifier or self.DIGEST
+        return run_block(
+            lines,
+            {
+                "FAKE_PRESENT": (reference or self.REFERENCE) if present else "",
+                "FAKE_IMAGE_ID": identifier,
+                "FAKE_REPO_DIGESTS": repo_digests,
+                "FAKE_REMOTE": remote,
+                "FAKE_REMOTE_MESSAGE": (
+                    "dial tcp: i/o timeout"
+                    if remote == "error"
+                    else "unknown: artifact not found"
+                ),
+            },
+        )
+
+    def test_a_digest_that_is_the_local_image_id_is_accepted(self):
+        completed = self.bind()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn(f"runtime base:         {self.REFERENCE}", completed.stdout)
+        self.assertIn("remote manifest:      absent", completed.stdout)
+        self.assertIn("the push uploads every parent layer", completed.stdout)
+
+    def test_a_digest_among_the_repo_digests_is_accepted(self):
+        other = "sha256:" + "d" * 64
+        completed = self.bind(identifier=other, repo_digests=self.REFERENCE)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn(f"local image id:       {other}", completed.stdout)
+
+    def test_the_registry_state_of_the_base_is_recorded_never_a_gate(self):
+        present = self.bind(remote="present")
+        self.assertEqual(present.returncode, 0, present.stderr)
+        self.assertIn("remote manifest:      present", present.stdout)
+        unreachable = self.bind(remote="error")
+        self.assertEqual(unreachable.returncode, 0, unreachable.stderr)
+        self.assertIn("remote manifest:      unavailable", unreachable.stdout)
+
+    def test_a_local_object_that_is_not_the_digest_is_refused(self):
+        completed = self.bind(identifier="sha256:" + "d" * 64)
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("is not that digest", completed.stderr)
+        self.assertNotIn("BLOCK-DONE", completed.stdout)
+
+    def test_an_absent_object_is_never_pulled_or_replaced_by_a_tag(self):
+        completed = self.bind(present=False)
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("not in the local Docker store", completed.stderr)
+        for tag in ("registry.example/runtime:2.3.0", "runtime:latest"):
+            with self.subTest(tag):
+                completed = self.bind(reference=tag, present=False)
+                self.assertEqual(completed.returncode, 1)
+                self.assertIn(
+                    "must be name@sha256:<64 hex digest>, never a tag", completed.stderr
+                )
+
+
 class CandidateContractTests(unittest.TestCase):
     """verify_image.sh holds an image to the resolver mode it declares."""
 
@@ -2594,6 +2970,30 @@ class CandidateContractTests(unittest.TestCase):
                 self.assertIn(
                     "does not carry the complete Runtime base", completed.stderr
                 )
+
+    def test_the_verifier_passes_the_staged_wheels_and_the_manifest(self):
+        build = (DOCKER / "build_two_wheel.sh").read_text()
+        for pin in (
+            '--sglang-wheel "$context/artifacts/$DERIVED_SGLANG_WHEEL_NAME"',
+            '--xgrammar-wheel "$context/artifacts/$DERIVED_XGRAMMAR_WHEEL_NAME"',
+            '--wheelhouse-manifest "$context/wheelhouse/wheelhouse-manifest.json"',
+            '--label "org.flagos.ci.resolver-cache-source=$resolver_cache_source"',
+            '--label "org.flagos.ci.resolver-mode=$resolver_mode"',
+            '--label "org.flagos.ci.base-local-image-id=$BASE_LOCAL_IMAGE_ID"',
+        ):
+            self.assertIn(pin, build)
+        # the candidate labels are added in the offline-wheelhouse mode only
+        labels = build[build.index("labels=(") : build.index("docker build --platform")]
+        common, candidate = labels.split(
+            'if [ "$resolver_mode" = "$OFFLINE_MODE" ]; then\n    # The candidate says what it is'
+        )
+        self.assertNotIn("release-ready", common)
+        self.assertNotIn("resolver-cache-source", common)
+        self.assertIn('--label "org.flagos.ci.release-ready=false"', candidate)
+        self.assertIn(
+            '--label "org.flagos.ci.wheelhouse-manifest-sha256=$wheelhouse_manifest_sha256"',
+            candidate,
+        )
 
     def test_the_verifier_compares_every_staged_wheel_member_by_member(self):
         verifier = self.verifier
@@ -2921,6 +3321,178 @@ class InstalledWheelComparisonTests(unittest.TestCase):
             "xgrammar==0.2.1+flagos.hcu1: the explicit wheel is not installed",
             completed.stderr,
         )
+
+
+class RemoteCandidateTests(unittest.TestCase):
+    """The pushed candidate is verified against the registry object."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_script("verify_remote_blobs")
+        cls.script = SCRIPTS / "verify_remote_candidate.sh"
+
+    def registry(self):
+        """A fake Harbor on localhost: token endpoint, manifests and blobs.
+        Returns (host, state); state holds the manifests and blobs."""
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        state = {"manifests": {}, "blobs": {}}
+
+        class Handler(BaseHTTPRequestHandler):
+            def reply(self, status, body, content_type="application/json"):
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(body)
+
+            def do_GET(self):
+                if self.path.startswith("/service/token"):
+                    self.reply(200, json.dumps({"token": "fake"}).encode())
+                elif "/manifests/" in self.path or "/blobs/" in self.path:
+                    digest = self.path.rsplit("/", 1)[-1]
+                    table = (
+                        state["manifests"]
+                        if "/manifests/" in self.path
+                        else state["blobs"]
+                    )
+                    if digest in table:
+                        self.reply(200, table[digest])
+                    else:
+                        self.reply(404, b'{"errors":[]}')
+                else:
+                    self.reply(404, b"")
+
+            def do_HEAD(self):
+                self.do_GET()
+
+            def log_message(self, *arguments):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        return f"127.0.0.1:{server.server_address[1]}", state
+
+    @staticmethod
+    def image(state, layer_count=2):
+        """Store an image (config + layers) and its index in the registry;
+        return (index digest, config digest, layer digests, diff_ids)."""
+        blobs = state["blobs"]
+        layers, digests, diff_ids = [], [], []
+        for number in range(layer_count):
+            content = f"layer-{number}".encode()
+            digest = "sha256:" + hashlib.sha256(content).hexdigest()
+            blobs[digest] = content
+            layers.append({"digest": digest})
+            digests.append(digest)
+            diff_ids.append("sha256:" + hashlib.sha256(content).hexdigest())
+        config = {
+            "architecture": "amd64",
+            "os": "linux",
+            "rootfs": {"diff_ids": diff_ids, "type": "layers"},
+            "config": {"Labels": {"org.flagos.ci.release-ready": "false"}},
+        }
+        config_bytes = json.dumps(config).encode()
+        config_digest = "sha256:" + hashlib.sha256(config_bytes).hexdigest()
+        blobs[config_digest] = config_bytes
+        manifest = {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {"digest": config_digest},
+            "layers": layers,
+        }
+        manifest_digest = (
+            "sha256:" + hashlib.sha256(json.dumps(manifest).encode()).hexdigest()
+        )
+        state["manifests"][manifest_digest] = json.dumps(manifest).encode()
+        index = {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "manifests": [
+                {
+                    "digest": manifest_digest,
+                    "platform": {"os": "linux", "architecture": "amd64"},
+                }
+            ],
+        }
+        index_digest = (
+            "sha256:" + hashlib.sha256(json.dumps(index).encode()).hexdigest()
+        )
+        state["manifests"][index_digest] = json.dumps(index).encode()
+        return index_digest, config_digest, manifest_digest, digests, diff_ids
+
+    def test_every_blob_of_the_remote_manifest_is_confirmed(self):
+        host, state = self.registry()
+        index, config, manifest, layers, diff_ids = self.image(state)
+        record = self.module.inspect(host, "proj/repo", index, scheme="http")
+        self.assertEqual(record["digest"], index)
+        self.assertEqual(
+            record["media_type"], "application/vnd.oci.image.index.v1+json"
+        )
+        self.assertEqual(
+            record["manifests"],
+            [
+                {
+                    "digest": manifest,
+                    "platform": "linux/amd64",
+                    "config_digest": config,
+                    "layers": 2,
+                }
+            ],
+        )
+        self.assertEqual(record["linux_amd64"]["manifest_digest"], manifest)
+        self.assertEqual(record["linux_amd64"]["config_digest"], config)
+        self.assertEqual(record["linux_amd64"]["diff_ids"], diff_ids)
+        self.assertEqual(
+            record["linux_amd64"]["config"]["config"]["Labels"],
+            {"org.flagos.ci.release-ready": "false"},
+        )
+        self.assertEqual(sorted(record["blobs_checked"]), sorted([config, *layers]))
+        self.assertEqual(record["blobs_missing"], [])
+
+    def test_a_missing_parent_layer_is_a_hard_failure(self):
+        host, state = self.registry()
+        index, _, _, layers, _ = self.image(state)
+        del state["blobs"][layers[0]]
+        with self.assertRaisesRegex(self.module.RegistryError, "not in the registry"):
+            self.module.inspect(host, "proj/repo", index, scheme="http")
+
+    def test_an_unknown_object_is_a_hard_failure(self):
+        host, state = self.registry()
+        with self.assertRaisesRegex(self.module.RegistryError, "HTTP 404"):
+            self.module.inspect(host, "proj/repo", "sha256:" + "0" * 64, scheme="http")
+
+    def test_the_cli_refuses_anything_but_a_digest(self):
+        self.assertEqual(self.module.main(["harbor.baai.ac.cn", "a/b", "latest"]), 1)
+        self.assertEqual(self.module.main(["harbor.baai.ac.cn", "a/b"]), 2)
+
+    def test_the_candidate_tag_is_the_only_accepted_reference(self):
+        text = self.script.read_text()
+        pattern = re.search(r"CANDIDATE_TAG_PATTERN='([^']+)'", text).group(1)
+        accepted = (
+            "harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-hygon-2w-offline-"
+            "abc1234-20260101T000000Z"
+        )
+        self.assertIsNotNone(re.match(pattern, accepted))
+        for refused in (
+            accepted.replace("0.5.18-hygon-2w-offline-", "0.5.18-hygon-two-wheel-"),
+            accepted.replace("flagos-dev/sglang-plugin-fl", "flagos-dev/other"),
+            accepted.replace("abc1234", "zzzzzzz"),
+            accepted + "x",
+            "harbor.baai.ac.cn/flagos-runtime/flagos-runtime-hygon-dtk26.04:2.3.0",
+        ):
+            self.assertIsNone(re.match(pattern, refused), refused)
+        # the script reads the registry object, proves every blob, pulls by
+        # digest and compares with the accepted local build
+        self.assertIn('docker buildx imagetools inspect "$tag"', text)
+        self.assertIn('docker pull --platform linux/amd64 "$repository@$digest"', text)
+        self.assertIn('verify_remote_blobs.py" "$host" "$name" "$digest"', text)
+        self.assertIn("diff_ids", text)
+        self.assertIn('"Labels"', text)
+        self.assertNotIn("docker push", text)
 
 
 if __name__ == "__main__":
