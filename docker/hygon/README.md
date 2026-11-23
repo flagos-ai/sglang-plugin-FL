@@ -360,8 +360,9 @@ docker/hygon/scripts/verify_image.sh <tag>
   动态 constraints 则由 `build_two_wheel.sh` 从解析出的 digest 生成，只保护
   Runtime distributions 不被 resolver 替换，仅作构建临时输入（/tmp，同一
   RUN 内消费并删除），不留在最终镜像；
-- 构建期临时文件（constraints、两 wheel、excludes）
-  全部 COPY 到 `/tmp`，由消费它们的同一 `RUN` 删除；镜像不设 `WORKDIR`
+- 构建输入（constraints、两 wheel、excludes）由 BuildKit 只读 bind mount
+  给唯一安装 `RUN`，不进入最终镜像的任何 blob；uv 同时使用 `--no-cache`，
+  验收明确拒绝 `/root/.cache/uv`（旧候选曾残留约 1.1 GB）。镜像不设 `WORKDIR`
   （继承 Runtime 的 `/app`），不含 `/opt/sglang-ci` 或任何构建痕迹。HCU
   patch 不再进入镜像：它折入派生 wheel（staging 期严格差异门禁保证只有
   patch 文件、METADATA Version 行、dist-info 目录名与 RECORD 变化）；派生

@@ -20,9 +20,9 @@
 #   * Hygon installs sglang[srt_empty,runtime_common] + sglang_fl[hygon]:
 #     the dependency ownership-inversion extras. The DTK torch/FlagTree/
 #     FlagGems/FlagCX stack comes from the runtime, never from this build.
-#   * Build inputs live under /tmp only for the RUN that consumes them and
-#     are deleted in that same RUN; the released image carries no CI
-#     working directory and no build evidence.
+#   * Build inputs are read-only BuildKit bind mounts for the RUN that consumes
+#     them; they never enter a final-image layer. The released image carries no
+#     CI working directory, resolver cache, wheel archive, or build evidence.
 #
 # Build + accept (single release entry; acceptance is the gate, --push is
 # reachable only after it passes):
@@ -54,25 +54,22 @@ ARG FLAGOS_INDEX=https://resource.flagos.net/repository/flagos-pypi-hygon/simple
 ARG TENCENT_INDEX=https://mirrors.cloud.tencent.com/pypi/simple
 ARG PROXY_INDEX=https://resource.flagos.net/repository/pypi-proxy/simple
 
-# Runtime constraints are consumed and removed by the install RUN below.
+# Runtime constraints are consumed by the install RUN below.
 # runtime-constraints.txt freezes the pristine Runtime inventory (canonical
 # name==version) and is generated from the resolved base by
 # build_two_wheel.sh - never committed. Product requirements, including the
 # datasets compatibility pin, are carried by the reviewed wheel metadata.
-COPY artifacts/runtime-constraints.txt /tmp/runtime-constraints.txt
 
-# The two reviewed application wheels and the single-item resolver exclusion
-# list are staged by docker/hygon/stage_wheels.sh; their SHA256s are part of
+# The generated constraints, two reviewed application wheels and the current
+# single-item resolver exclusion are mounted read-only from the staging
+# artifacts directory for the install RUN; none enters an image layer. Their
+# SHA256s are part of
 # the staging reproducibility record. The SGLang wheel is the DERIVED HCU
 # wheel: the exact published flagos wheel with the reviewed HCU gating patch
 # folded in before staging (tools/wheels/hygon/derive_sglang_wheel.py;
 # strict diff gates prove only the patch's files, the METADATA Version line,
 # the dist-info directory name and RECORD differ from the pinned input).
 # The image therefore never patches site-packages.
-COPY artifacts/sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl /tmp/wheels/sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl
-COPY artifacts/sglang_fl-0.1.0-py3-none-any.whl /tmp/wheels/sglang_fl-0.1.0-py3-none-any.whl
-COPY artifacts/runtime-0.5.18.excludes.txt /tmp/runtime-0.5.18.excludes.txt
-
 # --- One uv resolver install of the two application wheels -------------------
 # CONTRACT: no standalone triton distribution enters the image; the Runtime's
 # /opt/flagtree tree (Triton 3.6) is the only compiler, and --excludes drops
@@ -82,16 +79,17 @@ COPY artifacts/runtime-0.5.18.excludes.txt /tmp/runtime-0.5.18.excludes.txt
 # Owner: FlagOS Runtime (remove once it ships a metadata-consistent triton).
 # build_two_wheel.sh runs the exact twin of this command (plus --dry-run)
 # against the resolved base digest and plan-validates it BEFORE the build.
-RUN /usr/local/bin/uv pip install --python /flagos/bin/python3 \
+RUN --mount=type=bind,source=artifacts,target=/tmp/artifacts,readonly \
+    /usr/local/bin/uv pip install --python /flagos/bin/python3 \
+      --no-cache \
       --index "$FLAGOS_INDEX" \
       --index "$TENCENT_INDEX" \
       --default-index "$PROXY_INDEX" \
       --index-strategy unsafe-first-match \
-      --constraints /tmp/runtime-constraints.txt \
-      --excludes /tmp/runtime-0.5.18.excludes.txt \
-      '/tmp/wheels/sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl[srt_empty,runtime_common]' \
-      '/tmp/wheels/sglang_fl-0.1.0-py3-none-any.whl[hygon]' \
-      && rm -rf /tmp/wheels /tmp/runtime-constraints.txt /tmp/runtime-0.5.18.excludes.txt
+      --constraints /tmp/artifacts/runtime-constraints.txt \
+      --excludes /tmp/artifacts/runtime-0.5.18.excludes.txt \
+      '/tmp/artifacts/sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl[srt_empty,runtime_common]' \
+      '/tmp/artifacts/sglang_fl-0.1.0-py3-none-any.whl[hygon]'
 
 # --- TEMP: DTK loader path baked into the image ------------------------------
 # Runner hosts differ in whether they inject the DTK loader path; the paths

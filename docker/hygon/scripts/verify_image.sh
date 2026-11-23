@@ -309,7 +309,7 @@ workdir="$(docker image inspect --format '{{.Config.WorkingDir}}' "$image")"
     exit 1
 }
 run --entrypoint bash "$image" -c \
-    'test ! -e /opt/sglang-ci && test ! -e /tmp/wheels && test ! -e /tmp/stubs' \
+    'test ! -e /opt/sglang-ci && test ! -e /tmp/artifacts && test ! -e /tmp/wheels && test ! -e /tmp/stubs && test ! -e /root/.cache/uv' \
     || { echo "FATAL: CI working directory or build residue in the image" >&2; exit 1; }
 
 # LD_LIBRARY_PATH prepend semantics, proven inside the image:

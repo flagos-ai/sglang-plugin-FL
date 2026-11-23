@@ -130,34 +130,36 @@ docker run --rm --platform linux/amd64 \
 echo "=== [4/6] Resolver dry-run plan gate (same resolved digest) ==="
 # /plan inside this container is the disposable plan dir; the file mounts
 # reproduce the exact /tmp paths the containerfile install consumes:
-# the generated Runtime constraints, the staged wheels under
-# /tmp/wheels, the single-item exclusion list. dry-run.sh is the containerfile
+# the generated Runtime constraints, staged wheels and current exclusion under
+# /tmp/artifacts. dry-run.sh is the containerfile
 # install command plus --dry-run and the output redirect (compared by the
 # two-wheel contract unit tests).
 plan="$refdir/uvplan"
 mkdir -p "$plan"
 cp "$refdir/runtime-constraints.txt" "$plan/runtime-constraints.txt"
 cp "$refdir/runtime-distributions-before.json" "$plan/"
+# The same artifacts directory is bind-mounted by both the dry-run container
+# and the Dockerfile install RUN. BuildKit does not copy it into a final layer.
+cp "$refdir/runtime-constraints.txt" "$context/artifacts/runtime-constraints.txt"
 cat > "$plan/dry-run.sh" <<'EOF'
 /usr/local/bin/uv pip install --python /flagos/bin/python3 \
       --dry-run \
+      --no-cache \
       --index "$FLAGOS_INDEX" \
       --index "$TENCENT_INDEX" \
       --default-index "$PROXY_INDEX" \
       --index-strategy unsafe-first-match \
-      --constraints /tmp/runtime-constraints.txt \
-      --excludes /tmp/runtime-0.5.18.excludes.txt \
-      '/tmp/wheels/sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl[srt_empty,runtime_common]' \
-      '/tmp/wheels/sglang_fl-0.1.0-py3-none-any.whl[hygon]' \
+      --constraints /tmp/artifacts/runtime-constraints.txt \
+      --excludes /tmp/artifacts/runtime-0.5.18.excludes.txt \
+      '/tmp/artifacts/sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl[srt_empty,runtime_common]' \
+      '/tmp/artifacts/sglang_fl-0.1.0-py3-none-any.whl[hygon]' \
       > /plan/uv-dry-run.txt 2>&1 \
 && python /scripts/validate_uv_plan.py /plan/uv-dry-run.txt /plan
 EOF
 docker run --rm --platform linux/amd64 \
     -e FLAGOS_INDEX -e TENCENT_INDEX -e PROXY_INDEX \
     --volume "$plan":/plan \
-    --volume "$plan/runtime-constraints.txt":/tmp/runtime-constraints.txt:ro \
-    --volume "$context/artifacts":/tmp/wheels:ro \
-    --volume "$context/artifacts/runtime-0.5.18.excludes.txt":/tmp/runtime-0.5.18.excludes.txt:ro \
+    --volume "$context/artifacts":/tmp/artifacts:ro \
     --volume "$scripts":/scripts:ro \
     --entrypoint bash "$RESOLVED_BASE" /plan/dry-run.sh
 echo "resolver plan validated: no runtime distribution replaced"
@@ -168,7 +170,6 @@ echo "=== [5/6] Building the candidate image ==="
 # pinned input wheel + reviewed patch) replaces the former patch label: the
 # image binds to the exact wheel artifact it installs.
 derived_wheel_sha256="$(sha256sum "$context/artifacts/$DERIVED_SGLANG_WHEEL_NAME" | awk '{print $1}')"
-cp "$refdir/runtime-constraints.txt" "$context/artifacts/runtime-constraints.txt"
 docker build --platform linux/amd64 \
     --build-arg "BASE_IMAGE=$RESOLVED_BASE" \
     --label "org.flagos.ci.base-digest=$RESOLVED_BASE" \

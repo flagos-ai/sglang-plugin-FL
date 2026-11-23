@@ -37,7 +37,7 @@ def uv_args(chunk: str) -> list[str]:
     lines = []
     for line in chunk.splitlines():
         stripped = line.strip().rstrip("\\").strip()
-        if stripped.startswith(("--", "'/tmp/wheels/")):
+        if stripped.startswith(("--", "'/tmp/artifacts/")):
             lines.append(stripped)
         elif stripped.startswith(">") or stripped.startswith("&&"):
             break
@@ -97,12 +97,12 @@ class StagingCouplingTests(unittest.TestCase):
             containerfile,
             "CI working-directory semantics crept back into the release image",
         )
-        # Every COPYed build input is removed by the RUN that consumes it.
+        # Build inputs are read-only mounts and never enter an image layer.
         self.assertIn(
-            "rm -rf /tmp/wheels /tmp/runtime-constraints.txt"
-            " /tmp/runtime-0.5.18.excludes.txt",
+            "--mount=type=bind,source=artifacts,target=/tmp/artifacts,readonly",
             containerfile,
         )
+        self.assertNotIn("COPY artifacts/", containerfile)
         self.assertNotIn("/tmp/requirements.txt", containerfile)
         self.assertFalse((DOCKER / "requirements.txt").exists())
         self.assertNotIn("docker/hygon/stubs", containerfile)
@@ -172,15 +172,16 @@ class StagingCouplingTests(unittest.TestCase):
         real = uv_args(parts[1])
         self.assertNotIn("--dry-run", real)
         self.assertFalse(any(argument.startswith("-r ") for argument in real))
+        self.assertEqual(real.count("--no-cache"), 1)
         self.assertEqual(real.count("--index-strategy unsafe-first-match"), 1)
         self.assertNotIn("first-index", " ".join(real))
         self.assertEqual(real.count('--index "$TENCENT_INDEX"'), 1)
         for required in (
-            "--excludes /tmp/runtime-0.5.18.excludes.txt",
-            "--constraints /tmp/runtime-constraints.txt",
-            "'/tmp/wheels/sglang-0.5.18+flagos.hcu1-cp310-cp310-"
+            "--excludes /tmp/artifacts/runtime-0.5.18.excludes.txt",
+            "--constraints /tmp/artifacts/runtime-constraints.txt",
+            "'/tmp/artifacts/sglang-0.5.18+flagos.hcu1-cp310-cp310-"
             "linux_x86_64.whl[srt_empty,runtime_common]'",
-            "'/tmp/wheels/sglang_fl-0.1.0-py3-none-any.whl[hygon]'",
+            "'/tmp/artifacts/sglang_fl-0.1.0-py3-none-any.whl[hygon]'",
         ):
             self.assertIn(required, real, f"install lost contract flag {required!r}")
 
@@ -199,6 +200,9 @@ class StagingCouplingTests(unittest.TestCase):
             [a for a in dry_run if a != "--dry-run"],
             real,
             "dry-run and real install arguments diverge",
+        )
+        self.assertIn(
+            '--volume "$context/artifacts":/tmp/artifacts:ro', build_wrapper
         )
 
     def test_no_committed_runtime_snapshots(self):

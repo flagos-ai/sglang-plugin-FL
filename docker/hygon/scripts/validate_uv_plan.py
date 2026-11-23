@@ -8,7 +8,7 @@ included, which is where uv writes the plan):
     Would download M packages
     Would install K packages
      + name==version                 (index packages)
-     + name @ file:///tmp/wheels/... (the staged local wheels)
+     + name @ file:///tmp/artifacts/... (the staged local wheels)
 
 Turns the plan into the additions audit record (the staged wheels
 contribute the version read from their own METADATA) and fails when the
