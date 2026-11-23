@@ -23,7 +23,8 @@
 #      and build the candidate image FROM THE RESOLVED DIGEST (passed as
 #      the BASE_IMAGE build arg), carrying its provenance as OCI labels
 #      (org.flagos.ci.base-digest / source-commit /
-#      sglang-wheel-sha256 / xgrammar-wheel-sha256) so acceptance binds to
+#      sglang-wheel-sha256 / xgrammar-wheel-sha256 / triton-slot) so
+#      acceptance binds to
 #      the exact staged artifacts rather than only their version strings or
 #      the checkout;
 #   6. run the post-build acceptance (docker/hygon/scripts/verify_image.sh)
@@ -51,6 +52,10 @@ DERIVED_SGLANG_VERSION="0.5.18+flagos.hcu1"
 DERIVED_SGLANG_WHEEL_NAME="sglang-${DERIVED_SGLANG_VERSION}-cp310-cp310-linux_x86_64.whl"
 DERIVED_XGRAMMAR_VERSION="0.2.1+flagos.hcu1"
 DERIVED_XGRAMMAR_WHEEL_NAME="xgrammar-${DERIVED_XGRAMMAR_VERSION}-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+# The compiler slot the containerfile selects (ENV PYTHONPATH). The only
+# other value is the A/B experiment's /opt/triton (triton_slot_ab.sh),
+# which is never built here: the production default stays /opt/flagtree.
+TRITON_SLOT="/opt/flagtree"
 
 push=0
 allow_dirty=0
@@ -184,6 +189,7 @@ docker build --platform linux/amd64 \
     --label "org.flagos.ci.source-commit=$source_commit" \
     --label "org.flagos.ci.sglang-wheel-sha256=$derived_wheel_sha256" \
     --label "org.flagos.ci.xgrammar-wheel-sha256=$xgrammar_wheel_sha256" \
+    --label "org.flagos.ci.triton-slot=$TRITON_SLOT" \
     -f "$context/runtime-0.5.18.containerfile" \
     -t "$tag" "$context"
 
@@ -227,6 +233,7 @@ echo "runtime tag:    $BASE_IMAGE (moving; resolved at build time)"
 echo "resolved base:  $RESOLVED_BASE (baked as org.flagos.ci.base-digest)"
 echo "sglang wheel:   sha256=$derived_wheel_sha256 (org.flagos.ci.sglang-wheel-sha256; derived 0.5.18+flagos.hcu1)"
 echo "xgrammar wheel: sha256=$xgrammar_wheel_sha256 (org.flagos.ci.xgrammar-wheel-sha256; derived 0.2.1+flagos.hcu1)"
+echo "triton slot:    $TRITON_SLOT (org.flagos.ci.triton-slot; production default)"
 echo "image-tag:      $tag"
 echo "image-id:       $(docker image inspect --format '{{.Id}}' "$tag")"
 echo "build-context:  $context (from stage_wheels.sh; remove manually when done)"

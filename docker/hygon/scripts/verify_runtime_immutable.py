@@ -19,9 +19,11 @@ Checks:
      baseline; a transitional exact (xgrammar, triton) exception remains until
      the external-index removal gates can run, while the wheel contract below
      independently rejects metadata that could emit it
-  4. compiler slots      -- /opt/flagtree carries the recorded Triton, no
-     standalone triton distribution exists, and the triton module
-     resolves from /opt/flagtree in THIS process
+  4. compiler slots      -- every Runtime slot matches its contract and its
+     recorded Triton; the triton module resolves from the slot the image
+     declares (org.flagos.ci.triton-slot) in THIS process; the resolver
+     installed no standalone triton into site-packages; triton distribution
+     metadata is visible exactly when the selected slot ships it
   5. two-wheel contract  -- sglang and sglang_fl distributions, versions,
      entry points, and the plugin resolving from its installed
      distribution root
@@ -41,7 +43,6 @@ import hashlib
 import importlib.util
 import json
 import os
-import re
 import subprocess
 import sys
 import sysconfig
@@ -52,6 +53,11 @@ from packaging.utils import canonicalize_name
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pip_check_exceptions import pip_check_violations  # noqa: E402
+from triton_slot import (  # noqa: E402
+    assert_slot_root,
+    contract_of,
+    dist_info_version,
+)
 
 EXPECTED_SGLANG = "0.5.18+flagos.hcu1"
 EXPECTED_PLUGIN = "0.1.0"
@@ -152,35 +158,61 @@ def check_compiler_slots(evidence: Path) -> None:
     recorded = json.loads((evidence / "runtime-0.5.18.provenance.json").read_text())
     slots = recorded.get("compiler_slots", {})
     assert slots, "provenance.json carries no compiler slots"
-    # The schema keys are slot ROOTS ('/opt/flagtree', '/opt/triton');
-    # every recorded slot must still carry its recorded Triton version.
+    # Every slot the Runtime ships must still carry its recorded Triton and
+    # match its contract; the selected one is the tree this image resolves.
     for slot_root, expected_version in sorted(slots.items()):
-        init_path = Path(slot_root) / "triton" / "__init__.py"
-        assert init_path.is_file(), f"compiler slot missing: {init_path}"
-        assert expected_version, f"provenance.json lacks the version for {slot_root}"
-        match = re.search(r"__version__\s*=\s*['\"]([^'\"]+)", init_path.read_text())
-        actual = match.group(1) if match else None
-        assert actual == expected_version, (
+        observed = assert_slot_root(slot_root)
+        assert observed["module_version"] == expected_version, (
             f"compiler slot {slot_root} drifted: expected {expected_version}, "
-            f"found {actual}"
+            f"found {observed['module_version']}"
         )
-        print(f"[4/6] compiler slot {slot_root}: triton {actual}")
-    current = installed_distributions()
-    assert "triton" not in current, (
-        f"standalone triton distribution present: {current['triton']}"
-    )
+        print(f"[4/6] compiler slot {slot_root}: triton {observed['module_version']}")
     selected = recorded.get("selected_slot")
     assert selected in slots, f"selected slot {selected!r} is not a recorded slot"
+    contract = contract_of(selected)
+    assert os.environ.get("PYTHONPATH") == selected, (
+        f"image-level PYTHONPATH is {os.environ.get('PYTHONPATH')!r}, "
+        f"expected the declared slot {selected!r}"
+    )
     # find_spec resolves without executing the module: safe on GPU-less
-    # builders, and it is the resolution every entrypoint inherits from
-    # the image-level PYTHONPATH.
+    # builders, and it is the resolution every entrypoint inherits from the
+    # image-level PYTHONPATH.
     spec = importlib.util.find_spec("triton")
     assert spec is not None and spec.origin, "triton module not resolvable"
     assert spec.origin.startswith(str(Path(selected).resolve()) + "/"), (
         f"triton module resolves {spec.origin}, expected under {selected}"
     )
+    # the resolver must never install a standalone triton; whether a triton
+    # DISTRIBUTION is visible at all is the selected slot's own contract
+    purelib = Path(sysconfig.get_paths()["purelib"])
+    assert not list(purelib.glob("triton-*.dist-info")), (
+        "resolver installed a standalone triton distribution into site-packages"
+    )
+    import importlib.metadata as md
+
+    try:
+        version = md.version("triton")
+    except md.PackageNotFoundError:
+        version = None
+    if contract["pip_check_sees_triton"]:
+        expected_version = dist_info_version(contract["triton_dist_info"])
+        assert version == expected_version, (
+            f"slot {selected} must expose its triton distribution metadata "
+            f"({expected_version}), found {version!r}"
+        )
+        owner = Path(md.distribution("triton").locate_file("")).resolve()
+        assert owner == Path(selected).resolve(), (
+            f"triton distribution metadata comes from {owner}, expected {selected}"
+        )
+    else:
+        assert version is None, (
+            f"slot {selected} ships no triton distribution but one is visible: "
+            f"{version!r}"
+        )
     print(
-        f"[4/6] no standalone triton; module resolves {spec.origin} (slot {selected})"
+        f"[4/6] no standalone triton in site-packages; module resolves "
+        f"{spec.origin} (slot {selected}; triton distribution metadata: "
+        f"{version or 'absent, per contract'})"
     )
 
 

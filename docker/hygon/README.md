@@ -379,7 +379,9 @@ docker/hygon/scripts/verify_image.sh <tag>
 - `verify_image.sh` 覆盖：runtime 零漂移六门、vendor 模块 provenance、
   plugin guard 冒烟、Runtime clang 无卡 HSACO 编译、SGLang import 冒烟、Triton 多入口
   解析、installed-wheel 父/子进程解析、镜像级 ENV/label 合同（含
-  LD_LIBRARY_PATH 前插语义、中性 WORKDIR、无 CI 工作目录残留）；
+  LD_LIBRARY_PATH 前插语义、中性 WORKDIR、无 CI 工作目录残留）。Triton 相关
+  各门按镜像 label `org.flagos.ci.triton-slot` 声明的 slot 取**该 slot 的真实
+  合同**（见下文），没有为实验放宽的统一口径；
 - wheel 的 METADATA/entry point/payload 验收在 staging 期
   （`scripts/check_plugin_wheel.py`）与验收期（六门之五）各跑一次。
 
@@ -405,6 +407,50 @@ excludes；disposable，不入仓库、不进镜像）。一条版本只对应�
   目前断言 provenance 的 `source_commit` 等于镜像的 `source-commit` label；
   发布件在更早的提交派生时该断言会拒绝，release 模式需改为以钉定 SHA 为准
   后才能启用 pre-derived 路径。
+
+### Triton 编译器 slot：`/opt/flagtree` vs `/opt/triton`（reviewer r4627164234）
+
+Runtime 自带两套编译器树，容器文件只是用 `ENV PYTHONPATH` 选其一：
+
+| slot | 模块版本 | triton dist-info | backends | pip check 是否看到 triton |
+|---|---|---|---|---|
+| `/opt/flagtree`（生产默认） | 3.6.0 | 无（由 `flagtree 0.7.0+hcu3.6` distribution 提供） | `hcu` | 否 |
+| `/opt/triton` | 3.5.1 | `triton-3.5.1+das.opt1.dtk2604.torch290.dist-info` | `amd`、`nvidia` | 是 |
+
+- 候选默认继续 `/opt/flagtree`。镜像 label `org.flagos.ci.triton-slot` 记录所选
+  slot（构建脚本写入，值只允许 `/opt/flagtree` 或 `/opt/triton`），验收脚本从
+  label 读回，并按**该 slot 的真实合同**逐项核对：模块版本、dist-info 有无、
+  backend 目录、`import triton` 的解析路径、pip check 是否看到 triton。合同定义
+  在 `scripts/triton_slot.py`，没有为 A/B 放宽任何一条；
+- `/opt/triton` 下的 dist-info 让 `pip check` 即使对**原始** xgrammar wheel 也
+  满足，但它把编译器换成 vendor 3.5.1（没有 `hcu` backend）；该组合在 HCU 上
+  是否可用未知，只能由硬件实验回答。
+
+A/B 命令（单变量；两臂都是同一个已验收候选之上的薄层）：
+
+```bash
+docker/hygon/triton_slot_ab.sh --experiment <ID> --context <staging-context-dir> \
+  <已验收候选镜像> <tag-a> <tag-b>
+# A 臂 PYTHONPATH=/opt/flagtree，B 臂 PYTHONPATH=/opt/triton
+```
+
+脚本先证明单变量（`scripts/verify_triton_slot_pair.py`：两臂 `RootFS.Layers`
+相同、ENV 只差 `PYTHONPATH`、label 只差 slot label、`/opt/flagtree`、`/opt/triton`
+与 site-packages 的树摘要相同、基底 digest 与两个 wheel 的 SHA label 相同），
+再对每臂跑一遍完整 `verify_image.sh`，不推送。无卡部分只在一个伪候选上验证
+过（31 层相同；B 臂报告 triton distribution
+`3.5.1+das.opt1.dtk2604.torch290`）；**真实候选上的 A/B 尚未运行**。
+
+硬件 A/B 与解除条件：
+
+1. 候选镜像先通过无卡验收（需 Nexus 可用以完成构建）；
+2. 用一次性分支把 `.github/configs/hygon.yml` 的 `ci_image` 指向 A 臂，另一
+   分支指向 B 臂，各自推送镜像并跑 Hygon 硬件矩阵——本轮不允许改该文件、
+   不允许推送，故未执行；
+3. 只有 A、B 两臂在同一候选 digest 上各自跑完矩阵才形成 slot 结论；A 臂自身
+   失败的实验无效。此前的硬件 A 尝试即属此类：基线 A 因 amdsmi×hyhal ABI
+   失败，变量未隔离，结论无效；
+4. 在此之前容器文件默认继续 `/opt/flagtree`。
 
 ### `--excludes triton` 的退役门
 

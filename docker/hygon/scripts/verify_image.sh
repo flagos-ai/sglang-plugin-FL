@@ -22,7 +22,8 @@
 #   3. kernel-wheel stub import smoke
 #   4. direct Runtime clang HSACO compile through the DTK device libraries
 #   5. SGLang import smoke (sentinel verdict from the log)
-#   6. Triton entrypoint matrix (sh, bash, child process) + no triton dist
+#   6. Triton slot contract for the slot the image declares + entrypoint
+#      matrix (sh, bash, child process) + no resolver-installed triton dist
 #   7. installed-wheel resolution contract from an empty working
 #      directory (parent and child process; full import deferred to HCU CI)
 #   8. image-level ENV/label contract: the compatibility ENVs, the
@@ -82,6 +83,19 @@ BASE_IMAGE="$(docker image inspect --format '{{index .Config.Labels "org.flagos.
     exit 1
 }
 
+# The compiler slot the image selects (org.flagos.ci.triton-slot; the A/B
+# experiment derives /opt/triton images from an accepted candidate). Every
+# slot is verified against its own contract; the production default is
+# /opt/flagtree.
+TRITON_SLOT="$(docker image inspect --format '{{index .Config.Labels "org.flagos.ci.triton-slot"}}' "$image")"
+case "$TRITON_SLOT" in
+    /opt/flagtree|/opt/triton) ;;
+    *)
+        echo "FATAL: $image lacks a valid org.flagos.ci.triton-slot label (got '$TRITON_SLOT')" >&2
+        exit 1
+        ;;
+esac
+
 # The required (prepended) DTK loader prefix and whatever the base image
 # itself carries; both feed the phase-8 probe.
 LD_REQUIRED_PREFIX="/opt/dtk/dcc/gcvm/lib:/opt/dtk/hip/lib:/opt/dtk/llvm/lib:/opt/dtk/lib:/opt/dtk/lib64:/opt/hyhal/lib:/opt/hyhal/lib64:/opt/dtk/dushmem/lib:/opt/dtk/opencl/lib:/opt/dtk/.hyhal/rocm_smi/lib:/opt/dtk/.hyhal/lib:/opt/dtk/.hyhal/lib64"
@@ -100,7 +114,8 @@ echo "    base (org.flagos.ci.base-digest): $BASE_IMAGE"
 run --volume "$refdir":/out \
     --volume "$scripts":/scripts:ro \
     --entrypoint python "$BASE_IMAGE" \
-    /scripts/collect_runtime_reference.py --out /out --base-ref "$BASE_IMAGE"
+    /scripts/collect_runtime_reference.py --out /out --base-ref "$BASE_IMAGE" \
+    --selected-slot "$TRITON_SLOT"
 
 echo "=== [1/8] Runtime immutability (six gates) ==="
 run --volume "$refdir":/evidence:ro \
@@ -179,12 +194,41 @@ run --volume "$scripts":/scripts:ro \
 cat "$smoke_log"
 grep -qE "SMOKE-PASS|SMOKE-TOLERATED|no ROCm-capable device is detected" "$smoke_log"
 
-echo "=== [6/8] Triton entrypoint matrix ==="
-run --entrypoint bash "$image" <<'EOF'
-python -c 'import triton; p = triton.__file__; assert p and p.startswith("/opt/flagtree"), p; print("triton (sh):", p)' \
-&& bash -c 'python -c "import triton; assert triton.__file__.startswith(\"/opt/flagtree\"), triton.__file__; print(\"triton (bash):\", triton.__file__)"' \
-&& python -c 'import importlib.metadata as md; names=[(d.metadata["Name"] or "").lower() for d in md.distributions()]; assert "triton" not in names, "standalone triton distribution still installed"; print("standalone triton distribution absent: OK")'
-EOF
+echo "=== [6/8] Triton slot contract + entrypoint matrix (slot: $TRITON_SLOT) ==="
+run -e TRITON_SLOT="$TRITON_SLOT" --entrypoint bash "$image" <<'SLOT_EOF'
+python -c 'import os, triton; p = triton.__file__; assert p and p.startswith(os.environ["TRITON_SLOT"] + "/"), p; print("triton (sh):", p)' \
+&& bash -c 'python -c "import os, triton; assert triton.__file__.startswith(os.environ[\"TRITON_SLOT\"] + \"/\"), triton.__file__; print(\"triton (bash):\", triton.__file__)"' \
+&& python - "$TRITON_SLOT" <<'PY'
+import importlib.metadata as md
+import pathlib
+import sys
+import sysconfig
+
+sys.path.insert(0, "/scripts")
+from triton_slot import assert_slot_root, contract_of, dist_info_version
+
+slot = sys.argv[1]
+observed = assert_slot_root(slot)
+contract = contract_of(slot)
+# the resolver must never install a standalone triton; the declared slot's
+# own distribution metadata is the only triton a check may see
+purelib = pathlib.Path(sysconfig.get_paths()["purelib"])
+assert not list(purelib.glob("triton-*.dist-info")), (
+    "standalone triton distribution installed into site-packages"
+)
+try:
+    version = md.version("triton")
+except md.PackageNotFoundError:
+    version = None
+if contract["pip_check_sees_triton"]:
+    assert version == dist_info_version(contract["triton_dist_info"]), version
+else:
+    assert version is None, f"unexpected triton distribution {version!r}"
+print(f"triton slot {slot}: module {observed['module_version']}, backends "
+      f"{observed['backends']}, distribution metadata {version or 'absent'}; "
+      "no resolver-installed triton")
+PY
+SLOT_EOF
 
 echo "=== [7/8] Installed-wheel resolution contract (empty cwd, no shadowing) ==="
 run --entrypoint bash "$image" <<'EOF'
@@ -216,7 +260,7 @@ EOF
 
 echo "=== [8/8] Image-level ENV/label contract ==="
 env_json="$(docker image inspect --format '{{json .Config.Env}}' "$image")"
-for var in PYTHONPATH=/opt/flagtree \
+for var in "PYTHONPATH=$TRITON_SLOT" \
            ROCM_PATH=/opt/dtk; do
     grep -q "\"$var\"" <<<"$env_json" || {
         echo "FATAL: image ENV lacks $var" >&2
@@ -444,7 +488,7 @@ print(f"LD_LIBRARY_PATH: {len(required)} DTK paths in front, "
       f"{len(elements) - len(required)} inherited, no empty element")
 PY
 
-echo "ENV/label contract: PYTHONPATH, LD_LIBRARY_PATH (prepend), ROCM_PATH,"
+echo "ENV/label contract: PYTHONPATH=$TRITON_SLOT, LD_LIBRARY_PATH (prepend), ROCM_PATH,"
 echo "direct Runtime clang, plugin-owned import guard, provenance"
 echo "labels, neutral WORKDIR ('$workdir'), no /opt/sglang-ci residue"
 

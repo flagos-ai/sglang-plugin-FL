@@ -40,6 +40,9 @@ FROM ${BASE_IMAGE}
 # so direct python entrypoints get no triton; image-level PYTHONPATH fixes it.
 # Evidence: base probe - find_spec("triton") is None without a bash profile.
 # Owner: FlagOS Runtime (remove once /opt/flagtree is exposed OCI-wide).
+# This is also the Triton compiler slot selection: build_two_wheel.sh records
+# it as org.flagos.ci.triton-slot and verify_image.sh holds each slot to its
+# own contract (docker/hygon/README.md).
 ENV PYTHONPATH=/opt/flagtree
 
 # Index priority with uv's real semantics. --index-strategy

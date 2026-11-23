@@ -565,6 +565,20 @@ class ReviewerCommentContractTests(unittest.TestCase):
     later change cannot silently bring the rejected design back.
     """
 
+    def test_r4627164234_slot_default_stays_flagtree_and_the_ab_is_prepared(self):
+        containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
+        self.assertEqual(containerfile.count("ENV PYTHONPATH="), 1)
+        self.assertIn("ENV PYTHONPATH=/opt/flagtree", containerfile)
+        self.assertNotIn("ENV PYTHONPATH=/opt/triton", containerfile)
+        self.assertTrue((DOCKER / "triton_slot_ab.sh").is_file())
+        ab = (DOCKER / "triton_slot_ab.sh").read_text()
+        self.assertIn('SLOT_A="/opt/flagtree"', ab)
+        self.assertIn('SLOT_B="/opt/triton"', ab)
+        self.assertIn("verify_triton_slot_pair.py", ab)
+        # the A/B never pushes and says the hardware matrix is still owed
+        self.assertNotIn("docker push", ab)
+        self.assertIn("NOT run here", ab)
+
     def test_r4627443492_wheels_are_pinned_artifacts_with_a_publication_manifest(self):
         staging = (DOCKER / "stage_wheels.sh").read_text()
         self.assertIn(
@@ -617,6 +631,114 @@ class ReviewerCommentContractTests(unittest.TestCase):
         containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
         self.assertNotIn("-r /tmp", containerfile)
         self.assertNotIn("requirements.txt", containerfile)
+
+
+class TritonSlotContractTests(unittest.TestCase):
+    """Each Runtime compiler slot is verified against its own contract."""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(SCRIPTS))
+        import triton_slot
+
+        cls.slot = triton_slot
+
+    def test_two_known_slots_and_the_production_default(self):
+        slot = self.slot
+        self.assertEqual(sorted(slot.SLOT_CONTRACTS), ["/opt/flagtree", "/opt/triton"])
+        self.assertEqual(slot.PRODUCTION_SLOT, "/opt/flagtree")
+        self.assertFalse(slot.SLOT_CONTRACTS["/opt/flagtree"]["pip_check_sees_triton"])
+        self.assertTrue(slot.SLOT_CONTRACTS["/opt/triton"]["pip_check_sees_triton"])
+        self.assertEqual(
+            slot.dist_info_version(
+                slot.SLOT_CONTRACTS["/opt/triton"]["triton_dist_info"]
+            ),
+            "3.5.1+das.opt1.dtk2604.torch290",
+        )
+        self.assertIsNone(
+            slot.dist_info_version(
+                slot.SLOT_CONTRACTS["/opt/flagtree"]["triton_dist_info"]
+            )
+        )
+
+    def _tree(self, root, version, dist_info, backends):
+        triton = Path(root) / "triton"
+        (triton / "backends").mkdir(parents=True)
+        (triton / "__init__.py").write_text(f"__version__ = '{version}'\n")
+        for name in backends:
+            (triton / "backends" / name).mkdir()
+        if dist_info:
+            (Path(root) / dist_info).mkdir()
+        return str(root)
+
+    def test_inspect_slot_reads_the_facts_from_disk(self):
+        import tempfile
+
+        slot = self.slot
+        with tempfile.TemporaryDirectory() as tmp:
+            flagtree = self._tree(Path(tmp) / "flagtree", "3.6.0", None, ["hcu"])
+            vendor = self._tree(
+                Path(tmp) / "vendor",
+                "3.5.1",
+                "triton-3.5.1+das.opt1.dtk2604.torch290.dist-info",
+                ["amd", "nvidia"],
+            )
+            self.assertEqual(
+                slot.inspect_slot(flagtree),
+                {
+                    "module_version": "3.6.0",
+                    "triton_dist_info": [],
+                    "backends": ["hcu"],
+                },
+            )
+            observed = slot.inspect_slot(vendor)
+            self.assertEqual(observed["module_version"], "3.5.1")
+            self.assertEqual(observed["backends"], ["amd", "nvidia"])
+            self.assertEqual(
+                observed["triton_dist_info"],
+                ["triton-3.5.1+das.opt1.dtk2604.torch290.dist-info"],
+            )
+
+    def test_unknown_slot_is_rejected(self):
+        with self.assertRaises(AssertionError):
+            self.slot.contract_of("/opt/elsewhere")
+        with self.assertRaises(AssertionError):
+            self.slot.dist_info_version("garbage")
+
+    def test_contracts_match_the_contract_table(self):
+        # the table is the single source: every contract is self-consistent
+        for root, contract in self.slot.SLOT_CONTRACTS.items():
+            sees = contract["pip_check_sees_triton"]
+            self.assertEqual(sees, contract["triton_dist_info"] is not None, root)
+            if sees:
+                version = self.slot.dist_info_version(contract["triton_dist_info"])
+                self.assertTrue(version.startswith(contract["module_version"]))
+
+    def test_verifier_is_parametrized_by_the_declared_slot(self):
+        build = (DOCKER / "build_two_wheel.sh").read_text()
+        self.assertIn('--label "org.flagos.ci.triton-slot=$TRITON_SLOT"', build)
+        self.assertIn('TRITON_SLOT="/opt/flagtree"', build)
+        verify = (DOCKER / "scripts" / "verify_image.sh").read_text()
+        self.assertIn("org.flagos.ci.triton-slot", verify)
+        self.assertIn('--selected-slot "$TRITON_SLOT"', verify)
+        self.assertIn('"PYTHONPATH=$TRITON_SLOT"', verify)
+        # no phase may still hard-code the production slot
+        phase6 = verify[verify.index("=== [6/8]") : verify.index("=== [7/8]")]
+        self.assertNotIn("/opt/flagtree", phase6)
+        collector = (SCRIPTS / "collect_runtime_reference.py").read_text()
+        self.assertIn("--selected-slot", collector)
+        self.assertIn("assert_slot_root", collector)
+
+    def test_pair_verifier_checks_layers_env_labels_and_trees(self):
+        pair = (SCRIPTS / "verify_triton_slot_pair.py").read_text()
+        for check in (
+            'a["RootFS"]["Layers"] == b["RootFS"]["Layers"]',
+            'differing == ["PYTHONPATH"]',
+            "label_diff == [SLOT_LABEL]",
+            "rest(a) == rest(b)",
+            'TREES = ("/opt/flagtree", "/opt/triton", "<site-packages>")',
+        ):
+            self.assertIn(check, pair)
 
 
 class UvInstallContractTests(unittest.TestCase):

@@ -12,6 +12,8 @@ run) with the output directory bind-mounted writable, and emits, under --out:
   runtime-0.5.18.site-files.sha256      site-packages file hashes
   runtime-0.5.18.pip-check-baseline.txt the runtime's own pip check output
   runtime-0.5.18.provenance.json        compiler slots + vendor module origins
+                                        (module origins recorded for the
+                                        --selected-slot compiler slot)
   runtime-distributions-before.json     canonical map (dry-run plan gate)
   runtime-constraints.txt               canonical name==version resolver
                                         constraints (build input)
@@ -30,7 +32,6 @@ import importlib.metadata as md
 import importlib.util
 import json
 import os
-import re
 import subprocess
 import sys
 import sysconfig
@@ -38,17 +39,19 @@ from pathlib import Path
 
 from packaging.utils import canonicalize_name
 
-# Mirror the final image's container-start module resolution: PYTHONPATH
-# (/opt/flagtree) precedes site-packages there. The BASE image has no
-# image-level PYTHONPATH (our layer adds it), so insert it at the same
-# position to record what container start will resolve.
-if not os.environ.get("PYTHONPATH"):
-    sys.path.insert(0, "/opt/flagtree")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from triton_slot import (  # noqa: E402
+    FLAGTREE_SLOT,
+    SLOT_CONTRACTS,
+    assert_slot_root,
+)
 
-# The documented provenance-v2 compiler slots of the operations Runtime.
-SELECTED_SLOT = "/opt/flagtree"
-KNOWN_SLOTS = (SELECTED_SLOT, "/opt/triton")
-_VERSION_RE = re.compile(r"__version__\s*=\s*['\"]([^'\"]+)")
+# Mirror the final image's container-start module resolution: the image-level
+# PYTHONPATH (the selected compiler slot) precedes site-packages there. The
+# BASE image has no image-level PYTHONPATH (our layer adds it), so insert the
+# slot at the same position to record what container start will resolve.
+if not os.environ.get("PYTHONPATH"):
+    sys.path.insert(0, FLAGTREE_SLOT)
 
 
 def installed_distributions() -> dict[str, str]:
@@ -68,7 +71,17 @@ def probe_module(module: str) -> dict:
     return {"found": True, "origin": spec.origin}
 
 
-def collect(out: Path, base_ref: str) -> None:
+def select_slot(slot: str) -> None:
+    """Put the compiler slot the image selects at the position its image-level
+    PYTHONPATH gives it at container start (the base has no PYTHONPATH)."""
+    if os.environ.get("PYTHONPATH"):
+        return
+    if FLAGTREE_SLOT in sys.path:
+        sys.path.remove(FLAGTREE_SLOT)
+    sys.path.insert(0, slot)
+
+
+def collect(out: Path, base_ref: str, selected_slot: str) -> None:
     packages = installed_distributions()
     with (out / "runtime-distributions-before.json").open("w") as f:
         json.dump(packages, f, indent=2, sort_keys=True)
@@ -106,14 +119,16 @@ def collect(out: Path, base_ref: str) -> None:
         if completed.stderr.strip():
             f.write(completed.stderr)
 
+    # every slot the Runtime ships must still match its contract; the
+    # selected one is the tree the finished image will resolve
     slots = {}
-    for slot in KNOWN_SLOTS:
+    for slot in SLOT_CONTRACTS:
         init = Path(slot) / "triton" / "__init__.py"
         if not init.is_file():
             continue
-        match = _VERSION_RE.search(init.read_text())
-        slots[slot] = match.group(1) if match else ""
-    assert SELECTED_SLOT in slots and slots[SELECTED_SLOT], (
+        observed = assert_slot_root(slot)
+        slots[slot] = observed["module_version"]
+    assert selected_slot in slots and slots[selected_slot], (
         f"selected compiler slot missing or versionless in the base: {slots}"
     )
 
@@ -129,8 +144,8 @@ def collect(out: Path, base_ref: str) -> None:
             "triton __init__.__version__ under <root>/triton) + modules "
             "(vendor module origins for the provenance gate)"
         ),
-        "selected_slot": SELECTED_SLOT,
-        "selection": "image-level ENV PYTHONPATH=/opt/flagtree",
+        "selected_slot": selected_slot,
+        "selection": f"image-level ENV PYTHONPATH={selected_slot}",
         "modules": {
             module: probe_module(module)
             for module in ("torch", "triton", "flag_gems", "flagcx", "flagtree")
@@ -154,9 +169,16 @@ def main() -> int:
         default="",
         help="the resolved base digest, recorded in provenance.json",
     )
+    parser.add_argument(
+        "--selected-slot",
+        default=FLAGTREE_SLOT,
+        help="compiler slot the image selects via PYTHONPATH (A/B experiment)",
+    )
     args = parser.parse_args()
+    assert_slot_root(args.selected_slot)  # rejects unknown slots
+    select_slot(args.selected_slot)
     args.out.mkdir(parents=True, exist_ok=True)
-    collect(args.out, args.base_ref)
+    collect(args.out, args.base_ref, args.selected_slot)
     return 0
 
 
