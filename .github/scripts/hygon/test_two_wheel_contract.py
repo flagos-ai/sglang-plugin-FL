@@ -558,5 +558,169 @@ class StageContextSurvivalTests(unittest.TestCase):
         shutil.rmtree(cls.context, ignore_errors=True)
 
 
+class ReviewerCommentContractTests(unittest.TestCase):
+    """One block per PR #180 review comment this branch answers.
+
+    Each test pins the repository state that answers the comment, so a
+    later change cannot silently bring the rejected design back.
+    """
+
+    def test_r4627443492_wheels_are_pinned_artifacts_with_a_publication_manifest(self):
+        staging = (DOCKER / "stage_wheels.sh").read_text()
+        self.assertIn(
+            'SGLANG_WHEEL_URL="https://resource.flagos.net/repository/flagos-pypi-hygon/',
+            staging,
+        )
+        # one version, one content: the derived wheels must hash to pins
+        self.assertIn(
+            'SGLANG_DERIVED_SHA256="edcae8c0678290ec68b83d8ec38537d0ef7852b3f8f183984126bba9e8639b5f"',
+            staging,
+        )
+        self.assertIn(
+            'XGRAMMAR_DERIVED_SHA256="c2deb2853ac98cbaf63ecfa7f55dd00c54e25c9c43a34e9edb234f84e316d1a2"',
+            staging,
+        )
+        self.assertEqual(staging.count('require_sha256 "$derived_wheel"'), 1)
+        self.assertEqual(staging.count('require_sha256 "$derived_xgrammar_wheel"'), 1)
+        # an already-published wheel is staged by download-then-verify
+        self.assertIn("stage_pre_derived", staging)
+        self.assertIn("publication_manifest.py", staging)
+        containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
+        self.assertNotIn("COPY artifacts/", containerfile)
+
+    def test_r4627462330_the_patch_is_folded_into_the_wheel_not_the_image(self):
+        containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
+        for banned in ("git apply", "hcu.patch", "patch -p"):
+            self.assertNotIn(banned, containerfile)
+        self.assertTrue(
+            (REPO_ROOT / "tools/wheels/hygon/sglang-v0.5.18-hcu.patch").is_file()
+        )
+        self.assertFalse((DOCKER / "sglang-v0.5.18-hcu.patch").exists())
+
+    def test_r4627527485_the_datasets_pin_is_wheel_metadata(self):
+        pyproject = (REPO_ROOT / "pyproject.toml").read_text()
+        self.assertIn('"datasets==5.2.0"', pyproject)
+        self.assertFalse((DOCKER / "requirements.txt").exists())
+        containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
+        self.assertNotIn("-r /tmp", containerfile)
+        self.assertNotIn("requirements.txt", containerfile)
+
+
+class PublicationManifestTests(unittest.TestCase):
+    """The publication manifest names every staged artifact with its pin."""
+
+    @classmethod
+    def setUpClass(cls):
+        import json
+        import tempfile
+        import zipfile
+
+        sys.path.insert(0, str(REPO_ROOT / "tools" / "wheels" / "hygon"))
+        import publication_manifest
+
+        cls.module = publication_manifest
+        cls.tmp = tempfile.mkdtemp(prefix="pub-manifest-test.")
+        artifacts = Path(cls.tmp) / "artifacts"
+        artifacts.mkdir()
+        cls.wheels = {}
+        for name, dist, version in (
+            (
+                "sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl",
+                "sglang",
+                "0.5.18+flagos.hcu1",
+            ),
+            (
+                "xgrammar-0.2.1+flagos.hcu1-cp310-cp310-manylinux_2_27_x86_64."
+                "manylinux_2_28_x86_64.whl",
+                "xgrammar",
+                "0.2.1+flagos.hcu1",
+            ),
+            ("sglang_fl-0.1.0-py3-none-any.whl", "sglang_fl", "0.1.0"),
+        ):
+            path = artifacts / name
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr(
+                    f"{dist}-{version}.dist-info/METADATA",
+                    f"Metadata-Version: 2.1\nName: {dist}\nVersion: {version}\n",
+                )
+            cls.wheels[dist] = path
+        (
+            artifacts
+            / ("sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.provenance.json")
+        ).write_text(
+            json.dumps(
+                {
+                    "input_wheel": "sglang-0.5.18+flagos-cp310-cp310-linux_x86_64.whl",
+                    "input_sha256": "1fe8a560" + "0" * 56,
+                    "patch": "sglang-v0.5.18-hcu.patch",
+                    "patch_sha256": "4327e6f7" + "0" * 56,
+                    "source_commit": "0" * 40,
+                }
+            )
+        )
+        (
+            artifacts
+            / (
+                "xgrammar-0.2.1+flagos.hcu1-cp310-cp310-manylinux_2_27_x86_64."
+                "manylinux_2_28_x86_64.provenance.json"
+            )
+        ).write_text(
+            json.dumps(
+                {
+                    "input_wheel": "xgrammar-0.2.1-cp310-cp310-manylinux_2_27_x86_64."
+                    "manylinux_2_28_x86_64.whl",
+                    "input_sha256": "5b80b806" + "0" * 56,
+                    "dropped_requires_dist": [
+                        'triton; platform_system == "Linux" and platform_machine == "x86_64"'
+                    ],
+                    "source_commit": "0" * 40,
+                }
+            )
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        import shutil
+
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_manifest_lists_every_artifact_with_its_nexus_target(self):
+        manifest = self.module.build(Path(self.tmp))
+        self.assertEqual(
+            sorted(a["distribution"] for a in manifest["artifacts"]),
+            ["sglang", "sglang_fl", "xgrammar"],
+        )
+        by_name = {a["distribution"]: a for a in manifest["artifacts"]}
+        sglang = by_name["sglang"]
+        self.assertEqual(
+            sglang["sha256"], self.module.sha256_file(self.wheels["sglang"])
+        )
+        self.assertEqual(
+            sglang["nexus"]["path"],
+            "packages/sglang/0.5.18+flagos.hcu1/"
+            "sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl",
+        )
+        self.assertEqual(sglang["derived"]["kind"], "derived")
+        self.assertEqual(sglang["derived"]["input_sha256"], "1fe8a560" + "0" * 56)
+        self.assertEqual(by_name["xgrammar"]["derived"]["kind"], "metadata-corrected")
+        self.assertIn("built_from", by_name["sglang_fl"])
+        self.assertNotIn("derived", by_name["sglang_fl"])
+
+    def test_nothing_is_called_published(self):
+        manifest = self.module.build(Path(self.tmp))
+        for artifact in manifest["artifacts"]:
+            self.assertIn("LOCAL DEVELOPMENT CANDIDATE", artifact["status"])
+        self.assertIn("Nothing here is published", manifest["status"])
+        self.assertIn("hcu2", " ".join(manifest["policy"]))
+
+    def test_staging_can_consume_an_already_derived_wheel_by_pin(self):
+        staging = (DOCKER / "stage_wheels.sh").read_text()
+        self.assertIn("SGLANG_DERIVED_WHEEL", staging)
+        self.assertIn("XGRAMMAR_DERIVED_WHEEL", staging)
+        # the pre-derived path verifies the same pin as a fresh derive
+        self.assertEqual(staging.count("$SGLANG_DERIVED_SHA256"), 2)
+        self.assertEqual(staging.count("$XGRAMMAR_DERIVED_SHA256"), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

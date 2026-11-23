@@ -12,6 +12,12 @@ sglang-v0.5.18-hcu.patch                             (input, reviewed)
         |  derive_sglang_wheel.py
         v
 sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl  (+ provenance JSON)
+
+xgrammar-0.2.1-cp310-...-manylinux_2_28_x86_64.whl  (input, SHA256-pinned)
+        |
+        |  derive_metadata_wheel.py   (drops the active HCU triton requirement only)
+        v
+xgrammar-0.2.1+flagos.hcu1-cp310-...-manylinux_2_28_x86_64.whl  (+ provenance JSON)
 ```
 
 ## Files
@@ -27,6 +33,11 @@ sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl  (+ provenance JSON)
   imported by the derive script as its post-build self-check.
 - `test_derive_sglang_wheel.py` — pytest: synthetic wheels cover the
   error branches; the success paths run the SHA-pinned real wheel.
+- `derive_metadata_wheel.py` / `verify_metadata_wheel.py` /
+  `test_derive_metadata_wheel.py` — the metadata-only correction and its
+  independent verifier (last section).
+- `publication_manifest.py` — writes the publication manifest of a staging
+  context (see "Content pins, pre-derived wheels, publication").
 
 ## Derive contract
 
@@ -134,6 +145,38 @@ exists.
 
 Generated wheels, unpack trees, manifests and provenance JSONs are build
 evidence: keep them under `$TMPDIR`/CI artifacts, out of the repository.
+
+## Content pins, pre-derived wheels, publication
+
+One version carries exactly one content. `docker/hygon/stage_wheels.sh`
+enforces it at staging time with the digests the two derived wheels hash
+to from this checkout's tools and the pinned inputs:
+
+| wheel | SHA256 |
+|---|---|
+| `sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl` | `edcae8c0678290ec68b83d8ec38537d0ef7852b3f8f183984126bba9e8639b5f` |
+| `xgrammar-0.2.1+flagos.hcu1-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl` | `c2deb2853ac98cbaf63ecfa7f55dd00c54e25c9c43a34e9edb234f84e316d1a2` |
+
+- a derive that produces anything else fails staging: different content
+  needs the next local version, never a re-published `hcu1`. The pin covers
+  the compressed bytes too, so a tooling or deflate-implementation change
+  that alters the archive stops the build instead of silently shipping a
+  second content under the same version;
+- an already-derived wheel (a published artifact, or a secured local copy)
+  can be staged instead of deriving: `SGLANG_DERIVED_WHEEL=<path>` /
+  `XGRAMMAR_DERIVED_WHEEL=<path>`. Staging copies it together with its
+  sibling `.provenance.json` and verifies it against the same pin;
+  nothing is unpacked, patched or repacked inside an image;
+- `publication_manifest.py --context <staging-context-dir>` writes
+  `publication-manifest.json`: per artifact the distribution, version,
+  filename, size, SHA256 and the suggested Nexus location
+  (`flagos-pypi-hygon`, `packages/<name>/<version>/<file>` - the layout
+  the published input wheel already uses). Every entry is marked LOCAL
+  DEVELOPMENT CANDIDATE until the artifact owner publishes it;
+- a release build consumes the PUBLISHED wheels by pinning these same
+  SHA256 values. Before that mode is used, the post-build acceptance's
+  `provenance.source_commit == image source-commit` assertion has to be
+  reworked: a published wheel is derived at an earlier commit.
 
 ## Metadata-only dependency correction
 

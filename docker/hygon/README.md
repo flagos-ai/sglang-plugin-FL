@@ -383,6 +383,29 @@ docker/hygon/scripts/verify_image.sh <tag>
 - wheel 的 METADATA/entry point/payload 验收在 staging 期
   （`scripts/check_plugin_wheel.py`）与验收期（六门之五）各跑一次。
 
+### 候选输入：staging、内容钉定与发布边界
+
+`docker/hygon/stage_wheels.sh` 产出构建上下文（wheel、provenance、constraints、
+excludes；disposable，不入仓库、不进镜像）。一条版本只对应一份内容：
+
+- 两个派生 wheel 的 SHA256 在脚本内钉定（`SGLANG_DERIVED_SHA256`、
+  `XGRAMMAR_DERIVED_SHA256`）。现场派生结果与钉定值不符即失败：内容变了就要
+  下一个 local version（`hcu2`），绝不重发 `hcu1`；
+- 已派生好的 wheel（发布件，或有 SHA 佐证的本地副本）用
+  `SGLANG_DERIVED_WHEEL` / `XGRAMMAR_DERIVED_WHEEL` 指定：staging 复制它与
+  相邻的 provenance JSON，并比对同一钉定值，不在镜像内解包、patch、重打包；
+- staging 末尾写出 `publication-manifest.json`
+  （`tools/wheels/hygon/publication_manifest.py`）：每个制品的 distribution、
+  version、文件名、字节数、SHA256 与建议的 Nexus 仓库/路径
+  （`flagos-pypi-hygon`，`packages/<name>/<version>/<file>`，与已发布输入
+  wheel 的现有布局一致）。本轮全部制品状态为 LOCAL DEVELOPMENT CANDIDATE，
+  没有发布任何内容；reviewer r4627443492 要求的“wheel 来自
+  resource.flagos.net”在制品 owner 发布之前属于 externally blocked；
+- 正式镜像只应消费已发布、不可变、SHA 钉定的 wheel。注意 `verify_image.sh`
+  目前断言 provenance 的 `source_commit` 等于镜像的 `source-commit` label；
+  发布件在更早的提交派生时该断言会拒绝，release 模式需改为以钉定 SHA 为准
+  后才能启用 pre-derived 路径。
+
 ### 剩余兼容债速查（Docker 注释保持简短，完整证据口径在此）
 
 | 兼容块 | 为什么暂时存在 | 证据 | 移除条件 / owner |

@@ -22,10 +22,16 @@
 #   5. fetch the SHA-pinned xgrammar 0.2.1 wheel and derive a local-version
 #      wheel whose only metadata change removes its active HCU ``triton``
 #      requirement (the payload, tags and every native file stay identical);
+#      both derived wheels must hash to their PINNED digests - one version,
+#      one content - and an already-derived wheel (published, or a secured
+#      local copy) can be staged instead of deriving: SGLANG_DERIVED_WHEEL /
+#      XGRAMMAR_DERIVED_WHEEL, verified against the same pins;
 #   6. assemble a temporary build context under $TMPDIR with the two
 #      application wheels, the corrected dependency wheel, their provenance,
 #      the still-transitional resolver exclusion and the minimal containerfile;
-#   7. print the reproducibility record (source commit, input/derived wheel
+#   7. write the publication manifest (disposable): filename, version,
+#      SHA256 and suggested Nexus path per artifact;
+#   8. print the reproducibility record (source commit, input/derived wheel
 #      identities, patch identity, plugin wheel identity and context path).
 #
 # Wheels and provenance JSONs are never committed; the staging directory
@@ -47,6 +53,38 @@ XGRAMMAR_WHEEL_SHA256="5b80b8060fcf6c94324f563e1d4778029b21d35c556dca5bbf49428d3
 DERIVED_XGRAMMAR_VERSION="0.2.1+flagos.hcu1"
 DERIVED_XGRAMMAR_WHEEL_NAME="xgrammar-${DERIVED_XGRAMMAR_VERSION}-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
 XGRAMMAR_TRITON_REQUIREMENT='triton; platform_system == "Linux" and platform_machine == "x86_64"'
+# A derived version is bound to ONE content. These are the digests the hcu1
+# artifacts hash to with this checkout's tools and pinned inputs; a derive
+# that produces anything else fails here (different content needs the next
+# local version, never a re-published hcu1). They are also what a release
+# build pins once the wheels are published to resource.flagos.net.
+SGLANG_DERIVED_SHA256="edcae8c0678290ec68b83d8ec38537d0ef7852b3f8f183984126bba9e8639b5f"
+XGRAMMAR_DERIVED_SHA256="c2deb2853ac98cbaf63ecfa7f55dd00c54e25c9c43a34e9edb234f84e316d1a2"
+
+sha256_of() { sha256sum "$1" | awk '{print $1}'; }
+require_sha256() {  # <file> <expected sha256> <what>
+    local actual
+    actual="$(sha256_of "$1")"
+    if [ "$actual" != "$2" ]; then
+        echo "FATAL: SHA256 mismatch for $3: expected $2, got $actual" >&2
+        exit 1
+    fi
+}
+stage_pre_derived() {  # <provided wheel> <destination dir> <derived wheel name> <pinned sha256>
+    # already-derived wheel (published, or a secured local copy): staged
+    # with its provenance and verified against the same pin as a derive
+    local provided="$1" dest="$2" name="$3" pinned="$4"
+    test -s "$provided" || { echo "FATAL: $provided is not a non-empty file" >&2; exit 1; }
+    test -s "${provided%.whl}.provenance.json" || {
+        echo "FATAL: ${provided%.whl}.provenance.json (provenance of the pre-derived wheel) is missing" >&2
+        exit 1
+    }
+    mkdir -p "$dest"
+    cp "$provided" "$dest/$name"
+    cp "${provided%.whl}.provenance.json" "$dest/${name%.whl}.provenance.json"
+    echo "using pre-derived wheel: $provided"
+    require_sha256 "$dest/$name" "$pinned" "$name (version content is pinned; different content needs the next local version)"
+}
 
 stage="$(mktemp -d "${TMPDIR:-/tmp}/hygon-two-wheel-stage.XXXXXX")"
 # The final build context must SURVIVE this script (the printed docker
@@ -101,22 +139,28 @@ if [ "$actual" != "$SGLANG_WHEEL_SHA256" ]; then
 fi
 echo "verified $SGLANG_WHEEL_NAME sha256=$actual"
 
-echo "=== Deriving the HCU SGLang wheel ($DERIVED_SGLANG_VERSION) ==="
+echo "=== Staging the HCU SGLang wheel ($DERIVED_SGLANG_VERSION) ==="
 derive_out="$stage/derived"
-python3 "$repo_root/tools/wheels/hygon/derive_sglang_wheel.py" \
-    --input-wheel "$sglang_wheel" \
-    --expected-input-sha256 "$SGLANG_WHEEL_SHA256" \
-    --patch "$HCU_PATCH" \
-    --output-dir "$derive_out" \
-    --derived-version "$DERIVED_SGLANG_VERSION" \
-    --source-commit "$(git -C "$repo_root" rev-parse HEAD)" \
-    | tee "$stage/derive.log"
 derived_wheel="$derive_out/$DERIVED_SGLANG_WHEEL_NAME"
-test -s "$derived_wheel"
 derived_provenance="${DERIVED_SGLANG_WHEEL_NAME%.whl}.provenance.json"
+if [ -n "${SGLANG_DERIVED_WHEEL:-}" ]; then
+    stage_pre_derived "$SGLANG_DERIVED_WHEEL" "$derive_out" \
+        "$DERIVED_SGLANG_WHEEL_NAME" "$SGLANG_DERIVED_SHA256"
+else
+    python3 "$repo_root/tools/wheels/hygon/derive_sglang_wheel.py" \
+        --input-wheel "$sglang_wheel" \
+        --expected-input-sha256 "$SGLANG_WHEEL_SHA256" \
+        --patch "$HCU_PATCH" \
+        --output-dir "$derive_out" \
+        --derived-version "$DERIVED_SGLANG_VERSION" \
+        --source-commit "$(git -C "$repo_root" rev-parse HEAD)" \
+        | tee "$stage/derive.log"
+    require_sha256 "$derived_wheel" "$SGLANG_DERIVED_SHA256" \
+        "$DERIVED_SGLANG_WHEEL_NAME (version content is pinned; different content needs the next local version)"
+fi
 test -s "$derive_out/$derived_provenance"
-derived_sha256="$(sha256sum "$derived_wheel" | awk '{print $1}')"
-patch_sha256="$(sha256sum "$HCU_PATCH" | awk '{print $1}')"
+derived_sha256="$(sha256_of "$derived_wheel")"
+patch_sha256="$(sha256_of "$HCU_PATCH")"
 
 echo "=== Fetching and verifying the original xgrammar wheel ==="
 xgrammar_wheel="$stage/$XGRAMMAR_WHEEL_NAME"
@@ -147,22 +191,28 @@ if [ "$xgrammar_actual" != "$XGRAMMAR_WHEEL_SHA256" ]; then
 fi
 echo "verified $XGRAMMAR_WHEEL_NAME sha256=$xgrammar_actual"
 
-echo "=== Deriving the HCU xgrammar wheel ($DERIVED_XGRAMMAR_VERSION) ==="
+echo "=== Staging the HCU xgrammar wheel ($DERIVED_XGRAMMAR_VERSION) ==="
 xgrammar_derive_out="$stage/xgrammar-derived"
-python3 "$repo_root/tools/wheels/hygon/derive_metadata_wheel.py" \
-    --input-wheel "$xgrammar_wheel" \
-    --expected-input-sha256 "$XGRAMMAR_WHEEL_SHA256" \
-    --drop-requires-dist "$XGRAMMAR_TRITON_REQUIREMENT" \
-    --drop-distribution triton \
-    --derived-version "$DERIVED_XGRAMMAR_VERSION" \
-    --output-dir "$xgrammar_derive_out" \
-    --source-commit "$(git -C "$repo_root" rev-parse HEAD)" \
-    | tee "$stage/xgrammar-derive.log"
 derived_xgrammar_wheel="$xgrammar_derive_out/$DERIVED_XGRAMMAR_WHEEL_NAME"
-test -s "$derived_xgrammar_wheel"
 derived_xgrammar_provenance="${DERIVED_XGRAMMAR_WHEEL_NAME%.whl}.provenance.json"
+if [ -n "${XGRAMMAR_DERIVED_WHEEL:-}" ]; then
+    stage_pre_derived "$XGRAMMAR_DERIVED_WHEEL" "$xgrammar_derive_out" \
+        "$DERIVED_XGRAMMAR_WHEEL_NAME" "$XGRAMMAR_DERIVED_SHA256"
+else
+    python3 "$repo_root/tools/wheels/hygon/derive_metadata_wheel.py" \
+        --input-wheel "$xgrammar_wheel" \
+        --expected-input-sha256 "$XGRAMMAR_WHEEL_SHA256" \
+        --drop-requires-dist "$XGRAMMAR_TRITON_REQUIREMENT" \
+        --drop-distribution triton \
+        --derived-version "$DERIVED_XGRAMMAR_VERSION" \
+        --output-dir "$xgrammar_derive_out" \
+        --source-commit "$(git -C "$repo_root" rev-parse HEAD)" \
+        | tee "$stage/xgrammar-derive.log"
+    require_sha256 "$derived_xgrammar_wheel" "$XGRAMMAR_DERIVED_SHA256" \
+        "$DERIVED_XGRAMMAR_WHEEL_NAME (version content is pinned; different content needs the next local version)"
+fi
 test -s "$xgrammar_derive_out/$derived_xgrammar_provenance"
-derived_xgrammar_sha256="$(sha256sum "$derived_xgrammar_wheel" | awk '{print $1}')"
+derived_xgrammar_sha256="$(sha256_of "$derived_xgrammar_wheel")"
 
 echo "=== Assembling the build context ==="
 mkdir -p "$context/artifacts"
@@ -191,6 +241,9 @@ if [ -e "$context/docker/hygon/sglang-v0.5.18-hcu.patch" ]; then
     exit 1
 fi
 
+echo "=== Publication manifest (disposable evidence; nothing is published here) ==="
+python3 "$repo_root/tools/wheels/hygon/publication_manifest.py" --context "$context"
+
 echo "=== Reproducibility record ==="
 commit="$(git -C "$repo_root" rev-parse HEAD)"
 echo "source-commit:  $commit"
@@ -200,6 +253,7 @@ echo "hcu-patch:      sha256=$patch_sha256"
 echo "sglang-derived: $DERIVED_SGLANG_WHEEL_NAME sha256=$derived_sha256"
 echo "xgrammar-input: $XGRAMMAR_WHEEL_NAME sha256=$XGRAMMAR_WHEEL_SHA256"
 echo "xgrammar-derived: $DERIVED_XGRAMMAR_WHEEL_NAME sha256=$derived_xgrammar_sha256"
+echo "pinned-content: both derived wheels match their pinned digests (one version, one content)"
 echo "context:        $context (survives this script; remove manually when done)"
 echo "build command:"
 echo "  docker/hygon/build_two_wheel.sh <tag>"
