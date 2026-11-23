@@ -58,14 +58,15 @@ EXPECTED_FLAGTREE = "0.6.1+hcu3.6"
 # digest before the baseline, dry-run, FROM and acceptance). The runtime ships
 # torch/flagtree/flag-gems/flagcx; the sglang[srt_empty,runtime_common]
 # closure adds the SGLang wheel plus its pure-Python dependency closure. The
-# standalone triton wheel that xgrammar declares is an external platform
-# component: removed at image build time, FlagTree's /opt/flagtree
-# (image-level PYTHONPATH) is the only Triton in any entrypoint.
+# corrected HCU xgrammar wheel has no standalone-triton metadata requirement;
+# FlagTree's /opt/flagtree (image-level PYTHONPATH) is the only Triton in any
+# entrypoint. The image acceptance binds that corrected wheel by SHA/provenance.
 RUNTIME_IMAGE_RELEASES = {
     "sglang": "0.5.18+flagos.hcu1",
     "sglang-fl": "0.1.0",
     "torch": "2.9.0+das.opt1.dtk2604",
     "flag-gems": "5.4.0",
+    "xgrammar": "0.2.1+flagos.hcu1",
 }
 RUNTIME_IMAGE_FLAGTREE = "0.7.0+hcu3.6"
 # Installed into the ephemeral CI job container by setup.sh, pinned with
@@ -263,10 +264,10 @@ def _verify_runtime_image_versions() -> None:
             f"found {actual}"
         )
     print(f"[hygon-env] flagtree={actual}")
-    # The standalone triton wheel (xgrammar declaration) is an external
-    # platform component: it must NOT be installed; FlagTree is the only
-    # Triton, and the module must resolve from /opt/flagtree in this very
-    # process (setup.sh and the image build gate the other entrypoints).
+    # The standalone triton wheel must NOT be installed; corrected xgrammar
+    # metadata no longer requests it, FlagTree is the only Triton, and the
+    # module must resolve from /opt/flagtree in this very process (setup.sh and
+    # the image build gate the other entrypoints).
     try:
         actual = metadata.version("triton")
     except metadata.PackageNotFoundError:

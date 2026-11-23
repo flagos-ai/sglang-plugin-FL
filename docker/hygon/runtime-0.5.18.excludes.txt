@@ -5,10 +5,12 @@
 # every entrypoint; it is not a pip distribution. The Runtime's FlagGems
 # 5.4.0 build targets that 3.6 launcher path, so the two-wheel install
 # must resolve the application closure without any standalone triton
-# distribution (xgrammar's metadata declaration is the documented gap that
-# pip check reports and the verifier accepts as the platform capability
-# exception). uv drops exactly this package from resolution; nothing is
-# installed, uninstalled, or stubbed for it.
+# distribution. The staged corrected xgrammar wheel removes the declaration;
+# this exclusion remains only until the real FlagOS indexes recover and a
+# no-excludes dry-run, candidate build, pip check and full acceptance all pass.
+# uv currently drops exactly this package from resolution; nothing is
+# installed, uninstalled, or stubbed for it. Keeping it is not evidence that
+# the corrected wheel has passed those external-index gates.
 #
 # Keep this file to this one requirement; every other dependency resolves
 # normally from wheel METADATA.

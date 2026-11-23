@@ -60,11 +60,11 @@ ARG PROXY_INDEX=https://resource.flagos.net/repository/pypi-proxy/simple
 # build_two_wheel.sh - never committed. Product requirements, including the
 # datasets compatibility pin, are carried by the reviewed wheel metadata.
 
-# The generated constraints, two reviewed application wheels and the current
-# single-item resolver exclusion are mounted read-only from the staging
-# artifacts directory for the install RUN; none enters an image layer. Their
-# SHA256s are part of
-# the staging reproducibility record. The SGLang wheel is the DERIVED HCU
+# The generated constraints, two reviewed application wheels, corrected
+# xgrammar dependency wheel and the current single-item resolver exclusion are
+# mounted read-only from the staging artifacts directory for the install RUN;
+# none enters an image layer. Their SHA256s are part of the staging
+# reproducibility record. The SGLang wheel is the DERIVED HCU
 # wheel: the exact published flagos wheel with the reviewed HCU gating patch
 # folded in before staging (tools/wheels/hygon/derive_sglang_wheel.py;
 # strict diff gates prove only the patch's files, the METADATA Version line,
@@ -72,11 +72,15 @@ ARG PROXY_INDEX=https://resource.flagos.net/repository/pypi-proxy/simple
 # The image therefore never patches site-packages.
 # --- One uv resolver install of the two application wheels -------------------
 # CONTRACT: no standalone triton distribution enters the image; the Runtime's
-# /opt/flagtree tree (Triton 3.6) is the only compiler, and --excludes drops
-# the standalone triton that xgrammar's metadata would otherwise pull in.
+# /opt/flagtree tree (Triton 3.6) is the only compiler. The explicit xgrammar
+# local-version wheel removes its incorrect HCU triton requirement. --excludes
+# remains temporarily until the same real-index plan and built image pass the
+# removal gates; it is deliberately not treated as proof that the correction
+# works against the currently unavailable FlagOS indexes.
 # Evidence: run 44465620210 - full Hygon hardware matrix green, no triton
 # distribution installed, triton.__file__ under /opt/flagtree.
-# Owner: FlagOS Runtime (remove once it ships a metadata-consistent triton).
+# Owner: xgrammar artifact/build tooling (remove after the corrected wheel's
+# real-index no-excludes plan, candidate build and full acceptance pass).
 # build_two_wheel.sh runs the exact twin of this command (plus --dry-run)
 # against the resolved base digest and plan-validates it BEFORE the build.
 RUN --mount=type=bind,source=artifacts,target=/tmp/artifacts,readonly \
@@ -88,6 +92,7 @@ RUN --mount=type=bind,source=artifacts,target=/tmp/artifacts,readonly \
       --index-strategy unsafe-first-match \
       --constraints /tmp/artifacts/runtime-constraints.txt \
       --excludes /tmp/artifacts/runtime-0.5.18.excludes.txt \
+      '/tmp/artifacts/xgrammar-0.2.1+flagos.hcu1-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl' \
       '/tmp/artifacts/sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl[srt_empty,runtime_common]' \
       '/tmp/artifacts/sglang_fl-0.1.0-py3-none-any.whl[hygon]'
 

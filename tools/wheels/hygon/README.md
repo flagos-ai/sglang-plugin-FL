@@ -1,4 +1,4 @@
-# Hygon derived SGLang wheel
+# Hygon derived platform wheels
 
 This directory owns the artifact tooling that turns the published FlagOS
 SGLang wheel plus the reviewed HCU gating patch into a NEW derived wheel,
@@ -134,3 +134,31 @@ exists.
 
 Generated wheels, unpack trees, manifests and provenance JSONs are build
 evidence: keep them under `$TMPDIR`/CI artifacts, out of the repository.
+
+## Metadata-only dependency correction
+
+`derive_metadata_wheel.py` and `verify_metadata_wheel.py` implement the same
+immutable-artifact policy for third-party metadata defects without changing
+their payload. The current HCU use is xgrammar 0.2.1: its Linux/x86_64 wheel
+declares a standalone `triton` distribution even though the Hygon Runtime owns
+the compiler capability as `/opt/flagtree` and deliberately has no Triton
+distribution metadata.
+
+The staging flow SHA-pins the official cp310 x86_64 wheel, removes exactly:
+
+```text
+Requires-Dist: triton; platform_system == "Linux" and platform_machine == "x86_64"
+```
+
+and emits `xgrammar==0.2.1+flagos.hcu1`. The independent verifier requires the
+line to be active for the target environment and present exactly once; permits
+only that deletion, the Version/dist-info rename and rebuilt RECORD; and proves
+all payload/native files, tags, ZIP member order and per-member compression are
+unchanged. The provenance manifest binds every wheel member to the candidate
+image through `org.flagos.ci.xgrammar-wheel-sha256`; post-build acceptance
+compares every installed member except installer-owned RECORD byte-for-byte.
+
+This is staging-time development-candidate production, not license to rewrite
+arbitrary downloaded wheels during image assembly. The release endpoint is an
+immutable corrected wheel in the artifact service. A content change requires a
+new local version (`hcu2`, and so on); `hcu1` must never be overwritten.

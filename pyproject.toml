@@ -57,10 +57,11 @@ hygon = [
     # compiler as the /opt/flagtree module tree (Triton 3.6.0, selected by
     # the image-level PYTHONPATH), not as a pip distribution; its FlagGems
     # 5.4.0 build targets that launcher path. The image build therefore
-    # excludes the ``triton`` distribution from resolution entirely (see
-    # docker/hygon/runtime-0.5.18.excludes.txt); xgrammar still declares
-    # it in its metadata, which pip check reports as the documented
-    # platform capability exception (docker/hygon/scripts/ checks).
+    # supplies a metadata-corrected, SHA-bound xgrammar platform wheel that
+    # removes its inaccurate HCU ``Requires-Dist: triton``. The old resolver
+    # exclusion and exact pip-check exception remain temporarily until the
+    # unavailable FlagOS indexes recover and the no-excludes real plan,
+    # candidate build and full acceptance all pass.
 ]
 
 [project.entry-points."sglang.srt.platforms"]

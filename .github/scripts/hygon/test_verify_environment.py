@@ -839,6 +839,7 @@ class RuntimeEvidenceTests(unittest.TestCase):
             "sglang-fl": "0.1.0",
             "torch": "2.9.0+das.opt1.dtk2604",
             "flag-gems": "5.4.0",
+            "xgrammar": "0.2.1+flagos.hcu1",
             "flagtree": "0.7.0+hcu3.6",
         }
 
@@ -861,6 +862,7 @@ class RuntimeEvidenceTests(unittest.TestCase):
             "sglang-fl": "0.1.0",
             "torch": "2.9.0+das.opt1.dtk2604",
             "flag-gems": "5.4.0",
+            "xgrammar": "0.2.1+flagos.hcu1",
             "flagtree": "0.7.0+hcu3.6",
             "triton": "3.8.0",
         }

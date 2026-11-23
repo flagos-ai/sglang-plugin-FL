@@ -23,8 +23,9 @@
 #      and build the candidate image FROM THE RESOLVED DIGEST (passed as
 #      the BASE_IMAGE build arg), carrying its provenance as OCI labels
 #      (org.flagos.ci.base-digest / source-commit /
-#      sglang-wheel-sha256) so the acceptance step binds to the image
-#      itself, not to the checkout;
+#      sglang-wheel-sha256 / xgrammar-wheel-sha256) so acceptance binds to
+#      the exact staged artifacts rather than only their version strings or
+#      the checkout;
 #   6. run the post-build acceptance (docker/hygon/scripts/verify_image.sh)
 #      against the produced tag - this is the release gate.
 #
@@ -48,6 +49,8 @@ scripts="$platform_dir/scripts"
 containerfile="$platform_dir/runtime-0.5.18.containerfile"
 DERIVED_SGLANG_VERSION="0.5.18+flagos.hcu1"
 DERIVED_SGLANG_WHEEL_NAME="sglang-${DERIVED_SGLANG_VERSION}-cp310-cp310-linux_x86_64.whl"
+DERIVED_XGRAMMAR_VERSION="0.2.1+flagos.hcu1"
+DERIVED_XGRAMMAR_WHEEL_NAME="xgrammar-${DERIVED_XGRAMMAR_VERSION}-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
 
 push=0
 allow_dirty=0
@@ -142,7 +145,7 @@ cp "$refdir/runtime-distributions-before.json" "$plan/"
 # and the Dockerfile install RUN. BuildKit does not copy it into a final layer.
 cp "$refdir/runtime-constraints.txt" "$context/artifacts/runtime-constraints.txt"
 cat > "$plan/dry-run.sh" <<'EOF'
-/usr/local/bin/uv pip install --python /flagos/bin/python3 \
+if ! /usr/local/bin/uv pip install --python /flagos/bin/python3 \
       --dry-run \
       --no-cache \
       --index "$FLAGOS_INDEX" \
@@ -151,10 +154,14 @@ cat > "$plan/dry-run.sh" <<'EOF'
       --index-strategy unsafe-first-match \
       --constraints /tmp/artifacts/runtime-constraints.txt \
       --excludes /tmp/artifacts/runtime-0.5.18.excludes.txt \
+      '/tmp/artifacts/xgrammar-0.2.1+flagos.hcu1-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl' \
       '/tmp/artifacts/sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl[srt_empty,runtime_common]' \
       '/tmp/artifacts/sglang_fl-0.1.0-py3-none-any.whl[hygon]' \
-      > /plan/uv-dry-run.txt 2>&1 \
-&& python /scripts/validate_uv_plan.py /plan/uv-dry-run.txt /plan
+      > /plan/uv-dry-run.txt 2>&1; then
+    cat /plan/uv-dry-run.txt >&2
+    exit 2
+fi
+python /scripts/validate_uv_plan.py /plan/uv-dry-run.txt /plan
 EOF
 docker run --rm --platform linux/amd64 \
     -e FLAGOS_INDEX -e TENCENT_INDEX -e PROXY_INDEX \
@@ -170,11 +177,13 @@ echo "=== [5/6] Building the candidate image ==="
 # pinned input wheel + reviewed patch) replaces the former patch label: the
 # image binds to the exact wheel artifact it installs.
 derived_wheel_sha256="$(sha256sum "$context/artifacts/$DERIVED_SGLANG_WHEEL_NAME" | awk '{print $1}')"
+xgrammar_wheel_sha256="$(sha256sum "$context/artifacts/$DERIVED_XGRAMMAR_WHEEL_NAME" | awk '{print $1}')"
 docker build --platform linux/amd64 \
     --build-arg "BASE_IMAGE=$RESOLVED_BASE" \
     --label "org.flagos.ci.base-digest=$RESOLVED_BASE" \
     --label "org.flagos.ci.source-commit=$source_commit" \
     --label "org.flagos.ci.sglang-wheel-sha256=$derived_wheel_sha256" \
+    --label "org.flagos.ci.xgrammar-wheel-sha256=$xgrammar_wheel_sha256" \
     -f "$context/runtime-0.5.18.containerfile" \
     -t "$tag" "$context"
 
@@ -197,19 +206,27 @@ echo "=== [6/6] Post-build acceptance (release gate) ==="
 # installed patched files match the manifest - a same-version,
 # different-content wheel cannot pass.
 derived_provenance="$context/artifacts/${DERIVED_SGLANG_WHEEL_NAME%.whl}.provenance.json"
+xgrammar_provenance="$context/artifacts/${DERIVED_XGRAMMAR_WHEEL_NAME%.whl}.provenance.json"
 if [ ! -s "$derived_provenance" ]; then
     echo "FATAL: derived-wheel provenance missing from the context: $derived_provenance" >&2
     exit 1
 fi
+if [ ! -s "$xgrammar_provenance" ]; then
+    echo "FATAL: xgrammar provenance missing from the context: $xgrammar_provenance" >&2
+    exit 1
+fi
 bash "$scripts/verify_image.sh" "$tag" \
     --sglang-wheel-sha256 "$derived_wheel_sha256" \
-    --sglang-provenance "$derived_provenance"
+    --sglang-provenance "$derived_provenance" \
+    --xgrammar-wheel-sha256 "$xgrammar_wheel_sha256" \
+    --xgrammar-provenance "$xgrammar_provenance"
 
 echo "=== Reproducibility record ==="
 echo "source-commit:  $source_commit"
 echo "runtime tag:    $BASE_IMAGE (moving; resolved at build time)"
 echo "resolved base:  $RESOLVED_BASE (baked as org.flagos.ci.base-digest)"
 echo "sglang wheel:   sha256=$derived_wheel_sha256 (org.flagos.ci.sglang-wheel-sha256; derived 0.5.18+flagos.hcu1)"
+echo "xgrammar wheel: sha256=$xgrammar_wheel_sha256 (org.flagos.ci.xgrammar-wheel-sha256; derived 0.2.1+flagos.hcu1)"
 echo "image-tag:      $tag"
 echo "image-id:       $(docker image inspect --format '{{.Id}}' "$tag")"
 echo "build-context:  $context (from stage_wheels.sh; remove manually when done)"

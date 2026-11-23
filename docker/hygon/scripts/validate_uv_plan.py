@@ -12,8 +12,8 @@ included, which is where uv writes the plan):
 
 Turns the plan into the additions audit record (the staged wheels
 contribute the version read from their own METADATA) and fails when the
-plan touches any runtime distribution. External platform components
-(the excluded triton) never appear in a uv plan at all.
+plan touches any runtime distribution. The corrected xgrammar local-version
+wheel must appear in the plan, while standalone Triton must not.
 
 Usage: validate_uv_plan.py <uv-dry-run-output.txt> [evidence-dir]
 
@@ -35,6 +35,7 @@ from packaging.utils import canonicalize_name
 # ' + name==version' (index package) or ' + name @ file://...' (local wheel).
 _PLAN_LINE_RE = re.compile(r"^\s*\+\s+(?P<token>.+)$", re.MULTILINE)
 _WHEEL_VERSION_RE = re.compile(r"^Version:\s*(.+)$", re.MULTILINE)
+EXPECTED_XGRAMMAR = "0.2.1+flagos.hcu1"
 
 
 def parse_plan(plan_text: str) -> dict[str, str]:
@@ -68,6 +69,20 @@ def parse_plan(plan_text: str) -> dict[str, str]:
     return planned
 
 
+def validate_platform_plan(planned: dict[str, str]) -> None:
+    """Require the corrected xgrammar artifact and reject standalone Triton."""
+    actual = planned.get("xgrammar")
+    if actual != EXPECTED_XGRAMMAR:
+        raise SystemExit(
+            "FATAL: resolver did not select the corrected xgrammar wheel: "
+            f"expected {EXPECTED_XGRAMMAR}, found {actual!r}"
+        )
+    if "triton" in planned:
+        raise SystemExit(
+            f"FATAL: resolver plans standalone triton=={planned['triton']}"
+        )
+
+
 def main() -> int:
     if len(sys.argv) not in (2, 3):
         raise SystemExit(
@@ -78,6 +93,7 @@ def main() -> int:
     before = json.loads((evidence / "runtime-distributions-before.json").read_text())
 
     planned = parse_plan(plan_text)
+    validate_platform_plan(planned)
 
     conflicts = sorted(
         f"{name}: runtime={before[name]} planned={version}"

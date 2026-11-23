@@ -16,9 +16,9 @@ Checks:
      downgrade, or removal fails
   2. site files          -- every runtime site-packages file keeps its SHA256
   3. pip check           -- returncode-aware comparison against the runtime
-     baseline; the ONLY accepted addition is the exact canonical
-     (xgrammar, triton) pair, matched by the shared precise parser
-     (pip_check_exceptions.py), never substring-based
+     baseline; a transitional exact (xgrammar, triton) exception remains until
+     the external-index removal gates can run, while the wheel contract below
+     independently rejects metadata that could emit it
   4. compiler slots      -- /opt/flagtree carries the recorded Triton, no
      standalone triton distribution exists, and the triton module
      resolves from /opt/flagtree in THIS process
@@ -47,6 +47,7 @@ import sys
 import sysconfig
 from pathlib import Path
 
+from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -54,6 +55,7 @@ from pip_check_exceptions import pip_check_violations  # noqa: E402
 
 EXPECTED_SGLANG = "0.5.18+flagos.hcu1"
 EXPECTED_PLUGIN = "0.1.0"
+EXPECTED_XGRAMMAR = "0.2.1+flagos.hcu1"
 EXPECTED_ENTRY_POINTS = {
     "sglang.srt.platforms": ("sglang_fl", "sglang_fl:activate_platform"),
     "sglang.srt.plugins": ("sglang_fl", "sglang_fl:load_plugin"),
@@ -143,7 +145,7 @@ def check_pip_check(evidence: Path) -> None:
     assert not new, (
         f"new pip check violations beyond the platform exception: {sorted(new)}"
     )
-    print("[3/6] pip check: only the documented (xgrammar, triton) exception")
+    print("[3/6] pip check: no violation beyond the transitional exact exception")
 
 
 def check_compiler_slots(evidence: Path) -> None:
@@ -194,6 +196,16 @@ def check_two_wheel_contract() -> None:
 
     assert md.version("sglang") == EXPECTED_SGLANG, md.version("sglang")
     assert md.version("sglang-fl") == EXPECTED_PLUGIN, md.version("sglang-fl")
+    assert md.version("xgrammar") == EXPECTED_XGRAMMAR, md.version("xgrammar")
+    xgrammar = md.distribution("xgrammar")
+    triton_requirements = [
+        requirement
+        for requirement in xgrammar.requires or ()
+        if canonicalize_name(Requirement(requirement).name) == "triton"
+    ]
+    assert not triton_requirements, (
+        f"corrected xgrammar metadata still declares triton: {triton_requirements}"
+    )
     for group, (name, value) in EXPECTED_ENTRY_POINTS.items():
         registered = {(ep.name, ep.value) for ep in md.entry_points(group=group)}
         assert (name, value) in registered, (
@@ -211,7 +223,8 @@ def check_two_wheel_contract() -> None:
         )
     print(
         f"[5/6] two-wheel contract: sglang=={EXPECTED_SGLANG}, "
-        f"sglang_fl=={EXPECTED_PLUGIN} at {distribution_root} "
+        f"sglang_fl=={EXPECTED_PLUGIN} at {distribution_root}; corrected "
+        f"xgrammar=={EXPECTED_XGRAMMAR} has no triton requirement "
         f"(metadata/payload verified; import deferred to HCU CI)"
     )
 
@@ -226,8 +239,7 @@ def check_hcu_compat_markers() -> None:
     dist = md.distribution("sglang-fl")
     distribution_root = Path(dist.locate_file("")).resolve()
     guard = (
-        distribution_root
-        / "sglang_fl/dispatch/backends/vendor/hygon/import_guard.py"
+        distribution_root / "sglang_fl/dispatch/backends/vendor/hygon/import_guard.py"
     )
     text = guard.read_text()
     assert 'fullname == "sgl_kernel.scalar_type"' in text, (

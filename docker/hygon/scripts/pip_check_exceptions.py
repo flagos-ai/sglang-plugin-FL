@@ -2,10 +2,12 @@
 """Precise pip-check exception parsing for the Hygon two-wheel CI image.
 
 The image resolves the application closure without a standalone ``triton``
-distribution (docker/hygon/runtime-0.5.18.excludes.txt): the Runtime
-provides the Triton compiler as the /opt/flagtree module tree. Wheel
-metadata that still declares triton surfaces in ``pip check`` as a
-missing-distribution line, and ONLY the exact canonical
+distribution: the Runtime provides the Triton compiler as the /opt/flagtree
+module tree, and the staged HCU xgrammar wheel removes the inaccurate active
+``Requires-Dist: triton`` line. The old exception remains temporarily while
+the FlagOS indexes are unavailable: it may be deleted only after a real-index
+dry-run without ``--excludes``, candidate build and full image acceptance all
+pass. If legacy metadata still surfaces in ``pip check``, ONLY the exact canonical
 (requirer, requirement) pairs in ``ALLOWED_NEW_REQUIREMENTS`` are
 accepted as documented platform capability exceptions. Everything else -
 unknown line shapes included - is a violation; a crashing pip check
@@ -25,10 +27,10 @@ from packaging.utils import canonicalize_name
 PIP_CHECK_SUCCESS_NOTICE = "No broken requirements found."
 
 # (requirer, requirement) pairs the image may add on top of the runtime's
-# own pip-check baseline, exactly and completely. xgrammar's wheel metadata
-# declares triton on the Linux/x86_64 platform; the compiler comes from the
-# Runtime's /opt/flagtree tree instead. This is a documented platform
-# capability exception, not a satisfied packaging contract.
+# own pip-check baseline, exactly and completely. This is transitional rollback
+# policy, not the expected result for the corrected xgrammar wheel and not a
+# satisfied packaging contract. verify_runtime_immutable independently requires
+# the corrected xgrammar version and rejects any remaining triton declaration.
 ALLOWED_NEW_REQUIREMENTS = frozenset(
     {
         ("xgrammar", "triton"),

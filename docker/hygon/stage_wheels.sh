@@ -2,7 +2,7 @@
 # Copyright 2026 FlagOS Contributors
 # SPDX-License-Identifier: Apache-2.0
 #
-# Stage the two reviewed wheel artifacts for the Hygon CI image build.
+# Stage the reviewed wheel artifacts for the Hygon CI image build.
 #
 # This entry only prepares a build context; it never builds the full image
 # and never touches the repository working tree:
@@ -19,12 +19,14 @@
 #      patch is folded in and the wheel is republished as
 #      0.5.18+flagos.hcu1 BEFORE any image assembly (strict diff gates run
 #      inside the derive; the image never patches site-packages);
-#   5. assemble a temporary build context under $TMPDIR with the two
-#      wheels under artifacts/ plus the resolver exclusion list and the
-#      minimal containerfile;
-#   6. print the reproducibility record (source commit, input/derived
-#      SGLang wheel + patch SHA256s, plugin wheel SHA256, context path,
-#      and the exact docker build command).
+#   5. fetch the SHA-pinned xgrammar 0.2.1 wheel and derive a local-version
+#      wheel whose only metadata change removes its active HCU ``triton``
+#      requirement (the payload, tags and every native file stay identical);
+#   6. assemble a temporary build context under $TMPDIR with the two
+#      application wheels, the corrected dependency wheel, their provenance,
+#      the still-transitional resolver exclusion and the minimal containerfile;
+#   7. print the reproducibility record (source commit, input/derived wheel
+#      identities, patch identity, plugin wheel identity and context path).
 #
 # Wheels and provenance JSONs are never committed; the staging directory
 # is disposable.
@@ -39,6 +41,12 @@ SGLANG_WHEEL_SHA256="1fe8a560353fd15aea7194869f1fd50e1fdbedd8fc1074db52b9a130287
 DERIVED_SGLANG_VERSION="0.5.18+flagos.hcu1"
 DERIVED_SGLANG_WHEEL_NAME="sglang-${DERIVED_SGLANG_VERSION}-cp310-cp310-linux_x86_64.whl"
 HCU_PATCH="$repo_root/tools/wheels/hygon/sglang-v0.5.18-hcu.patch"
+XGRAMMAR_WHEEL_NAME="xgrammar-0.2.1-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+XGRAMMAR_WHEEL_URL="https://mirrors.cloud.tencent.com/pypi/packages/1a/62/4fba98477159f4f79b2baa33f891708df3585ff6a1ac77b4c64895ec462b/${XGRAMMAR_WHEEL_NAME}"
+XGRAMMAR_WHEEL_SHA256="5b80b8060fcf6c94324f563e1d4778029b21d35c556dca5bbf49428d307eca37"
+DERIVED_XGRAMMAR_VERSION="0.2.1+flagos.hcu1"
+DERIVED_XGRAMMAR_WHEEL_NAME="xgrammar-${DERIVED_XGRAMMAR_VERSION}-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+XGRAMMAR_TRITON_REQUIREMENT='triton; platform_system == "Linux" and platform_machine == "x86_64"'
 
 stage="$(mktemp -d "${TMPDIR:-/tmp}/hygon-two-wheel-stage.XXXXXX")"
 # The final build context must SURVIVE this script (the printed docker
@@ -68,7 +76,11 @@ python3 "$repo_root/docker/hygon/scripts/check_plugin_wheel.py" \
 
 echo "=== Fetching and verifying the original SGLang wheel ==="
 sglang_wheel="$stage/$SGLANG_WHEEL_NAME"
-if [ -n "${SGLANG_INPUT_WHEEL:-}" ] && [ -s "$SGLANG_INPUT_WHEEL" ]; then
+if [ -n "${SGLANG_INPUT_WHEEL:-}" ]; then
+    test -s "$SGLANG_INPUT_WHEEL" || {
+        echo "FATAL: SGLANG_INPUT_WHEEL is not a non-empty file: $SGLANG_INPUT_WHEEL" >&2
+        exit 1
+    }
     # Offline/dev escape with the SAME identity gate: a pre-secured local
     # copy of the pinned wheel (same override as the derive tests).
     cp "$SGLANG_INPUT_WHEEL" "$sglang_wheel"
@@ -106,6 +118,52 @@ test -s "$derive_out/$derived_provenance"
 derived_sha256="$(sha256sum "$derived_wheel" | awk '{print $1}')"
 patch_sha256="$(sha256sum "$HCU_PATCH" | awk '{print $1}')"
 
+echo "=== Fetching and verifying the original xgrammar wheel ==="
+xgrammar_wheel="$stage/$XGRAMMAR_WHEEL_NAME"
+if [ -n "${XGRAMMAR_INPUT_WHEEL:-}" ]; then
+    test -s "$XGRAMMAR_INPUT_WHEEL" || {
+        echo "FATAL: XGRAMMAR_INPUT_WHEEL is not a non-empty file: $XGRAMMAR_INPUT_WHEEL" >&2
+        exit 1
+    }
+    cp "$XGRAMMAR_INPUT_WHEEL" "$xgrammar_wheel"
+    echo "using pre-secured input wheel: $XGRAMMAR_INPUT_WHEEL"
+else
+    for attempt in 1 2 3 4 5; do
+        if curl -fL --retry 3 --retry-delay 5 "$XGRAMMAR_WHEEL_URL" -o "$xgrammar_wheel"; then
+            break
+        fi
+        echo "xgrammar wheel fetch attempt ${attempt} failed; retrying" >&2
+        sleep 10
+    done
+fi
+test -s "$xgrammar_wheel" || {
+    echo "FATAL: xgrammar wheel fetch produced no artifact" >&2
+    exit 1
+}
+xgrammar_actual="$(sha256sum "$xgrammar_wheel" | awk '{print $1}')"
+if [ "$xgrammar_actual" != "$XGRAMMAR_WHEEL_SHA256" ]; then
+    echo "FATAL: SHA256 mismatch for $XGRAMMAR_WHEEL_NAME: expected $XGRAMMAR_WHEEL_SHA256, got $xgrammar_actual" >&2
+    exit 1
+fi
+echo "verified $XGRAMMAR_WHEEL_NAME sha256=$xgrammar_actual"
+
+echo "=== Deriving the HCU xgrammar wheel ($DERIVED_XGRAMMAR_VERSION) ==="
+xgrammar_derive_out="$stage/xgrammar-derived"
+python3 "$repo_root/tools/wheels/hygon/derive_metadata_wheel.py" \
+    --input-wheel "$xgrammar_wheel" \
+    --expected-input-sha256 "$XGRAMMAR_WHEEL_SHA256" \
+    --drop-requires-dist "$XGRAMMAR_TRITON_REQUIREMENT" \
+    --drop-distribution triton \
+    --derived-version "$DERIVED_XGRAMMAR_VERSION" \
+    --output-dir "$xgrammar_derive_out" \
+    --source-commit "$(git -C "$repo_root" rev-parse HEAD)" \
+    | tee "$stage/xgrammar-derive.log"
+derived_xgrammar_wheel="$xgrammar_derive_out/$DERIVED_XGRAMMAR_WHEEL_NAME"
+test -s "$derived_xgrammar_wheel"
+derived_xgrammar_provenance="${DERIVED_XGRAMMAR_WHEEL_NAME%.whl}.provenance.json"
+test -s "$xgrammar_derive_out/$derived_xgrammar_provenance"
+derived_xgrammar_sha256="$(sha256sum "$derived_xgrammar_wheel" | awk '{print $1}')"
+
 echo "=== Assembling the build context ==="
 mkdir -p "$context/artifacts"
 cp "$plugin_wheel" "$context/artifacts/"
@@ -114,6 +172,10 @@ cp "$derived_wheel" "$context/artifacts/$DERIVED_SGLANG_WHEEL_NAME"
 # post-build acceptance binds the OCI label and the installed patched
 # files against it
 cp "$derive_out/$derived_provenance" "$context/artifacts/$derived_provenance"
+cp "$derived_xgrammar_wheel" \
+   "$context/artifacts/$DERIVED_XGRAMMAR_WHEEL_NAME"
+cp "$xgrammar_derive_out/$derived_xgrammar_provenance" \
+   "$context/artifacts/$derived_xgrammar_provenance"
 cp "$repo_root/docker/hygon/runtime-0.5.18.excludes.txt" \
    "$context/artifacts/runtime-0.5.18.excludes.txt"
 # The staged containerfile references docker/hygon/ (external acceptance
@@ -136,6 +198,8 @@ echo "plugin-wheel:   $(basename "$plugin_wheel") sha256=$(sha256sum "$plugin_wh
 echo "sglang-input:   $SGLANG_WHEEL_NAME sha256=$SGLANG_WHEEL_SHA256"
 echo "hcu-patch:      sha256=$patch_sha256"
 echo "sglang-derived: $DERIVED_SGLANG_WHEEL_NAME sha256=$derived_sha256"
+echo "xgrammar-input: $XGRAMMAR_WHEEL_NAME sha256=$XGRAMMAR_WHEEL_SHA256"
+echo "xgrammar-derived: $DERIVED_XGRAMMAR_WHEEL_NAME sha256=$derived_xgrammar_sha256"
 echo "context:        $context (survives this script; remove manually when done)"
 echo "build command:"
 echo "  docker/hygon/build_two_wheel.sh <tag>"

@@ -35,21 +35,26 @@ set -euo pipefail
 
 # Usage:
 #   verify_image.sh <image>
-#   verify_image.sh <image> --sglang-wheel-sha256 <hex> --sglang-provenance <json>
+#   verify_image.sh <image> --sglang-wheel-sha256 <hex> --sglang-provenance <json> \
+#       --xgrammar-wheel-sha256 <hex> --xgrammar-provenance <json>
 #
 # The strict form is what build_two_wheel.sh runs: the expected derived
 # wheel digest and its provenance manifest (patched-file hashes) bind the
 # acceptance to the exact artifact content. Without them only the weaker
 # identity gate (label present + installed version) runs, and the report
 # says so.
-image="${1:?usage: verify_image.sh <image> [--sglang-wheel-sha256 H] [--sglang-provenance P]}"
+image="${1:?usage: verify_image.sh <image> [strict artifact arguments]}"
 shift || true
 expected_sglang_sha256=""
 sglang_provenance=""
+expected_xgrammar_sha256=""
+xgrammar_provenance=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --sglang-wheel-sha256) expected_sglang_sha256="${2:?}"; shift 2 ;;
         --sglang-provenance) sglang_provenance="${2:?}"; shift 2 ;;
+        --xgrammar-wheel-sha256) expected_xgrammar_sha256="${2:?}"; shift 2 ;;
+        --xgrammar-provenance) xgrammar_provenance="${2:?}"; shift 2 ;;
         *) echo "FATAL: unknown argument $1" >&2; exit 1 ;;
     esac
 done
@@ -58,15 +63,21 @@ if [ -n "$expected_sglang_sha256" ] && [ -z "$sglang_provenance" ] \
     echo "FATAL: --sglang-wheel-sha256 and --sglang-provenance must be given together" >&2
     exit 1
 fi
+if [ -n "$expected_xgrammar_sha256" ] && [ -z "$xgrammar_provenance" ] \
+    || [ -z "$expected_xgrammar_sha256" ] && [ -n "$xgrammar_provenance" ]; then
+    echo "FATAL: --xgrammar-wheel-sha256 and --xgrammar-provenance must be given together" >&2
+    exit 1
+fi
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 scripts="$here"
 repo_root="$(cd "$here/../../.." && pwd)"
 DERIVED_SGLANG_VERSION="0.5.18+flagos.hcu1"
+DERIVED_XGRAMMAR_VERSION="0.2.1+flagos.hcu1"
 
 # The acceptance binds to the image itself: the base digest comes from the
 # OCI label build_two_wheel.sh bakes in, never from the checkout.
 BASE_IMAGE="$(docker image inspect --format '{{index .Config.Labels "org.flagos.ci.base-digest"}}' "$image")"
-[ -n "$BASE_IMAGE" ] || {
+[ -n "$BASE_IMAGE" ] && [ "$BASE_IMAGE" != "<no value>" ] || {
     echo "FATAL: $image lacks the org.flagos.ci.base-digest label" >&2
     exit 1
 }
@@ -221,8 +232,13 @@ grep -q '"LD_LIBRARY_PATH=/opt/dtk' <<<"$env_json" || {
 # SGLang must be the DERIVED HCU wheel - the reviewed gating patch folded
 # into the pinned flagos wheel BEFORE assembly (the former Dockerfile
 # patch + patch-label gate).
+labeled_source_commit="$(docker image inspect --format '{{index .Config.Labels "org.flagos.ci.source-commit"}}' "$image")"
+[ -n "$labeled_source_commit" ] && [ "$labeled_source_commit" != "<no value>" ] || {
+    echo "FATAL: $image lacks the org.flagos.ci.source-commit label" >&2
+    exit 1
+}
 labeled_wheel_sha256="$(docker image inspect --format '{{index .Config.Labels "org.flagos.ci.sglang-wheel-sha256"}}' "$image")"
-[ -n "$labeled_wheel_sha256" ] || {
+[ -n "$labeled_wheel_sha256" ] && [ "$labeled_wheel_sha256" != "<no value>" ] || {
     echo "FATAL: $image lacks the org.flagos.ci.sglang-wheel-sha256 label" >&2
     exit 1
 }
@@ -241,7 +257,7 @@ if [ -n "$expected_sglang_sha256" ]; then
         exit 1
     }
     python3 - "$sglang_provenance" "$expected_sglang_sha256" \
-        "$DERIVED_SGLANG_VERSION" <<'PY'
+        "$DERIVED_SGLANG_VERSION" "$labeled_source_commit" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -250,6 +266,7 @@ provenance = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 assert provenance["derived_sha256"] == sys.argv[2], (
     f"provenance derived_sha256 {provenance['derived_sha256']} != expected")
 assert provenance["derived_version"] == sys.argv[3], provenance["derived_version"]
+assert provenance["source_commit"] == sys.argv[4], provenance["source_commit"]
 assert provenance["patched_files_manifest"], "provenance carries no manifest"
 PY
     run -e DERIVED_SGLANG_VERSION="$DERIVED_SGLANG_VERSION" \
@@ -298,6 +315,98 @@ purelib = pathlib.Path(sysconfig.get_paths()["purelib"])
 dist_infos = sorted(p.name for p in purelib.glob("sglang-*.dist-info"))
 assert dist_infos == [f"sglang-{version}.dist-info"], dist_infos
 print("installed sglang distribution:", version, "(", dist_infos[0], ")")
+PY
+fi
+
+# The corrected xgrammar artifact follows the same content-binding contract.
+# RECORD itself is installer-owned (uv may add INSTALLER/direct_url entries),
+# so every other wheel member, including METADATA/WHEEL and all native payload,
+# must match the staged provenance byte-for-byte.
+labeled_xgrammar_sha256="$(docker image inspect --format '{{index .Config.Labels "org.flagos.ci.xgrammar-wheel-sha256"}}' "$image")"
+[ -n "$labeled_xgrammar_sha256" ] && [ "$labeled_xgrammar_sha256" != "<no value>" ] || {
+    echo "FATAL: $image lacks the org.flagos.ci.xgrammar-wheel-sha256 label" >&2
+    exit 1
+}
+if [ -n "$expected_xgrammar_sha256" ]; then
+    [ "$labeled_xgrammar_sha256" = "$expected_xgrammar_sha256" ] || {
+        echo "FATAL: org.flagos.ci.xgrammar-wheel-sha256=$labeled_xgrammar_sha256 != expected $expected_xgrammar_sha256" >&2
+        exit 1
+    }
+    [ -s "$xgrammar_provenance" ] || {
+        echo "FATAL: xgrammar provenance not found: $xgrammar_provenance" >&2
+        exit 1
+    }
+    python3 - "$xgrammar_provenance" "$expected_xgrammar_sha256" \
+        "$DERIVED_XGRAMMAR_VERSION" "$labeled_source_commit" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+provenance = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert provenance["derived_sha256"] == sys.argv[2], provenance["derived_sha256"]
+assert provenance["derived_version"] == sys.argv[3], provenance["derived_version"]
+assert provenance["source_commit"] == sys.argv[4], provenance["source_commit"]
+assert provenance["drop_distribution"] == "triton", provenance["drop_distribution"]
+assert provenance["dropped_requires_dist"] == [
+    'triton; platform_system == "Linux" and platform_machine == "x86_64"'
+], provenance["dropped_requires_dist"]
+assert provenance["bound_files_manifest"], "xgrammar provenance has no manifest"
+PY
+    run -e DERIVED_XGRAMMAR_VERSION="$DERIVED_XGRAMMAR_VERSION" \
+        --volume "$xgrammar_provenance":/xgrammar-provenance.json:ro \
+        --entrypoint python "$image" - <<'PY'
+import hashlib
+import importlib.metadata as md
+import json
+import os
+import pathlib
+import sysconfig
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+
+version = md.version("xgrammar")
+expected = os.environ["DERIVED_XGRAMMAR_VERSION"]
+assert version == expected, f"installed xgrammar is {version!r}, expected {expected!r}"
+purelib = pathlib.Path(sysconfig.get_paths()["purelib"])
+dist_infos = sorted(p.name for p in purelib.glob("xgrammar-*.dist-info"))
+assert dist_infos == [f"xgrammar-{version}.dist-info"], dist_infos
+requirements = md.distribution("xgrammar").requires or ()
+triton = [r for r in requirements if canonicalize_name(Requirement(r).name) == "triton"]
+assert not triton, f"corrected xgrammar still declares triton: {triton}"
+manifest = json.loads(pathlib.Path("/xgrammar-provenance.json").read_text())[
+    "bound_files_manifest"
+]
+mismatches = []
+checked = 0
+for relative, expected_hash in sorted(manifest.items()):
+    if relative.endswith(".dist-info/RECORD"):
+        continue
+    path = purelib / relative
+    actual = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+    if actual != expected_hash:
+        mismatches.append(relative)
+    checked += 1
+assert not mismatches, f"installed xgrammar files differ from provenance: {mismatches}"
+print(f"installed xgrammar distribution: {version} ({dist_infos[0]}); "
+      f"{checked} wheel members match provenance; triton metadata absent")
+PY
+else
+    echo "WARNING: no --xgrammar-wheel-sha256/--xgrammar-provenance given;"
+    echo "running only the xgrammar identity/metadata gate; content binding was NOT checked"
+    run -e DERIVED_XGRAMMAR_VERSION="$DERIVED_XGRAMMAR_VERSION" \
+        --entrypoint python "$image" - <<'PY'
+import importlib.metadata as md
+import os
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+
+version = md.version("xgrammar")
+assert version == os.environ["DERIVED_XGRAMMAR_VERSION"], version
+requirements = md.distribution("xgrammar").requires or ()
+assert not [
+    r for r in requirements if canonicalize_name(Requirement(r).name) == "triton"
+]
+print("installed xgrammar distribution:", version, "(triton metadata absent)")
 PY
 fi
 

@@ -3,7 +3,8 @@
 Covers the product-candidate wiring that the next image build will run:
 
 * the staged containerfile references exactly the artifacts stage_wheels.sh
-  assembles (two wheels + the excludes file), stays assembly-only (no
+  assembles (two application wheels, corrected xgrammar wheel and the
+  transitional excludes file), stays assembly-only (no
   bind-mounted build scripts), and its single uv install carries the full
   resolver contract, mirrored flag-for-flag by the pre-build dry-run gate
   in build_two_wheel.sh;
@@ -66,6 +67,18 @@ class StagingCouplingTests(unittest.TestCase):
             staging,
         )
         self.assertIn("tools/wheels/hygon/derive_sglang_wheel.py", staging)
+        xgrammar = (
+            "xgrammar-0.2.1+flagos.hcu1-cp310-cp310-manylinux_2_27_x86_64."
+            "manylinux_2_28_x86_64.whl"
+        )
+        self.assertIn(xgrammar, containerfile)
+        self.assertIn('DERIVED_XGRAMMAR_VERSION="0.2.1+flagos.hcu1"', staging)
+        self.assertIn("tools/wheels/hygon/derive_metadata_wheel.py", staging)
+        self.assertIn("XGRAMMAR_INPUT_WHEEL", staging)
+        self.assertIn(
+            "5b80b8060fcf6c94324f563e1d4778029b21d35c556dca5bbf49428d307eca37",
+            staging,
+        )
 
     def test_containerfile_is_assembly_only(self):
         containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
@@ -179,6 +192,8 @@ class StagingCouplingTests(unittest.TestCase):
         for required in (
             "--excludes /tmp/artifacts/runtime-0.5.18.excludes.txt",
             "--constraints /tmp/artifacts/runtime-constraints.txt",
+            "'/tmp/artifacts/xgrammar-0.2.1+flagos.hcu1-cp310-cp310-"
+            "manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl'",
             "'/tmp/artifacts/sglang-0.5.18+flagos.hcu1-cp310-cp310-"
             "linux_x86_64.whl[srt_empty,runtime_common]'",
             "'/tmp/artifacts/sglang_fl-0.1.0-py3-none-any.whl[hygon]'",
@@ -204,6 +219,7 @@ class StagingCouplingTests(unittest.TestCase):
         self.assertIn(
             '--volume "$context/artifacts":/tmp/artifacts:ro', build_wrapper
         )
+        self.assertIn("cat /plan/uv-dry-run.txt >&2", heredoc.group(1))
 
     def test_no_committed_runtime_snapshots(self):
         for name in (
@@ -279,6 +295,12 @@ class BuildProvenanceContractTests(unittest.TestCase):
         wrapper = (DOCKER / "build_two_wheel.sh").read_text()
         self.assertIn("HEAD moved during the build", wrapper)
         self.assertIn("source-commit label mismatch", wrapper)
+        self.assertIn("org.flagos.ci.xgrammar-wheel-sha256", wrapper)
+        self.assertIn('--xgrammar-wheel-sha256 "$xgrammar_wheel_sha256"', wrapper)
+        self.assertIn('--xgrammar-provenance "$xgrammar_provenance"', wrapper)
+        verifier = (SCRIPTS / "verify_image.sh").read_text()
+        self.assertIn('provenance["source_commit"] == sys.argv[4]', verifier)
+        self.assertIn('!= "<no value>"', verifier)
 
 
 class PluginWheelAcceptanceTests(unittest.TestCase):
@@ -420,6 +442,15 @@ class UvPlanParserTests(unittest.TestCase):
                 "sglang_fl-0.1.0.dist-info/METADATA",
                 "Metadata-Version: 2.1\nName: sglang_fl\nVersion: 0.1.0\n",
             )
+        cls.xgrammar_wheel = (
+            Path(cls.tmp)
+            / "xgrammar-0.2.1+flagos.hcu1-cp310-cp310-manylinux_2_28_x86_64.whl"
+        )
+        with zipfile.ZipFile(cls.xgrammar_wheel, "w") as archive:
+            archive.writestr(
+                "xgrammar-0.2.1+flagos.hcu1.dist-info/METADATA",
+                "Metadata-Version: 2.1\nName: xgrammar\nVersion: 0.2.1+flagos.hcu1\n",
+            )
 
     @classmethod
     def tearDownClass(cls):
@@ -435,18 +466,31 @@ class UvPlanParserTests(unittest.TestCase):
             "Would install 132 packages\n"
             f" + sglang @ file://{self.sglang_wheel}\n"
             f" + sglang_fl @ file://{self.plugin_wheel}\n"
+            f" + xgrammar @ file://{self.xgrammar_wheel}\n"
             " + datasets==5.2.0\n"
-            " + XGrammar==0.2.1\n"
             " + torch==2.9.0\n"
         )
 
     def test_parses_multiline_stderr_plan(self):
         planned = self.validate_uv_plan.parse_plan(self.real_output())
         self.assertEqual(planned["datasets"], "5.2.0")
-        self.assertEqual(planned["xgrammar"], "0.2.1")  # canonicalized
+        self.assertEqual(planned["xgrammar"], "0.2.1+flagos.hcu1")
         self.assertEqual(planned["sglang"], "0.5.18+flagos.hcu1")
         self.assertEqual(planned["sglang-fl"], "0.1.0")
         self.assertNotIn("triton", planned)
+        self.validate_uv_plan.validate_platform_plan(planned)
+
+    def test_original_xgrammar_is_rejected(self):
+        planned = self.validate_uv_plan.parse_plan(self.real_output())
+        planned["xgrammar"] = "0.2.1"
+        with self.assertRaises(SystemExit):
+            self.validate_uv_plan.validate_platform_plan(planned)
+
+    def test_standalone_triton_is_rejected(self):
+        planned = self.validate_uv_plan.parse_plan(self.real_output())
+        planned["triton"] = "3.5.0"
+        with self.assertRaises(SystemExit):
+            self.validate_uv_plan.validate_platform_plan(planned)
 
     def test_local_wheel_version_comes_from_metadata(self):
         # A file:// plan line contributes the version from the wheel's own
@@ -488,6 +532,10 @@ class StageContextSurvivalTests(unittest.TestCase):
         for relative in (
             "artifacts/sglang-0.5.18+flagos.hcu1-cp310-cp310-linux_x86_64.whl",
             "artifacts/sglang_fl-0.1.0-py3-none-any.whl",
+            "artifacts/xgrammar-0.2.1+flagos.hcu1-cp310-cp310-"
+            "manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+            "artifacts/xgrammar-0.2.1+flagos.hcu1-cp310-cp310-"
+            "manylinux_2_27_x86_64.manylinux_2_28_x86_64.provenance.json",
             "artifacts/runtime-0.5.18.excludes.txt",
             "runtime-0.5.18.containerfile",
             "docker/hygon/scripts/validate_uv_plan.py",
@@ -502,6 +550,10 @@ class StageContextSurvivalTests(unittest.TestCase):
         self.assertFalse(
             any((self.context / "artifacts").glob("sglang-0.5.18+flagos-cp310*")),
             "the original (non-derived) SGLang wheel was staged for the image",
+        )
+        self.assertFalse(
+            any((self.context / "artifacts").glob("xgrammar-0.2.1-cp310*")),
+            "the original xgrammar wheel was staged for the image",
         )
 
     @classmethod
