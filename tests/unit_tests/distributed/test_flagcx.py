@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -12,7 +13,7 @@ import torch
 
 
 class _FakeFlagCXLibrary:
-    def __init__(self, library_path: str) -> None:
+    def __init__(self, library_path=None) -> None:
         self.library_path = library_path
 
 
@@ -21,14 +22,14 @@ class _FakeFlagCXId:
         self.internal = [0] * 128
 
 
-def _fake_wrapper_tuple():
-    return (
-        _FakeFlagCXLibrary,
-        lambda ptr=None: ptr,
-        object,
-        object,
-        object,
-        _FakeFlagCXId,
+def _fake_wrapper():
+    return SimpleNamespace(
+        FLAGCXLibrary=_FakeFlagCXLibrary,
+        buffer_type=lambda ptr=None: ptr,
+        flagcxDataTypeEnum=object,
+        flagcxRedOpTypeEnum=object,
+        flagcxUniqueId=_FakeFlagCXId,
+        flagcxStream_t=object,
     )
 
 
@@ -43,12 +44,31 @@ def _disabled_comm():
 
 
 def test_import_flagcx_wrapper_requires_flagcx_path(monkeypatch) -> None:
-    from sglang_fl.distributed.device_communicators.flagcx import _import_flagcx_wrapper
+    from sglang_fl.distributed.device_communicators import flagcx as flagcx_mod
 
     monkeypatch.delenv("FLAGCX_PATH", raising=False)
 
-    with pytest.raises(RuntimeError, match="FLAGCX_PATH environment variable is not set"):
-        _import_flagcx_wrapper()
+    load = Mock(side_effect=ModuleNotFoundError(name="flagcx"))
+    monkeypatch.setattr(flagcx_mod, "import_module", load)
+    with pytest.raises(RuntimeError, match="Install the FlagCX Python package"):
+        flagcx_mod._import_flagcx_wrapper()
+    load.assert_called_once_with("flagcx.api")
+
+
+def test_communicator_uses_installed_flagcx_for_library_and_streams(monkeypatch):
+    from sglang_fl.distributed.device_communicators import flagcx as flagcx_mod
+
+    monkeypatch.delenv("FLAGCX_PATH", raising=False)
+    wrapper = _fake_wrapper()
+    provider = Mock(return_value=wrapper)
+    monkeypatch.setattr(flagcx_mod, "import_module", provider)
+    monkeypatch.setattr(flagcx_mod.dist, "get_rank", Mock(return_value=0))
+    monkeypatch.setattr(flagcx_mod.dist, "get_world_size", Mock(return_value=1))
+    comm = flagcx_mod.FlagCXCommunicator(group="group", device=torch.device("cpu"))
+
+    provider.assert_called_once_with("flagcx.api")
+    assert comm.flagcx.library_path is None
+    assert comm._stream_type is wrapper.flagcxStream_t
 
 
 def test_import_flagcx_wrapper_rejects_invalid_path(monkeypatch) -> None:
@@ -64,7 +84,7 @@ def test_world_size_one_disables_communicator(monkeypatch, tmp_path: Path) -> No
     from sglang_fl.distributed.device_communicators import flagcx as flagcx_mod
 
     monkeypatch.setenv("FLAGCX_PATH", str(tmp_path))
-    monkeypatch.setattr(flagcx_mod, "_import_flagcx_wrapper", lambda: _fake_wrapper_tuple())
+    monkeypatch.setattr(flagcx_mod, "_import_flagcx_wrapper", _fake_wrapper)
     monkeypatch.setattr(flagcx_mod.dist, "get_rank", Mock(return_value=0))
     monkeypatch.setattr(flagcx_mod.dist, "get_world_size", Mock(return_value=1))
 

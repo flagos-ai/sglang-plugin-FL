@@ -38,13 +38,12 @@ class FlagCXTransferEngine:
         gpu_id: Optional[int] = None,
         ib_device: Optional[str] = None,
     ):
-        # Reuse the collective communicator's FLAGCX_PATH/sys.path handling so
-        # there is a single place that knows how to locate the FlagCX wrapper.
+        # Select the same FlagCX provider as the collective communicator.
         from sglang_fl.distributed.device_communicators.flagcx import (
             _import_flagcx_wrapper,
         )
 
-        flagcx_library = _import_flagcx_wrapper()[0]
+        flagcx_library = _import_flagcx_wrapper().FLAGCXLibrary
 
         self.hostname = hostname
         self.gpu_id = gpu_id if gpu_id is not None else 0

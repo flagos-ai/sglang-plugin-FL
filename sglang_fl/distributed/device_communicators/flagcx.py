@@ -20,14 +20,11 @@ enabling cross-platform distributed communication on domestic chips.
 Adapted from vllm-plugin-FL's PyFlagcxCommunicator pattern:
   https://github.com/flagos-ai/vllm-plugin-FL
 
-Requirements:
-  - FLAGCX_PATH env var pointing to FlagCX installation
-  - libflagcx.so built at $FLAGCX_PATH/build/lib/
-  - FlagCX Python wrapper at $FLAGCX_PATH/plugin/interservice/flagcx_wrapper.py
+Install the FlagCX Python package for a packaged deployment. An explicit
+`FLAGCX_PATH` selects a source checkout with its wrapper and built library.
 
 Usage:
-  SGLANG_FL_DIST_BACKEND=flagcx FLAGCX_PATH=/path/to/FlagCX \
-      python -m sglang.launch_server --tp 2 ...
+  SGLANG_FL_DIST_BACKEND=flagcx python -m sglang.launch_server --tp 2 ...
 """
 
 import contextlib
@@ -35,6 +32,7 @@ import ctypes
 import logging
 import os
 import sys
+from importlib import import_module
 
 import torch
 import torch.distributed as dist
@@ -43,36 +41,25 @@ logger = logging.getLogger(__name__)
 
 
 def _import_flagcx_wrapper():
-    """Import FlagCX wrapper, adding FLAGCX_PATH to sys.path if needed."""
+    """Load the public FlagCX API, or the explicitly configured source tree."""
     flagcx_path = os.getenv("FLAGCX_PATH")
     if not flagcx_path:
-        raise RuntimeError(
-            "FLAGCX_PATH environment variable is not set. "
-            "Set it to the FlagCX installation directory."
-        )
+        try:
+            return import_module("flagcx.api")
+        except ModuleNotFoundError as exc:
+            if exc.name not in ("flagcx", "flagcx.api"):
+                raise
+            raise RuntimeError(
+                "Install the FlagCX Python package or set FLAGCX_PATH to a "
+                "built FlagCX source tree."
+            ) from exc
     if not os.path.isdir(flagcx_path):
         raise RuntimeError(f"FLAGCX_PATH={flagcx_path} is not a valid directory.")
 
     if flagcx_path not in sys.path:
         sys.path.append(flagcx_path)
 
-    from plugin.interservice.flagcx_wrapper import (
-        FLAGCXLibrary,
-        buffer_type,
-        flagcxComm_t,
-        flagcxDataTypeEnum,
-        flagcxRedOpTypeEnum,
-        flagcxUniqueId,
-    )
-
-    return (
-        FLAGCXLibrary,
-        buffer_type,
-        flagcxComm_t,
-        flagcxDataTypeEnum,
-        flagcxRedOpTypeEnum,
-        flagcxUniqueId,
-    )
+    return import_module("plugin.interservice.flagcx_wrapper")
 
 
 class FlagCXCommunicator:
@@ -96,14 +83,13 @@ class FlagCXCommunicator:
 
         # Import FlagCX wrapper
         try:
-            (
-                FLAGCXLibrary,
-                self._buffer_type,
-                _,
-                self._dtype_enum,
-                self._redop_enum,
-                flagcxUniqueId,
-            ) = _import_flagcx_wrapper()
+            wrapper = _import_flagcx_wrapper()
+            self._buffer_type = wrapper.buffer_type
+            self._dtype_enum = wrapper.flagcxDataTypeEnum
+            self._redop_enum = wrapper.flagcxRedOpTypeEnum
+            self._stream_type = wrapper.flagcxStream_t
+            flagcx_unique_id = wrapper.flagcxUniqueId
+            library_type = wrapper.FLAGCXLibrary
         except Exception as e:
             logger.warning(
                 f"FlagCX wrapper import failed: {e}. Falling back to torch.distributed."
@@ -113,11 +99,17 @@ class FlagCXCommunicator:
 
         # Load libflagcx.so
         flagcx_path = os.getenv("FLAGCX_PATH")
-        library_path = os.path.join(flagcx_path, "build", "lib", "libflagcx.so")
+        library_path = (
+            os.path.join(flagcx_path, "build", "lib", "libflagcx.so")
+            if flagcx_path
+            else None
+        )
         try:
-            self.flagcx = FLAGCXLibrary(library_path)
+            self.flagcx = (
+                library_type(library_path) if library_path else library_type()
+            )
         except Exception as e:
-            logger.warning(f"Failed to load libflagcx.so from {library_path}: {e}")
+            logger.warning("Failed to load FlagCX library: %s", e)
             self.disabled = True
             return
 
@@ -133,7 +125,7 @@ class FlagCXCommunicator:
         if self.rank == 0:
             self.unique_id = self.flagcx.flagcxGetUniqueId()
         else:
-            self.unique_id = flagcxUniqueId()
+            self.unique_id = flagcx_unique_id()
 
         # Broadcast unique ID via torch.distributed (using the CPU group)
         tensor = torch.ByteTensor(list(self.unique_id.internal))
@@ -206,8 +198,7 @@ class FlagCXCommunicator:
         cached = self._stream_cache.get(handle)
         if cached is not None:
             return cached
-        from plugin.interservice.flagcx_wrapper import flagcxStream_t
-        new_stream = flagcxStream_t()
+        new_stream = self._stream_type()
         self.flagcx.FLAGCX_CHECK(
             self.flagcx.devHandle.contents.streamCopy(
                 ctypes.byref(new_stream),
