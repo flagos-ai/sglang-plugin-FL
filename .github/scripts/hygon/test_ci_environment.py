@@ -240,13 +240,14 @@ class ImageAndSetupTests(unittest.TestCase):
         self.assertIn("python .github/scripts/hygon/verify_environment.py", source)
         self.assertIn('locate_file("")', verifier_source)
         self.assertIn("attention_backend", verifier_source)
-        # The DTK prefix contract (ROCM_PATH, /opt/rocm, direct Runtime clang) is
-        # baked into the image; the job only verifies it and never rewrites.
+        # The Runtime owns the DTK prefix contract; the job verifies the Bash
+        # environment and never recreates it in the application image.
         self.assertNotIn("enable_flagtree_device_lib_fallback.py", source)
         self.assertNotIn("enable_sglang_scalar_fallback.py", source)
         self.assertIn("/opt/dtk/aillvm/bin/clang-18", verifier_source)
-        self.assertIn("/opt/rocm/bin/hipcc --version", source)
-        self.assertIn("readlink -f /opt/rocm", source)
+        self.assertIn('"${ROCM_PATH}/bin/hipcc" --version', source)
+        self.assertIn("ROCM_PATH:-", source)
+        self.assertNotIn("/opt/rocm", source)
         self.assertNotIn("TRITON_HIP_CLANG_PATH", image_source)
         self.assertNotIn("/opt/hcu-clang", image_source)
         # CI runs the checked-in HCU attention contract: setup.sh must not

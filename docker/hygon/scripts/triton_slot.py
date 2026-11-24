@@ -4,8 +4,8 @@
 """The two Triton compiler slots of the Hygon operations Runtime, as contracts.
 
 The Runtime ships the Triton compiler as module TREES, not as something the
-image resolver installs; the image-level ``PYTHONPATH`` selects which tree
-every entrypoint imports:
+image resolver installs; Runtime's Bash initialization selects the production
+tree through ``PYTHONPATH``. A disposable A/B experiment may override it:
 
   /opt/flagtree  FlagTree 0.7.0+hcu3.6: ``triton`` module 3.6.0, HCU backend,
                  no ``triton`` dist-info, so ``pip check`` does not see a

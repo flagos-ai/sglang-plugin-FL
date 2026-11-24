@@ -75,8 +75,9 @@ echo "=== [3/4] Collecting the Runtime reference from the base digest ==="
 docker run --rm --platform linux/amd64 \
     --volume "$refdir":/out \
     --volume "$scripts":/scripts:ro \
-    --entrypoint python "$RESOLVED_BASE" \
-    /scripts/collect_runtime_reference.py --out /out --base-ref "$RESOLVED_BASE"
+    --entrypoint bash "$RESOLVED_BASE" -c 'exec python "$@"' bash \
+    /scripts/collect_runtime_reference.py --out /out --base-ref "$RESOLVED_BASE" \
+    --selected-slot /opt/flagtree
 cp "$refdir/runtime-constraints.txt" "$context/artifacts/runtime-constraints.txt"
 
 echo "=== [4/4] Building the image ==="

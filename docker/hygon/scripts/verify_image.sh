@@ -16,8 +16,8 @@
 #   stage 1  docker run <base>       collect_runtime_reference.py
 #   stage 2  docker run <candidate>  verify_runtime_immutable.py (six gates)
 #   stage 3  docker run <candidate>  verify_module_provenance.py
-#   stage 4  image-level contract: the compatibility ENVs, the Runtime's
-#            complete parent layers, the neutral WORKDIR, no build residue
+#   stage 4  Runtime Bash environment contract, no application ENV overrides,
+#            complete Runtime parent layers, neutral WORKDIR, no build residue
 #
 # Usage: verify_image.sh <candidate-image> [base-image]
 #        (base defaults to the tag in ARG BASE_IMAGE of the containerfile,
@@ -56,47 +56,42 @@ echo "=== Stage 1: collecting the runtime reference inside the base ==="
 echo "    base:      $base"
 echo "    candidate: $candidate"
 run --volume "$here":/verifier:ro --volume "$tmp":/baseline \
-    --entrypoint python "$base" \
-    /verifier/collect_runtime_reference.py --out /baseline --base-ref "$base"
+    --entrypoint bash "$base" -c 'exec python "$@"' bash \
+    /verifier/collect_runtime_reference.py --out /baseline --base-ref "$base" \
+    --selected-slot /opt/flagtree
 
 echo "=== Stage 2: runtime immutability (six gates) ==="
 run --volume "$here":/verifier:ro --volume "$tmp":/baseline:ro \
-    --entrypoint python "$candidate" \
+    --entrypoint bash "$candidate" -c 'exec python "$@"' bash \
     /verifier/verify_runtime_immutable.py --evidence-dir /baseline
 
 echo "=== Stage 3: vendor module provenance ==="
 run --volume "$here":/verifier:ro --volume "$tmp":/baseline:ro \
-    --entrypoint python "$candidate" \
+    --entrypoint bash "$candidate" -c 'exec python "$@"' bash \
     /verifier/verify_module_provenance.py \
     --reference /baseline/runtime-0.5.18.provenance.json
 
-echo "=== Stage 4: image-level contract ==="
+echo "=== Stage 4: Runtime Bash environment and image contract ==="
 image_env="$(env_of "$candidate")"
-base_ld="$(env_of "$base" | sed -n 's/^LD_LIBRARY_PATH=//p' | head -n 1)"
-image_ld="$(sed -n 's/^LD_LIBRARY_PATH=//p' <<<"$image_env" | head -n 1)"
-for entry in PYTHONPATH=/opt/flagtree ROCM_PATH=/opt/dtk; do
-    grep -qxF "$entry" <<<"$image_env" || {
-        echo "FATAL: image ENV lacks $entry" >&2
+for variable in PYTHONPATH LD_LIBRARY_PATH ROCM_PATH; do
+    if grep -q "^${variable}=" <<<"$image_env"; then
+        echo "FATAL: application image overrides Runtime-owned $variable" >&2
         exit 1
-    }
+    fi
 done
-# The DTK loader paths are prepended to whatever the base carries.
-case "$image_ld" in
-    /opt/dtk/dcc/gcvm/lib:*) ;;
-    *)
-        echo "FATAL: image LD_LIBRARY_PATH does not start with the DTK loader paths: '$image_ld'" >&2
-        exit 1
-        ;;
-esac
-if [ -n "$base_ld" ]; then
-    case "$image_ld" in
-        *":$base_ld") ;;
-        *)
-            echo "FATAL: image LD_LIBRARY_PATH dropped the base value '$base_ld'" >&2
-            exit 1
-            ;;
+run --entrypoint bash "$candidate" -c '
+    set -eu
+    test "${PYTHONPATH:-}" = /opt/flagtree
+    test "${ROCM_PATH:-}" = /opt/dtk
+    case ":${LD_LIBRARY_PATH:-}:" in
+        *:/opt/dtk/hip/lib:*) ;;
+        *) echo "Runtime did not export DTK loader paths" >&2; exit 1 ;;
     esac
-fi
+    test ! -e /opt/rocm
+    test -x "$ROCM_PATH/bin/hipcc"
+    "$ROCM_PATH/bin/hipcc" --version | head -n 1
+    python -c '\''import importlib.util; spec = importlib.util.find_spec("triton"); assert spec and spec.origin.startswith("/opt/flagtree/"), spec; print("Runtime Bash environment: FlagTree slot and DTK paths active")'\''
+'
 
 # The image is built FROM the base, so its RootFS must start with every
 # layer of that base.
@@ -134,8 +129,9 @@ run --entrypoint bash "$candidate" -c '
     if python -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec(\"pytest\") is None else 1)"
     then :; else echo "test tooling in the image: pytest"; exit 1; fi
 ' || { echo "FATAL: CI working directory, build residue or test tooling in the image" >&2; exit 1; }
-echo "image-level contract: PYTHONPATH=/opt/flagtree, ROCM_PATH=/opt/dtk,"
-echo "  LD_LIBRARY_PATH (DTK paths prepended), complete Runtime base layers,"
+echo "Runtime Bash environment contract: PYTHONPATH=/opt/flagtree, ROCM_PATH=/opt/dtk,"
+echo "  DTK loader paths active, no /opt/rocm alias or application ENV override,"
+echo "  complete Runtime base layers,"
 echo "  WORKDIR '$workdir', no build residue"
 
 echo "ACCEPTED: $candidate passed the post-build gates (the reference was"

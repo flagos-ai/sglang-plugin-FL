@@ -44,14 +44,18 @@ if [ -n "${GITHUB_ENV:-}" ]; then
   printf 'SGLANG_FL_TEST_SOURCE=wheel\n' >> "$GITHUB_ENV"
 fi
 
-# The image bakes the DTK prefix contract (ROCM_PATH and the /opt/rocm alias,
-# see the containerfile); this job only verifies it. The direct Runtime clang
-# selection check runs inside verify_environment.py below.
-if [ "$(readlink -f /opt/rocm)" != "$(readlink -f /opt/dtk)" ]; then
-  echo "::error::/opt/rocm is missing or does not resolve to the DTK SDK" >&2
+# The Runtime owns the DTK environment. BASH_ENV loads vendor.sh before this
+# job, so verify the exported root and compiler rather than recreating an SDK
+# alias in the application image.
+if [ "${ROCM_PATH:-}" != "/opt/dtk" ]; then
+  echo "::error::Runtime did not export ROCM_PATH=/opt/dtk" >&2
   exit 1
 fi
-/opt/rocm/bin/hipcc --version | head -n 1
+if [ ! -x "${ROCM_PATH}/bin/hipcc" ]; then
+  echo "::error::Runtime did not expose ${ROCM_PATH}/bin/hipcc" >&2
+  exit 1
+fi
+"${ROCM_PATH}/bin/hipcc" --version | head -n 1
 
 python .github/scripts/hygon/ci_environment.py -- \
   python .github/scripts/hygon/verify_environment.py \

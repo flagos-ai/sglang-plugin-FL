@@ -6,8 +6,8 @@
 Runs INSIDE the finished image (docker/hygon/scripts/verify_image.sh wraps
 the docker run) and compares the live module origins of the vendor stack
 against the reference provenance collected dynamically from the digest the
-build resolved once from the Runtime's moving tag. The image-level
-PYTHONPATH=/opt/flagtree makes the runtime's
+build resolved once from the Runtime's moving tag. The Runtime Bash
+PYTHONPATH=/opt/flagtree makes the Runtime's
 FlagTree tree the authoritative resolution in every entrypoint (this
 process included), and the standalone triton wheel never enters
 resolution, so every vendor module must resolve to the exact same origin
@@ -25,9 +25,8 @@ from pathlib import Path
 
 VENDOR_MODULES = ("torch", "triton", "flag_gems", "flagcx", "flagtree")
 
-# Mirror the container-start module resolution: PYTHONPATH (/opt/flagtree)
-# precedes site-packages there, while plain build steps do not inherit
-# that ENV. Same position, same precedence as at container start.
+# Mirror the Runtime Bash module resolution: PYTHONPATH (/opt/flagtree)
+# precedes site-packages. Host-side tests may not inherit that environment.
 if not os.environ.get("PYTHONPATH"):
     sys.path.insert(0, "/opt/flagtree")
 
@@ -75,7 +74,7 @@ def main() -> int:
             print(f"  ! {module}: {was} -> {now}")
         return 1
     print(
-        "module provenance unchanged under container-start resolution order "
+        "module provenance unchanged under Runtime Bash resolution order "
         "(triton resolves via /opt/flagtree before site-packages):"
     )
     print(json.dumps(after, indent=2, sort_keys=True))
