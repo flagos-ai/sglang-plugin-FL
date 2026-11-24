@@ -51,7 +51,12 @@ bw1000: &bw1000_profile
       exclude: []
     functional:
       include: "*"
-      exclude: []
+      # Runtime FlashAttention has a vendor-confirmed wont-fix for the
+      # paged-KV BF16/GQA head_dim=256 MTP shape in this test file. Keep the
+      # source test unchanged and exclude only this Hygon-specific regression
+      # until the Runtime provides a corrected kernel.
+      exclude:
+        - ops/test_hygon_mtp_attention.py
     e2e:
       # concurrent/mtp stay in the pr stage: scheduled workflows only fire on
       # the default branch, so until this line merges back the nightly stage
