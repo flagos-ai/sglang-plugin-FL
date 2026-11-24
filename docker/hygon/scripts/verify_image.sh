@@ -16,7 +16,7 @@
 #      baseline, provenance) from the labeled base digest
 #   1. runtime immutability: distributions exact, site files unchanged,
 #      pip-check only the documented (xgrammar, triton) exception,
-#      compiler slots + no standalone triton + /opt/flagtree resolution,
+#      compiler slots + no standalone triton + Runtime Bash slot resolution,
 #      two-wheel contract, HCU compat markers   [verify_runtime_immutable]
 #   2. vendor module provenance vs the base reference
 #   3. kernel-wheel stub import smoke
@@ -27,8 +27,8 @@
 #      matrix (sh, bash, child process) + no resolver-installed triton dist
 #   7. installed-wheel resolution contract from an empty working
 #      directory (parent and child process; full import deferred to HCU CI)
-#   8. image-level ENV/label contract: the compatibility ENVs, the
-#      LD_LIBRARY_PATH prepend semantics, the provenance labels, the
+#   8. Runtime Bash environment/label contract: no application overrides,
+#      vendor.sh/zz-flagos.sh exports, the provenance labels, the
 #      declared resolver mode and candidate contract, the Runtime's complete
 #      parent layers, every installed wheel compared member by member with
 #      the staged artifact (the whole closure for an offline-wheelhouse
@@ -205,9 +205,6 @@ PY
 
 # The required (prepended) DTK loader prefix and whatever the base image
 # itself carries; both feed the phase-8 probe.
-LD_REQUIRED_PREFIX="/opt/dtk/dcc/gcvm/lib:/opt/dtk/hip/lib:/opt/dtk/llvm/lib:/opt/dtk/lib:/opt/dtk/lib64:/opt/hyhal/lib:/opt/hyhal/lib64:/opt/dtk/dushmem/lib:/opt/dtk/opencl/lib:/opt/dtk/.hyhal/rocm_smi/lib:/opt/dtk/.hyhal/lib:/opt/dtk/.hyhal/lib64"
-LD_BASE_SUFFIX="$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$BASE_IMAGE" \
-    | sed -n 's/^LD_LIBRARY_PATH=//p' | head -n 1)"
 BASE_WORKDIR="$(docker image inspect --format '{{.Config.WorkingDir}}' "$BASE_IMAGE")"
 
 refdir="$(mktemp -d "${TMPDIR:-/tmp}/hygon-2w-verify.XXXXXX")"
@@ -220,25 +217,25 @@ echo "=== [0/8] Collecting the Runtime reference from the labeled base digest ==
 echo "    base (org.flagos.ci.base-digest): $BASE_IMAGE"
 run --volume "$refdir":/out \
     --volume "$scripts":/scripts:ro \
-    --entrypoint python "$BASE_IMAGE" \
+    --entrypoint bash "$BASE_IMAGE" -c 'exec python "$@"' bash \
     /scripts/collect_runtime_reference.py --out /out --base-ref "$BASE_IMAGE" \
     --selected-slot "$TRITON_SLOT"
 
 echo "=== [1/8] Runtime immutability (six gates) ==="
 run --volume "$refdir":/evidence:ro \
     --volume "$scripts":/scripts:ro \
-    --entrypoint python "$image" \
+    --entrypoint bash "$image" -c 'exec python "$@"' bash \
     /scripts/verify_runtime_immutable.py --evidence-dir /evidence
 
 echo "=== [2/8] Vendor module provenance ==="
 run --volume "$refdir":/evidence:ro \
     --volume "$scripts":/scripts:ro \
-    --entrypoint python "$image" \
+    --entrypoint bash "$image" -c 'exec python "$@"' bash \
     /scripts/verify_module_provenance.py \
     --reference /evidence/runtime-0.5.18.provenance.json
 
 echo "=== [3/8] Plugin-owned kernel import-guard smoke ==="
-run --entrypoint python "$image" - <<'PY'
+run --entrypoint bash "$image" -c 'exec python -' <<'PY'
 import importlib.metadata as md
 import importlib.util
 import pathlib
@@ -286,7 +283,7 @@ echo "=== [4/8] FlagTree HCU compile path (GPU-less, FlagTree's own stage functi
 # The probe drives FlagTree's make_amdgcn/make_hsaco with FlagTree's default
 # configuration: the real per-kernel code path, real clang argv, no wrapper.
 run --volume "$scripts":/scripts:ro \
-    --entrypoint python "$image" /scripts/flagtree_compile_probe.py \
+    --entrypoint bash "$image" -c 'exec python "$@"' bash /scripts/flagtree_compile_probe.py \
     --probe /scripts/hcu-device-lib-check.ll
 
 echo "=== [5/8] SGLang import smoke ==="
@@ -307,7 +304,7 @@ smoke_verdict_in_log() {
 }
 smoke_container="$(docker run -d --platform linux/amd64 \
     --volume "$scripts":/scripts:ro \
-    --entrypoint python "$image" /scripts/sglang_import_smoke.py)"
+    --entrypoint bash "$image" -c 'exec python "$@"' bash /scripts/sglang_import_smoke.py)"
 smoke_verdict=""
 for _ in $(seq 1 180); do
     docker logs "$smoke_container" > "$smoke_log" 2>&1 || true
@@ -405,19 +402,7 @@ print("child process:", origin)
 PY
 EOF
 
-echo "=== [8/8] Image-level ENV/label contract ==="
-env_json="$(docker image inspect --format '{{json .Config.Env}}' "$image")"
-for var in "PYTHONPATH=$TRITON_SLOT" \
-           ROCM_PATH=/opt/dtk; do
-    grep -q "\"$var\"" <<<"$env_json" || {
-        echo "FATAL: image ENV lacks $var" >&2
-        exit 1
-    }
-done
-grep -q '"LD_LIBRARY_PATH=/opt/dtk' <<<"$env_json" || {
-    echo "FATAL: image ENV lacks the DTK LD_LIBRARY_PATH prefix" >&2
-    exit 1
-}
+echo "=== [8/8] Runtime Bash environment/label contract ==="
 
 # Provenance labels: the base digest is consumed above; the installed
 # SGLang must be the DERIVED HCU wheel - the reviewed gating patch folded
@@ -466,7 +451,7 @@ assert provenance["patched_files_manifest"], "provenance carries no manifest"
 PY
     run -e DERIVED_SGLANG_VERSION="$DERIVED_SGLANG_VERSION" \
         --volume "$sglang_provenance":/provenance.json:ro \
-        --entrypoint python "$image" - <<'PY'
+        --entrypoint bash "$image" -c 'exec python -' <<'PY'
 import hashlib
 import importlib.metadata as md
 import json
@@ -498,7 +483,7 @@ else
     echo "running the weaker identity gate only (label present + installed"
     echo "version + dist-info directory); content binding was NOT checked"
     run -e DERIVED_SGLANG_VERSION="$DERIVED_SGLANG_VERSION" \
-        --entrypoint python "$image" - <<'PY'
+        --entrypoint bash "$image" -c 'exec python -' <<'PY'
 import importlib.metadata as md
 import os
 import pathlib
@@ -522,7 +507,7 @@ if [ -n "$sglang_wheel" ]; then
     }
     run --volume "$sglang_wheel":/wheel.whl:ro \
         --volume "$scripts":/scripts:ro \
-        --entrypoint python "$image" /scripts/verify_installed_wheel.py \
+        --entrypoint bash "$image" -c 'exec python "$@"' bash /scripts/verify_installed_wheel.py \
         --wheel /wheel.whl --own-tree sglang
 else
     echo "WARNING: no --sglang-wheel given; only the patched-file manifest was"
@@ -567,7 +552,7 @@ assert provenance["bound_files_manifest"], "xgrammar provenance has no manifest"
 PY
     run -e DERIVED_XGRAMMAR_VERSION="$DERIVED_XGRAMMAR_VERSION" \
         --volume "$xgrammar_provenance":/xgrammar-provenance.json:ro \
-        --entrypoint python "$image" - <<'PY'
+        --entrypoint bash "$image" -c 'exec python -' <<'PY'
 import hashlib
 import importlib.metadata as md
 import json
@@ -607,7 +592,7 @@ else
     echo "WARNING: no --xgrammar-wheel-sha256/--xgrammar-provenance given;"
     echo "running only the xgrammar identity/metadata gate; content binding was NOT checked"
     run -e DERIVED_XGRAMMAR_VERSION="$DERIVED_XGRAMMAR_VERSION" \
-        --entrypoint python "$image" - <<'PY'
+        --entrypoint bash "$image" -c 'exec python -' <<'PY'
 import importlib.metadata as md
 import os
 from packaging.requirements import Requirement
@@ -631,7 +616,7 @@ if [ -n "$xgrammar_wheel" ]; then
     }
     run --volume "$xgrammar_wheel":/wheel.whl:ro \
         --volume "$scripts":/scripts:ro \
-        --entrypoint python "$image" /scripts/verify_installed_wheel.py \
+        --entrypoint bash "$image" -c 'exec python "$@"' bash /scripts/verify_installed_wheel.py \
         --wheel /wheel.whl --own-tree xgrammar
 else
     echo "WARNING: no --xgrammar-wheel given; the installed xgrammar payload was"
@@ -675,7 +660,7 @@ PY
     # own bytes, and nothing else may live under the installed package.
     run --volume "$sglang_fl_wheel":/wheel.whl:ro \
         --volume "$scripts":/scripts:ro \
-        --entrypoint python "$image" /scripts/verify_installed_wheel.py \
+        --entrypoint bash "$image" -c 'exec python "$@"' bash /scripts/verify_installed_wheel.py \
         --wheel /wheel.whl --own-tree sglang_fl --min-members 100
 else
     echo "WARNING: no --sglang-fl-wheel/--sglang-fl-wheel-sha256/--sglang-fl-provenance given;"
@@ -692,7 +677,7 @@ if [ -n "$wheelhouse_manifest" ]; then
     run --volume "$(dirname "$wheelhouse_manifest")":/wheelhouse:ro \
         --volume "$refdir":/evidence:ro \
         --volume "$scripts":/scripts:ro \
-        --entrypoint python "$image" /scripts/verify_installed_wheel.py \
+        --entrypoint bash "$image" -c 'exec python "$@"' bash /scripts/verify_installed_wheel.py \
         --wheelhouse-manifest /wheelhouse/wheelhouse-manifest.json \
         --runtime /evidence/runtime-distributions-before.json
 fi
@@ -723,33 +708,41 @@ run --entrypoint bash "$image" -c '
 echo "residue check: no CI working directory, wheelhouse, wheel archive, constraints,"
 echo "  resolver plan, provenance, checkout or test runner in the image"
 
-# LD_LIBRARY_PATH prepend semantics, proven inside the image:
-# required DTK paths first, base value preserved, no empty path element.
-run -e LD_REQUIRED_PREFIX="$LD_REQUIRED_PREFIX" \
-    -e LD_BASE_SUFFIX="$LD_BASE_SUFFIX" \
-    --entrypoint python "$image" - <<'PY'
-import os
+run -e TRITON_SLOT="$TRITON_SLOT" --entrypoint bash "$image" -c '
+set -eu
+test "${PYTHONPATH:-}" = "$TRITON_SLOT"
+test "${ROCM_PATH:-}" = /opt/dtk
+case ":${LD_LIBRARY_PATH:-}:" in *:/opt/dtk/hip/lib:*) ;; *) echo "Runtime did not export DTK loader paths" >&2; exit 1 ;; esac
+test ! -e /opt/rocm
+test -x "$ROCM_PATH/bin/hipcc"
+"$ROCM_PATH/bin/hipcc" --version | head -n 1
+python -c '\''import os, importlib.util; s=importlib.util.find_spec("triton"); slot=os.environ["TRITON_SLOT"]; assert s and s.origin.startswith(slot + "/"), s; print("Runtime Bash environment:", os.environ["PYTHONPATH"], os.environ["ROCM_PATH"], "DTK loader path present")'\''
+'
+env_json="$(docker image inspect --format '{{json .Config.Env}}' "$image")"
+experiment="$(docker image inspect --format '{{index .Config.Labels "org.flagos.ci.triton-slot-experiment"}}' "$image")"
+for var in LD_LIBRARY_PATH= ROCM_PATH=; do
+    if grep -q "\"$var" <<<"$env_json"; then
+        echo "FATAL: application image overrides Runtime-owned $var" >&2
+        exit 1
+    fi
+done
+if [ -z "$experiment" ] || [ "$experiment" = "<no value>" ]; then
+    if grep -q '"PYTHONPATH=' <<<"$env_json"; then
+        echo "FATAL: production image overrides Runtime-owned PYTHONPATH" >&2
+        exit 1
+    fi
+else
+    grep -q "\"PYTHONPATH=$TRITON_SLOT\"" <<<"$env_json" || {
+        echo "FATAL: A/B arm does not declare PYTHONPATH=$TRITON_SLOT" >&2
+        exit 1
+    }
+fi
 
-value = os.environ.get("LD_LIBRARY_PATH", "")
-elements = value.split(":") if value else []
-required = os.environ["LD_REQUIRED_PREFIX"].split(":")
-assert elements[: len(required)] == required, (
-    f"required DTK paths not in front: {elements[: len(required)]}"
-)
-assert "" not in elements, f"empty LD_LIBRARY_PATH path element in {value!r}"
-base = os.environ.get("LD_BASE_SUFFIX", "")
-if base:
-    assert elements == required + base.split(":"), (
-        f"base LD_LIBRARY_PATH value not preserved: {value!r} (base {base!r})"
-    )
-print(f"LD_LIBRARY_PATH: {len(required)} DTK paths in front, "
-      f"{len(elements) - len(required)} inherited, no empty element")
-PY
-
-echo "ENV/label contract: PYTHONPATH=$TRITON_SLOT, LD_LIBRARY_PATH (prepend), ROCM_PATH,"
+echo "Runtime Bash environment/label contract: FlagTree slot, DTK loader/compiler paths,"
 echo "FlagTree default clang selection, plugin-owned import guard, provenance"
 echo "labels, resolver mode $RESOLVER_MODE, neutral WORKDIR ('$workdir'),"
 echo "no build residue"
 
-echo "ACCEPTED: $image passed all post-build gates (reference data was"
+echo "ACCEPTED: $image passed all post-build gates (Runtime Bash environment"
+echo "was exercised; reference data was"
 echo "collected dynamically from $BASE_IMAGE and disposed with $refdir)"

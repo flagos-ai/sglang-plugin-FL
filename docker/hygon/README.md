@@ -467,8 +467,9 @@ HTTP 500，`packages/sglang/…` 与 `simple/sglang/` 404），release 路径的
 - **staging**：`HYGON_WHEELHOUSE=<目录>` 让 `stage_wheels.sh` 先按 manifest 复核
   wheelhouse（少文件、多文件、内容变化都失败），再把它复制进构建上下文；
 - **配方**：`runtime-0.5.18.offline-wheelhouse.containerfile` 与 release 配方在
-  resolver 来源之外逐条指令相同（契约测试保证）：`PYTHONPATH=/opt/flagtree`、
-  三个 wheel 路径、constraints、excludes、Runtime 兼容 bundle 全部一致，差别只是
+  resolver 来源之外逐条指令相同（契约测试保证）：三个 wheel 路径、constraints
+  和 excludes 全部一致；两者都不覆盖 Runtime 管理的 `PYTHONPATH`、
+  `LD_LIBRARY_PATH`、`ROCM_PATH`，也不创建 `/opt/rocm`。差别只是
   `--index…/--default-index…/--index-strategy…` 换成
   `--no-index --find-links /wheelhouse`、`RUN --network=none` 和 wheelhouse 的
   只读 bind mount。没有 `# syntax=` 指令：固定的 frontend 镜像在 docker.io 上，
@@ -586,13 +587,15 @@ clang -target amdgcn-amd-amdhsa -mcpu=gfx936:xnack- -mllvm=-check-valu-data-forw
 ```bash
 docker run --rm --platform linux/amd64 \
   --volume "$PWD/docker/hygon/scripts":/scripts:ro \
-  --entrypoint python <candidate-image> /scripts/flagtree_compile_probe.py \
+  --entrypoint bash <candidate-image> -c 'exec python "$@"' bash \
+  /scripts/flagtree_compile_probe.py \
   --probe /scripts/hcu-device-lib-check.ll
 ```
 
 ### Triton 编译器 slot：`/opt/flagtree` vs `/opt/triton`（reviewer r4627164234）
 
-Runtime 自带两套编译器树，容器文件只是用 `ENV PYTHONPATH` 选其一：
+Runtime 自带两套编译器树。生产镜像不覆盖环境，由 Runtime 的 Bash 初始化选择
+`/opt/flagtree`；一次性 A/B 薄层才用 `ENV PYTHONPATH` 切换两臂：
 
 | slot | 模块版本 | triton dist-info | backends | pip check 是否看到 triton |
 |---|---|---|---|---|
@@ -659,17 +662,18 @@ docker/hygon/no_excludes_gate.sh <staging-context-dir> [--evidence-dir DIR]
 
 ### 剩余兼容债速查（Docker 注释保持简短，完整证据口径在此）
 
-容器文件里的 TEMP 块共用一句头注释：“TEMP Runtime compatibility bundle；这些
-设置暴露 Runtime 已携带但没有对所有入口稳定提供的能力；等待 Runtime owner 明确
-迁移方案；详细 observed failure、owner 和 removal gate 见 docker/hygon/README.md。”
-下表就是这张清单。CI 结论均按 job 级数据核对。
+下表记录历史兼容项及现状。前三项 Docker 覆盖和 `/opt/rocm` 别名已经移除：
+实际 Runtime 通过 `BASH_ENV=/etc/bash_env.sh` 加载 vendor profile，生产入口实测获得
+`PYTHONPATH=/opt/flagtree`、`ROCM_PATH=/opt/dtk` 和 DTK loader 路径；SGLang
+v0.5.18 的 `rocm_home()` 优先使用 `ROCM_PATH`，因此不需要 `/opt/rocm`。
+CI 结论均按 job 级数据核对。
 
 | 兼容块 | observed failure（首错误） | 证据 | owner | removal gate |
 |---|---|---|---|---|
-| `ENV PYTHONPATH=/opt/flagtree`（Triton slot 选择） | 无 bash profile 的直接 python 入口 `find_spec("triton") is None` | base 探针；slot 合同见上节 | FlagOS Runtime | Runtime 以 OCI ENV / `.pth` 等对所有入口暴露 flagtree；是否改选 `/opt/triton` 另由硬件 A/B 决定 |
-| `ENV LD_LIBRARY_PATH=/opt/dtk/…`（前插，保留 base 原值） | 去掉该变量后 `from torch._C import *` → `ImportError: libgalaxyhip.so.5: cannot open shared object file: No such file or directory` | 当前 base digest 临时容器探针；commit 06ff229（把 DTK loader path 写入镜像 ENV） | FlagOS Runtime | Runtime 经 OCI ENV 或 `ld.so.conf` 提供完整 loader 合同 |
-| `ENV ROCM_PATH=/opt/dtk` | 未设置时 FlagTree 选中 `/opt/rocm/llvm/bin/clang`（clang 17.0.0）：`clang (LLVM option parsing): Unknown command line argument '-check-valu-data-forward-hazards=0'`，随后 `HSACOError: File operation failed: [Errno 2] No such file or directory: '<tmp>.amdgcn'` | CI run 43426581773 / job 131895138156（E2E inference 失败）；本地探针复现同一首错误 | FlagTree / FlagOS Runtime | FlagTree 不再由该变量推导 clang，或 Runtime 自身导出 `ROCM_PATH=/opt/dtk` |
-| `RUN ln -s /opt/dtk /opt/rocm` | SGLang HIP JIT builder 调用 `/opt/rocm/bin/hipcc`：`/bin/sh: 1: /opt/rocm/bin/hipcc: not found` | CI run 43417967624 / job 131868790147（E2E inference 失败）；未设 ROCM_PATH 时 FlagTree 的默认根同样是 `/opt/rocm` | SGLang（HIP JIT builder 假定 ROCm 前缀）/ FlagOS Runtime | SGLang 原生支持 DTK 前缀，或 Runtime 提供官方别名 |
+| `PYTHONPATH=/opt/flagtree` | **已移除 Docker 覆盖**；绕过 Bash 的裸 entrypoint 不在 Runtime 合同内 | Runtime OCI `BASH_ENV=/etc/bash_env.sh`；实际 Bash 探针 | FlagOS Runtime | 已满足：vendor profile 导出 `/opt/flagtree`；验收强制经 Bash 启动 |
+| `LD_LIBRARY_PATH=/opt/dtk/…` | **已移除 Docker 覆盖** | 同上；实际 Bash 探针可 import Runtime 栈 | FlagOS Runtime | 已满足：vendor profile 提供 DTK loader 路径 |
+| `ROCM_PATH=/opt/dtk` | **已移除 Docker 覆盖** | 实际 Bash 探针；FlagTree 编译探针 | FlagOS Runtime | 已满足：vendor profile 导出 `/opt/dtk` |
+| `/opt/rocm -> /opt/dtk` | **已移除**；SGLang v0.5.18 `rocm_home()` 先读 `ROCM_HOME`/`ROCM_PATH`，实测返回 `/opt/dtk` | Runtime Bash 探针与上游 `toolchain.py` | 无 | 已满足：`ROCM_PATH=/opt/dtk`，`${ROCM_PATH}/bin/hipcc` 可执行 |
 | 直接 Runtime clang（wrapper 已从候选移除） | 无卡探针通过；真实 kernel 编译尚未在硬件上验证 | 上文矩阵 | 本仓库（候选选择） | Hygon 硬件矩阵通过后才声明 wrapper 可删除；失败则改用 C 或 D2 |
 | 派生 xgrammar wheel `0.2.1+flagos.hcu1` | 官方 0.2.1 wheel 在 Linux/x86_64 无条件要求 standalone triton，但 HCU Runtime 的编译器能力由 `/opt/flagtree` 模块树提供且无 distribution metadata | 闭包扫描唯一声明者为 xgrammar；原 wheel 的离线 uv 对照会继续解析 triton，修正 wheel 不会；两次派生 SHA 均为 `c2deb285…1a2` 且 49 个非 RECORD 文件（含 11 个 native）逐字节不变；run 44465620210（Hygon PR 档 CI）：镜像内没有 triton distribution，`triton.__file__` 位于 `/opt/flagtree` 下 | xgrammar/upstream 或 FlagOS artifact owner | 发布 metadata 正确且不可变的 HCU wheel 后，删除仓库派生步骤 |
 | `--excludes triton`（暂留） | 无（过渡项） | 2026-11-23 的多次 `no_excludes_gate.sh` 重试均停在 `flagos-pypi-hygon/simple/torch/` HTTP 500；离线门已通过，但按合同不足以授权删除 | 本仓库 | `no_excludes_gate.sh` 通过 → 删除后候选构建 → pip check → 完整 `verify_image.sh`，再单独删除 excludes 与精确豁免 |

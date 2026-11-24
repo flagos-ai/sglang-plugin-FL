@@ -683,8 +683,7 @@ class ReviewerCommentContractTests(unittest.TestCase):
 
     def test_r4627164234_slot_default_stays_flagtree_and_the_ab_is_prepared(self):
         containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
-        self.assertEqual(containerfile.count("ENV PYTHONPATH="), 1)
-        self.assertIn("ENV PYTHONPATH=/opt/flagtree", containerfile)
+        self.assertNotIn("ENV PYTHONPATH=", containerfile)
         self.assertNotIn("ENV PYTHONPATH=/opt/triton", containerfile)
         self.assertTrue((DOCKER / "triton_slot_ab.sh").is_file())
         ab = (DOCKER / "triton_slot_ab.sh").read_text()
@@ -771,36 +770,11 @@ class ReviewerCommentContractTests(unittest.TestCase):
         # the version-check switch is set only while a placeholder is active
         self.assertIn('if root == "sgl_kernel":', guard)
 
-    def test_r4627488390_the_loader_path_is_prepended_inside_one_bundle(self):
+    def test_r4627488390_runtime_owns_the_vendor_environment(self):
         containerfile = (DOCKER / "runtime-0.5.18.containerfile").read_text()
-        line = next(
-            text
-            for text in containerfile.splitlines()
-            if text.startswith("ENV LD_LIBRARY_PATH=")
-        )
-        self.assertTrue(
-            line.endswith("${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"),
-            "LD_LIBRARY_PATH must be prepended, never overwritten",
-        )
-        # the three Runtime compatibility items sit together under one header
-        header = containerfile.index("# --- TEMP Runtime compatibility bundle")
-        bundle = containerfile[header:]
-        order = [
-            bundle.index("ENV LD_LIBRARY_PATH="),
-            bundle.index("ENV ROCM_PATH=/opt/dtk"),
-            bundle.index("ln -s /opt/dtk /opt/rocm"),
-        ]
-        self.assertEqual(order, sorted(order))
-        for sentence in (
-            "这些设置暴露 Runtime 已携带但没有对所有入口",
-            "等待 Runtime owner 明确迁移方案",
-            "removal gate",
-            "docker/hygon/README.md",
-        ):
-            self.assertIn(sentence, bundle)
-        # the slot default and the install are not part of the bundle
-        self.assertNotIn("ENV PYTHONPATH=", bundle)
-        self.assertNotIn("uv pip install", bundle)
+        self.assertNotIn("ENV LD_LIBRARY_PATH=", containerfile)
+        self.assertNotIn("ENV ROCM_PATH=", containerfile)
+        self.assertNotIn("/opt/rocm", containerfile)
 
     def test_r4627512386_the_excludes_removal_is_gated(self):
         # transitional state: the exclusion and its exact exception remain
@@ -912,7 +886,9 @@ class TritonSlotContractTests(unittest.TestCase):
         verify = (DOCKER / "scripts" / "verify_image.sh").read_text()
         self.assertIn("org.flagos.ci.triton-slot", verify)
         self.assertIn('--selected-slot "$TRITON_SLOT"', verify)
-        self.assertIn('"PYTHONPATH=$TRITON_SLOT"', verify)
+        self.assertIn('-e TRITON_SLOT="$TRITON_SLOT"', verify)
+        self.assertIn('test "${PYTHONPATH:-}" = "$TRITON_SLOT"', verify)
+        self.assertIn("production image overrides Runtime-owned PYTHONPATH", verify)
         # no phase may still hard-code the production slot
         phase6 = verify[verify.index("=== [6/8]") : verify.index("=== [7/8]")]
         self.assertNotIn("/opt/flagtree", phase6)
@@ -2031,7 +2007,10 @@ class OfflineRecipeTests(unittest.TestCase):
             "SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK",
         ):
             self.assertNotIn(banned, self.offline, banned)
-        self.assertIn("ENV PYTHONPATH=/opt/flagtree", self.offline)
+        self.assertNotIn("ENV PYTHONPATH=", self.offline)
+        self.assertNotIn("ENV LD_LIBRARY_PATH=", self.offline)
+        self.assertNotIn("ENV ROCM_PATH=", self.offline)
+        self.assertNotIn("/opt/rocm", self.offline)
         # the candidate installs the very wheel files the release installs
         wheels = [
             argument

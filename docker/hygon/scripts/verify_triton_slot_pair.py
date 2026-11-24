@@ -121,9 +121,10 @@ def arm_report(image: str) -> dict:
             "--volume",
             f"{HERE}:/scripts:ro",
             "--entrypoint",
-            "python",
+            "bash",
             image,
-            "-",
+            "-c",
+            "exec python -",
             stdin=_ARM_PROGRAM,
         )
         .strip()

@@ -1,7 +1,7 @@
 # Single-item resolver exclusion for the Hygon two-wheel CI image.
 #
 # The operations Runtime provides the Triton compiler as the /opt/flagtree
-# module tree (Triton 3.6.0), selected by the image-level PYTHONPATH for
+# module tree (Triton 3.6.0), selected by Runtime Bash PYTHONPATH for
 # every entrypoint; it is not a pip distribution. The Runtime's FlagGems
 # 5.4.0 build targets that 3.6 launcher path, so the two-wheel install
 # must resolve the application closure without any standalone triton

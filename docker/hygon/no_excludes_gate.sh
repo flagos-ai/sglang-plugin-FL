@@ -58,7 +58,7 @@ RESOLVED_BASE="$(docker image inspect --format '{{range .RepoDigests}}{{println 
 echo "resolved base: $RESOLVED_BASE"
 docker run --rm --platform linux/amd64 \
     --volume "$evidence":/out --volume "$scripts":/scripts:ro \
-    --entrypoint python "$RESOLVED_BASE" \
+    --entrypoint bash "$RESOLVED_BASE" -c 'exec python "$@"' bash \
     /scripts/collect_runtime_reference.py --out /out --base-ref "$RESOLVED_BASE"
 # the same generated constraints the build consumes
 cp "$evidence/runtime-constraints.txt" "$context/artifacts/runtime-constraints.txt"

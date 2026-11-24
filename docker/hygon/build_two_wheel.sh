@@ -81,9 +81,9 @@ DERIVED_SGLANG_WHEEL_NAME="sglang-${DERIVED_SGLANG_VERSION}-cp310-cp310-linux_x8
 DERIVED_XGRAMMAR_VERSION="0.2.1+flagos.hcu1"
 DERIVED_XGRAMMAR_WHEEL_NAME="xgrammar-${DERIVED_XGRAMMAR_VERSION}-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
 PLUGIN_WHEEL_NAME="sglang_fl-0.1.0-py3-none-any.whl"
-# The compiler slot the containerfile selects (ENV PYTHONPATH). The only
-# other value is the A/B experiment's /opt/triton (triton_slot_ab.sh),
-# which is never built here: the production default stays /opt/flagtree.
+# The compiler slot the Runtime Bash environment selects. The only other value
+# is the A/B experiment's /opt/triton (triton_slot_ab.sh), which is never built
+# here: the production default stays /opt/flagtree.
 TRITON_SLOT="/opt/flagtree"
 INDEX_MODE="index"
 OFFLINE_MODE="offline-wheelhouse"
@@ -330,8 +330,9 @@ echo "=== [3/6] Collecting the Runtime reference from the base digest ==="
 docker run --rm --platform linux/amd64 \
     --volume "$refdir":/out \
     --volume "$scripts":/scripts:ro \
-    --entrypoint python "$RESOLVED_BASE" \
-    /scripts/collect_runtime_reference.py --out /out --base-ref "$RESOLVED_BASE"
+    --entrypoint bash "$RESOLVED_BASE" -c 'exec python "$@"' bash \
+    /scripts/collect_runtime_reference.py --out /out --base-ref "$RESOLVED_BASE" \
+    --selected-slot "$TRITON_SLOT"
 
 echo "=== [4/6] Resolver dry-run plan gate (same base digest, same mounts and network) ==="
 # /plan inside this container is the disposable plan dir. The install

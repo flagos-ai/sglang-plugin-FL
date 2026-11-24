@@ -46,10 +46,9 @@ from triton_slot import (  # noqa: E402
     assert_slot_root,
 )
 
-# Mirror the final image's container-start module resolution: the image-level
-# PYTHONPATH (the selected compiler slot) precedes site-packages there. The
-# BASE image has no image-level PYTHONPATH (our layer adds it), so insert the
-# slot at the same position to record what container start will resolve.
+# Mirror the final image's Bash-start module resolution: Runtime profile
+# scripts export the selected compiler slot ahead of site-packages. Host-side
+# tests may invoke this module without that environment, so retain a fallback.
 if not os.environ.get("PYTHONPATH"):
     sys.path.insert(0, FLAGTREE_SLOT)
 
@@ -72,13 +71,12 @@ def probe_module(module: str) -> dict:
 
 
 def select_slot(slot: str) -> None:
-    """Put the compiler slot the image selects at the position its image-level
-    PYTHONPATH gives it at container start (the base has no PYTHONPATH)."""
-    if os.environ.get("PYTHONPATH"):
-        return
-    if FLAGTREE_SLOT in sys.path:
-        sys.path.remove(FLAGTREE_SLOT)
+    """Select the declared slot with Runtime Bash's import precedence."""
+    for known_slot in SLOT_CONTRACTS:
+        while known_slot in sys.path:
+            sys.path.remove(known_slot)
     sys.path.insert(0, slot)
+    os.environ["PYTHONPATH"] = slot
 
 
 def collect(out: Path, base_ref: str, selected_slot: str) -> None:
@@ -145,7 +143,7 @@ def collect(out: Path, base_ref: str, selected_slot: str) -> None:
             "(vendor module origins for the provenance gate)"
         ),
         "selected_slot": selected_slot,
-        "selection": f"image-level ENV PYTHONPATH={selected_slot}",
+        "selection": f"Runtime Bash environment PYTHONPATH={selected_slot}",
         "modules": {
             module: probe_module(module)
             for module in ("torch", "triton", "flag_gems", "flagcx", "flagtree")
@@ -172,7 +170,7 @@ def main() -> int:
     parser.add_argument(
         "--selected-slot",
         default=FLAGTREE_SLOT,
-        help="compiler slot the image selects via PYTHONPATH (A/B experiment)",
+        help="compiler slot selected by Runtime Bash (or the A/B experiment)",
     )
     args = parser.parse_args()
     assert_slot_root(args.selected_slot)  # rejects unknown slots

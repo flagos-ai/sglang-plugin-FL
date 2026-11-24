@@ -59,7 +59,7 @@ EXPECTED_FLAGTREE = "0.6.1+hcu3.6"
 # torch/flagtree/flag-gems/flagcx; the sglang[srt_empty,runtime_common]
 # closure adds the SGLang wheel plus its pure-Python dependency closure. The
 # corrected HCU xgrammar wheel has no standalone-triton metadata requirement;
-# FlagTree's /opt/flagtree (image-level PYTHONPATH) is the only Triton in any
+# FlagTree's /opt/flagtree (Runtime Bash PYTHONPATH) is the only Triton in any
 # entrypoint. The image acceptance binds that corrected wheel by SHA/provenance.
 RUNTIME_IMAGE_RELEASES = {
     "sglang": "0.5.18+flagos.hcu1",

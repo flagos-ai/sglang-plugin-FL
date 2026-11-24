@@ -171,12 +171,12 @@ def check_compiler_slots(evidence: Path) -> None:
     assert selected in slots, f"selected slot {selected!r} is not a recorded slot"
     contract = contract_of(selected)
     assert os.environ.get("PYTHONPATH") == selected, (
-        f"image-level PYTHONPATH is {os.environ.get('PYTHONPATH')!r}, "
+        f"Runtime Bash PYTHONPATH is {os.environ.get('PYTHONPATH')!r}, "
         f"expected the declared slot {selected!r}"
     )
     # find_spec resolves without executing the module: safe on GPU-less
     # builders, and it is the resolution every entrypoint inherits from the
-    # image-level PYTHONPATH.
+    # Runtime Bash PYTHONPATH.
     spec = importlib.util.find_spec("triton")
     assert spec is not None and spec.origin, "triton module not resolvable"
     assert spec.origin.startswith(str(Path(selected).resolve()) + "/"), (
