@@ -58,7 +58,7 @@ docker exec hygon-sglang-0518 /usr/bin/env \
 ## 安装前应用 SGLang 源码补丁
 
 必须对 **SGLang v0.5.18 源码**应用
-[`sglang-v0.5.18-hcu.patch`](sglang-v0.5.18-hcu.patch)，然后再安装 SGLang。
+[`sglang-v0.5.18-hcu.patch`](../tools/wheels/hygon/sglang-v0.5.18-hcu.patch)，然后再安装 SGLang。
 仅安装或更新插件无法修复这一上游导入问题：量化注册表在插件补丁执行前就会
 根据 HIP 标记导入 AMD Quark/AITER 内核；HCU 同样使用 HIP，但不提供这些内核。
 
@@ -68,8 +68,8 @@ docker exec hygon-sglang-0518 /usr/bin/env \
 export PLUGIN_ROOT=/opt/sglang-plugin-fl
 export SGLANG_SOURCE_ROOT=/opt/sglang-0.5.18
 cd "$SGLANG_SOURCE_ROOT"
-git apply --check "$PLUGIN_ROOT/docker/hygon/sglang-v0.5.18-hcu.patch"
-git apply "$PLUGIN_ROOT/docker/hygon/sglang-v0.5.18-hcu.patch"
+git apply --check "$PLUGIN_ROOT/tools/wheels/hygon/sglang-v0.5.18-hcu.patch"
+git apply "$PLUGIN_ROOT/tools/wheels/hygon/sglang-v0.5.18-hcu.patch"
 ```
 
 之后按容器配方安装该 SGLang 源码与插件。补丁仅让海光跳过三个不适用的 AMD
