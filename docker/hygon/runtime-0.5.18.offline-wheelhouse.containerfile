@@ -1,62 +1,16 @@
-# SGLang 0.5.18 two-wheel DEVELOPMENT CANDIDATE image on the Hygon operations
-# runtime, resolved OFFLINE from a wheelhouse.
-#
-# This is the TEMP recipe of the offline-wheelhouse development candidate
-# (docker/hygon/README.md, "Offline-wheelhouse development candidate"). It
-# covers the periods when the FlagOS package indexes are unreachable: the
-# resolver closure comes from a wheelhouse that docker/hygon/
-# build_wheelhouse.sh derives from the resolver cache of a last-green
-# two-wheel image, and the install RUN has no network at all.
-#
-# It is NOT a release recipe. build_two_wheel.sh refuses it for --push; only
-# --push-candidate publishes the result, labeled release-ready=false. The
-# release recipe stays docker/hygon/runtime-0.5.18.containerfile, and the
-# contract tests hold the two recipes identical outside the resolver RUN
-# (same base argument, same compiler slot, same three wheels, same
-# constraints and exclusion, same Runtime compatibility bundle).
-#
-# No `# syntax=` directive on purpose: the pinned frontend image lives on
-# docker.io, which an offline build must not depend on. Every instruction
-# below is supported by the builder's built-in Dockerfile frontend.
-#
-# Build + accept (single candidate entry; acceptance is the gate,
-# --push-candidate is reachable only after it passes):
-#   docker/hygon/build_two_wheel.sh --offline-wheelhouse <wheelhouse> \
-#       --runtime-image <name@sha256:digest> [--push-candidate] <tag>
-#
-# The Runtime base is always passed in as an explicitly verified digest
-# (--runtime-image): this recipe carries no default and never falls back to
-# a moving tag.
+# SGLang 0.5.18 two-wheel DEVELOPMENT CANDIDATE: the release recipe
+# (runtime-0.5.18.containerfile) resolved offline from a wheelhouse. TEMP,
+# never a release input; the base is always passed as a verified digest.
+# Evidence and boundaries: docker/hygon/README.md
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
-# TEMP: the Runtime exposes /opt/flagtree only to bash sessions (BASH_ENV),
-# so direct python entrypoints get no triton; image-level PYTHONPATH fixes it.
-# Evidence: base probe - find_spec("triton") is None without a bash profile.
-# Owner: FlagOS Runtime (remove once /opt/flagtree is exposed OCI-wide).
-# This is also the Triton compiler slot selection: build_two_wheel.sh records
-# it as org.flagos.ci.triton-slot and verify_image.sh holds each slot to its
-# own contract (docker/hygon/README.md).
+# TEMP (FlagOS Runtime): /opt/flagtree is exposed to bash sessions only; also the
+# Triton compiler slot. Evidence/owner/removal gate: docker/hygon/README.md
 ENV PYTHONPATH=/opt/flagtree
 
-# --- One uv resolver install of the two application wheels, offline --------
-# CONTRACT (the same as the release recipe): no standalone triton distribution
-# enters the image; the Runtime's /opt/flagtree tree (Triton 3.6) is the only
-# compiler. The explicit xgrammar local-version wheel removes its incorrect
-# HCU triton requirement; --excludes remains temporarily, exactly as in the
-# release recipe.
-#
-# The closure is resolved ONLY from the wheelhouse (--no-index
-# --find-links): a flat directory of the upstream wheels a last-green
-# two-wheel image downloaded, each bound to the digest its registry declared
-# (wheelhouse-manifest.json). Runtime distributions come from the base and
-# are frozen by the generated constraints; nothing is downloaded, so the RUN
-# needs no network and says so. The wheelhouse, constraints and wheels are
-# read-only bind mounts from the build context and never enter an image
-# layer.
-# build_two_wheel.sh runs the exact twin of this command (plus --dry-run)
-# with the same mounts and network mode BEFORE the build
-# (uv_install_contract.py reads it from this file).
+# Same install as the release recipe, resolved only from the wheelhouse
+# (--no-index --find-links) with no network. Evidence: docker/hygon/README.md
 RUN --network=none \
     --mount=type=bind,source=artifacts,target=/tmp/artifacts,readonly \
     --mount=type=bind,source=wheelhouse,target=/wheelhouse,readonly \
@@ -76,10 +30,8 @@ RUN --network=none \
 # 和 removal gate 见 docker/hygon/README.md。
 # 1/3 DTK loader path, prepended to whatever the base carries.
 ENV LD_LIBRARY_PATH=/opt/dtk/dcc/gcvm/lib:/opt/dtk/hip/lib:/opt/dtk/llvm/lib:/opt/dtk/lib:/opt/dtk/lib64:/opt/hyhal/lib:/opt/hyhal/lib64:/opt/dtk/dushmem/lib:/opt/dtk/opencl/lib:/opt/dtk/.hyhal/rocm_smi/lib:/opt/dtk/.hyhal/lib:/opt/dtk/.hyhal/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
-
 # 2/3 FlagTree derives its clang selection from this root.
 ENV ROCM_PATH=/opt/dtk
-
 # 3/3 The ROCm prefix alias SGLang's HIP JIT builder expects.
 RUN if [ ! -e /opt/rocm ] && [ ! -L /opt/rocm ]; then ln -s /opt/dtk /opt/rocm; fi \
     && test "$(readlink -f /opt/rocm)" = "$(readlink -f /opt/dtk)"
