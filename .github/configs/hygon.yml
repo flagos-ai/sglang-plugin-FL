@@ -3,10 +3,13 @@
 
 platform: hygon
 
-# Docker image for this hardware
-# Published tag: 0.5.18-hygon-ci-20261015; anonymous manifest/config verified.
-# The old main image contains SGLang 0.5.11 and is rejected by setup.
-ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:d21327c133c4abd40297cf717278bd9190397916a544dc84cbfe9068f09b6c96
+# Two-wheel image on the operations runtime (docker/hygon/runtime-0.5.18.containerfile):
+# sglang 0.5.18+flagos.hcu1 and sglang_fl[hygon]. The digest below is a TEMP candidate,
+# not release-ready (docker/hygon/README.md). The image is large; a cold runner spends
+# most of an hour pulling it, so all platform stages get 180 minutes.
+test_timeout: 180
+
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:95261fa0192f96821306048b7a47abdb852dec8b372e64f9c8451996b335d760
 
 # Runner labels for this hardware
 runner_labels:
