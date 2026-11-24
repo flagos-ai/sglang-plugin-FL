@@ -104,14 +104,18 @@ jobs:
         run: |
           if [ "${{ inputs.platform }}" = "hygon" ]; then
             unset CUDA_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES
+            # The Hygon Runtime initializes DTK paths through BASH_ENV.
+            # GitHub's container step shell is sh, which does not source it.
+            bash -c 'python "$TEST_DRIVER" --platform hygon --scope unit'
+          else
+            python "$TEST_DRIVER" \
+              --platform ${{ inputs.platform }} \
+              --scope unit
           fi
-          python "$TEST_DRIVER" \
-            --platform ${{ inputs.platform }} \
-            --scope unit
 
       - name: Run Hygon vendor-stack verifier regressions
         if: inputs.platform == 'hygon'
-        run: python .github/scripts/hygon/ci_environment.py -- python -m pytest .github/scripts/hygon/test_verify_environment.py -q --junitxml=test-results-hygon-environment.xml
+        run: bash -c 'python .github/scripts/hygon/ci_environment.py -- python -m pytest .github/scripts/hygon/test_verify_environment.py -q --junitxml=test-results-hygon-environment.xml'
 
       - name: Run functional tests
         env:
@@ -119,10 +123,13 @@ jobs:
         run: |
           if [ "${{ inputs.platform }}" = "hygon" ]; then
             unset CUDA_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES
+            # Keep Bash as the parent of the runner and all test subprocesses.
+            bash -c 'python "$TEST_DRIVER" --platform hygon --scope functional'
+          else
+            python "$TEST_DRIVER" \
+              --platform ${{ inputs.platform }} \
+              --scope functional
           fi
-          python "$TEST_DRIVER" \
-            --platform ${{ inputs.platform }} \
-            --scope functional
 
       - name: Upload test results
         if: always()
