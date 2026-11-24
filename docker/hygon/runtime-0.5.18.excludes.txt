@@ -1,0 +1,6 @@
+# Resolver exclusion for the Hygon two-wheel image. The operations Runtime
+# provides the Triton compiler as the /opt/flagtree module tree, not as a pip
+# distribution, so no standalone triton may enter the image. The staged xgrammar
+# wheel no longer declares triton; this single line stays until the FlagOS
+# indexes confirm that the install resolves identically without it.
+triton
