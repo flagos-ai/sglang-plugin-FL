@@ -9,7 +9,7 @@ platform: hygon
 # most of an hour pulling it, so all platform stages get 180 minutes.
 test_timeout: 180
 
-ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:95261fa0192f96821306048b7a47abdb852dec8b372e64f9c8451996b335d760
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:b2049b1bbc47ac5b1b51a0a5506e98e32dc36f634c2c369ed3c7b6dc3a87aa86
 
 # Runner labels for this hardware
 runner_labels:
