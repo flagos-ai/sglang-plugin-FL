@@ -25,3 +25,24 @@ RUN /usr/local/bin/uv pip install \
       --excludes /tmp/runtime-0.5.18.excludes.txt \
       /tmp/wheels/sglang-0.5.18-cp312-cp312-manylinux_2_34_x86_64.whl \
       '/tmp/wheels/sglang_fl-0.1.0-py3-none-any.whl[nvidia]'
+
+# The `[nvidia]` extra above pulls `cuda-toolkit[nvcc]`, whose wheels install
+# under `site-packages/nvidia/cu13` -- a location no consumer treats as a CUDA
+# Toolkit root. The Runtime base image ships a cudart-only `/usr/local/cuda`
+# with no `bin/`, so torch's `cpp_extension`, SGLang's JIT toolchain, and
+# FlashInfer all fall back to it and fail with `nvcc: not found` when they
+# compile a kernel. FlashInfer compiles at serve time, so the compiler is a
+# runtime dependency, not a build-time one.
+#
+# The plugin activates a compatibility view itself at import time, but that is
+# a process-level side effect: it does not reach a process that never imports
+# `sglang_fl`, and `torch.utils.cpp_extension.CUDA_HOME` caches its value at
+# torch import. Make the view an environment fact instead, so every consumer
+# (including subprocesses and `docker exec`) resolves the same compiler. The
+# symlinks are also what the plugin's own `_valid_cuda_home()` requires to
+# accept the directory; with them in place it returns early and adds nothing.
+ENV CUDA_HOME=/flagos/lib/python3.12/site-packages/nvidia/cu13 \
+    CUDA_PATH=/flagos/lib/python3.12/site-packages/nvidia/cu13
+RUN ln -sfn lib "${CUDA_HOME}/lib64" \
+ && ln -sfn libcudart.so.13 "${CUDA_HOME}/lib/libcudart.so"
+ENV PATH="${CUDA_HOME}/bin:${PATH}"
