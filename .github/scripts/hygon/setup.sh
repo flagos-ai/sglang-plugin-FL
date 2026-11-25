@@ -62,3 +62,62 @@ python .github/scripts/hygon/ci_environment.py -- \
     --plugin-root "$PLUGIN_ROOT" --plugin-source wheel \
     --runtime-evidence "$RUNTIME_SNAPSHOT" \
     --require-gpu --min-gpus 2
+
+# TEMP probe for build-infra#1960: identify the host hyhal/driver pair that the
+# runner mounts into this job. Strictly read-only; remove this block once the
+# Hygon runner driver inventory is recorded.
+{
+  echo "uname: $(uname -sr)"
+  echo "--- hyhal mounts ---"
+  grep -E 'hyhal' /proc/mounts 2>/dev/null | head -5 || true
+  echo "--- /opt/hyhal ---"
+  ls -la /opt/hyhal 2>/dev/null | head -25 || true
+  echo "--- /usr/local/hyhal ---"
+  ls -la /usr/local/hyhal 2>/dev/null | head -25 || true
+  echo "--- hyhal version/release files ---"
+  for f in $(
+    find /opt/hyhal /usr/local/hyhal -maxdepth 3 -type f \
+      \( -iname '*version*' -o -iname 'release' -o -iname '*.release' \) 2>/dev/null \
+      | sort | head -10
+  ); do
+    echo "--- $f"
+    head -10 "$f" 2>/dev/null || true
+  done || true
+  echo "--- hyhal lib sonames ---"
+  ls -l /opt/hyhal/lib /opt/hyhal/lib64 /usr/local/hyhal/lib /usr/local/hyhal/lib64 2>/dev/null \
+    | grep -E '\.so' | head -30 || true
+  lib=""
+  for c in /opt/hyhal/lib/libamd_smi.so /opt/hyhal/lib64/libamd_smi.so \
+    /usr/local/hyhal/lib/libamd_smi.so /usr/local/hyhal/lib64/libamd_smi.so; do
+    if [ -e "$c" ]; then
+      lib="$c"
+      break
+    fi
+  done
+  if [ -n "$lib" ]; then
+    echo "--- $lib ---"
+    echo "amdsmi_init occurrences: $(grep -ac amdsmi_init "$lib" 2>/dev/null || echo 0)"
+    echo "amdsmi_get_gpu_enumeration_info occurrences: $(grep -ac amdsmi_get_gpu_enumeration_info "$lib" 2>/dev/null || echo 0)"
+  else
+    echo "no libamd_smi.so under the hyhal mounts"
+  fi
+  echo "--- kernel modules ---"
+  lsmod 2>/dev/null | grep -iE 'hcu|kfd|hygon|rock|dtk|hsdk' || true
+  grep -rH . /sys/module/hcu*/version /sys/module/*kfd*/version /sys/module/rock*/version /sys/module/hy*/version 2>/dev/null \
+    | head -10 || true
+  echo "--- hy-smi ---"
+  smi=""
+  for c in /usr/local/hyhal/bin/hy-smi /opt/hyhal/bin/hy-smi; do
+    if [ -x "$c" ]; then
+      smi="$c"
+      break
+    fi
+  done
+  if [ -n "$smi" ]; then
+    echo "--- $smi -v (timeout 30s) ---"
+    timeout 30 "$smi" -v 2>&1 | head -6 || true
+  else
+    echo "no hy-smi binary under the hyhal mounts; PATH hy-smi: $(command -v hy-smi || echo none)"
+  fi
+  true
+} 2>&1 | sed 's/^/[hyhal-probe] /' || true
