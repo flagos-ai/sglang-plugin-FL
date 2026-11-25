@@ -191,6 +191,16 @@ jobs:
       branch: ${{ inputs.branch }}
     secrets: inherit
 
+  test-tsingmicro:
+    needs: discover
+    if: contains(fromJson(needs.discover.outputs.platforms), 'tsingmicro')
+    uses: ./.github/workflows/_platform_test.yml
+    with:
+      platform: tsingmicro
+      ci_stage: weekly
+      branch: ${{ inputs.branch }}
+    secrets: inherit
+
   test-metax:
     needs: discover
     if: contains(fromJson(needs.discover.outputs.platforms), 'metax')

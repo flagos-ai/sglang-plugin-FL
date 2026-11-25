@@ -149,10 +149,9 @@ def test_other_backends_keep_64_for_all_vl_generation_calls(
 ):
     namespace = _load(monkeypatch, name, vendor, budget)
     kwargs, calls = _capture_generation(monkeypatch, namespace, name)
-    if vendor == "tsingmicro":
-        assert kwargs["disable_fast_image_processor"] is True
-    else:
-        assert "disable_fast_image_processor" not in kwargs
+    # TsingMicro gets image_processor_backend=pil from the plugin defaults; the
+    # deprecated disable_fast_image_processor flag is no longer passed.
+    assert "disable_fast_image_processor" not in kwargs
     assert {c["sampling"]["max_new_tokens"] for c in calls if c["image_data"]} == {64}
     assert {c["sampling"]["max_new_tokens"] for c in calls if not c["image_data"]} == {
         97
