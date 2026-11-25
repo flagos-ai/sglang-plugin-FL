@@ -61,10 +61,13 @@ _ATTN_BACKEND_MAP = {
     "ascend": "ascend",
     "mthreads": "fa3",
     "enflame": "fa3",
-    "thead": "fa3",
+    # PPU's sgl_kernel.flash_attn imports sglang.srt.utils.is_ppu, which upstream
+    # SGLang does not define, so fa3 cannot load on PPU; triton is validated.
+    "thead": "triton",
     "kunlunxin": "kunlunxin",
     "iluvatar": "triton",
     "hygon": "hcu",
+    "metax": "triton",
 }
 
 
@@ -128,6 +131,10 @@ class PlatformFL(SRTPlatform):
     # ------------------------------------------------------------------
 
     def is_cuda(self) -> bool:
+        """True only for devices that can run NVIDIA CUDA kernels (sgl_kernel, flashinfer)."""
+        # MetaX exposes torch.cuda but cannot run NVIDIA kernels; is_cuda_alike() stays True
+        if self._vendor_name == "metax":
+            return False
         return self._device_type == "cuda"
 
     def is_npu(self) -> bool:
@@ -447,11 +454,25 @@ class PlatformFL(SRTPlatform):
             )
 
             apply_musa_runtime_defaults(server_args)
+        if self._vendor_name == "thead":
+            from sglang_fl.dispatch.backends.vendor.thead.runtime_config import (
+                apply_thead_runtime_defaults,
+            )
+
+            apply_thead_runtime_defaults(server_args)
         if self._vendor_name == "kunlunxin":
             server_args.mm_attention_backend = "sdpa"
             server_args.disable_cuda_graph = False
         if self._vendor_name == "nvidia":
             return
+        if (
+            self._vendor_name == "metax"
+            and getattr(server_args, "mm_attention_backend", None) is None
+        ):
+            # Without flash_attn, vision SDPA falls back to the math path, which
+            # FlagGems turns into per-shape bmm autotuning. Use SGLang's triton
+            # vision attention (compiled by FlagTree) instead.
+            server_args.mm_attention_backend = "triton_attn"
         if self._device_type == "gcu":
             server_args.device = "gcu"
             server_args.attention_backend = "fa3"

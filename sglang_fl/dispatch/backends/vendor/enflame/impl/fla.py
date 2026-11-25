@@ -21,7 +21,7 @@ def chunk_gated_delta_rule_gcu(
     head_first: bool = False,
     use_qk_l2norm_in_kernel: bool = False,
 ):
-    from sglang.srt.layers.attention.fla.chunk import ChunkGatedDeltaRuleFunction
+    from sglang.kernels.ops.attention.fla.chunk import ChunkGatedDeltaRuleFunction
 
     o, h = ChunkGatedDeltaRuleFunction.apply(
         q,
@@ -51,10 +51,18 @@ def fused_recurrent_gated_delta_rule_gcu(
     num_accepted_tokens: Optional[torch.Tensor] = None,
     use_qk_l2norm_in_kernel: bool = False,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-    from sglang.srt.layers.attention.fla.fused_recurrent import (
+    if ssm_state_indices is not None or num_accepted_tokens is not None:
+        raise NotImplementedError(
+            "GCU fused_recurrent_gated_delta_rule does not support "
+            "ssm_state_indices or num_accepted_tokens"
+        )
+
+    from sglang.kernels.ops.attention.fla.fused_recurrent import (
         FusedRecurrentFunction,
     )
 
+    # The public function is patched by our dispatch bridge. Call the
+    # underlying Function to avoid re-entering operator dispatch.
     return FusedRecurrentFunction.apply(
         q,
         k,
@@ -65,10 +73,9 @@ def fused_recurrent_gated_delta_rule_gcu(
         initial_state,
         output_final_state,
         cu_seqlens,
-        ssm_state_indices,
-        num_accepted_tokens,
         use_qk_l2norm_in_kernel,
     )
+
 
 def fused_recurrent_gated_delta_rule_packed_decode_gcu(
     mixed_qkv: torch.Tensor,
