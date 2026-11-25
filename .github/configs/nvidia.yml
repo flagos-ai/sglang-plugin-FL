@@ -21,9 +21,10 @@ test_timeout: 180
 
 # Digest-pinned validated image (flagtree-3.6 two-wheel build; the full
 # NVIDIA matrix ran green on this exact digest with USE_FLAGGEMS=1).
-# TEMP while PR #8 is validated: consume the CUDA_HOME candidate by exact digest;
+# TEMP while PR #8 is validated: consume the CUDA_HOME candidate by exact digest
+# (rebuilt from 48ce805 so the plugin wheel carries the merged thead vendor tree);
 # restore the flagtree-3.6 pin before merging #8.
-ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:c9d1dc37c7cfb3a4c3d68f8d5fc6d847ec59b6510c5de3ed6750cfa93ee2d202
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:d3333b24676846f1773785b0912cde9a99b8c6b0cdb10e6d374657ecd516590e
 
 # Runner labels for this hardware
 runner_labels:
