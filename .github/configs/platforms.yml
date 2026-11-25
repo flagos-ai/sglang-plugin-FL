@@ -30,6 +30,7 @@
 #   musa    <- sglang_fl/dispatch/config/musa.yaml,    docker/mthreads/
 #   thead   <- sglang_fl/dispatch/config/{thead,tsingmicro}.yaml, docker/thead/
 #   iluvatar <- sglang_fl/dispatch/config/iluvatar.yaml, docker/iluvatar/
+#   tsingmicro <- sglang_fl/dispatch/config/tsingmicro.yaml, docker/tsingmicro/
 #   metax   <- sglang_fl/dispatch/config/metax.yaml,  docker/metax/
 
 global_trigger_paths:
@@ -136,6 +137,24 @@ platforms:
     # harbor CI image from docker/kunlunxin/ci-0.5.18.containerfile are ready.
     # Local matrix: tests/platforms/kunlunxin.yaml.
     enabled: false
+
+  tsingmicro:
+    # TX8110 (TXDA), SGLang 0.5.18 empty runtime. CI image (from
+    # docker/tsingmicro/empty-0.5.18.containerfile) is published and pinned in
+    # tsingmicro.yml; disabled until the ci-sglang-plugin-fl-tsingmicro runner
+    # is online.
+    enabled: false
+    trigger_paths:
+      - sglang_fl/dispatch/config/tsingmicro.yaml
+      - .github/scripts/tsingmicro/
+      - .github/configs/tsingmicro.yml
+      - tests/platforms/tsingmicro.yaml
+      - docker/tsingmicro/
+    exempt_from_global:
+      - sglang_fl/dispatch/config/tsingmicro.yaml
+      - .github/scripts/tsingmicro/
+      - .github/configs/tsingmicro.yml
+      - tests/platforms/tsingmicro.yaml
 
   enflame:
     enabled: false

@@ -5,8 +5,9 @@
 Auto-imported by ``PlatformFL.init_backend()`` when sglang activates the
 tsingmicro platform.  Importing this module executes the
 ``@register_attention_backend`` decorator below, which inserts the txda
-backend creator into sglang's ``ATTENTION_BACKENDS`` dict.  After that,
-``ModelRunner._get_attention_backend_from_str("txda_oot")`` can resolve it.
+backend creator into sglang's ``ATTENTION_BACKENDS`` dict, where SGLang 0.5.18's
+``attention_backend_setup._build_full_attention_backend_from_str`` resolves
+``attention_backend="txda_oot"`` (the TXDA default, see ``sglang_fl/platform.py``).
 
 To onboard a custom TXDA attention kernel:
   1. Implement the backend in ``impl/attention_backend.py``.
@@ -25,14 +26,28 @@ logger = logging.getLogger(__name__)
 def _create_txda_oot_backend(runner):
     """Creator for 'txda_oot' in sglang's ATTENTION_BACKENDS registry.
 
-    Called by ``ModelRunner._get_attention_backend_from_str`` when
+    Called by SGLang's attention-backend setup when
     ``server_args.attention_backend == "txda_oot"``.
 
     Defer heavy imports (vendor SDK, CUDA-only headers, etc.) to the body
     of this function so the module stays importable on any host.
     """
-    # Default: use torch_native (PyTorch SDPA) for TXDA hardware.
-    # Replace with a custom TXDA attention backend when available.
-    from sglang.srt.layers.attention.torch_native_backend import TorchNativeAttnBackend
+    # Routes extend/prefill and decode to the flaggems _tsingmicro kernels;
+    # metadata handling is inherited from TritonAttnBackend.
+    from sglang_fl.dispatch.backends.vendor.tsingmicro.impl.attention_backend import (
+        TxdaAttnBackend,
+    )
 
-    return TorchNativeAttnBackend(runner)
+    return TxdaAttnBackend(runner)
+
+
+# Workers that SGLang starts without load_plugins() (sglang.bench_one_batch)
+# load the full plugin before their first ModelConfig; see plugin_bootstrap.py.
+# init_backend runs while ModelRunner is still being imported, so only the
+# wrapper is installed here; loading the plugin waits for the first real
+# model-config call.
+from sglang_fl.dispatch.backends.vendor.tsingmicro.plugin_bootstrap import (  # noqa: E402
+    install_model_config_bootstrap,
+)
+
+install_model_config_bootstrap()

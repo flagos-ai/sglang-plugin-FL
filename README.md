@@ -76,6 +76,16 @@ acceptance still need available devices. The test image is published as
 `harbor.baai.ac.cn/plugin/sglang-plugin-fl:0.5.18-iluvatar-ci`; automatic GPU CI
 uses its pinned digest and still requires a real full acceptance result.
 
+The TsingMicro TX8110 (TXDA) upgrade keeps the vendor stack (torch_txda,
+FlagTree 0.7.1a1+tsingmicro3.6, runtime/CCL 0.30279.6) and adds a
+[SGLang 0.5.18 empty container recipe](docker/tsingmicro/empty-0.5.18.containerfile).
+Qwen3.6-27B and Qwen3.6-35B-A3B passed TP8 offline, concurrent and serving
+runs with answers identical to SGLang 0.5.11, and two-node TP8/PP2 runs.
+See the [TsingMicro deployment and validation notes](docker/tsingmicro/README.md)
+for device selection, plugin defaults, known issues and coverage limits. The
+`tsingmicro` CI platform is configured but disabled until its image and runner
+are available.
+
 The validated H100 environment removes the Triton package installed with
 PyTorch and uses FlagTree 0.6.2a1 as its Triton 3.6-compatible compiler. The
 verified FlagGems master snapshot handles `to_copy` on H100.
