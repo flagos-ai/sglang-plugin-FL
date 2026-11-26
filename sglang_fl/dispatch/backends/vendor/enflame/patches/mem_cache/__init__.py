@@ -10,3 +10,7 @@ def patch_mem_cache():
     from .req_to_token import patch_req_to_token
 
     patch_req_to_token()
+
+    from .paged_allocator import patch_paged_allocator
+
+    patch_paged_allocator()

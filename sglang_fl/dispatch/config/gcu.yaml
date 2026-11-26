@@ -1,7 +1,7 @@
 # SGLang-FL Dispatch Configuration for GCU platform
 prefer: vendor
 
-# Union of the 12 launch-script blacklists; history: claude/blacklist_yaml_20261103/
+# Keep in sync with SGLANG_FL_FLAGOS_BLACKLIST in launch scripts.
 flagos_blacklist:
   - isin
   - clone
@@ -10,3 +10,9 @@ flagos_blacklist:
   - _index_put_impl_
   - repeat_interleave_self_int
   - _unique2
+  - pow_scalar
+  - embedding
+  - zero_
+
+op_backends:
+  mrotary_embedding: [reference]
