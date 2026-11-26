@@ -376,6 +376,159 @@ def step3_fast_topk() -> bool:
     return all_ok
 
 
+def step4_round2_table() -> bool:
+    """The operators after moe_align_block_size on the 35B-A3B and mtp paths.
+
+    Round 1 got past moe_align and raised ``sgl_kernel.silu_and_mul`` inside
+    Triton fused_experts; the mtp path additionally needs the tree builder and
+    greedy verifier. Each is checked against a plain torch reference on device,
+    through the symbol SGLang's own module has bound.
+    """
+    say("=== step 4: silu_and_mul / moe_sum_reduce / tree build+verify ===")
+    hook = load_hook_module()
+    import sglang.srt.layers.moe.moe_runner.triton_utils.fused_moe as fused_moe
+
+    all_ok = True
+    device = "cuda"
+
+    def check(label: str, ok: bool, detail: str = "") -> None:
+        nonlocal all_ok
+        say(f"  {label}: {'ok' if ok else 'MISMATCH'} {detail}")
+        all_ok = all_ok and ok
+
+    say(
+        "  fused_moe.silu_and_mul is hook:", fused_moe.silu_and_mul is hook.silu_and_mul
+    )
+
+    # silu_and_mul(x, out): silu(x[:, :d]) * x[:, d:]
+    rows, hidden = 257, 512
+    x = torch.randn(rows, 2 * hidden, device=device, dtype=torch.bfloat16)
+    out = torch.empty(rows, hidden, device=device, dtype=torch.bfloat16)
+    fused_moe.silu_and_mul(x, out)
+    ref = torch.nn.functional.silu(x[:, :hidden].float()) * x[:, hidden:].float()
+    check(
+        "silu_and_mul",
+        torch.allclose(out.float(), ref, atol=2e-2, rtol=2e-2),
+        f"max_abs_diff={(out.float() - ref).abs().max().item():.4g}",
+    )
+
+    # moe_sum_reduce_triton(x, out, scale): sum over topk * scale
+    tokens, topk = 64, 8
+    x = torch.randn(tokens, topk, hidden, device=device, dtype=torch.bfloat16)
+    out = torch.empty(tokens, hidden, device=device, dtype=torch.bfloat16)
+    hook.moe_sum_reduce(x, out, 0.5)
+    ref = x.float().sum(1) * 0.5
+    check(
+        "moe_sum_reduce",
+        torch.allclose(out.float(), ref, atol=2e-1, rtol=2e-2),
+        f"max_abs_diff={(out.float() - ref).abs().max().item():.4g}",
+    )
+
+    # Tree: topk 1 chain (the mtp acceptance shape) and topk 2, depth 3.
+    for topk in (1, 2):
+        steps, batch, prompt = 3, 2, 7
+        num_draft = 1 + steps * topk
+        parent_list = torch.zeros(batch, steps * topk, device=device, dtype=torch.long)
+        if topk > 1:
+            parent_list = torch.arange(steps * topk, device=device) // topk
+            parent_list = parent_list.expand(batch, -1).contiguous()
+        scores_index = (
+            torch.arange(batch * num_draft, device=device, dtype=torch.long)
+            .view(batch, -1)[:, 1:]
+            .contiguous()
+        )
+        bonus = torch.arange(100, 100 + batch, device=device, dtype=torch.long)
+        draft_tokens = torch.arange(
+            1000, 1000 + batch * steps * topk, device=device, dtype=torch.long
+        ).view(batch, steps * topk)
+        try:
+            (
+                tree_mask,
+                positions,
+                retrieve_index,
+                retrieve_next_token,
+                retrieve_next_sibling,
+                draft_tokens_all,
+            ) = hook.build_tree_kernel_efficient(
+                bonus,
+                parent_list,
+                scores_index,
+                draft_tokens,
+                torch.full((batch,), prompt, device=device, dtype=torch.long),
+                batch * prompt,
+                topk,
+                steps,
+                num_draft,
+            )
+        except Exception as error:  # noqa: BLE001 - probe reports and continues
+            check(
+                f"build_tree topk={topk}",
+                False,
+                f"RAISED {type(error).__name__}: {str(error)[:300]}",
+            )
+            continue
+        draft_tokens_all = draft_tokens_all.view(batch, num_draft)
+        # (a) nothing accepted: the target disagrees at the root.
+        predicts = torch.zeros(batch, num_draft, device=device, dtype=torch.long)
+        accept_index = torch.zeros(batch, steps, device=device, dtype=torch.long)
+        accept_num = torch.zeros(batch, device=device, dtype=torch.long)
+        target_predict = torch.full(
+            (batch, num_draft), -1, device=device, dtype=torch.long
+        )
+        target_predict[:, 0] = 5000 + torch.arange(batch, device=device)
+        try:
+            hook.verify_tree_greedy(
+                predicts,
+                accept_index,
+                accept_num,
+                draft_tokens_all,
+                retrieve_index,
+                retrieve_next_token,
+                retrieve_next_sibling,
+                target_predict,
+            )
+            torch.cuda.synchronize()
+        except Exception as error:  # noqa: BLE001 - probe reports and continues
+            check(
+                f"verify_tree_greedy topk={topk}",
+                False,
+                f"RAISED {type(error).__name__}: {str(error)[:300]}",
+            )
+            continue
+        check(
+            f"verify reject-all topk={topk}",
+            bool((accept_num == 0).all())
+            and torch.equal(predicts[:, 0], target_predict[:, 0]),
+            f"accept_num={accept_num.tolist()} predicts0={predicts[:, 0].tolist()}",
+        )
+        # (b) chain fully accepted (topk 1): the target repeats every draft token.
+        if topk == 1:
+            predicts.zero_()
+            accept_index.zero_()
+            accept_num.zero_()
+            target_predict = draft_tokens_all.clone()
+            hook.verify_tree_greedy(
+                predicts,
+                accept_index,
+                accept_num,
+                draft_tokens_all,
+                retrieve_index,
+                retrieve_next_token,
+                retrieve_next_sibling,
+                target_predict,
+            )
+            torch.cuda.synchronize()
+            check(
+                "verify accept-all topk=1",
+                bool((accept_num == steps).all())
+                and torch.equal(
+                    predicts[:, : steps + 1], draft_tokens_all[:, : steps + 1]
+                ),
+                f"accept_num={accept_num.tolist()} predicts={predicts[0].tolist()} draft={draft_tokens_all[0].tolist()} accept_index={accept_index[0].tolist()}",
+            )
+    return all_ok
+
+
 def main() -> int:
     say(
         "torch",
@@ -407,6 +560,7 @@ def main() -> int:
         ("step1", step1_flag_gems_kernel),
         ("step2", step2_sglang_symbol),
         ("step3", step3_fast_topk),
+        ("step4", step4_round2_table),
     ):
         try:
             results[name] = step()

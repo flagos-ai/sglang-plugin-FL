@@ -9,6 +9,17 @@ called. This hook gives the PLACEHOLDER real implementations:
   fast_topk             -> torch.topk (same values/indices, same shapes for
                            every k, unlike the keepdim max shortcut)
   moe_align_block_size  -> FlagGems' Triton moe_align_block_size
+  silu_and_mul          -> SGLang's Triton activation (the kernel the dense
+                           MLP already uses on HCU, see activation.py)
+  moe_sum_reduce        -> SGLang's Triton moe_sum_reduce_triton
+  build_tree_kernel_efficient -> SGLang's Triton tree builder (XPU path)
+  verify_tree_greedy    -> SGLang's Triton verify_tree_greedy_triton (XPU path)
+  top_k_renorm_prob /   -> SGLang's Triton renormalisation kernels
+  top_p_renorm_prob
+
+Round 1 (fast_topk + moe_align_block_size only) got past moe_align and then
+hit ``sgl_kernel.silu_and_mul`` inside Triton fused_experts, hence this table.
+Not implemented: tree_speculative_sampling_target_only (non-greedy MTP).
 
 A really installed sgl_kernel is never touched: the hook only acts on a
 module that carries the plugin's ``__sglang_fl_placeholder__`` marker.
@@ -65,13 +76,91 @@ def moe_align_block_size(
     num_tokens_post_pad.copy_(num_post_pad.reshape(num_tokens_post_pad.shape))
 
 
+def _act_and_mul(name: str, input, out=None):
+    import sglang.kernels.ops.activation.activation as activation
+
+    return getattr(activation, name)(input, out)
+
+
+def silu_and_mul(input, out=None):
+    return _act_and_mul("silu_and_mul", input, out)
+
+
+def gelu_and_mul(input, out=None):
+    return _act_and_mul("gelu_and_mul", input, out)
+
+
+def gelu_tanh_and_mul(input, out=None):
+    return _act_and_mul("gelu_tanh_and_mul", input, out)
+
+
+def moe_sum_reduce(input, output, routed_scaling_factor):
+    from sglang.kernels.ops.moe.fused_moe_triton_kernels import moe_sum_reduce_triton
+
+    return moe_sum_reduce_triton(input, output, routed_scaling_factor)
+
+
+def top_k_renorm_prob(probs, top_k):
+    from sglang.kernels.ops.sampling.renorm_triton import top_k_renorm_probs_triton
+
+    return top_k_renorm_probs_triton(probs, top_k)
+
+
+def top_p_renorm_prob(probs, top_p):
+    from sglang.kernels.ops.sampling.renorm_triton import top_p_renorm_probs_triton
+
+    return top_p_renorm_probs_triton(probs, top_p)
+
+
+def build_tree_kernel_efficient(*args, **kwargs):
+    """Run SGLang's own wrapper, but with the Triton builder underneath
+    (the builder SGLang itself selects on XPU)."""
+    from sglang.srt.speculative import eagle_utils
+
+    original = eagle_utils.sgl_build_tree_kernel_efficient
+    eagle_utils.sgl_build_tree_kernel_efficient = (
+        eagle_utils.sgl_build_tree_kernel_triton
+    )
+    try:
+        return eagle_utils.build_tree_kernel_efficient(*args, **kwargs)
+    finally:
+        eagle_utils.sgl_build_tree_kernel_efficient = original
+
+
+def verify_tree_greedy(predicts, accept_index, accept_token_num, candidates, **tree):
+    from sglang.srt.speculative.eagle_utils import verify_tree_greedy_triton
+
+    # SGLang passes the four tree tensors as keywords, in this order.
+    return verify_tree_greedy_triton(
+        predicts, accept_index, accept_token_num, candidates, *tree.values()
+    )
+
+
+# sgl_kernel name -> implementation. Names absent here keep raising.
+FALLBACKS = {
+    "fast_topk": fast_topk,
+    "moe_align_block_size": moe_align_block_size,
+    "silu_and_mul": silu_and_mul,
+    "gelu_and_mul": gelu_and_mul,
+    "gelu_tanh_and_mul": gelu_tanh_and_mul,
+    "moe_sum_reduce": moe_sum_reduce,
+    "top_k_renorm_prob": top_k_renorm_prob,
+    "top_p_renorm_prob": top_p_renorm_prob,
+    "build_tree_kernel_efficient": build_tree_kernel_efficient,
+    "verify_tree_greedy": verify_tree_greedy,
+}
+
+
 def patch_placeholder(name: str) -> bool:
     module = sys.modules.get(name)
     if module is None or not getattr(module, "__sglang_fl_placeholder__", False):
         return False
-    module.fast_topk = fast_topk
-    module.moe_align_block_size = moe_align_block_size
-    sys.stderr.write(f"{TAG} fallbacks installed on the sgl_kernel placeholder\n")
+    for attr, fn in FALLBACKS.items():
+        setattr(module, attr, fn)
+    sys.stderr.write(
+        f"{TAG} fallbacks installed on the sgl_kernel placeholder: "
+        f"{', '.join(sorted(FALLBACKS))}\n"
+    )
     return True
 
 
