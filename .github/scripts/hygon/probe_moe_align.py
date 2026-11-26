@@ -7,13 +7,13 @@ SGLang's Triton fused_experts path calls
 launching; on HCU sgl_kernel is the plugin's placeholder, so every MoE model
 fails with ``sgl_kernel.moe_align_block_size is unavailable``.
 
-Round 3. Earlier rounds established that the FlagGems kernel is correct for
+Round 4. Earlier rounds established that the FlagGems kernel is correct for
 small inputs but wrong from numel 16384, where it switches to its TLE path.
 
-Step 1 runs the FlagGems kernel as shipped and with its TLE switch off,
-against a plain Python reference, across the switch-over sizes.
-Step 2 installs the drop-in replacement at the exact symbol SGLang calls
-(with the TLE switch off) and checks the buffers SGLang itself allocated.
+Step 1 runs the FlagGems kernel as shipped against a plain Python
+reference and compares per expert (what fused MoE actually needs).
+Step 2 installs the drop-in replacement at the symbol SGLang calls and
+checks the buffers SGLang itself allocated.
 Step 3 swaps SGLang's speculative ``fast_topk`` for SGLang's own pure-torch
 one and exercises the MTP draft selection that calls it.
 """
@@ -54,72 +54,101 @@ def reference(topk_ids: torch.Tensor, block_size: int, num_experts: int):
         torch.tensor(sorted_ids, dtype=torch.int32),
         torch.tensor(expert_ids, dtype=torch.int32),
         len(sorted_ids),
+        total,
     )
 
 
 def compare(label, block_size, sorted_ids, expert_ids, num_post_pad, ref) -> bool:
-    """Compare the VALID prefix: align kernels return buffers allocated to the
-    upper bound; only the first num_tokens_post_pad entries are meaningful."""
-    ref_ids, ref_expert_ids, ref_num = ref
+    """Return whether the output is SEMANTICALLY correct.
+
+    The valid prefix is num_tokens_post_pad entries (buffers are allocated to
+    the upper bound). A fused-MoE kernel only needs: the block -> expert map,
+    every token landing in a block of its own expert, and the padding of each
+    expert at the END of that expert's region. Which of an expert's blocks a
+    token lands in does not matter, so tokens are compared per expert; the
+    strict per-block equality is reported as information only.
+    """
+    ref_ids, ref_expert_ids, ref_num, pad_value = ref
     used = int(num_post_pad.reshape(-1)[0])
     if used % block_size:
         say(f"  {label}: num_tokens_post_pad {used} not a multiple of {block_size}")
         return False
-    ok = True
-    if used != ref_num:
-        say(f"  {label}: num_tokens_post_pad {used} != {ref_num}")
-        ok = False
     blocks = used // block_size
+    if (
+        blocks * block_size > sorted_ids.reshape(-1).numel()
+        or blocks > expert_ids.reshape(-1).numel()
+    ):
+        say(f"  {label}: num_tokens_post_pad {used} exceeds the returned buffers")
+        return False
     got_expert_ids = expert_ids.reshape(-1)[:blocks].tolist()
+    problems = []
+    if used != ref_num:
+        problems.append(f"num_tokens_post_pad {used} != {ref_num}")
     if got_expert_ids != ref_expert_ids[:blocks].tolist():
-        first = next(
-            (
-                i
-                for i, (got, want) in enumerate(
-                    zip(got_expert_ids, ref_expert_ids.tolist())
-                )
-                if got != want
-            ),
-            None,
-        )
-        say(f"  {label}: expert_ids differ (first mismatch at block {first})")
-        ok = False
-    got = sorted_ids.reshape(-1)[:used].reshape(blocks, block_size).tolist()
-    want = ref_ids[: blocks * block_size].reshape(blocks, block_size).tolist()
-    bad = [i for i, (g, w) in enumerate(zip(got, want)) if sorted(g) != sorted(w)]
-    if bad:
-        say(f"  {label}: {len(bad)} of {blocks} blocks differ, first {bad[:3]}")
-        first = bad[0]
-        say(f"    block {first}: expert {got_expert_ids[first]}")
-        say(
-            f"      got  real={[v for v in got[first] if v != int(ref_num)][:12]} "
-            f"pads={sum(1 for v in got[first] if v == int(ref_num))}"
-        )
-        say(
-            f"      want real={[v for v in want[first] if v != int(ref_num)][:12]} "
-            f"pads={sum(1 for v in want[first] if v == int(ref_num))}"
-        )
-        all_got = sorted(v for row in got for v in row if v != int(ref_num))
-        all_want = sorted(v for row in want for v in row if v != int(ref_num))
-        say(
-            f"    same multiset of real tokens overall: {all_got == all_want} "
-            f"(got {len(all_got)}, want {len(all_want)})"
-        )
-        ok = False
-    return ok
+        problems.append("block->expert map differs")
+        return False
+    flat = sorted_ids.reshape(-1)[:used].tolist()
+    ref_flat = ref_ids.tolist()
+    strict_bad = 0
+    per_expert_bad = []
+    tail_bad = []
+    expert = got_expert_ids[0]
+    region: list[int] = []
+    ref_region: list[int] = []
+    regions: list[tuple[int, list[int], list[int]]] = []
 
+    def flush() -> None:
+        if region:
+            regions.append((expert, region, ref_region))
 
-def align_via_flag_gems(topk_ids, block_size, num_experts, *, tle: bool):
-    """FlagGems' public kernel; ``tle=False`` forces its classic 4-stage path."""
-    import flag_gems
-
-    module = sys.modules[FLAG_GEMS_ALIGN_MODULE]
-    saved = module.HAS_TLE
-    module.HAS_TLE = bool(tle)
-    try:
-        return flag_gems.moe_align_block_size(topk_ids, block_size, num_experts)
-    finally:
-        module.HAS_TLE = saved
+    for index in range(used):
+        current_expert = got_expert_ids[index // block_size]
+        if current_expert != expert:
+            flush()
+            expert, region, ref_region = current_expert, [], []
+        region.append(flat[index])
+        ref_region.append(ref_flat[index])
+    flush()
+    for expert, got_region, want_region in regions:
+        got_real = sorted(v for v in got_region if v != pad_value)
+        want_real = sorted(v for v in want_region if v != pad_value)
+        if got_real != want_real:
+            per_expert_bad.append(expert)
+        got_pads = sum(1 for v in got_region if v == pad_value)
+        want_pads = sum(1 for v in want_region if v == pad_value)
+        if (
+            got_pads != want_pads
+            or got_region[len(got_region) - got_pads :] != [pad_value] * got_pads
+        ):
+            tail_bad.append(expert)
+        got_blocks = [
+            sorted(got_region[i : i + block_size])
+            for i in range(0, len(got_region), block_size)
+        ]
+        want_blocks = [
+            sorted(want_region[i : i + block_size])
+            for i in range(0, len(want_region), block_size)
+        ]
+        strict_bad += sum(1 for g, w in zip(got_blocks, want_blocks) if g != w)
+    if per_expert_bad:
+        problems.append(f"token sets differ for experts {per_expert_bad[:5]}")
+    if tail_bad:
+        problems.append(f"padding not at region end for experts {tail_bad[:5]}")
+    out_of_range = sum(1 for v in flat if v >= pad_value and v != pad_value)
+    if out_of_range:
+        problems.append(f"{out_of_range} entries are neither a token nor the pad value")
+    if problems:
+        say(f"  {label}: {'; '.join(problems)}")
+    else:
+        say(
+            f"  {label}: SEMANTIC OK"
+            + (
+                f" (order differs from the reference in {strict_bad} of {blocks} blocks)"
+                if strict_bad
+                else ""
+            )
+        )
+    return not problems
 
 
 def make_case(tokens, topk, experts):
@@ -132,17 +161,13 @@ def make_case(tokens, topk, experts):
 
 
 def step1_flag_gems_kernel() -> bool:
-    say("=== step 1: FlagGems moe_align_block_size (as shipped vs TLE off) ===")
+    say("=== step 1: FlagGems moe_align_block_size as shipped vs reference ===")
     import flag_gems  # noqa: F401
 
-    say(
-        "  module HAS_TLE as shipped:",
-        sys.modules[FLAG_GEMS_ALIGN_MODULE].HAS_TLE
-        if FLAG_GEMS_ALIGN_MODULE in sys.modules
-        else "not imported yet",
-    )
+    say("  module HAS_TLE as shipped:", sys.modules[FLAG_GEMS_ALIGN_MODULE].HAS_TLE)
     cases = [
         (1, 8, 256, 64),
+        (1, 8, 257, 64),
         (37, 8, 256, 16),
         (512, 8, 256, 64),
         (1000, 8, 257, 64),
@@ -155,29 +180,33 @@ def step1_flag_gems_kernel() -> bool:
         (4098, 8, 256, 64),
         (8192, 8, 256, 64),
         (16384, 8, 256, 64),
+        (16384, 10, 512, 32),
     ]
-    results = {}
+    all_ok = True
     for tokens, topk, experts, block in cases:
         topk_ids = make_case(tokens, topk, experts)
-        ref = reference(topk_ids.cpu(), block, experts)
-        for tle in (True, False):
-            label = f"numel={tokens * topk} E={experts + 0} block={block} tle={'on' if tle else 'off'}"
-            try:
-                torch.cuda.synchronize()
-                start = time.perf_counter()
-                out = align_via_flag_gems(topk_ids, block, experts, tle=tle)
-                torch.cuda.synchronize()
-                elapsed = (time.perf_counter() - start) * 1000
-                ok = compare(
-                    label, block, out[0].cpu(), out[1].cpu(), out[2].cpu(), ref
-                )
-                say(f"  {label}: {'OK' if ok else 'MISMATCH'} ({elapsed:.1f} ms)")
-            except Exception as error:  # noqa: BLE001 - probe reports and continues
-                say(f"  {label}: RAISED {type(error).__name__}: {str(error)[:300]}")
-                traceback.print_exc()
-                ok = False
-            results[(tokens, tle)] = ok
-    return all(results[(tokens, False)] for tokens, _, _, _ in cases)
+        label = f"numel={tokens * topk} E={experts} block={block}"
+        try:
+            torch.cuda.synchronize()
+            start = time.perf_counter()
+            out = flag_gems.moe_align_block_size(topk_ids, block, experts)
+            torch.cuda.synchronize()
+            elapsed = (time.perf_counter() - start) * 1000
+            ok = compare(
+                label,
+                block,
+                out[0].cpu(),
+                out[1].cpu(),
+                out[2].cpu(),
+                reference(topk_ids.cpu(), block, experts),
+            )
+            say(f"    ({elapsed:.1f} ms)")
+            all_ok = all_ok and ok
+        except Exception as error:  # noqa: BLE001 - probe reports and continues
+            say(f"  {label}: RAISED {type(error).__name__}: {str(error)[:300]}")
+            traceback.print_exc()
+            all_ok = False
+    return all_ok
 
 
 def make_drop_in():
@@ -194,8 +223,10 @@ def make_drop_in():
     ):
         if ignore_invalid_expert:
             raise RuntimeError("probe drop-in does not implement ignore_invalid_expert")
-        sorted_ids, expert_ids, num_post_pad = align_via_flag_gems(
-            topk_ids, block_size, num_experts, tle=False
+        import flag_gems
+
+        sorted_ids, expert_ids, num_post_pad = flag_gems.moe_align_block_size(
+            topk_ids, block_size, num_experts
         )
         used = int(num_post_pad.reshape(-1)[0])
         if used > sorted_token_ids.numel():
@@ -235,7 +266,13 @@ def step2_sglang_symbol() -> bool:
         say("  unpatched call unexpectedly succeeded; nothing to replace")
         return True
 
-    kernels_moe.moe_align_block_size = make_drop_in()
+    drop_in = make_drop_in()
+    # The SGLang wrapper calls the symbol it bound at import time, so the
+    # caller module's own name has to be rebound as well.
+    kernels_moe.moe_align_block_size = drop_in
+    say("  caller bound name:", getattr(runner, "sgl_moe_align_block_size", None))
+    if getattr(runner, "sgl_moe_align_block_size", None) is not None:
+        runner.sgl_moe_align_block_size = drop_in
     for tokens in (1, 16, 77, 512, 2048, 4096, 8192):
         topk_ids = make_case(tokens, 8, 256)
         try:
@@ -288,9 +325,9 @@ def step3_fast_topk() -> bool:
         return True
 
     spec_utils.fast_topk = torch_fast_topk
-    # Shapes as eagle_worker_v2.draft_forward calls it for i >= 1: topk_p,
-    # topk_index and scores carry topk*topk candidates per request, hidden is
-    # one row per request.
+    # Shapes as eagle_worker_v2.draft_forward calls it for i >= 1: topk_p and
+    # topk_index carry topk*topk candidates per request, scores is the current
+    # step's topk scores per request, hidden is one row per request.
     batch, topk = 8, 2
     generator = torch.Generator(device="cpu").manual_seed(0)
     topk_p = torch.rand(batch, topk * topk, generator=generator).to("cuda")
@@ -300,7 +337,7 @@ def step3_fast_topk() -> bool:
         .to("cuda")
     )
     hidden = torch.rand(batch, 16, generator=generator).to("cuda")
-    scores_full = torch.rand(batch, topk * topk, generator=generator).to("cuda")
+    scores_full = torch.rand(batch, topk, generator=generator).to("cuda")
     all_ok = True
     for iteration in (1, 2):
         try:
