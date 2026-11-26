@@ -124,14 +124,16 @@ python .github/scripts/hygon/ci_environment.py -- \
 
 # TEMP experiment for the 35B-A3B MoE failure: can FlagGems'
 # moe_align_block_size replace the sgl_kernel one on HCU? Read-only probe.
-python "$PLUGIN_ROOT/.github/scripts/hygon/probe_moe_align.py" 2>&1 \
-  | sed 's/^/[moe-probe-setup] /' || true
-
-# TEMP integration experiment: give the sgl_kernel placeholder the two
-# fallbacks in every Python process of this job container (a .pth line).
+# TEMP integration experiment: give the sgl_kernel placeholder the fallback
+# table in every Python process of this job container (a .pth line).
 purelib="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
 cp "$PLUGIN_ROOT/.github/scripts/hygon/hcu_sgl_kernel_fallback_probe.py" \
   "$purelib/zz_hcu_sgl_kernel_fallback_probe.py"
 echo 'import zz_hcu_sgl_kernel_fallback_probe; zz_hcu_sgl_kernel_fallback_probe.install()' \
   > "$purelib/zz_hcu_sgl_kernel_fallback_probe.pth"
 echo "[hcu-fallback-probe] hook installed under $purelib"
+
+# TEMP probe of the operators on the 35B-A3B and mtp paths. Runs AFTER the hook
+# is installed, so steps 2-4 exercise the fallbacks as the e2e processes do.
+python "$PLUGIN_ROOT/.github/scripts/hygon/probe_moe_align.py" 2>&1 \
+  | sed 's/^/[moe-probe-setup] /' || true

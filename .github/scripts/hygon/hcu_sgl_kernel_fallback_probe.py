@@ -112,19 +112,39 @@ def top_p_renorm_prob(probs, top_p):
     return top_p_renorm_probs_triton(probs, top_p)
 
 
-def build_tree_kernel_efficient(*args, **kwargs):
-    """Run SGLang's own wrapper, but with the Triton builder underneath
-    (the builder SGLang itself selects on XPU)."""
-    from sglang.srt.speculative import eagle_utils
+def build_tree_kernel_efficient(
+    parent_list,
+    selected_index,
+    verified_seq_len,
+    tree_mask,
+    positions,
+    retrieve_index,
+    retrieve_next_token,
+    retrieve_next_sibling,
+    topk,
+    depth,
+    draft_token_num,
+    tree_mask_mode,
+):
+    """Low-level builder (SGLang binds it as sgl_build_tree_kernel_efficient
+    and allocates the buffers itself): launch SGLang's Triton builder, the
+    one its XPU path uses."""
+    from sglang.srt.speculative.eagle_utils import sgl_build_tree_kernel_triton
 
-    original = eagle_utils.sgl_build_tree_kernel_efficient
-    eagle_utils.sgl_build_tree_kernel_efficient = (
-        eagle_utils.sgl_build_tree_kernel_triton
+    return sgl_build_tree_kernel_triton(
+        parent_list,
+        selected_index,
+        verified_seq_len,
+        tree_mask,
+        positions,
+        retrieve_index,
+        retrieve_next_token,
+        retrieve_next_sibling,
+        topk,
+        depth,
+        draft_token_num,
+        tree_mask_mode,
     )
-    try:
-        return eagle_utils.build_tree_kernel_efficient(*args, **kwargs)
-    finally:
-        eagle_utils.sgl_build_tree_kernel_efficient = original
 
 
 def verify_tree_greedy(predicts, accept_index, accept_token_num, candidates, **tree):

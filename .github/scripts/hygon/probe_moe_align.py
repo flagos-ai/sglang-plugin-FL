@@ -387,7 +387,12 @@ def step4_round2_table() -> bool:
     say("=== step 4: silu_and_mul / moe_sum_reduce / tree build+verify ===")
     hook = load_hook_module()
     import sglang.srt.layers.moe.moe_runner.triton_utils.fused_moe as fused_moe
+    import sglang.srt.speculative.eagle_utils as eagle_utils
 
+    say(
+        "  eagle_utils.sgl_build_tree_kernel_efficient is hook:",
+        eagle_utils.sgl_build_tree_kernel_efficient is hook.build_tree_kernel_efficient,
+    )
     all_ok = True
     device = "cuda"
 
@@ -449,7 +454,7 @@ def step4_round2_table() -> bool:
                 retrieve_next_token,
                 retrieve_next_sibling,
                 draft_tokens_all,
-            ) = hook.build_tree_kernel_efficient(
+            ) = eagle_utils.build_tree_kernel_efficient(
                 bonus,
                 parent_list,
                 scores_index,
