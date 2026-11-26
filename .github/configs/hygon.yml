@@ -12,8 +12,13 @@ test_timeout: 180
 ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:b2049b1bbc47ac5b1b51a0a5506e98e32dc36f634c2c369ed3c7b6dc3a87aa86
 
 # Runner labels for this hardware
+# TEMP validation on the new self-hosted machine; restore the CI pool label
+# before merging #180.
 runner_labels:
-  - ci-sglang-plugin-fl-hygon
+  - self-hosted
+  - Linux
+  - X64
+  - hygon
 
 # Container volumes (hardware-specific paths).
 # The CI image ships only the DTK userspace; the DCU driver userspace lives on
