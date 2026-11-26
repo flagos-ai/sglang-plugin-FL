@@ -67,6 +67,7 @@ _ATTN_BACKEND_MAP = {
     "kunlunxin": "kunlunxin",
     "iluvatar": "triton",
     "hygon": "hcu",
+    "tsingmicro": "txda_oot",
     "metax": "triton",
 }
 
@@ -214,6 +215,15 @@ class PlatformFL(SRTPlatform):
     # ------------------------------------------------------------------
 
     def get_device(self, local_rank: int) -> torch.device:
+        # SGLang's ``utils.common.get_device()`` (no device id) falls back to
+        # ``current_platform.get_device(None)`` and expects a device-type
+        # *string* ("txda"); ServerArgs then calls ``.split(":")`` on it. This
+        # is reached on TsingMicro when ``--device`` is not given (e.g.
+        # ``python -m sglang.bench_offline_throughput``). Temporary,
+        # tsingmicro-only fix; every other vendor and every rank-based call
+        # keep returning a torch.device.
+        if local_rank is None and self._vendor_name == "tsingmicro":
+            return self._device_type
         return torch.device(self._device_type, local_rank)
 
     def set_device(self, device: torch.device) -> None:
@@ -369,7 +379,11 @@ class PlatformFL(SRTPlatform):
     def is_pin_memory_available(self, device=None) -> bool:
         if device is not None and str(device) == "cpu":
             return False
-        return self._device_type in ("cuda", "npu", "xpu", "musa", "tsingmicro")
+        # TXDA ("txda"; the old entry "tsingmicro" is the vendor name and never
+        # matched): torch_txda's pin_memory() returns an unpinned tensor
+        # (is_pinned() stays False), so SGLang's pinned non_blocking copies
+        # would gain nothing. Keep it off, as in every validated run.
+        return self._device_type in ("cuda", "npu", "xpu", "musa")
 
     def supports_fp8(self) -> bool:
         if self._device_type == "cuda":
@@ -454,6 +468,12 @@ class PlatformFL(SRTPlatform):
             )
 
             apply_musa_runtime_defaults(server_args)
+        if self._vendor_name == "tsingmicro":
+            from sglang_fl.dispatch.backends.vendor.tsingmicro.runtime_config import (
+                apply_tsingmicro_runtime_defaults,
+            )
+
+            apply_tsingmicro_runtime_defaults(server_args)
         if self._vendor_name == "thead":
             from sglang_fl.dispatch.backends.vendor.thead.runtime_config import (
                 apply_thead_runtime_defaults,
