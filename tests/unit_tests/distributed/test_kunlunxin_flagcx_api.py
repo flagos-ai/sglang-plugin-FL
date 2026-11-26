@@ -1,6 +1,8 @@
 """FlagCX API selection, stream binding and existing fallback contracts."""
 import ctypes
+from pathlib import Path
 import sys
+from tempfile import TemporaryDirectory
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -46,10 +48,51 @@ class FlagCXAPIContract(unittest.TestCase):
                 flagcx._import_flagcx_api()
             self.assertIs(caught.exception, error)
 
+    def test_explicit_root_pairs_packaged_api_with_source_library(self):
+        api = object()
+        spec = SimpleNamespace(submodule_search_locations=["/fake"])
+        with (
+            TemporaryDirectory() as root,
+            patch.dict("os.environ", {"FLAGCX_PATH": root}),
+            patch.object(sys, "path", list(sys.path)),
+            patch.object(flagcx, "find_spec", return_value=spec),
+            patch.object(flagcx.PathFinder, "find_spec", return_value=object()),
+            patch.object(flagcx, "import_module", return_value=api) as importer,
+        ):
+            selected_api, library_path = flagcx._load_collective_api()
+
+        self.assertIs(selected_api, api)
+        self.assertEqual(Path(library_path), Path(root) / "build/lib/libflagcx.so")
+        importer.assert_called_once_with("flagcx.api")
+
+    def test_explicit_root_keeps_its_legacy_wrapper(self):
+        legacy = object()
+        with (
+            TemporaryDirectory() as root,
+            patch.dict("os.environ", {"FLAGCX_PATH": root}),
+            patch.object(sys, "path", list(sys.path)),
+            patch.object(flagcx, "find_spec") as find_spec,
+            patch.object(flagcx, "import_module", return_value=legacy) as importer,
+        ):
+            wrapper = Path(root) / "plugin/interservice/flagcx_wrapper.py"
+            wrapper.parent.mkdir(parents=True)
+            wrapper.touch()
+            selected_api, library_path = flagcx._load_collective_api()
+
+        self.assertIs(selected_api, legacy)
+        self.assertEqual(Path(library_path), Path(root) / "build/lib/libflagcx.so")
+        find_spec.assert_not_called()
+        importer.assert_called_once_with("plugin.interservice.flagcx_wrapper")
+
     def test_initialization_failure_preserves_existing_fallback(self):
         from sglang_fl.distributed.communicator import CommunicatorFL
         platform = SimpleNamespace(PlatformFL=Mock(return_value=SimpleNamespace(_dist_backend="flagcx")))
-        with patch.dict(sys.modules, {"sglang_fl.platform": platform}), patch.object(flagcx, "_import_flagcx_wrapper", side_effect=RuntimeError("intentional import failure")):
+        with (
+            patch.dict(sys.modules, {"sglang_fl.platform": platform}),
+            patch.object(
+                flagcx, "_load_collective_api", side_effect=RuntimeError("intentional import failure")
+            ),
+        ):
             comm = CommunicatorFL("cpu-group", __import__("torch").device("cuda:0"), "device-group", 2, 0, [0, 1])
             self.assertFalse(comm.is_active)
             self.assertIsNone(comm._flagcx_comm)
@@ -66,12 +109,11 @@ class FlagCXAPIContract(unittest.TestCase):
         comm._stream_cache = {}
         comm._get_raw_stream_handle = lambda: 42
         comm.flagcx = SimpleNamespace(devHandle=SimpleNamespace(contents=SimpleNamespace(streamCopy=Mock(side_effect=copy))), FLAGCX_CHECK=Mock())
-        api = SimpleNamespace(flagcxStream_t=ctypes.c_void_p)
-        with patch.object(flagcx, "_import_flagcx_api", return_value=api):
-            stream = comm._get_stream()
-            self.assertEqual(stream.value, 123)
-            self.assertIs(comm._get_stream(), stream)
-            comm.flagcx.devHandle.contents.streamCopy.assert_called_once()
+        comm._flagcx_api = SimpleNamespace(flagcxStream_t=ctypes.c_void_p)
+        stream = comm._get_stream()
+        self.assertEqual(stream.value, 123)
+        self.assertIs(comm._get_stream(), stream)
+        comm.flagcx.devHandle.contents.streamCopy.assert_called_once()
         comm._stream_cache.clear()
         comm.flagcx = None
 

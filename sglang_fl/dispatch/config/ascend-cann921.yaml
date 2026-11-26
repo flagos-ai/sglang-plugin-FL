@@ -1,0 +1,12 @@
+# Copyright 2026 FlagOS Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+# Additional ATen exclusions for Ascend with SGLang 0.5.18, CANN 9.2.1,
+# FlagGems 5.4.0 and active FlagTree 0.7.0+ascend3.5.
+# FlagTree cannot lower the mixed-type pow in gelu_tanh.
+# FlagGems lift_fresh kernels launch a zero grid on empty tensors.
+# https://github.com/flagos-ai/FlagGems/pull/6802
+flagos_blacklist:
+  - gelu
+  - lift_fresh
+  - lift_fresh_copy

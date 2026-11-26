@@ -19,6 +19,7 @@ import yaml
 _ROOT = Path(__file__).parents[2]
 _DOCKERFILE = _ROOT / "docker" / "ascend" / "empty-0.5.18.containerfile"
 _DOCKERIGNORE = Path(f"{_DOCKERFILE}.dockerignore")
+_CANN921_DOCKERFILE = _DOCKERFILE.with_name("cann921-0.5.18.containerfile")
 _ASCEND_CONFIG = _ROOT / ".github" / "configs" / "ascend.yml"
 _ASCEND_CHECK = _ROOT / ".github" / "scripts" / "ascend" / "check.sh"
 _PLATFORM_REGISTRY = _ROOT / ".github" / "configs" / "platforms.yml"
@@ -142,6 +143,148 @@ def test_ci_uses_the_ascend_runtime_without_privileged_mode() -> None:
     assert "HCCL_IF_BASE_PORT=" not in options
     assert "--privileged" not in options
     assert "--device /dev/" not in options
+
+
+def test_pinned_ascend_ci_and_image_builds_expect_their_cann_release() -> None:
+    config = yaml.safe_load(_ASCEND_CONFIG.read_text(encoding="utf-8"))
+    assert "-e SGLANG_FL_ASCEND_EXPECTED_CANN=9.2.1" in config["container_options"]
+    for path, release in ((_DOCKERFILE, "8.5.0"), (_CANN921_DOCKERFILE, "9.2.1")):
+        dockerfile = path.read_text(encoding="utf-8")
+        assert dockerfile.count(f"--expected-cann-version {release}") == 2
+
+
+def test_verifier_reports_cann_without_a_required_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    monkeypatch.setenv("ASCEND_TOOLKIT_HOME", str(tmp_path))
+    (tmp_path / "version.cfg").write_text("version=9.3.0\n", encoding="utf-8")
+
+    _VERIFIER._check_cann_version(None)
+
+    assert "CANN=9.3.0" in capsys.readouterr().out
+
+
+def test_verifier_checks_the_requested_cann_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ASCEND_TOOLKIT_HOME", str(tmp_path))
+    config = tmp_path / "version.cfg"
+    config.write_text("version=9.2.1.B100\n", encoding="utf-8")
+    _VERIFIER._check_cann_version("9.2.1")
+
+    config.write_text("version=9.2.10\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match=r"CANN must be 9\.2\.1, found 9\.2\.10"):
+        _VERIFIER._check_cann_version("9.2.1")
+
+
+@pytest.mark.parametrize(
+    ("ci_expectation", "explicit", "expected"),
+    [(None, None, None), ("9.2.1", None, "9.2.1"), ("9.2.1", "8.5.0", "8.5.0")],
+)
+def test_verifier_cli_reads_the_cann_release_from_its_caller(
+    monkeypatch: pytest.MonkeyPatch,
+    ci_expectation: str | None,
+    explicit: str | None,
+    expected: str | None,
+) -> None:
+    if ci_expectation is None:
+        monkeypatch.delenv("SGLANG_FL_ASCEND_EXPECTED_CANN", raising=False)
+    else:
+        monkeypatch.setenv("SGLANG_FL_ASCEND_EXPECTED_CANN", ci_expectation)
+    argv = [str(_VERIFIER_PATH)]
+    if explicit is not None:
+        argv.extend(("--expected-cann-version", explicit))
+    monkeypatch.setattr(sys, "argv", argv)
+    calls = []
+    monkeypatch.setattr(_VERIFIER, "verify", lambda **kwargs: calls.append(kwargs))
+
+    assert _VERIFIER.main() == 0
+    assert calls[0]["expected_cann_version"] == expected
+
+
+def _stub_verifier_runtime(monkeypatch: pytest.MonkeyPatch, *, cann921: bool):
+    events = []
+    monkeypatch.setenv("SGLANG_FL_ASCEND_CANN921", "1" if cann921 else "0")
+    monkeypatch.setattr(
+        _VERIFIER,
+        "sys",
+        SimpleNamespace(version_info=(3, 12 if cann921 else 11), version="test"),
+    )
+    monkeypatch.setattr(
+        _VERIFIER,
+        "_require_distribution",
+        lambda name, expected: events.append(("distribution", name, expected)),
+    )
+    for name in (
+        "_require_source_markers",
+        "_check_cann_version",
+        "_require_flagtree",
+        "_require_npu_kernel_surface",
+        "_require_solve_tril_source",
+        "_require_deep_ep_layout",
+        "_require_sglang_import",
+        "_require_plugin",
+    ):
+        monkeypatch.setattr(_VERIFIER, name, lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        _VERIFIER, "_require_flagcx_layout", lambda **kwargs: Path("libflagcx.so")
+    )
+    monkeypatch.setattr(
+        _VERIFIER,
+        "_require_npu",
+        lambda *args, **kwargs: events.append(("npu",)),
+    )
+    return events
+
+
+@pytest.mark.parametrize("cann921", (False, True))
+@pytest.mark.parametrize("require_ci", (False, True))
+@pytest.mark.parametrize("require_npu", (False, True))
+def test_benchmark_imports_are_scoped_to_the_new_ci_image_and_device_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+    cann921: bool,
+    require_ci: bool,
+    require_npu: bool,
+) -> None:
+    events = _stub_verifier_runtime(monkeypatch, cann921=cann921)
+    monkeypatch.setattr(
+        _VERIFIER, "_require_import", lambda name: events.append(("import", name))
+    )
+
+    _VERIFIER.verify(require_ci=require_ci, require_npu=require_npu)
+
+    for name, version in (
+        ("numpy", "1.26.4"),
+        ("pyarrow", "25.0.1"),
+        ("datasets", "5.2.0"),
+    ):
+        assert (("distribution", name, version) in events) is cann921
+        assert (("import", name) in events) is (cann921 and require_ci)
+    benchmark_import = ("import", "sglang.benchmark.serving")
+    assert (benchmark_import in events) is (cann921 and require_ci and require_npu)
+    if benchmark_import in events:
+        assert events.index(("npu",)) < events.index(benchmark_import)
+
+
+def test_ci_verifier_rejects_pyarrow_numpy_abi_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = _stub_verifier_runtime(monkeypatch, cann921=True)
+
+    def import_module(name: str):
+        if name == "pyarrow":
+            raise ImportError("pyarrow requires NumPy 2.0 or newer, found 1.26.4")
+        return SimpleNamespace()
+
+    monkeypatch.setattr(_VERIFIER.importlib, "import_module", import_module)
+
+    with pytest.raises(
+        RuntimeError, match="failed to import pyarrow: ImportError"
+    ) as exc:
+        _VERIFIER.verify(require_ci=True, require_npu=True)
+
+    assert isinstance(exc.value.__cause__, ImportError)
+    assert ("npu",) not in events
 
 
 def test_ci_mounts_host_models_and_driver_read_only() -> None:

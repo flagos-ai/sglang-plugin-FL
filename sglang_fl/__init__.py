@@ -486,6 +486,7 @@ def _setup_flaggems(config: dict = None):
         return
 
     import flag_gems
+    from sglang_fl.dispatch.config.utils import get_flagos_runtime_blacklist
 
     # Whitelist/blacklist: env > YAML config
     if config is not None:
@@ -509,6 +510,22 @@ def _setup_flaggems(config: dict = None):
     whitelist = _parse_list(whitelist_str)
     if blacklist_str:
         blacklist = _parse_list(blacklist_str)
+
+    runtime_blacklist = get_flagos_runtime_blacklist(
+        getattr(flag_gems, "vendor_name", None),
+        getattr(flag_gems, "__version__", None),
+    )
+    if runtime_blacklist:
+        # Runtime exclusions also apply to explicit operator selections.
+        if whitelist:
+            whitelist = [op for op in whitelist if op not in runtime_blacklist]
+            if not whitelist:
+                logger.info(
+                    "FlagGems: runtime blacklist excludes all requested ATen ops"
+                )
+                return
+        else:
+            blacklist = list(dict.fromkeys([*(blacklist or []), *runtime_blacklist]))
 
     fg_kwargs = dict(
         record=record,

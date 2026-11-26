@@ -22,6 +22,8 @@ from typing import Any
 
 import torch
 
+from .gdn_prefill import uses_native_vk_gdn_state
+
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +88,8 @@ def _sequential_target_verify(
     mixed_qkv: torch.Tensor,
     a: torch.Tensor,
     b: torch.Tensor,
+    *,
+    native_vk_state: bool = False,
 ) -> torch.Tensor:
     """Execute a fixed-width verify chain through the one-token decode ABI."""
 
@@ -148,16 +152,15 @@ def _sequential_target_verify(
     safe_cache_indices = cache_indices.to(torch.int64).clamp(min=0)
     conv_window = layer.conv_weights.shape[-1] - 1
 
-    # Speculative NPU pools deliberately use layouts that the native multi-token
-    # kernels consume as raw storage: conv has D-1 extra rows and temporal is a
-    # transposed view.  Ordinary decode instead expects compact contiguous
-    # [B, K-1, C] conv and [B, HV, K, V] SSM pools.  Materializing logical views
-    # here is essential: passing the speculative pool directly would make the
-    # Triton recurrent kernel reinterpret V-major storage as K-major.
+    # Speculative NPU pools expose the temporal state as a logical K,V view
+    # and reserve D-1 extra rows in the convolution window. Compact the
+    # selected slots for one-token decode. The 2026.9.0 recurrent ABI uses
+    # contiguous V,K; older versions use contiguous K,V.
     work_conv = conv_states.index_select(0, safe_cache_indices)[
         :, -conv_window:, :
     ].contiguous()
-    work_ssm = ssm_states.index_select(0, safe_cache_indices).contiguous()
+    decode_state = ssm_states.transpose(-1, -2) if native_vk_state else ssm_states
+    work_ssm = decode_state.index_select(0, safe_cache_indices).contiguous()
     work_cache_indices = torch.arange(
         batch_size,
         dtype=cache_indices.dtype,
@@ -204,7 +207,8 @@ def _sequential_target_verify(
         # persistence boundary as normal generation.  Copy the logical K,V
         # snapshot back through SGLang's speculative cache view; commit later
         # handles the inverse logical-to-physical layout conversion.
-        intermediate_ssm[:batch_size, step].copy_(work_ssm)
+        snapshot = work_ssm.transpose(-1, -2) if native_vk_state else work_ssm
+        intermediate_ssm[:batch_size, step].copy_(snapshot)
         conv_snapshot = work_conv.transpose(-1, -2)
         intermediate_conv[:batch_size, step].copy_(conv_snapshot)
 
@@ -319,6 +323,7 @@ def patch_gdn_target_verify() -> bool:
         _COMMIT_PARAMETERS,
         "update_mamba_state_after_mtp_verify",
     )
+    native_vk_state = uses_native_vk_gdn_state()
 
     @wraps(original_forward)
     def forward_extend(
@@ -347,6 +352,7 @@ def patch_gdn_target_verify() -> bool:
             mixed_qkv,
             a,
             b,
+            native_vk_state=native_vk_state,
         )
 
     @wraps(original_commit)
