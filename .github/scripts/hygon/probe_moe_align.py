@@ -7,13 +7,13 @@ SGLang's Triton fused_experts path calls
 launching; on HCU sgl_kernel is the plugin's placeholder, so every MoE model
 fails with ``sgl_kernel.moe_align_block_size is unavailable``.
 
-Round 4. Earlier rounds established that the FlagGems kernel is correct for
+Round 5. Earlier rounds established that the FlagGems kernel is correct for
 small inputs but wrong from numel 16384, where it switches to its TLE path.
 
 Step 1 runs the FlagGems kernel as shipped against a plain Python
 reference and compares per expert (what fused MoE actually needs).
-Step 2 installs the drop-in replacement at the symbol SGLang calls and
-checks the buffers SGLang itself allocated.
+Step 2 installs the integration hook's replacement at the symbol SGLang
+calls and checks the buffers SGLang itself allocated.
 Step 3 swaps SGLang's speculative ``fast_topk`` for SGLang's own pure-torch
 one and exercises the MTP draft selection that calls it.
 """
@@ -209,37 +209,16 @@ def step1_flag_gems_kernel() -> bool:
     return all_ok
 
 
-def make_drop_in():
-    def moe_align_block_size(
-        topk_ids,
-        num_experts,
-        block_size,
-        sorted_token_ids,
-        experts_ids,
-        num_tokens_post_pad,
-        cumsum_buffer,
-        pad_sorted_token_ids=False,
-        ignore_invalid_expert=False,
-    ):
-        if ignore_invalid_expert:
-            raise RuntimeError("probe drop-in does not implement ignore_invalid_expert")
-        import flag_gems
+def load_hook_module():
+    """The integration hook, loaded by path WITHOUT installing it."""
+    import importlib.util
+    from pathlib import Path
 
-        sorted_ids, expert_ids, num_post_pad = flag_gems.moe_align_block_size(
-            topk_ids, block_size, num_experts
-        )
-        used = int(num_post_pad.reshape(-1)[0])
-        if used > sorted_token_ids.numel():
-            raise RuntimeError(
-                f"FlagGems produced {used} sorted ids, SGLang allocated "
-                f"{sorted_token_ids.numel()}"
-            )
-        sorted_token_ids.fill_(topk_ids.numel())
-        sorted_token_ids[:used].copy_(sorted_ids[:used])
-        experts_ids[: len(expert_ids)].copy_(expert_ids)
-        num_tokens_post_pad.copy_(num_post_pad.reshape(num_tokens_post_pad.shape))
-
-    return moe_align_block_size
+    path = Path(__file__).with_name("hcu_sgl_kernel_fallback_probe.py")
+    spec = importlib.util.spec_from_file_location("hcu_fallback_probe_hook", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def step2_sglang_symbol() -> bool:
@@ -266,14 +245,15 @@ def step2_sglang_symbol() -> bool:
         say("  unpatched call unexpectedly succeeded; nothing to replace")
         return True
 
-    drop_in = make_drop_in()
+    hook = load_hook_module()
+    drop_in = hook.moe_align_block_size
     # The SGLang wrapper calls the symbol it bound at import time, so the
     # caller module's own name has to be rebound as well.
     kernels_moe.moe_align_block_size = drop_in
     say("  caller bound name:", getattr(runner, "sgl_moe_align_block_size", None))
     if getattr(runner, "sgl_moe_align_block_size", None) is not None:
         runner.sgl_moe_align_block_size = drop_in
-    for tokens in (1, 16, 77, 512, 2048, 4096, 8192):
+    for tokens in (1, 2, 16, 31, 77, 512, 2048, 4096, 8192):
         topk_ids = make_case(tokens, 8, 256)
         try:
             sorted_ids, expert_ids, num_post_pad = runner.moe_align_block_size(
@@ -306,72 +286,93 @@ def step2_sglang_symbol() -> bool:
 def step3_fast_topk() -> bool:
     """MTP draft: spec_utils imports fast_topk from the sgl_kernel placeholder.
 
-    SGLang's own non-CUDA/HIP branch uses a pure-torch fallback
-    (sglang.srt.utils.common.fast_topk); try it at the exact symbol.
+    Candidates at the exact symbol: torch.topk (same shapes for every k) and
+    SGLang's own non-CUDA fallback (a keepdim max shortcut for k == 1). The
+    mtp acceptance runs EAGLE with topk 1, so both k values are exercised.
     """
     say("=== step 3: fast_topk in sglang.srt.speculative.spec_utils ===")
     import sglang.srt.speculative.spec_utils  # noqa: F401
-    from sglang.srt.utils.common import fast_topk as torch_fast_topk
+    from sglang.srt.utils.common import fast_topk as sglang_fallback_fast_topk
 
+    hook = load_hook_module()
     spec_utils = sys.modules["sglang.srt.speculative.spec_utils"]
     say("  current symbol:", getattr(spec_utils, "fast_topk", None))
-    scores = torch.rand(4, 4, device="cuda")
     try:
-        spec_utils.fast_topk(scores, 2, dim=-1)
+        spec_utils.fast_topk(torch.rand(4, 4, device="cuda"), 1, dim=-1)
     except Exception as error:  # noqa: BLE001 - the failure under investigation
         say(f"  unpatched call raises {type(error).__name__}: {str(error)[:200]}")
     else:
         say("  unpatched call unexpectedly succeeded; nothing to replace")
         return True
 
-    spec_utils.fast_topk = torch_fast_topk
+    all_ok = True
     # Shapes as eagle_worker_v2.draft_forward calls it for i >= 1: topk_p and
     # topk_index carry topk*topk candidates per request, scores is the current
-    # step's topk scores per request, hidden is one row per request.
-    batch, topk = 8, 2
-    generator = torch.Generator(device="cpu").manual_seed(0)
-    topk_p = torch.rand(batch, topk * topk, generator=generator).to("cuda")
-    topk_index = (
-        torch.arange(batch * topk * topk, dtype=torch.int64)
-        .view(batch, topk * topk)
-        .to("cuda")
-    )
-    hidden = torch.rand(batch, 16, generator=generator).to("cuda")
-    scores_full = torch.rand(batch, topk, generator=generator).to("cuda")
-    all_ok = True
-    for iteration in (1, 2):
-        try:
-            input_ids, hidden_out, probs, _tree_info = (
-                spec_utils._select_top_k_tokens_later(
-                    iteration, topk_p, topk_index, hidden, scores_full, topk
+    # step's topk scores per request, hidden has one row per topk candidate.
+    batch, width = 8, 16
+    for candidate_name, candidate in (
+        ("torch.topk", hook.fast_topk),
+        ("sglang fallback", sglang_fallback_fast_topk),
+    ):
+        spec_utils.fast_topk = candidate
+        say(f"  candidate: {candidate_name}")
+        for topk in (1, 2, 4):
+            generator = torch.Generator(device="cpu").manual_seed(topk)
+            topk_p = torch.rand(batch, topk * topk, generator=generator).to("cuda")
+            topk_index = (
+                torch.arange(batch * topk * topk, dtype=torch.int64)
+                .view(batch, topk * topk)
+                .to("cuda")
+            )
+            hidden = torch.rand(batch * topk, width, generator=generator).to("cuda")
+            scores = torch.rand(batch, topk, generator=generator).to("cuda")
+            try:
+                torch._dynamo.reset()
+                input_ids, hidden_out, probs, tree_info = (
+                    spec_utils._select_top_k_tokens_later(
+                        1, topk_p, topk_index, hidden, scores, topk
+                    )
+                )
+                torch.cuda.synchronize()
+            except Exception as error:  # noqa: BLE001 - probe reports and continues
+                say(
+                    f"    topk={topk}: RAISED {type(error).__name__}: {str(error)[:200]}"
+                )
+                all_ok = all_ok and False
+                continue
+            expect = (
+                (scores.unsqueeze(2) * topk_p.view(-1, topk, topk))
+                .flatten(start_dim=1)
+                .topk(topk, dim=-1)
+            )
+            close = bool(
+                torch.allclose(
+                    probs.reshape(batch, -1).float().cpu(),
+                    expect.values.cpu(),
+                    atol=1e-5,
                 )
             )
-            torch.cuda.synchronize()
-        except Exception as error:  # noqa: BLE001 - probe reports and continues
-            say(
-                f"  iteration={iteration} RAISED {type(error).__name__}: {str(error)[:300]}"
+            index_match = bool(
+                torch.equal(
+                    torch.sort(
+                        torch.gather(
+                            topk_index.cpu().view(batch, -1), 1, expect.indices
+                        ).flatten()
+                    ).values,
+                    torch.sort(input_ids.cpu()).values,
+                )
             )
-            traceback.print_exc()
-            all_ok = False
-            continue
-        expect_probs = (
-            (scores_full.unsqueeze(2) * topk_p.view(-1, topk, topk))
-            .flatten(start_dim=1)
-            .topk(topk, dim=-1)
-            .values
-        )
-        close = bool(torch.allclose(probs.float().cpu(), expect_probs.cpu(), atol=1e-5))
-        shapes_ok = (
-            tuple(input_ids.shape) == (batch * topk,)
-            and tuple(hidden_out.shape) == (batch * topk, 16)
-            and tuple(probs.shape) == (batch, topk)
-        )
-        say(
-            f"  iteration={iteration}: input_ids={tuple(input_ids.shape)} "
-            f"hidden={tuple(hidden_out.shape)} probs={tuple(probs.shape)} "
-            f"topk_probs_match_torch={close} shapes_ok={shapes_ok}"
-        )
-        all_ok = all_ok and close and shapes_ok
+            shapes_ok = (
+                tuple(input_ids.shape) == (batch * topk,)
+                and tuple(hidden_out.shape) == (batch * topk, width)
+                and tuple(probs.shape) == (batch, topk)
+            )
+            say(
+                f"    topk={topk}: probs_match_torch={close} "
+                f"selected_tokens_match_torch={index_match} shapes_ok={shapes_ok} "
+                f"probs_shape={tuple(probs.shape)}"
+            )
+            all_ok = all_ok and close and index_match and shapes_ok
     return all_ok
 
 
