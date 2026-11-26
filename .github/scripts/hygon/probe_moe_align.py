@@ -494,9 +494,11 @@ def step4_round2_table() -> bool:
             f"positions={positions[:num_draft].tolist()} bonus={[100] * batch}"
         )
 
-        def run(target_rows, label, want_num, want_predicts):
+        def run(target_rows, label, want_num, want_predicts, want_index=None):
             predicts = torch.zeros(batch, num_draft, device=device, dtype=torch.long)
-            accept_index = torch.zeros(batch, steps, device=device, dtype=torch.long)
+            accept_index = torch.zeros(
+                batch, steps + 1, device=device, dtype=torch.long
+            )
             accept_num = torch.zeros(batch, device=device, dtype=torch.long)
             target = torch.tensor(
                 [target_rows] * batch, device=device, dtype=torch.long
@@ -519,13 +521,14 @@ def step4_round2_table() -> bool:
                 ),
             )
             torch.cuda.synchronize()
+            index_ok = want_index is None or torch.equal(
+                accept_index[0].cpu(), torch.tensor(want_index)
+            )
             check(
                 label,
                 bool((accept_num == want_num).all())
-                and torch.equal(
-                    predicts[0, : len(want_predicts)].cpu(),
-                    torch.tensor(want_predicts),
-                ),
+                and torch.equal(predicts[0].cpu(), torch.tensor(want_predicts))
+                and index_ok,
                 f"accept_num={accept_num.tolist()} predicts={predicts[0].tolist()} "
                 f"accept_index={accept_index[0].tolist()}",
             )
@@ -544,13 +547,30 @@ def step4_round2_table() -> bool:
                 rows[node] = tok(child)
             return rows
 
+        def placed(path, final):
+            # predicts[parent] = accepted child token, predicts[last] = final
+            rows = [0] * num_draft
+            for node, child in zip(path, path[1:]):
+                rows[node] = tok(child)
+            rows[path[-1]] = final
+            return rows
+
+        # Nothing accepted: only the root keeps the target's prediction.
+        run(
+            [5000] * num_draft,
+            f"verify reject-all topk={topk}",
+            0,
+            [5000] + [0] * (num_draft - 1),
+            accept_index=[0],
+        )
         accept_all = along([0] + chain, None)
         accept_all[chain[-1]] = 4242
         run(
             accept_all,
             f"verify accept-all topk={topk}",
             len(chain),
-            [tok(node) for node in chain] + [4242],
+            placed([0] + chain, 4242),
+            accept_index=[0] + chain,
         )
         # The target agrees on the first draft and rejects the second.
         partial = along([0] + chain, chain[1])
@@ -558,7 +578,8 @@ def step4_round2_table() -> bool:
             partial,
             f"verify partial-accept topk={topk}",
             1,
-            [tok(chain[0]), wrong],
+            placed([0, chain[0]], wrong),
+            accept_index=[0, chain[0]],
         )
         if topk == 2:
             # Take the sibling branch: 1 -> 4 -> 6 instead of 1 -> 3 -> 5.
@@ -569,8 +590,48 @@ def step4_round2_table() -> bool:
                 rows,
                 "verify sibling-branch topk=2",
                 3,
-                [tok(4), tok(6), 4242],
+                placed([0] + sibling, 4242),
+                accept_index=[0] + sibling,
             )
+    # SGLang's own reference case for this kernel
+    # (kernels/aot/tests/speculative/test_eagle_utils.py), inputs and expected
+    # outputs copied verbatim.
+    device = "cuda"
+    candidates = torch.tensor(
+        [[0, 1, 2, 3, 4, 5], [7, 8, 9, 10, 11, 12]], device=device
+    )
+    retrieve_index = torch.tensor(
+        [[0, 1, 2, 3, 4, 5], [6, 7, 8, 9, 10, 11]], device=device
+    )
+    next_token = torch.tensor(
+        [[1, 2, -1, 4, 5, -1], [4, 2, 3, -1, 5, -1]], device=device
+    )
+    next_sibling = torch.tensor(
+        [[-1, 3, -1, -1, -1, -1], [-1, -1, -1, -1, 1, -1]], device=device
+    )
+    target = torch.tensor(
+        [[3, 18, 18, 4, 5, 18], [11, 18, 18, 18, 12, 18]], device=device
+    )
+    predicts = torch.full((12,), -1, dtype=torch.int64, device=device)
+    accept_index = torch.full((2, 4), -1, dtype=torch.int64, device=device)
+    accept_num = torch.zeros(2, dtype=torch.int64, device=device)
+    hook.verify_tree_greedy(
+        predicts,
+        accept_index,
+        accept_num,
+        candidates,
+        **dict(zip(TREE_KEYS, (retrieve_index, next_token, next_sibling, target))),
+    )
+    torch.cuda.synchronize()
+    want_predicts = [3, -1, -1, 4, 5, 18, 11, -1, -1, -1, 12, 18]
+    want_index = [[0, 3, 4, 5], [6, 10, 11, -1]]
+    check(
+        "verify SGLang reference case",
+        predicts.cpu().tolist() == want_predicts
+        and accept_index.cpu().tolist() == want_index
+        and accept_num.cpu().tolist() == [3, 2],
+        f"predicts={predicts.cpu().tolist()} accept_index={accept_index.cpu().tolist()} accept_num={accept_num.cpu().tolist()}",
+    )
     return all_ok
 
 
