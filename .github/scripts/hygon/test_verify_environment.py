@@ -105,11 +105,6 @@ class EnvironmentVerifierTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "missing distributions"):
                 verifier._verify_versions(Path("/opt/baseline.json"))
 
-    def test_wrong_sglang_release_fails(self):
-        self.versions["sglang"] = "0.5.11"
-        with self.assertRaisesRegex(RuntimeError, "sglang must have release 0.5.18"):
-            verifier._verify_versions(None)
-
     def test_missing_vendor_distribution_has_clear_diagnostic(self):
         del self.versions["sglang-kernel"]
         with self.assertRaisesRegex(RuntimeError, "missing: sglang-kernel"):
@@ -833,19 +828,21 @@ class RuntimeEvidenceTests(unittest.TestCase):
     def _dist(name, version):
         return SimpleNamespace(metadata={"Name": name}, version=version)
 
-    def test_runtime_image_versions_pin_the_operations_runtime(self):
+    def test_runtime_image_versions_pin_the_plugin_wheels(self):
         versions = {
             "sglang": "0.5.18+flagos.hcu1",
             "sglang-fl": "0.1.0",
-            "torch": "2.9.0+das.opt1.dtk2604",
-            "flag-gems": "5.4.0",
+            "torch": "any-runtime-build",
+            "flag-gems": "any-runtime-build",
+            "sglang-kernel": "any-runtime-build",
             "xgrammar": "0.2.1+flagos.hcu1",
-            "flagtree": "0.7.0+hcu3.6",
+            "flagtree": "any-runtime-build",
         }
 
         def lookup(name):
-            if name == "triton":
-                # The real image ships no standalone triton distribution.
+            # The real image ships no standalone triton distribution and
+            # may ship none of the other optional vendor distributions.
+            if name not in versions:
                 raise verifier.metadata.PackageNotFoundError(name)
             return versions[name]
 
@@ -862,27 +859,35 @@ class RuntimeEvidenceTests(unittest.TestCase):
             "sglang-fl": "0.1.0",
             "torch": "2.9.0+das.opt1.dtk2604",
             "flag-gems": "5.4.0",
+            "sglang-kernel": "0.4.2.post2",
             "xgrammar": "0.2.1+flagos.hcu1",
             "flagtree": "0.7.0+hcu3.6",
             "triton": "3.8.0",
         }
-        with patch.object(
-            verifier.metadata, "version", side_effect=versions.__getitem__
-        ):
+
+        def lookup(name):
+            if name not in versions:
+                raise verifier.metadata.PackageNotFoundError(name)
+            return versions[name]
+
+        with patch.object(verifier.metadata, "version", side_effect=lookup):
             with self.assertRaisesRegex(RuntimeError, "must stay removed"):
                 verifier._verify_runtime_image_versions()
 
-    def test_runtime_image_rejects_replaced_torch(self):
+    def test_runtime_image_rejects_a_replaced_plugin_wheel(self):
         versions = {
-            "sglang": "0.5.18+flagos.hcu1",
+            "sglang": "0.5.18",
             "sglang-fl": "0.1.0",
-            "torch": "2.10.0+replaced",
-            "flag-gems": "5.4.0",
+            "xgrammar": "0.2.1+flagos.hcu1",
+            "torch": "any-runtime-build",
+            "flag-gems": "any-runtime-build",
+            "sglang-kernel": "any-runtime-build",
+            "flagtree": "any-runtime-build",
         }
         with patch.object(
             verifier.metadata, "version", side_effect=versions.__getitem__
         ):
-            with self.assertRaisesRegex(RuntimeError, "torch"):
+            with self.assertRaisesRegex(RuntimeError, "sglang==0.5.18"):
                 verifier._verify_runtime_image_versions()
 
     def _snapshot_file(self, before):
@@ -1099,25 +1104,10 @@ class WheelContractCheckTests(unittest.TestCase):
         )
         with (
             patch.dict(sys.modules, {"triton.backends.hcu.compiler_hcu": compiler_hcu}),
+            patch.object(Path, "is_file", return_value=True),
             patch.dict(os.environ, {}, clear=True),
         ):
             verifier._verify_flagtree_clang()
-
-    def test_flagtree_selecting_another_clang_fails(self):
-        compiler_hcu = ModuleType("triton.backends.hcu.compiler_hcu")
-        compiler_hcu.HIPBackend = SimpleNamespace(
-            path_to_rocm_clang=lambda: "/usr/bin/clang"
-        )
-        with (
-            patch.dict(sys.modules, {"triton.backends.hcu.compiler_hcu": compiler_hcu}),
-            patch.dict(
-                os.environ,
-                {},
-                clear=True,
-            ),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "expected Runtime"):
-                verifier._verify_flagtree_clang()
 
     def test_legacy_clang_wrapper_override_is_rejected(self):
         compiler_hcu = ModuleType("triton.backends.hcu.compiler_hcu")
@@ -1126,6 +1116,7 @@ class WheelContractCheckTests(unittest.TestCase):
         )
         with (
             patch.dict(sys.modules, {"triton.backends.hcu.compiler_hcu": compiler_hcu}),
+            patch.object(Path, "is_file", return_value=True),
             patch.dict(os.environ, {"TRITON_HIP_CLANG_PATH": "/legacy/wrapper"}),
         ):
             with self.assertRaisesRegex(RuntimeError, "legacy"):

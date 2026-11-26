@@ -8,7 +8,7 @@ data is bind-mounted read-only:
   runtime-0.5.18.runtime-freeze.txt      runtime distributions (name==version)
   runtime-0.5.18.site-files.sha256       runtime site-packages file hashes
   runtime-0.5.18.pip-check-baseline.txt  the runtime's own pip check findings
-  runtime-0.5.18.provenance.json         compiler slot inventory
+  runtime-0.5.18.provenance.json         observed compiler slot inventory
 
 Checks:
   1. distribution freeze -- every runtime distribution survives with the
@@ -19,16 +19,17 @@ Checks:
      baseline; a transitional exact (xgrammar, triton) exception remains until
      the external-index removal gates can run, while the wheel contract below
      independently rejects metadata that could emit it
-  4. compiler slots      -- every Runtime slot matches its contract and its
-     recorded Triton; the triton module resolves from the slot the image
-     selects (PYTHONPATH=/opt/flagtree) in THIS process; the resolver
-     installed no standalone triton into site-packages; triton distribution
-     metadata is visible exactly when the selected slot ships it
+  4. compiler slots      -- every Runtime slot still matches what the base
+     digest shipped (recorded, never written in this repository); the triton
+     module resolves from the slot the image selects (Runtime Bash
+     PYTHONPATH) in THIS process; the resolver installed no standalone
+     triton into site-packages; any visible triton distribution metadata
+     comes from the selected slot
   5. two-wheel contract  -- sglang and sglang_fl distributions, versions,
      entry points, and the plugin resolving from its installed
      distribution root
-  6. HCU compat markers  -- the Runtime clang path and the plugin-owned
-     early import guard with the scalar_type exemption (the installed
+  6. HCU compat markers  -- the plugin-owned early import guard with the
+     scalar_type exemption and no legacy image-written shim (the installed
      SGLang version is checked by gate 5; its staged wheel is pinned by
      SHA256 in stage_wheels.sh)
 
@@ -53,11 +54,7 @@ from packaging.utils import canonicalize_name
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pip_check_exceptions import pip_check_violations  # noqa: E402
-from triton_slot import (  # noqa: E402
-    assert_slot_root,
-    contract_of,
-    dist_info_version,
-)
+from triton_slot import inspect_slot  # noqa: E402
 
 EXPECTED_SGLANG = "0.5.18+flagos.hcu1"
 EXPECTED_PLUGIN = "0.1.0"
@@ -72,7 +69,6 @@ REQUIRED_PLUGIN_PAYLOAD = (
     "sglang_fl/dispatch/backends/vendor/hygon/impl/attention_backend.py",
     "sglang_fl/dispatch/config/hygon.yaml",
 )
-RUNTIME_CLANG = Path("/opt/dtk/aillvm/bin/clang-18")
 
 
 def installed_distributions() -> dict[str, str]:
@@ -158,18 +154,19 @@ def check_compiler_slots(evidence: Path) -> None:
     recorded = json.loads((evidence / "runtime-0.5.18.provenance.json").read_text())
     slots = recorded.get("compiler_slots", {})
     assert slots, "provenance.json carries no compiler slots"
-    # Every slot the Runtime ships must still carry its recorded Triton and
-    # match its contract; the selected one is the tree this image resolves.
-    for slot_root, expected_version in sorted(slots.items()):
-        observed = assert_slot_root(slot_root)
-        assert observed["module_version"] == expected_version, (
-            f"compiler slot {slot_root} drifted: expected {expected_version}, "
-            f"found {observed['module_version']}"
+    # Every slot the Runtime ships must still be what the base digest
+    # shipped; the selected one is the tree this image resolves.
+    for slot_root, expected in sorted(slots.items()):
+        observed = inspect_slot(slot_root)
+        assert observed == expected, (
+            f"compiler slot {slot_root} drifted: expected {expected}, found {observed}"
         )
-        print(f"[4/6] compiler slot {slot_root}: triton {observed['module_version']}")
+        print(
+            f"[4/6] compiler slot {slot_root}: unchanged "
+            f"(triton module {observed['module_version']})"
+        )
     selected = recorded.get("selected_slot")
     assert selected in slots, f"selected slot {selected!r} is not a recorded slot"
-    contract = contract_of(selected)
     assert os.environ.get("PYTHONPATH") == selected, (
         f"Runtime Bash PYTHONPATH is {os.environ.get('PYTHONPATH')!r}, "
         f"expected the declared slot {selected!r}"
@@ -182,8 +179,7 @@ def check_compiler_slots(evidence: Path) -> None:
     assert spec.origin.startswith(str(Path(selected).resolve()) + "/"), (
         f"triton module resolves {spec.origin}, expected under {selected}"
     )
-    # the resolver must never install a standalone triton; whether a triton
-    # DISTRIBUTION is visible at all is the selected slot's own contract
+    # the resolver must never install a standalone triton
     purelib = Path(sysconfig.get_paths()["purelib"])
     assert not list(purelib.glob("triton-*.dist-info")), (
         "resolver installed a standalone triton distribution into site-packages"
@@ -194,25 +190,15 @@ def check_compiler_slots(evidence: Path) -> None:
         version = md.version("triton")
     except md.PackageNotFoundError:
         version = None
-    if contract["pip_check_sees_triton"]:
-        expected_version = dist_info_version(contract["triton_dist_info"])
-        assert version == expected_version, (
-            f"slot {selected} must expose its triton distribution metadata "
-            f"({expected_version}), found {version!r}"
-        )
+    if version is not None:
         owner = Path(md.distribution("triton").locate_file("")).resolve()
         assert owner == Path(selected).resolve(), (
             f"triton distribution metadata comes from {owner}, expected {selected}"
         )
-    else:
-        assert version is None, (
-            f"slot {selected} ships no triton distribution but one is visible: "
-            f"{version!r}"
-        )
     print(
         f"[4/6] no standalone triton in site-packages; module resolves "
         f"{spec.origin} (slot {selected}; triton distribution metadata: "
-        f"{version or 'absent, per contract'})"
+        f"{version or 'absent'})"
     )
 
 
@@ -294,7 +280,6 @@ def assert_import_guard_semantics(guard_path: Path) -> None:
 def check_hcu_compat_markers() -> None:
     import importlib.metadata as md
 
-    assert RUNTIME_CLANG.is_file(), f"Runtime clang missing: {RUNTIME_CLANG}"
     assert "TRITON_HIP_CLANG_PATH" not in os.environ, (
         "legacy clang wrapper override remains in the image"
     )
@@ -311,7 +296,7 @@ def check_hcu_compat_markers() -> None:
     assert not (purelib / "zz-hcu-kernel-stub-hook.pth").exists(), (
         "legacy startup hook remains"
     )
-    print("[6/6] HCU compat markers: Runtime clang + plugin early import guard")
+    print("[6/6] HCU compat markers: plugin early import guard, no legacy shim")
 
 
 def report_additions(runtime_names: set[str]) -> None:

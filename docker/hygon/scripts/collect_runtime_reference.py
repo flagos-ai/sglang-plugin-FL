@@ -40,11 +40,7 @@ from pathlib import Path
 from packaging.utils import canonicalize_name
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from triton_slot import (  # noqa: E402
-    FLAGTREE_SLOT,
-    SLOT_CONTRACTS,
-    assert_slot_root,
-)
+from triton_slot import FLAGTREE_SLOT, SLOT_ROOTS, inspect_slot, slot_exists  # noqa: E402
 
 # Mirror the final image's Bash-start module resolution: Runtime profile
 # scripts export the selected compiler slot ahead of site-packages. Host-side
@@ -72,7 +68,7 @@ def probe_module(module: str) -> dict:
 
 def select_slot(slot: str) -> None:
     """Select the declared slot with Runtime Bash's import precedence."""
-    for known_slot in SLOT_CONTRACTS:
+    for known_slot in SLOT_ROOTS:
         while known_slot in sys.path:
             sys.path.remove(known_slot)
     sys.path.insert(0, slot)
@@ -117,16 +113,11 @@ def collect(out: Path, base_ref: str, selected_slot: str) -> None:
         if completed.stderr.strip():
             f.write(completed.stderr)
 
-    # every slot the Runtime ships must still match its contract; the
-    # selected one is the tree the finished image will resolve
-    slots = {}
-    for slot in SLOT_CONTRACTS:
-        init = Path(slot) / "triton" / "__init__.py"
-        if not init.is_file():
-            continue
-        observed = assert_slot_root(slot)
-        slots[slot] = observed["module_version"]
-    assert selected_slot in slots and slots[selected_slot], (
+    # record what the Runtime ships in each compiler slot as observed; the
+    # acceptance compares the finished image against this record. The
+    # selected one is the tree the finished image will resolve.
+    slots = {slot: inspect_slot(slot) for slot in SLOT_ROOTS if slot_exists(slot)}
+    assert selected_slot in slots and slots[selected_slot]["module_version"], (
         f"selected compiler slot missing or versionless in the base: {slots}"
     )
 
@@ -138,9 +129,10 @@ def collect(out: Path, base_ref: str, selected_slot: str) -> None:
             "resolved base digest; regenerate whenever the digest changes"
         ),
         "schema": (
-            "compiler-slots-v2 (keys are slot ROOTS; each value is the "
-            "triton __init__.__version__ under <root>/triton) + modules "
-            "(vendor module origins for the provenance gate)"
+            "compiler-slots-v3 (keys are slot ROOTS; each value is the "
+            "observed triton module version, triton dist-info and backends "
+            "under <root>/triton) + modules (vendor module origins for the "
+            "provenance gate)"
         ),
         "selected_slot": selected_slot,
         "selection": f"Runtime Bash environment PYTHONPATH={selected_slot}",
@@ -155,7 +147,8 @@ def collect(out: Path, base_ref: str, selected_slot: str) -> None:
     print(f"reference data collected under {out}:")
     print(f"  distributions: {len(packages)} (canonical)")
     print(f"  site-packages files hashed: {len(manifest)}")
-    print(f"  compiler slots: {slots}")
+    for slot, observed in sorted(slots.items()):
+        print(f"  compiler slot {slot}: {observed}")
     print(f"  pip check exitcode: {completed.returncode}")
 
 
@@ -173,7 +166,9 @@ def main() -> int:
         help="compiler slot selected by Runtime Bash (or the A/B experiment)",
     )
     args = parser.parse_args()
-    assert_slot_root(args.selected_slot)  # rejects unknown slots
+    assert slot_exists(args.selected_slot), (
+        f"selected compiler slot {args.selected_slot!r} is not shipped by the base"
+    )
     select_slot(args.selected_slot)
     args.out.mkdir(parents=True, exist_ok=True)
     collect(args.out, args.base_ref, args.selected_slot)

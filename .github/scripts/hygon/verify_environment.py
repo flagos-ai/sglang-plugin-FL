@@ -45,13 +45,11 @@ OPTIONAL_VENDOR_DISTRIBUTIONS = (
     "triton",
     "flash-attn",
 )
-EXPECTED_RELEASES = {
-    "sglang": "0.5.18",
-    "torch": "2.10.0",
-    "sglang-kernel": "0.4.2.post2",
-    "flag-gems": "5.4.0.dev0",
-}
-EXPECTED_FLAGTREE = "0.6.1+hcu3.6"
+# What the Runtime ships (torch, flagtree, flag-gems, their versions and
+# paths) is decided by the Runtime owner and changes between Runtime
+# rebuilds, so no version of theirs is written here: the checks below only
+# require the vendor distributions to be present and compare the job
+# container against what the image itself started with.
 
 # Operations-runtime image (flagos-runtime-hygon-dtk26.04; the containerfile
 # declares the Runtime's moving semver tag, and each build resolves it to one
@@ -61,14 +59,12 @@ EXPECTED_FLAGTREE = "0.6.1+hcu3.6"
 # corrected HCU xgrammar wheel has no standalone-triton metadata requirement;
 # FlagTree's /opt/flagtree (Runtime Bash PYTHONPATH) is the only Triton in any
 # entrypoint. Staging pins that corrected wheel by SHA256.
-RUNTIME_IMAGE_RELEASES = {
+# The three wheels this repository adds on top of the Runtime.
+INSTALLED_WHEEL_RELEASES = {
     "sglang": "0.5.18+flagos.hcu1",
     "sglang-fl": "0.1.0",
-    "torch": "2.9.0+das.opt1.dtk2604",
-    "flag-gems": "5.4.0",
     "xgrammar": "0.2.1+flagos.hcu1",
 }
-RUNTIME_IMAGE_FLAGTREE = "0.7.0+hcu3.6"
 # Installed into the ephemeral CI job container by setup.sh, pinned with
 # their transitive closure; the operations runtime intentionally ships no
 # test packages. sglang_fl arrives preinstalled as the image's plugin
@@ -198,16 +194,9 @@ def capture_vendor_stack(path: Path) -> None:
 
 
 def _verify_versions(baseline: Path | None) -> None:
-    for name, expected in EXPECTED_RELEASES.items():
-        actual = _distribution_version(name)
-        # DTK wheels encode their build and ABI in PEP 440 local versions.
-        if actual.split("+", 1)[0] != expected:
-            raise RuntimeError(f"{name} must have release {expected}, found {actual}")
-        print(f"[hygon-env] {name}={actual}")
-    actual = _distribution_version("flagtree")
-    if actual != EXPECTED_FLAGTREE:
-        raise RuntimeError(f"flagtree must be {EXPECTED_FLAGTREE}, found {actual}")
-    print(f"[hygon-env] flagtree={actual}")
+    # DTK wheels encode their build and ABI in PEP 440 local versions.
+    for name in REQUIRED_VENDOR_DISTRIBUTIONS:
+        print(f"[hygon-env] {name}={_distribution_version(name)}")
 
     if baseline is not None:
         try:
@@ -249,21 +238,20 @@ def _verify_versions(baseline: Path | None) -> None:
 
 
 def _verify_runtime_image_versions() -> None:
-    """Pin the operations-runtime wheel contract (exact PEP 440 versions)."""
-    for name, expected in RUNTIME_IMAGE_RELEASES.items():
+    """Pin the wheels this repository installs (exact PEP 440 versions)."""
+    for name, expected in INSTALLED_WHEEL_RELEASES.items():
         actual = _distribution_version(name)
         if actual != expected:
             raise RuntimeError(
                 f"operations runtime expects {name}=={expected}, found {actual}"
             )
         print(f"[hygon-env] {name}={actual}")
-    actual = _distribution_version("flagtree")
-    if actual != RUNTIME_IMAGE_FLAGTREE:
-        raise RuntimeError(
-            f"operations runtime expects flagtree=={RUNTIME_IMAGE_FLAGTREE}, "
-            f"found {actual}"
-        )
-    print(f"[hygon-env] flagtree={actual}")
+    # Informational: which vendor distributions the Runtime shipped here.
+    for name in REQUIRED_VENDOR_DISTRIBUTIONS + OPTIONAL_VENDOR_DISTRIBUTIONS:
+        try:
+            print(f"[hygon-env] {name}={metadata.version(name)}")
+        except metadata.PackageNotFoundError:
+            print(f"[hygon-env] {name}=absent")
     # The standalone triton wheel must NOT be installed; corrected xgrammar
     # metadata no longer requests it, FlagTree is the only Triton, and the
     # module must resolve from /opt/flagtree in this very process (setup.sh and
@@ -416,9 +404,8 @@ def _verify_flagtree_clang() -> None:
     from triton.backends.hcu.compiler_hcu import HIPBackend
 
     actual = Path(HIPBackend.path_to_rocm_clang())
-    expected = Path("/opt/dtk/aillvm/bin/clang-18")
-    if actual != expected:
-        raise RuntimeError(f"FlagTree selected {actual}, expected Runtime {expected}")
+    if not actual.is_file():
+        raise RuntimeError(f"FlagTree selected a clang that does not exist: {actual}")
     if "TRITON_HIP_CLANG_PATH" in os.environ:
         raise RuntimeError("legacy TRITON_HIP_CLANG_PATH wrapper override remains")
     print(f"[hygon-env] FlagTree HCU compiler: {actual}")
