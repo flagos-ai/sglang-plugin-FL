@@ -121,3 +121,8 @@ python .github/scripts/hygon/ci_environment.py -- \
   fi
   true
 } 2>&1 | sed 's/^/[hyhal-probe] /' || true
+
+# TEMP experiment for the 35B-A3B MoE failure: can FlagGems'
+# moe_align_block_size replace the sgl_kernel one on HCU? Read-only probe.
+python "$PLUGIN_ROOT/.github/scripts/hygon/probe_moe_align.py" 2>&1 \
+  | sed 's/^/[moe-probe-setup] /' || true
