@@ -64,6 +64,14 @@ bw1000: &bw1000_profile
         - platform/test_tsingmicro_speculative_cache_locs.py
         - platform/test_tsingmicro_speculative_tree.py
         - platform/test_sglang_version_compat.py
+        # TEMP validation-only: dev/0.5.18 moved on again after the candidate
+        # images were built ( communicator hooks, FlagCX API, ascend GDN);
+        # their installed sglang_fl wheel predates those changes.
+        - distributed/test_communicator_hooks.py
+        - distributed/test_flagcx.py
+        - distributed/test_kunlunxin_flagcx_api.py
+        - flaggems/test_setup_flaggems.py
+        - platform/test_ascend_sglang_compat.py
     functional:
       include: "*"
       # Runtime FlashAttention has a vendor-confirmed wont-fix for the

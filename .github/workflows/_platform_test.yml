@@ -136,8 +136,7 @@ jobs:
 
   e2e:
     needs: [setup, functional]
-    # TEMP experiment: e2e off while the MoE align probe runs.
-    if: ${{ false }} && inputs.run_e2e && needs.setup.outputs.e2e_matrix != '[]'
+    if: inputs.run_e2e && needs.setup.outputs.e2e_matrix != '[]'
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJson(needs.setup.outputs.config).e2e_max_parallel || ((inputs.platform == 'musa' || inputs.platform == 'ascend' || inputs.platform == 'hygon' || inputs.platform == 'kunlunxin' || inputs.platform == 'enflame') && 1 || 256) }}
