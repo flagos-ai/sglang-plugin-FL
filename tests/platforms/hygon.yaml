@@ -48,7 +48,11 @@ bw1000: &bw1000_profile
   tests: &bw1000_tests
     unit:
       include: "*"
-      exclude: []
+      # TEMP validation-only: dev/0.5.18 gained the txda vendor package
+      # (#187) after the candidate images were built, so their installed
+      # sglang_fl wheel cannot import it. Drop this entry with the probe.
+      exclude:
+        - platform/test_tsingmicro_*.py
     functional:
       include: "*"
       # Runtime FlashAttention has a vendor-confirmed wont-fix for the
