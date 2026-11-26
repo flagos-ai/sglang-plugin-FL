@@ -52,7 +52,17 @@ bw1000: &bw1000_profile
       # (#187) after the candidate images were built, so their installed
       # sglang_fl wheel cannot import it. Drop this entry with the probe.
       exclude:
-        - platform/test_tsingmicro_*.py
+        - platform/test_tsingmicro_dummy_weights.py
+        - platform/test_tsingmicro_eagle_runtime.py
+        - platform/test_tsingmicro_fused_moe.py
+        - platform/test_tsingmicro_gdn_verify_conv.py
+        - platform/test_tsingmicro_gemma_rms_norm.py
+        - platform/test_tsingmicro_kv_leak_fix.py
+        - platform/test_tsingmicro_model_runner_timer.py
+        - platform/test_tsingmicro_plugin_bootstrap.py
+        - platform/test_tsingmicro_post_import_hook.py
+        - platform/test_tsingmicro_speculative_cache_locs.py
+        - platform/test_tsingmicro_speculative_tree.py
     functional:
       include: "*"
       # Runtime FlashAttention has a vendor-confirmed wont-fix for the
