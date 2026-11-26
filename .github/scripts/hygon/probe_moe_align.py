@@ -48,30 +48,32 @@ def reference(topk_ids: torch.Tensor, block_size: int, num_experts: int):
     )
 
 
-def compare(label, block_size, out, ref) -> bool:
-    sorted_ids, expert_ids, num_post_pad = out
+def compare(label, block_size, sorted_ids, expert_ids, num_post_pad, ref) -> bool:
+    """Compare the VALID prefix: align kernels return buffers allocated to the
+    upper bound (numel + experts * (block - 1)); only the first
+    num_tokens_post_pad entries and their blocks are meaningful."""
     ref_ids, ref_expert_ids, ref_num = ref
+    used = int(num_post_pad.reshape(-1)[0])
+    if used % block_size:
+        say(f"  {label}: num_tokens_post_pad {used} not a multiple of {block_size}")
+        return False
     ok = True
-    if int(num_post_pad.reshape(-1)[0]) != ref_num:
+    if used != ref_num:
+        say(f"  {label}: num_tokens_post_pad {used} != {ref_num}")
+        ok = False
+    blocks = used // block_size
+    got_expert_ids = expert_ids.reshape(-1)[:blocks].tolist()
+    if got_expert_ids != ref_expert_ids[:blocks].tolist():
         say(
-            f"  {label}: num_tokens_post_pad {int(num_post_pad.reshape(-1)[0])} != {ref_num}"
+            f"  {label}: expert_ids differ (first mismatch at "
+            f"{next((i for i, (g, w) in enumerate(zip(got_expert_ids, ref_expert_ids)) if g != w), None)})"
         )
         ok = False
-    if expert_ids.tolist() != ref_expert_ids.tolist():
-        say(f"  {label}: expert_ids differ")
-        ok = False
-    blocks = sorted_ids.reshape(-1, block_size).tolist()
-    ref_blocks = ref_ids.reshape(-1, block_size).tolist()
-    if len(blocks) != len(ref_blocks):
-        say(f"  {label}: {len(blocks)} blocks != {len(ref_blocks)}")
-        return False
-    bad = [
-        index
-        for index, (got, want) in enumerate(zip(blocks, ref_blocks))
-        if sorted(got) != sorted(want)
-    ]
+    got = sorted_ids.reshape(-1)[:used].reshape(blocks, block_size).tolist()
+    want = ref_ids[: blocks * block_size].reshape(blocks, block_size).tolist()
+    bad = [i for i, (g, w) in enumerate(zip(got, want)) if sorted(g) != sorted(w)]
     if bad:
-        say(f"  {label}: {len(bad)} blocks differ, first {bad[:3]}")
+        say(f"  {label}: {len(bad)} of {blocks} blocks differ, first {bad[:3]}")
         ok = False
     return ok
 
@@ -113,7 +115,9 @@ def step1_flag_gems_kernel() -> bool:
             ok = compare(
                 f"tokens={tokens} topk={topk} E={experts} block={block}",
                 block,
-                out,
+                out[0].cpu(),
+                out[1].cpu(),
+                out[2].cpu(),
                 reference(topk_ids.cpu(), block, experts),
             )
             say(
@@ -164,7 +168,13 @@ def make_drop_in(flag_gems_fn):
 def step2_sglang_symbol() -> bool:
     say("=== step 2: drop-in at sglang.kernels.ops.moe.moe_align_block_size ===")
     import flag_gems
-    import sglang.kernels.ops.moe as kernels_moe
+    import sys
+
+    # The package attribute ``sglang.kernels.ops.moe`` is shadowed by the
+    # function of the same name, so resolve the MODULE through sys.modules.
+    import sglang.kernels.ops.moe  # noqa: F401
+
+    kernels_moe = sys.modules["sglang.kernels.ops.moe"]
     import sglang.srt.layers.moe.moe_runner.triton_utils.moe_align_block_size as runner
 
     say("  original symbol:", kernels_moe.moe_align_block_size)
@@ -187,7 +197,9 @@ def step2_sglang_symbol() -> bool:
         ok = compare(
             f"sglang wrapper tokens={tokens}",
             64,
-            (sorted_ids.cpu(), expert_ids.cpu(), num_post_pad.cpu()),
+            sorted_ids.cpu(),
+            expert_ids.cpu(),
+            num_post_pad.cpu(),
             reference(topk_ids.cpu(), 64, 256),
         )
         pad_value = int(topk_ids.numel())
@@ -270,10 +282,19 @@ def step3_fast_topk() -> bool:
         return True
 
     spec_utils.fast_topk = torch_fast_topk
-    topk_p = torch.rand(8, topk, device="cuda")
-    topk_index = torch.arange(8 * topk, device="cuda", dtype=torch.int64).view(8, topk)
-    hidden = torch.rand(8, 16, device="cuda")
-    scores_full = torch.rand(8, topk * 64, device="cuda")
+    # Shapes as eagle_worker_v2.draft_forward calls it for i >= 1:
+    # topk_p / topk_index carry topk*topk candidates per request, scores is
+    # the full draft vocabulary distribution, hidden is one row per request.
+    batch, vocab = 8, 128
+    generator = torch.Generator(device="cpu").manual_seed(0)
+    topk_p = torch.rand(batch, topk * topk, generator=generator).to("cuda")
+    topk_index = (
+        torch.arange(batch * topk * topk, dtype=torch.int64)
+        .view(batch, topk * topk)
+        .to("cuda")
+    )
+    hidden = torch.rand(batch, 16, generator=generator).to("cuda")
+    scores_full = torch.rand(batch, vocab, generator=generator).to("cuda")
     all_ok = True
     for iteration in (1, 2):
         try:
@@ -282,6 +303,7 @@ def step3_fast_topk() -> bool:
                     iteration, topk_p, topk_index, hidden, scores_full, topk
                 )
             )
+            torch.cuda.synchronize()
         except Exception as error:  # noqa: BLE001 - probe reports and continues
             say(
                 f"  iteration={iteration} RAISED {type(error).__name__}: {str(error)[:300]}"
@@ -295,13 +317,18 @@ def step3_fast_topk() -> bool:
             .topk(topk, dim=-1)
             .values
         )
-        close = bool(torch.allclose(probs, expect_probs, atol=1e-6))
+        close = bool(torch.allclose(probs.float().cpu(), expect_probs.cpu(), atol=1e-5))
+        shapes_ok = (
+            tuple(input_ids.shape) == (batch * topk,)
+            and tuple(hidden_out.shape) == (batch * topk, 16)
+            and tuple(probs.shape) == (batch, topk)
+        )
         say(
             f"  iteration={iteration}: input_ids={tuple(input_ids.shape)} "
             f"hidden={tuple(hidden_out.shape)} probs={tuple(probs.shape)} "
-            f"topk_probs_match_torch={close}"
+            f"topk_probs_match_torch={close} shapes_ok={shapes_ok}"
         )
-        all_ok = all_ok and close
+        all_ok = all_ok and close and shapes_ok
     return all_ok
 
 
