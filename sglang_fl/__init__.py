@@ -63,6 +63,14 @@ import os
 
 import torch
 
+from sglang_fl.nvidia_runtime import activate_nvidia_runtime
+
+# The NVIDIA extra installs the CUDA compiler as a standard SGLang dependency,
+# while NVIDIA's wheels use a site-packages layout that FlashInfer does not
+# discover on its own.  Activate a conventional, cache-local view before any
+# SGLang entry point can import or compile a FlashInfer JIT module.
+activate_nvidia_runtime(torch)
+
 # A CoreX CUDA identity does not imply that NVIDIA FlashInfer is available.
 # Set this before SGLang imports cache its availability probe. Spawn workers
 # also need this in their environment (the Iluvatar container exports it).

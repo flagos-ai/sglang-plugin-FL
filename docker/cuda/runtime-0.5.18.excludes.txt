@@ -1,0 +1,15 @@
+# Single-item resolver exclusion for the NVIDIA two-wheel CI image.
+#
+# The operations Runtime provides the Triton compiler as the /opt/flagtree
+# module tree (Triton 3.6.0) activated through its login-shell profile, not
+# as a pip distribution.  Its Runtime-installed FlagGems 5.4.0 is
+# incompatible with standalone Triton 3.7.x (flag_gems.utils.libentry
+# truncates kernel arguments on the 3.7 launcher path), so the two-wheel
+# install must resolve the application closure without any standalone
+# triton distribution.  uv drops exactly this package from resolution and
+# still reports the metadata gap via pip check, which the image verifier
+# accepts as the documented platform capability exception.
+#
+# Keep this file to this one requirement; every other dependency resolves
+# normally from wheel METADATA.
+triton
