@@ -63,6 +63,7 @@ bw1000: &bw1000_profile
         - platform/test_tsingmicro_post_import_hook.py
         - platform/test_tsingmicro_speculative_cache_locs.py
         - platform/test_tsingmicro_speculative_tree.py
+        - platform/test_sglang_version_compat.py
     functional:
       include: "*"
       # Runtime FlashAttention has a vendor-confirmed wont-fix for the
