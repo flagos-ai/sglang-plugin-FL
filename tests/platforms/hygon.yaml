@@ -72,6 +72,10 @@ bw1000: &bw1000_profile
         - distributed/test_kunlunxin_flagcx_api.py
         - flaggems/test_setup_flaggems.py
         - platform/test_ascend_sglang_compat.py
+        # TEMP integration experiment only: the job-container .pth hook of the
+        # sgl_kernel fallback experiment is, by design, what this guard test
+        # forbids (an "hcu"/"stub" .pth in site-packages).
+        - platform/test_hygon_import_guard.py
     functional:
       include: "*"
       # Runtime FlashAttention has a vendor-confirmed wont-fix for the
