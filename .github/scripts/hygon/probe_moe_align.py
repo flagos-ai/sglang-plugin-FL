@@ -522,37 +522,61 @@ def step4_round2_table() -> bool:
             and torch.equal(predicts[:, 0], target_predict[:, 0]),
             f"accept_num={accept_num.tolist()} predicts0={predicts[:, 0].tolist()}",
         )
-        # (b) chain fully accepted (topk 1): the target repeats every draft token.
+        # (b) chain, topk 1. candidates = [bonus, d1, d2, d3]; node i is
+        # accepted when the target's prediction at node i equals the child
+        # token, and predicts carries the target's predictions along the
+        # accepted path (seen in (a): predicts[0] == target_predict[0]).
         if topk == 1:
-            predicts.zero_()
-            accept_index.zero_()
-            accept_num.zero_()
-            target_predict = draft_tokens_all.clone()
-            hook.verify_tree_greedy(
-                predicts,
-                accept_index,
-                accept_num,
-                draft_tokens_all,
-                **dict(
-                    zip(
-                        TREE_KEYS,
-                        (
-                            retrieve_index,
-                            retrieve_next_token,
-                            retrieve_next_sibling,
-                            target_predict,
-                        ),
-                    )
-                ),
-            )
-            torch.cuda.synchronize()
-            check(
+
+            def run_chain(target_rows, label, want_num, want_predicts):
+                predicts.zero_()
+                accept_index.zero_()
+                accept_num.zero_()
+                target = (
+                    torch.tensor(target_rows, device=device, dtype=torch.long)
+                    .expand(batch, -1)
+                    .contiguous()
+                )
+                hook.verify_tree_greedy(
+                    predicts,
+                    accept_index,
+                    accept_num,
+                    draft_tokens_all,
+                    **dict(
+                        zip(
+                            TREE_KEYS,
+                            (
+                                retrieve_index,
+                                retrieve_next_token,
+                                retrieve_next_sibling,
+                                target,
+                            ),
+                        )
+                    ),
+                )
+                torch.cuda.synchronize()
+                check(
+                    label,
+                    bool((accept_num == want_num).all())
+                    and torch.equal(
+                        predicts[0, : len(want_predicts)].cpu(),
+                        torch.tensor(want_predicts),
+                    ),
+                    f"accept_num={accept_num.tolist()} predicts={predicts[0].tolist()} draft={draft_tokens_all[0].tolist()} accept_index={accept_index[0].tolist()}",
+                )
+
+            d = draft_tokens_all[0].tolist()
+            run_chain(
+                [d[1], d[2], d[3], 4242],
                 "verify accept-all topk=1",
-                bool((accept_num == steps).all())
-                and torch.equal(
-                    predicts[:, : steps + 1], draft_tokens_all[:, : steps + 1]
-                ),
-                f"accept_num={accept_num.tolist()} predicts={predicts[0].tolist()} draft={draft_tokens_all[0].tolist()} accept_index={accept_index[0].tolist()}",
+                steps,
+                [d[1], d[2], d[3], 4242],
+            )
+            run_chain(
+                [d[1], 777, d[3], 4242],
+                "verify partial-accept topk=1",
+                1,
+                [d[1], 777],
             )
     return all_ok
 
