@@ -39,6 +39,8 @@ Environment variables:
   SGLANG_FLAGGEMS_RECORD=1|0          Enable FlagGems logging (default: 0)
   SGLANG_FLAGGEMS_LOG_ONCE=1|0        Log only once per op (default: 1)
   SGLANG_FLAGGEMS_LOG_PATH=<path>     Log output path
+  SGLANG_FL_LAYERNORM_NUM_WARPS=4|8|16|auto  Pin FlagGems layer_norm num_warps (default: 4)
+  SGLANG_FL_BATCH_INVARIANT_SHARED_GATE=1|0  Batch-invariant MoE shared_expert_gate on NVIDIA (default: 1)
   SGLANG_FL_OOT_ENABLED=1|0           Master switch for Layer 2 (default: 1)
   SGLANG_FL_PREFER=flagos|vendor|reference  Global backend priority
   SGLANG_FL_PER_OP=op=kind|kind;...         Per-op backend override
@@ -409,6 +411,8 @@ def _setup_flaggems(config: dict = None):
         flag_gems.enable(**fg_kwargs)
         logger.info("FlagGems enable: ALL ATen ops replaced with Triton kernels")
 
+    _pin_flaggems_layer_norm_warps()
+
     # Filter gems_aten log to only record Layer 1 (ATen dispatch) calls.
     # Exclude Layer 2 flagos calls (flag_gems.fused.*, flag_gems.modules.*)
     # so the log purely reflects ATen operator replacement.
@@ -431,6 +435,50 @@ def _setup_flaggems(config: dict = None):
         for h in fg_logger.handlers:
             if getattr(h, "_flaggems_owned", False):
                 h.addFilter(_AtenOnlyFilter())
+
+
+def _pin_flaggems_layer_norm_warps() -> None:
+    """Pin num_warps of FlagGems' persistent layer_norm kernels.
+
+    These kernels use plain ``triton.autotune`` over num_warps, which is
+    re-tuned by timing in every process and never cached. num_warps changes
+    the ``tl.sum`` reduction tree, so the pick (effectively random between
+    near-equal timings) changes LayerNorm output bits from one server start
+    to the next. Pinning a single config makes the output reproducible.
+    """
+    val = os.environ.get("SGLANG_FL_LAYERNORM_NUM_WARPS", "4").strip().lower()
+    if val in ("", "0", "auto"):
+        return
+    num_warps = int(val)
+
+    try:
+        import importlib
+
+        import triton
+
+        ln_mod = importlib.import_module("flag_gems.ops.layernorm")
+    except Exception as e:
+        logger.warning(f"layer_norm num_warps pin skipped: {e}")
+        return
+
+    for name in (
+        "layer_norm_persistent_kernel",
+        "layer_norm_persistent_kernel_multiline",
+    ):
+        fn = getattr(ln_mod, name, None)
+        while fn is not None and not isinstance(fn, triton.runtime.autotuner.Autotuner):
+            fn = getattr(fn, "fn", None)
+        if fn is None:
+            logger.warning(f"layer_norm num_warps pin: {name} autotuner not found")
+            continue
+        pinned = [c for c in fn.configs if c.num_warps == num_warps]
+        if not pinned:
+            logger.warning(
+                f"layer_norm num_warps pin: num_warps={num_warps} not in {name} configs"
+            )
+            continue
+        fn.configs = pinned[:1]
+    logger.info(f"FlagGems layer_norm num_warps pinned to {num_warps}")
 
 
 # ─── Vendor-specific sglang patches ───────────────────────────────────────────
@@ -791,6 +839,11 @@ def load_plugin():
 
     # 4. Communicator hooks (CommunicatorFL with FlagCX/torch.distributed)
     _setup_communicator_hooks()
+
+    # 4.5 Batch-invariant MoE shared_expert_gate (cuBLAS N=1 kernel switches on M)
+    from sglang_fl.dispatch.shared_expert_gate_patch import patch_shared_expert_gate
+
+    patch_shared_expert_gate()
 
     # 5. Vendor-specific patches — final overlay on top of all sglang_fl layers
     _apply_vendor_patches()
