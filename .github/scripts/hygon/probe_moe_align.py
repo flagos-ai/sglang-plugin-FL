@@ -530,39 +530,40 @@ def step4_round2_table() -> bool:
                 f"accept_index={accept_index[0].tolist()}",
             )
 
-        # The target's prediction at a node is compared with the children of
-        # that node; predicts carries the target's predictions along the path.
+        # The target's prediction at a node is accepted when it equals the
+        # token of one of that node's children; predicts carries the target's
+        # predictions along the accepted path. Position 0 (the bonus token) is
+        # the root, so its prediction selects the first accepted draft.
         wrong = 7777
-        accept_all = [wrong] * num_draft
-        for node, child in zip(chain, chain[1:]):
-            accept_all[node] = tok(child)
+
+        def along(path, stop):
+            rows = [wrong] * num_draft
+            for node, child in zip(path, path[1:]):
+                if child == stop:
+                    break
+                rows[node] = tok(child)
+            return rows
+
+        accept_all = along([0] + chain, None)
         accept_all[chain[-1]] = 4242
-        run(
-            [5000] * num_draft,
-            f"verify reject-all topk={topk}",
-            0,
-            [5000],
-        )
         run(
             accept_all,
             f"verify accept-all topk={topk}",
             len(chain),
-            [tok(node) for node in chain[1:]] + [4242],
+            [tok(node) for node in chain] + [4242],
         )
-        partial = list(accept_all)
-        partial[chain[1]] = wrong
+        # The target agrees on the first draft and rejects the second.
+        partial = along([0] + chain, chain[1])
         run(
             partial,
             f"verify partial-accept topk={topk}",
             1,
-            [tok(chain[1]), wrong],
+            [tok(chain[0]), wrong],
         )
         if topk == 2:
             # Take the sibling branch: 1 -> 4 -> 6 instead of 1 -> 3 -> 5.
             sibling = [1, 4, 6]
-            rows = [wrong] * num_draft
-            for node, child in zip(sibling, sibling[1:]):
-                rows[node] = tok(child)
+            rows = along([0] + sibling, None)
             rows[sibling[-1]] = 4242
             run(
                 rows,
