@@ -356,7 +356,7 @@ def step3_fast_topk() -> bool:
                 torch.equal(
                     torch.sort(
                         torch.gather(
-                            topk_index.cpu().view(batch, -1), 1, expect.indices
+                            topk_index.cpu().view(batch, -1), 1, expect.indices.cpu()
                         ).flatten()
                     ).values,
                     torch.sort(input_ids.cpu()).values,
