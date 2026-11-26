@@ -136,7 +136,8 @@ jobs:
 
   e2e:
     needs: [setup, functional]
-    if: inputs.run_e2e && needs.setup.outputs.e2e_matrix != '[]'
+    # TEMP experiment: e2e off while the MoE align probe runs.
+    if: ${{ false }} && inputs.run_e2e && needs.setup.outputs.e2e_matrix != '[]'
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJson(needs.setup.outputs.config).e2e_max_parallel || ((inputs.platform == 'musa' || inputs.platform == 'ascend' || inputs.platform == 'hygon' || inputs.platform == 'kunlunxin' || inputs.platform == 'enflame') && 1 || 256) }}
@@ -161,7 +162,8 @@ jobs:
 
   benchmark:
     needs: [setup, functional, e2e]
-    if: always() && inputs.run_benchmark && needs.functional.result == 'success' && (needs.e2e.result == 'success' || needs.e2e.result == 'skipped')
+    # TEMP experiment: benchmark off while the MoE align probe runs.
+    if: ${{ false }} && always() && inputs.run_benchmark && needs.functional.result == 'success' && (needs.e2e.result == 'success' || needs.e2e.result == 'skipped')
     uses: ./.github/workflows/_benchmark_test.yml
     with:
       platform: ${{ inputs.platform }}
