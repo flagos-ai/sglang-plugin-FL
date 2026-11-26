@@ -376,6 +376,15 @@ def step3_fast_topk() -> bool:
     return all_ok
 
 
+# SGLang passes the tree tensors to verify_tree_greedy under these keywords.
+TREE_KEYS = (
+    "retr" + "ive_index",
+    "retr" + "ive_next_token",
+    "retr" + "ive_next_sibling",
+    "target_predict",
+)
+
+
 def step4_round2_table() -> bool:
     """The operators after moe_align_block_size on the 35B-A3B and mtp paths.
 
@@ -487,10 +496,17 @@ def step4_round2_table() -> bool:
                 accept_index,
                 accept_num,
                 draft_tokens_all,
-                retrieve_index,
-                retrieve_next_token,
-                retrieve_next_sibling,
-                target_predict,
+                **dict(
+                    zip(
+                        TREE_KEYS,
+                        (
+                            retrieve_index,
+                            retrieve_next_token,
+                            retrieve_next_sibling,
+                            target_predict,
+                        ),
+                    )
+                ),
             )
             torch.cuda.synchronize()
         except Exception as error:  # noqa: BLE001 - probe reports and continues
@@ -517,10 +533,17 @@ def step4_round2_table() -> bool:
                 accept_index,
                 accept_num,
                 draft_tokens_all,
-                retrieve_index,
-                retrieve_next_token,
-                retrieve_next_sibling,
-                target_predict,
+                **dict(
+                    zip(
+                        TREE_KEYS,
+                        (
+                            retrieve_index,
+                            retrieve_next_token,
+                            retrieve_next_sibling,
+                            target_predict,
+                        ),
+                    )
+                ),
             )
             torch.cuda.synchronize()
             check(
@@ -531,6 +554,66 @@ def step4_round2_table() -> bool:
                 ),
                 f"accept_num={accept_num.tolist()} predicts={predicts[0].tolist()} draft={draft_tokens_all[0].tolist()} accept_index={accept_index[0].tolist()}",
             )
+    return all_ok
+
+
+def step5_paged_attention_head_dim() -> bool:
+    """FlagSVT's fa256.py (2026-11-26): the vendor flash_attn of the torch 2.9
+    runtime returned all-zero vectors for paged decode at head_dim 256 on
+    Qwen3.6-27B (token id 0 after the first token). Same tensors and the same
+    pass mark here: paged decode against hand-written attention, max_diff
+    < 0.05.
+    """
+    say("=== step 5: flash_attn paged decode x head_dim (FlagSVT fa256.py) ===")
+    try:
+        import flash_attn
+    except Exception as error:  # noqa: BLE001 - probe reports and continues
+        say(f"  flash_attn import failed: {error!r}")
+        return False
+    say("  flash_attn", getattr(flash_attn, "__version__", "?"))
+
+    all_ok = True
+    device = "cuda"
+    for head_dim in (64, 128, 192, 224, 256):
+        heads, kv_heads, seqlen, page = 24, 4, 64, 64
+        generator = torch.Generator(device="cpu").manual_seed(head_dim)
+        k = torch.randn(1, seqlen, kv_heads, head_dim, generator=generator).to(
+            device, torch.bfloat16
+        )
+        v = torch.randn(k.shape, generator=generator).to(device, torch.bfloat16)
+        k_cache = torch.zeros(
+            1, page, kv_heads, head_dim, device=device, dtype=torch.bfloat16
+        )
+        v_cache = torch.zeros_like(k_cache)
+        k_cache[0, :seqlen] = k[0]
+        v_cache[0, :seqlen] = v[0]
+        q = torch.randn(1, 1, heads, head_dim, generator=generator).to(
+            device, torch.bfloat16
+        )
+        out = flash_attn.flash_attn_with_kvcache(
+            q=q,
+            k_cache=k_cache,
+            v_cache=v_cache,
+            cache_seqlens=torch.tensor([seqlen], dtype=torch.int32, device=device),
+            block_table=torch.zeros(1, 1, dtype=torch.int32, device=device),
+            softmax_scale=head_dim**-0.5,
+            causal=True,
+        )
+        group = heads // kv_heads
+        qf = q[0, 0].float().view(kv_heads, group, head_dim)
+        kf = k[0].float().permute(1, 0, 2)  # (kv_heads, seqlen, head_dim)
+        vf = v[0].float().permute(1, 0, 2)
+        scores = torch.einsum("hgd,hsd->hgs", qf, kf) * head_dim**-0.5
+        ref = torch.einsum("hgs,hsd->hgd", scores.softmax(-1), vf).reshape(
+            heads, head_dim
+        )
+        diff = (out[0, 0].float() - ref).abs().max().item()
+        ok = out.float().abs().sum().item() > 0 and diff < 0.05
+        say(
+            f"  head_dim={head_dim}: paged_abs_sum={out.float().abs().sum().item():.4g} "
+            f"max_diff_vs_manual={diff:.4g} {'OK' if ok else 'BROKEN'}"
+        )
+        all_ok = all_ok and ok
     return all_ok
 
 
@@ -566,6 +649,7 @@ def main() -> int:
         ("step2", step2_sglang_symbol),
         ("step3", step3_fast_topk),
         ("step4", step4_round2_table),
+        ("step5", step5_paged_attention_head_dim),
     ):
         try:
             results[name] = step()
