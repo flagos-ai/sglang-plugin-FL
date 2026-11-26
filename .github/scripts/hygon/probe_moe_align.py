@@ -438,23 +438,29 @@ def step4_round2_table() -> bool:
         f"max_abs_diff={(out.float() - ref).abs().max().item():.4g}",
     )
 
-    # Tree: topk 1 chain (the mtp acceptance shape) and topk 2, depth 3.
+    # Tree build + greedy verify. Layout per sgl_build_tree_kernel_efficient_triton
+    # and organize_draft_results: candidates 0..N-1, selected_index lists them,
+    # node position = candidate + 1 (position 0 is the bonus token). The parent
+    # of the node for selected_index[i-1] is candidate parent_list[idx // topk]
+    # (root when idx // topk == 0), where idx = selected_index[i-1].
+    steps, batch, prompt = 3, 2, 7
+    bonus = torch.arange(100, 100 + batch, device=device, dtype=torch.long)
+    seq_lens = torch.full((batch,), prompt, device=device, dtype=torch.long)
     for topk in (1, 2):
-        steps, batch, prompt = 3, 2, 7
-        num_draft = 1 + steps * topk
-        parent_list = torch.zeros(batch, steps * topk, device=device, dtype=torch.long)
-        if topk > 1:
-            parent_list = torch.arange(steps * topk, device=device) // topk
-            parent_list = parent_list.expand(batch, -1).contiguous()
-        scores_index = (
-            torch.arange(batch * num_draft, device=device, dtype=torch.long)
-            .view(batch, -1)[:, 1:]
+        num_cand = steps * topk
+        num_draft = 1 + num_cand
+        sel = list(range(num_cand))
+        parents = {1: [-1, 0, 1], 2: [-1, 0, 2]}[topk]
+        chain = {1: [1, 2, 3], 2: [1, 3, 5]}[topk]
+        # token of candidate k (position k + 1): 1000 + k, same for every row
+        tok = lambda pos: 1000 + pos - 1  # noqa: E731
+        parent_list = torch.tensor([parents] * batch, device=device, dtype=torch.long)
+        scores_index = torch.tensor([sel] * batch, device=device, dtype=torch.long)
+        draft_tokens = (
+            (torch.arange(num_cand, device=device, dtype=torch.long) + 1000)
+            .expand(batch, -1)
             .contiguous()
         )
-        bonus = torch.arange(100, 100 + batch, device=device, dtype=torch.long)
-        draft_tokens = torch.arange(
-            1000, 1000 + batch * steps * topk, device=device, dtype=torch.long
-        ).view(batch, steps * topk)
         try:
             (
                 tree_mask,
@@ -468,7 +474,7 @@ def step4_round2_table() -> bool:
                 parent_list,
                 scores_index,
                 draft_tokens,
-                torch.full((batch,), prompt, device=device, dtype=torch.long),
+                seq_lens,
                 batch * prompt,
                 topk,
                 steps,
@@ -482,15 +488,19 @@ def step4_round2_table() -> bool:
             )
             continue
         draft_tokens_all = draft_tokens_all.view(batch, num_draft)
-        # (a) nothing accepted: the target disagrees at the root.
-        predicts = torch.zeros(batch, num_draft, device=device, dtype=torch.long)
-        accept_index = torch.zeros(batch, steps, device=device, dtype=torch.long)
-        accept_num = torch.zeros(batch, device=device, dtype=torch.long)
-        target_predict = torch.full(
-            (batch, num_draft), -1, device=device, dtype=torch.long
+        say(
+            f"  tree topk={topk}: next_token={retrieve_next_token[0].tolist()} "
+            f"next_sibling={retrieve_next_sibling[0].tolist()} "
+            f"positions={positions[:num_draft].tolist()} bonus={[100] * batch}"
         )
-        target_predict[:, 0] = 5000 + torch.arange(batch, device=device)
-        try:
+
+        def run(target_rows, label, want_num, want_predicts):
+            predicts = torch.zeros(batch, num_draft, device=device, dtype=torch.long)
+            accept_index = torch.zeros(batch, steps, device=device, dtype=torch.long)
+            accept_num = torch.zeros(batch, device=device, dtype=torch.long)
+            target = torch.tensor(
+                [target_rows] * batch, device=device, dtype=torch.long
+            )
             hook.verify_tree_greedy(
                 predicts,
                 accept_index,
@@ -503,80 +513,62 @@ def step4_round2_table() -> bool:
                             retrieve_index,
                             retrieve_next_token,
                             retrieve_next_sibling,
-                            target_predict,
+                            target,
                         ),
                     )
                 ),
             )
             torch.cuda.synchronize()
-        except Exception as error:  # noqa: BLE001 - probe reports and continues
             check(
-                f"verify_tree_greedy topk={topk}",
-                False,
-                f"RAISED {type(error).__name__}: {str(error)[:300]}",
+                label,
+                bool((accept_num == want_num).all())
+                and torch.equal(
+                    predicts[0, : len(want_predicts)].cpu(),
+                    torch.tensor(want_predicts),
+                ),
+                f"accept_num={accept_num.tolist()} predicts={predicts[0].tolist()} "
+                f"accept_index={accept_index[0].tolist()}",
             )
-            continue
-        check(
+
+        # The target's prediction at a node is compared with the children of
+        # that node; predicts carries the target's predictions along the path.
+        wrong = 7777
+        accept_all = [wrong] * num_draft
+        for node, child in zip(chain, chain[1:]):
+            accept_all[node] = tok(child)
+        accept_all[chain[-1]] = 4242
+        run(
+            [5000] * num_draft,
             f"verify reject-all topk={topk}",
-            bool((accept_num == 0).all())
-            and torch.equal(predicts[:, 0], target_predict[:, 0]),
-            f"accept_num={accept_num.tolist()} predicts0={predicts[:, 0].tolist()}",
+            0,
+            [5000],
         )
-        # (b) chain, topk 1. candidates = [bonus, d1, d2, d3]; node i is
-        # accepted when the target's prediction at node i equals the child
-        # token, and predicts carries the target's predictions along the
-        # accepted path (seen in (a): predicts[0] == target_predict[0]).
-        if topk == 1:
-
-            def run_chain(target_rows, label, want_num, want_predicts):
-                predicts.zero_()
-                accept_index.zero_()
-                accept_num.zero_()
-                target = (
-                    torch.tensor(target_rows, device=device, dtype=torch.long)
-                    .expand(batch, -1)
-                    .contiguous()
-                )
-                hook.verify_tree_greedy(
-                    predicts,
-                    accept_index,
-                    accept_num,
-                    draft_tokens_all,
-                    **dict(
-                        zip(
-                            TREE_KEYS,
-                            (
-                                retrieve_index,
-                                retrieve_next_token,
-                                retrieve_next_sibling,
-                                target,
-                            ),
-                        )
-                    ),
-                )
-                torch.cuda.synchronize()
-                check(
-                    label,
-                    bool((accept_num == want_num).all())
-                    and torch.equal(
-                        predicts[0, : len(want_predicts)].cpu(),
-                        torch.tensor(want_predicts),
-                    ),
-                    f"accept_num={accept_num.tolist()} predicts={predicts[0].tolist()} draft={draft_tokens_all[0].tolist()} accept_index={accept_index[0].tolist()}",
-                )
-
-            d = draft_tokens_all[0].tolist()
-            run_chain(
-                [d[1], d[2], d[3], 4242],
-                "verify accept-all topk=1",
-                steps,
-                [d[1], d[2], d[3], 4242],
-            )
-            run_chain(
-                [d[1], 777, d[3], 4242],
-                "verify partial-accept topk=1",
-                1,
-                [d[1], 777],
+        run(
+            accept_all,
+            f"verify accept-all topk={topk}",
+            len(chain),
+            [tok(node) for node in chain[1:]] + [4242],
+        )
+        partial = list(accept_all)
+        partial[chain[1]] = wrong
+        run(
+            partial,
+            f"verify partial-accept topk={topk}",
+            1,
+            [tok(chain[1]), wrong],
+        )
+        if topk == 2:
+            # Take the sibling branch: 1 -> 4 -> 6 instead of 1 -> 3 -> 5.
+            sibling = [1, 4, 6]
+            rows = [wrong] * num_draft
+            for node, child in zip(sibling, sibling[1:]):
+                rows[node] = tok(child)
+            rows[sibling[-1]] = 4242
+            run(
+                rows,
+                "verify sibling-branch topk=2",
+                3,
+                [tok(4), tok(6), 4242],
             )
     return all_ok
 
