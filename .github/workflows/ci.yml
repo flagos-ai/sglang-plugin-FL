@@ -112,11 +112,8 @@ jobs:
               l.get("name", "")
               for l in event.get("pull_request", {}).get("labels", []) or []
           ]
-          # Precedence when several tier labels are set: ci-full > ci-e2e > ci-functional.
-          tier = next(
-              (t for t in ("ci-full", "ci-e2e", "ci-functional") if t in labels),
-              "full",
-          )
+          # TEMP(probe): fixed tier — this repository defines no tier labels.
+          tier = "full"
           run_e2e = tier in ("full", "ci-full", "ci-e2e")
           run_benchmark = tier in ("full", "ci-full")
           print(f"Labels: {labels} -> tier {tier} "
@@ -148,6 +145,8 @@ jobs:
           else
             python3 .github/scripts/detect_platforms.py
           fi
+          # TEMP(probe): this validation covers T-Head only.
+          echo 'platforms=["thead"]' >> "$GITHUB_OUTPUT"
 
   # ============================================================
   # Jobs 6a-6g: per-platform testing (routed by discover)
