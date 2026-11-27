@@ -64,10 +64,9 @@ except metadata.PackageNotFoundError:
 else:
     raise SystemExit("placeholder fabricated distribution metadata")
 
-# Only sgl_kernel_npu is guarded; the other missing packages stay loud.
-import importlib.util
-assert importlib.util.find_spec("deep_ep") is None
-assert importlib.util.find_spec("torchair") is None
+# Only sgl_kernel_npu is guarded; deep_ep/torchair are not guarded roots
+# (their import errors must stay loud for their own call sites).
+assert set(import_guard._PACKAGES) == {{"sgl_kernel_npu"}}
 print("probe-ok")
 """
 
@@ -124,11 +123,16 @@ def test_a_real_package_blocks_the_placeholder(monkeypatch: pytest.MonkeyPatch) 
 
     finder = _stub_real_finder("sgl_kernel_npu")
     monkeypatch.syspath_prepend(str(_REPO_ROOT))
-    monkeypatch.setattr(sys, "meta_path", [*sys.meta_path, finder])
+    # A previous activation in this process may already have appended the
+    # placeholder finder; the premise here is a process without it.
+    real_meta_path = [
+        f for f in sys.meta_path if not isinstance(f, import_guard._PlaceholderFinder)
+    ]
+    monkeypatch.setattr(sys, "meta_path", [*real_meta_path, finder])
     try:
         assert import_guard.install_import_guards() == []
     finally:
-        sys.meta_path = [f for f in sys.meta_path if f is not finder]
+        sys.meta_path = real_meta_path
 
 
 def test_fallback_table_covers_the_loaded_backend_surface() -> None:
@@ -147,6 +151,10 @@ def test_fallback_table_covers_the_loaded_backend_surface() -> None:
         "sgl_kernel_npu.fla.chunk": {"chunk_gated_delta_rule_npu"},
         "sgl_kernel_npu.fla.fused_sigmoid_gating_recurrent": {
             "fused_sigmoid_gating_delta_rule_update_npu"
+        },
+        "sgl_kernel_npu.mamba.mamba_state_update_triton": {
+            "move_cache_dynamic_last_kernel_h_block",
+            "move_intermediate_cache",
         },
     }
     for module_path, names in expected.items():

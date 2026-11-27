@@ -294,7 +294,7 @@ def test_ascend_mtp_logprob_conformance_rejects_false_positives() -> None:
                             [(value, token_id, None), (-1.0, 999, None)]
                             for token_id in range(100, 132)
                         ],
-                    }
+                    },
                 }
 
             assert input_ids is not None
@@ -438,7 +438,10 @@ def test_ascend_mamba_state_update_patch_is_optional(monkeypatch) -> None:
     [
         ("0.5.18", "0.7.0+ascend3.5", "9.2.1", True, True),
         ("0.5.18", "0.7.0+ascend3.5", "8.5.0", True, False),
-        ("0.5.18", "0.7.1a1+ascend3.5", "9.2.1", True, False),
+        # The operations Runtime 2.3.0 ships 0.7.1a1+ascend3.5; the affected
+        # gate covers it like 0.7.0+ascend3.5 until the workarounds are
+        # proven unnecessary on hardware.
+        ("0.5.18", "0.7.1a1+ascend3.5", "9.2.1", True, True),
         ("0.5.18", "0.7.0+ascend3.5", "9.2.1", False, False),
         ("0.5.19", "0.7.0+ascend3.5", "9.2.1", True, False),
     ],

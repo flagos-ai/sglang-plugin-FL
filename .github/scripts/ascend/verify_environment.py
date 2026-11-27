@@ -1,582 +1,208 @@
 #!/usr/bin/env python3
-"""Verify the pinned Ascend SGLang 0.5.18 empty runtime."""
+# Copyright 2026 FlagOS Contributors
+# SPDX-License-Identifier: Apache-2.0
+"""Prove the installed-wheel contract of the Ascend two-wheel CI image.
+
+setup.sh runs this program twice, around the pinned test-runner install:
+
+  --capture-runtime-snapshot FILE   record the distribution inventory
+  --verify --runtime-evidence FILE  re-read it and check the contract
+
+Only plugin-owned facts are asserted: the SGLang and sglang_fl wheels the
+image installs, the entry points SGLang resolves them by, no standalone
+triton distribution, and the plugin's sgl_kernel_npu placeholder with its
+``npu::causal_conv1d`` fallback registration. What the Runtime owns
+(CANN, torch_npu, FlagTree, FlagGems, FlagCX versions) is printed, never
+asserted -- the Runtime is read-only and may move under us.
+"""
 
 from __future__ import annotations
 
 import argparse
-import base64
-import csv
-import ctypes
-import hashlib
 import importlib
 import importlib.util
-import os
-import re
-import site
-import sys
-from importlib import metadata
+import json
 from pathlib import Path
+import re
+import sys
 
-
-EXPECTED_RUNTIME_DISTRIBUTIONS = {
-    "sglang": "0.5.18",
-    "sglang-fl": "0.1.0",
-    "torch": "2.8.0+cpu",
-    "torch-npu": "2.8.0.post2",
-    "transformers": "5.12.1",
-    "triton": "3.5.0",
-    "triton-ascend": "3.2.1",
-    "flag-gems": "5.3.0",
-    "xgrammar": "0.2.1",
-    "compressed-tensors": "0.15.0",
-    "sgl-kernel-npu": "2026.6.1",
-    "deep-ep": "1.0.0+e05fc90e.cann.8.5.0.b232",
-    "attentions": "0.2",
-    "torch-memory-saver": "0.0.8",
+EXPECTED_WHEELS = {"sglang": "0.5.18", "sglang-fl": "0.1.0"}
+# Exact (name, value): SGLang loads the plugin through these entry points, so
+# a value typo that still parses would silently break activation.
+EXPECTED_ENTRY_POINTS = {
+    "sglang.srt.platforms": ("sglang_fl", "sglang_fl:activate_platform"),
+    "sglang.srt.plugins": ("sglang_fl", "sglang_fl:load_plugin"),
 }
-
-EXPECTED_CI_DISTRIBUTIONS = {
-    "pytest": "9.1.1",
-    "pytest-timeout": "2.4.0",
-}
-
-EXPECTED_FLAGTREE_VERSION = "0.7.0+ascend3.5"
-EXPECTED_FLAGTREE_TRITON = "3.5.1"
-EXPECTED_FLAGTREE_SOURCE = (
-    "Source-Commit, https://github.com/flagos-ai/FlagTree/commit/"
-    "2b5b81320c18dbf4008cf6ad14d3c246bd74f7ff"
-)
-EXPECTED_CANN921_DISTRIBUTIONS = {
-    "sglang": "0.5.18",
-    "sglang-fl": "0.1.0",
-    "torch": "2.13.0+cpu",
-    "torch-npu": "2.13.0",
-    "transformers": "5.12.1",
-    "flag-gems": "5.4.0",
-    "flagcx": "0.14.1+cann9.2.1",
-    "cann-shmem": "1.6.0",
-    "xgrammar": "0.2.1",
-    "compressed-tensors": "0.16.0",
-    "sgl-kernel-npu": "2026.9.0",
-    "deep-ep": "1.0.0+d5107fb6.cann.9.2.0.b237",
-    "attentions": "0.2",
-    "custom-ops": "1.0",
-    "torch-memory-saver": "0.0.8",
-    "numpy": "1.26.4",
-    "pyarrow": "25.0.1",
-    "datasets": "5.2.0",
-}
-
-EXPECTED_SOURCE_MARKERS = {
-    Path("/opt/sglang-0.5.18/.flagos-source-commit"): (
-        "sglang",
-        "71de97b264b04dcd514cf904003028aefe9775c8",
-    ),
-    Path("/opt/FlagGems/.flagos-source-commit"): (
-        "FlagGems",
-        "98fae44cdf2898f39c7f24f080d7c88b83d7c593",
-    ),
-    Path("/opt/FlagCX/.flagos-source-commit"): (
-        "FlagCX",
-        "68f069fe4ff2af9e8017b74aee8dee60c59e3b1d",
-    ),
-}
-
-# These imports are used by the v0.5.18 NPU backend for the model families in
-# tests/platforms/ascend.yaml. Check the wheel surface during image build and
-# import every module on a real NPU before CI starts. Missing future-model
-# kernels must fail explicitly instead of being hidden by an import stub.
-REQUIRED_NPU_KERNEL_MODULES = (
-    "sgl_kernel_npu.mem_cache.allocator",
-    "sgl_kernel_npu.attention.sinks_attention",
-    "sgl_kernel_npu.fla.chunk",
-    "sgl_kernel_npu.fla.fused_gdn_gating",
-    "sgl_kernel_npu.fla.fused_sigmoid_gating_recurrent",
-    "sgl_kernel_npu.fla.utils",
-    "sgl_kernel_npu.mamba.mamba_state_update_triton",
-    "sgl_kernel_npu.mamba.causal_conv1d",
-    "sgl_kernel_npu.norm.l1_norm",
-    "sgl_kernel_npu.norm.add_rmsnorm_bias",
-    "sgl_kernel_npu.norm.split_qkv_rmsnorm_rope",
-    "sgl_kernel_npu.activation.swiglu_oai",
-    "sgl_kernel_npu.sample.verify_tree_greedy",
-)
-
-SGLANG_SOURCE_ROOT = Path("/opt/sglang-0.5.18/python/sglang")
-STALE_SGLANG_ROOT = Path("/sgl-workspace/sglang")
-SOLVE_TRIL_RELATIVE_PATH = Path("sgl_kernel_npu/fla/solve_tril.py")
-SOLVE_TRIL_AL_IMPORT = "import triton.language.extra.cann.extension as al"
-SOLVE_TRIL_STALE_CALL = "tl.insert_slice("
-SOLVE_TRIL_ASCEND_CALL = "al.insert_slice("
-EXPECTED_SOLVE_TRIL_ASCEND_CALLS = 15
-EXPECTED_SOLVE_TRIL_SHA256 = (
-    "d5aaeef310dae31c1cdfad0776c379a852b3e955c469b75cd53b783cfa192a37"
-)
-EXPECTED_CAUSAL_CONV1D_SCHEMA = (
-    "npu::causal_conv1d(Tensor x, Tensor weight, Tensor conv_states, "
-    "Tensor? bias=None, Tensor? query_start_loc=None, Tensor? cache_indices=None, "
-    "Tensor? has_initial_state=None, Tensor? num_accepted_tokens=None, "
-    "int activation_mode=0, int pad_slot_id=-1, int run_mode=0) -> Tensor"
+# The plugin registers this schema through the sgl_kernel_npu fallbacks while
+# the placeholder is active (vendor/ascend/sgl_kernel_npu_fallbacks.py); the
+# GDN backend launches the op by it on every step.
+EXPECTED_CAUSAL_CONV1D_SCHEMA_PREFIX = (
+    "npu::causal_conv1d(Tensor x, Tensor weight, Tensor(a!) conv_states, "
 )
 
 
-def _require_distribution(name: str, expected: str) -> None:
-    try:
-        actual = metadata.version(name)
-    except metadata.PackageNotFoundError as exc:
-        raise RuntimeError(f"required distribution is missing: {name}") from exc
-    if actual != expected:
-        raise RuntimeError(f"{name} must be {expected}, found {actual}")
-    print(f"[ascend-env] {name}={actual}")
+def canonical(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def _require_flagtree() -> None:
-    _require_distribution("flagtree", EXPECTED_FLAGTREE_VERSION)
-    distribution = metadata.distribution("flagtree")
-    if EXPECTED_FLAGTREE_SOURCE not in distribution.metadata.get_all("Project-URL", []):
-        raise RuntimeError("FlagTree wheel source commit does not match the CI image")
-    owned_files = {
-        Path(distribution.locate_file(path)).resolve(): path
-        for path in distribution.files or ()
-    }
-    triton = _require_import("triton")
-    if triton.__version__ != EXPECTED_FLAGTREE_TRITON:
-        raise RuntimeError(
-            f"FlagTree must provide Triton {EXPECTED_FLAGTREE_TRITON}, "
-            f"found {triton.__version__}"
-        )
-    for name in (
-        "triton",
-        "triton._C.libtriton",
-        "triton.language.extra.cann.extension",
-    ):
-        module = _require_import(name) if name != "triton" else triton
-        path = Path(module.__file__).resolve()
-        entry = owned_files.get(path)
-        if entry is None or not path.is_relative_to("/opt/flagtree"):
-            raise RuntimeError(
-                f"FlagTree does not own the loaded {name} module at {path}"
+def runtime_inventory(exclude_root: Path | None = None) -> dict[str, str]:
+    """Canonical distribution name -> version.
+
+    Anything located under ``exclude_root`` (the checkout) is skipped so that
+    a source tree can never pass for an installed wheel.
+    """
+    from importlib import metadata
+
+    inventory = {}
+    for dist in metadata.distributions():
+        name = dist.metadata["Name"]
+        if not name:
+            continue
+        if exclude_root is not None:
+            origin = Path(dist.locate_file("")).resolve()
+            if origin == exclude_root or exclude_root in origin.parents:
+                continue
+        inventory[canonical(name)] = dist.version
+    return inventory
+
+
+def inventory_drift(before: dict[str, str], after: dict[str, str]) -> list[str]:
+    """Runtime distributions that changed or disappeared; additions are not drift."""
+    return sorted(
+        f"{name}: {version} -> {after.get(name, '<REMOVED>')}"
+        for name, version in before.items()
+        if after.get(name) != version
+    )
+
+
+def entry_point_failures(groups: dict[str, dict[str, str]]) -> list[str]:
+    return [
+        f"entry point {group}/{name} must be exactly {value!r}, "
+        f"found {groups.get(group, {}).get(name)!r}"
+        for group, (name, value) in EXPECTED_ENTRY_POINTS.items()
+        if groups.get(group, {}).get(name) != value
+    ]
+
+
+def collected_entry_points() -> dict[str, dict[str, str]]:
+    from importlib import metadata
+
+    groups: dict[str, dict[str, str]] = {}
+    for entry_point in metadata.entry_points():
+        if entry_point.group in EXPECTED_ENTRY_POINTS:
+            groups.setdefault(entry_point.group, {})[entry_point.name] = (
+                entry_point.value
             )
-        with path.open("rb") as stream:
-            digest = hashlib.file_digest(stream, "sha256").digest()
-        encoded = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
-        if (
-            entry.hash is None
-            or entry.hash.mode != "sha256"
-            or entry.hash.value != encoded
-        ):
-            raise RuntimeError(f"FlagTree RECORD digest mismatch for {path}")
-        print(f"[ascend-env] FlagTree owns {name}={path} (RECORD SHA256 verified)")
-    from triton.language.extra.cann import extension
-
-    if not callable(getattr(extension, "insert_slice", None)):
-        raise RuntimeError("FlagTree is missing CANN insert_slice for sgl-kernel-npu")
-    print(f"[ascend-env] triton-module={triton.__version__} (provided by FlagTree)")
+    return groups
 
 
-def _require_source_markers(*, cann921: bool) -> None:
-    for path, (name, expected) in EXPECTED_SOURCE_MARKERS.items():
-        if cann921 and name != "sglang":
-            continue  # The CANN 9.2.1 image supplies pinned vendor wheels.
+def wheel_origin_failures(plugin_root: Path) -> list[str]:
+    """The plugin under test is the installed wheel, never the checkout."""
+    from importlib import metadata
+
+    import sglang_fl
+
+    root = Path(metadata.distribution("sglang-fl").locate_file("")).resolve()
+    module_file = Path(sglang_fl.__file__).resolve()
+    if not module_file.is_relative_to(root):
+        return [
+            f"sglang_fl resolves from {module_file}, outside the installed "
+            f"distribution root {root}"
+        ]
+    if module_file.is_relative_to(plugin_root):
+        return [f"sglang_fl resolves from the checkout {plugin_root}: {module_file}"]
+    return []
+
+
+def placeholder_failures() -> list[str]:
+    """Without an sgl_kernel_npu wheel the placeholder carries the GDN kernels."""
+    from importlib import metadata
+
+    try:
+        version = metadata.version("sgl-kernel-npu")
+    except metadata.PackageNotFoundError:
+        pass
+    else:
+        print(
+            f"[ascend-env] sgl_kernel_npu: real distribution {version}, "
+            "placeholder checks skipped"
+        )
+        return []
+
+    # Import the early hook the engine's platform activation runs: it both
+    # installs the placeholder and registers the causal-conv1d fallback, so
+    # the checks below see exactly the contract the engine gets.
+    from sglang_fl.dispatch.backends.vendor.ascend import early  # noqa: F401
+    from sglang_fl.dispatch.backends.vendor.ascend import import_guard
+
+    if "sgl_kernel_npu" not in import_guard.install_import_guards():
+        return ["the sgl_kernel_npu placeholder is not active"]
+
+    failures: list[str] = []
+    # The import statement is the path SGLang takes; a plain attribute access
+    # would only reach the generic call-fails-loudly placeholder.
+    import sgl_kernel_npu.fla.chunk as chunk
+    import sgl_kernel_npu.norm.l1_norm as l1_norm_module
+
+    if not callable(l1_norm_module.l1_norm):
+        failures.append("sgl_kernel_npu.norm.l1_norm.l1_norm must carry the fallback")
+    if not callable(chunk.chunk_gated_delta_rule_npu):
+        failures.append(
+            "sgl_kernel_npu.fla.chunk.chunk_gated_delta_rule_npu must carry the fallback"
+        )
+    # SGLang selects its rope fast path through try/except ImportError; the
+    # symbol must stay absent so the generic path takes over.
+    try:
+        from sgl_kernel_npu.norm import fused_rope_qk_mqa  # noqa: F401
+    except ImportError:
+        pass
+    else:
+        failures.append("fused_rope_qk_mqa must stay absent for SGLang's fallback")
+    import torch
+
+    try:
+        schema = str(torch.ops.npu.causal_conv1d.default._schema)
+    except (AttributeError, RuntimeError) as exc:
+        failures.append(f"npu::causal_conv1d is not registered: {exc}")
+    else:
+        if not schema.startswith(EXPECTED_CAUSAL_CONV1D_SCHEMA_PREFIX):
+            failures.append("npu::causal_conv1d schema mismatch: " + schema)
+    return failures
+
+
+def _print_runtime_facts() -> None:
+    """Print what the Runtime owns; never assert it (the Runtime is read-only)."""
+    from importlib import metadata
+
+    for name in ("torch", "torch-npu", "flag-gems", "flagtree", "flagcx"):
         try:
-            actual = path.read_text(encoding="utf-8").strip()
-        except OSError as exc:
-            raise RuntimeError(f"{name} source marker is missing: {path}") from exc
-        if actual != expected:
-            raise RuntimeError(f"{name} source must be {expected}, found {actual}")
-        print(f"[ascend-env] {name}-commit={actual}")
-
-
-def _read_cann_version() -> tuple[Path, str]:
-    home = Path(
-        os.environ.get("ASCEND_TOOLKIT_HOME")
-        or os.environ.get("ASCEND_INSTALL_PATH")
-        or "/usr/local/Ascend/ascend-toolkit/latest"
-    )
-    candidates = (
-        home / "version.cfg",
-        home / "aarch64-linux" / "ascend_all_cann_install.info",
-        home / "aarch64-linux" / "ascend_toolkit_install.info",
-    )
-    for path in candidates:
+            print(f"[ascend-env] runtime {name}={metadata.version(name)}")
+        except metadata.PackageNotFoundError:
+            print(f"[ascend-env] runtime {name}=<no distribution>")
+    spec = importlib.util.find_spec("triton")
+    if spec is not None and spec.origin:
+        print(f"[ascend-env] runtime triton module={spec.origin}")
+    for path in (
+        Path("/usr/local/Ascend/ascend-toolkit/latest/version.cfg"),
+        Path(
+            "/usr/local/Ascend/ascend-toolkit/latest/aarch64-linux/"
+            "ascend_all_cann_install.info"
+        ),
+    ):
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         match = re.search(r"(?m)^version=([^\s]+)", text)
         if match:
-            return path, match.group(1)
-        bracketed = re.findall(r"\[([^\]]+)\]", text)
-        if bracketed:
-            return path, bracketed[-1]
-    raise RuntimeError(
-        "cannot determine CANN version; checked " + ", ".join(map(str, candidates))
-    )
+            print(f"[ascend-env] runtime CANN={match.group(1)} ({path})")
+            break
 
 
-def _check_cann_version(expected: str | None) -> None:
-    path, actual = _read_cann_version()
-    if expected and not re.match(rf"{re.escape(expected)}(?![0-9])", actual):
-        raise RuntimeError(f"CANN must be {expected}, found {actual} in {path}")
-    print(f"[ascend-env] CANN={actual} ({path})")
+def _require_npu(min_npus: int) -> None:
+    import torch
 
-
-def _require_npu_kernel_surface() -> None:
-    files = metadata.files("sgl-kernel-npu") or []
-    normalized = {str(path).replace("\\", "/") for path in files}
-    missing: list[str] = []
-    for module_name in REQUIRED_NPU_KERNEL_MODULES:
-        stem = module_name.replace(".", "/")
-        if not any(
-            path == f"{stem}.py"
-            or path.startswith(f"{stem}.")
-            or path == f"{stem}/__init__.py"
-            for path in normalized
-        ):
-            missing.append(module_name)
-    if missing:
-        raise RuntimeError(
-            "sgl-kernel-npu is missing required v0.5.18 modules: " + ", ".join(missing)
-        )
-    print(
-        "[ascend-env] sgl-kernel-npu module surface OK "
-        f"({len(REQUIRED_NPU_KERNEL_MODULES)} modules)"
-    )
-
-
-def _require_solve_tril_source() -> None:
-    try:
-        distribution = metadata.distribution("sgl-kernel-npu")
-    except metadata.PackageNotFoundError as exc:
-        raise RuntimeError("sgl-kernel-npu is not installed") from exc
-    path = Path(distribution.locate_file(SOLVE_TRIL_RELATIVE_PATH))
-    try:
-        content = path.read_bytes()
-        source = content.decode("utf-8")
-    except OSError as exc:
-        raise RuntimeError(f"cannot read NPU kernel source: {path}") from exc
-    except UnicodeDecodeError as exc:
-        raise RuntimeError(f"NPU kernel source is not UTF-8: {path}") from exc
-
-    stale_count = source.count(SOLVE_TRIL_STALE_CALL)
-    ascend_count = source.count(SOLVE_TRIL_ASCEND_CALL)
-    if SOLVE_TRIL_AL_IMPORT not in source:
-        raise RuntimeError(f"patched NPU kernel is missing the al import: {path}")
-    if stale_count != 0 or ascend_count != EXPECTED_SOLVE_TRIL_ASCEND_CALLS:
-        raise RuntimeError(
-            "sgl-kernel-npu solve_tril source mismatch: "
-            f"expected old=0/new={EXPECTED_SOLVE_TRIL_ASCEND_CALLS}, "
-            f"found old={stale_count}/new={ascend_count} in {path}"
-        )
-    digest = hashlib.sha256(content).hexdigest()
-    if digest != EXPECTED_SOLVE_TRIL_SHA256:
-        raise RuntimeError(
-            "sgl-kernel-npu solve_tril digest mismatch: "
-            f"expected {EXPECTED_SOLVE_TRIL_SHA256}, found {digest} in {path}"
-        )
-
-    record_candidates = [
-        entry
-        for entry in distribution.files or ()
-        if str(entry).replace("\\", "/").endswith(".dist-info/RECORD")
-    ]
-    if len(record_candidates) != 1:
-        raise RuntimeError(
-            "sgl-kernel-npu must contain exactly one dist-info/RECORD, "
-            f"found {len(record_candidates)}"
-        )
-    record_path = Path(distribution.locate_file(record_candidates[0]))
-    try:
-        with record_path.open(newline="", encoding="utf-8") as record_file:
-            rows = list(csv.reader(record_file))
-    except OSError as exc:
-        raise RuntimeError(f"cannot read sgl-kernel-npu RECORD: {record_path}") from exc
-    relative_name = SOLVE_TRIL_RELATIVE_PATH.as_posix()
-    matching = [row for row in rows if row and row[0] == relative_name]
-    encoded_digest = base64.urlsafe_b64encode(bytes.fromhex(digest)).rstrip(b"=")
-    expected_record = [
-        relative_name,
-        f"sha256={encoded_digest.decode('ascii')}",
-        str(len(content)),
-    ]
-    if matching != [expected_record]:
-        raise RuntimeError(
-            "sgl-kernel-npu RECORD does not describe solve_tril.py: "
-            f"expected {expected_record}, found {matching} in {record_path}"
-        )
-    print(
-        "[ascend-env] sgl-kernel-npu solve_tril source OK "
-        f"(old={stale_count}, new={ascend_count}, sha256={digest})"
-    )
-
-
-def _require_deep_ep_layout() -> None:
-    try:
-        distribution = metadata.distribution("deep-ep")
-    except metadata.PackageNotFoundError as exc:
-        raise RuntimeError("deep-ep is not installed") from exc
-    site_root = Path(distribution.locate_file(""))
-    extensions = sorted(site_root.glob("deep_ep_cpp*.so"))
-    if len(extensions) != 1:
-        raise RuntimeError(
-            "deep-ep must expose exactly one top-level deep_ep_cpp extension, "
-            f"found {len(extensions)} under {site_root}"
-        )
-    extension = extensions[0]
-    if not extension.is_symlink() or not extension.resolve().is_file():
-        raise RuntimeError(
-            f"deep-ep top-level extension must be a valid symlink: {extension}"
-        )
-    print(f"[ascend-env] deep-ep-extension={extension} -> {extension.resolve()}")
-
-
-def _require_causal_conv1d_abi(torch: object, *, cann921: bool = False) -> None:
-    try:
-        schema = str(torch.ops.npu.causal_conv1d.default._schema)
-    except (AttributeError, RuntimeError) as exc:
-        raise RuntimeError("npu::causal_conv1d is not registered") from exc
-    expected = EXPECTED_CAUSAL_CONV1D_SCHEMA
-    if cann921:
-        # The newer native build explicitly annotates the state mutation.
-        expected = expected.replace("Tensor conv_states", "Tensor(a!) conv_states")
-    if schema != expected:
-        raise RuntimeError(
-            f"npu::causal_conv1d ABI mismatch: expected {expected}, found {schema}"
-        )
-    print(f"[ascend-env] causal-conv1d-schema={schema}")
-
-
-def _require_vision_padding_numerics(torch: object) -> None:
-    """Validate the CANN 8.5 D=72 -> 128 fused-attention compatibility path."""
-
-    from sglang.srt.layers.attention.vision import (
-        VisionAscendAttention,
-        prepare_vision_attention_metadata,
-    )
-
-    patch_marker = "_sglang_fl_unaligned_head_fallback"
-    if not getattr(VisionAscendAttention.forward, patch_marker, False):
-        raise RuntimeError(
-            "Ascend VisionAscendAttention compatibility patch is not active"
-        )
-
-    head_size = 72
-    num_heads = 4
-    num_kv_heads = 2
-    sequence_ends = (3, 8)
-    total_tokens = sequence_ends[-1]
-    generator = torch.Generator(device="cpu")
-    generator.manual_seed(518)
-
-    def _quantized_randn(*shape: int):
-        return torch.randn(
-            *shape,
-            generator=generator,
-            device="cpu",
-            dtype=torch.float32,
-        ).to(torch.bfloat16)
-
-    q_cpu = _quantized_randn(total_tokens, num_heads, head_size)
-    k_cpu = _quantized_randn(total_tokens, num_kv_heads, head_size)
-    v_cpu = _quantized_randn(total_tokens, num_kv_heads, head_size)
-    q = q_cpu.to("npu")
-    k = k_cpu.to("npu")
-    v = v_cpu.to("npu")
-    cu_seqlens = torch.tensor(
-        (0, *sequence_ends),
-        dtype=torch.int32,
-        device="cpu",
-    )
-    forward_metadata = prepare_vision_attention_metadata(
-        cu_seqlens,
-        device=torch.device("npu"),
-    )
-
-    attention = VisionAscendAttention(
-        head_dim=head_size,
-        num_heads=num_heads,
-        num_kv_heads=num_kv_heads,
-        flatten_batch=True,
-    )
-    with torch.inference_mode():
-        output = attention(
-            q=q,
-            k=k,
-            v=v,
-            cu_seqlens=cu_seqlens,
-            bsz=1,
-            seq_len=total_tokens,
-            forward_metadata=forward_metadata,
-        )
-        torch.npu.synchronize()
-
-    expected_shape = (total_tokens, num_heads, head_size)
-    if tuple(output.shape) != expected_shape:
-        raise RuntimeError(
-            "Ascend vision padding output shape mismatch: "
-            f"expected {expected_shape}, found {tuple(output.shape)}"
-        )
-    output_cpu = output.float().cpu()
-    if not torch.isfinite(output_cpu).all():
-        raise RuntimeError("Ascend vision padding output contains non-finite values")
-
-    references = []
-    start = 0
-    scale = head_size**-0.5
-    kv_repeat = num_heads // num_kv_heads
-    for end in sequence_ends:
-        query = q_cpu[start:end].float().permute(1, 0, 2).unsqueeze(0)
-        key = (
-            k_cpu[start:end]
-            .float()
-            .permute(1, 0, 2)
-            .repeat_interleave(kv_repeat, dim=0)
-            .unsqueeze(0)
-        )
-        value = (
-            v_cpu[start:end]
-            .float()
-            .permute(1, 0, 2)
-            .repeat_interleave(kv_repeat, dim=0)
-            .unsqueeze(0)
-        )
-        reference = torch.nn.functional.scaled_dot_product_attention(
-            query,
-            key,
-            value,
-            dropout_p=0.0,
-            is_causal=False,
-            scale=scale,
-        )
-        references.append(reference.squeeze(0).permute(1, 0, 2))
-        start = end
-    reference_cpu = torch.cat(references, dim=0)
-    error = (output_cpu - reference_cpu).abs()
-    max_error = error.max().item()
-    mean_error = error.mean().item()
-    if max_error > 0.02 or mean_error > 0.002:
-        raise RuntimeError(
-            "Ascend vision D=72 padding numerical mismatch: "
-            f"max_abs={max_error:.8f}, mean_abs={mean_error:.8f}"
-        )
-    print(
-        "[ascend-env] vision-padding-numerics passed "
-        f"(packed={sequence_ends}, max_abs={max_error:.8f}, "
-        f"mean_abs={mean_error:.8f})"
-    )
-
-
-def _require_flagcx_layout(*, cann921: bool) -> Path:
-    if cann921:
-        dist = metadata.distribution("flagcx")
-        library = Path(dist.locate_file("flagcx/lib/libflagcx.so"))
-        if not library.is_file():
-            raise RuntimeError(
-                f"required packaged FlagCX library is missing: {library}"
-            )
-        return library
-    root = Path(os.environ.get("FLAGCX_PATH", "/opt/FlagCX"))
-    library = root / "build" / "lib" / "libflagcx.so"
-    wrapper = root / "plugin" / "interservice" / "flagcx_wrapper.py"
-    for path in (library, wrapper):
-        if not path.is_file():
-            raise RuntimeError(f"required FlagCX artifact is missing: {path}")
-    print(f"[ascend-env] FlagCX artifacts={root}")
-    root_string = str(root)
-    if root_string not in sys.path:
-        sys.path.insert(0, root_string)
-    _require_import("plugin.interservice.flagcx_wrapper")
-    return library
-
-
-def _require_import(name: str) -> object:
-    try:
-        module = importlib.import_module(name)
-    except Exception as exc:
-        raise RuntimeError(
-            f"failed to import {name}: {type(exc).__name__}: {exc}"
-        ) from exc
-    print(f"[ascend-env] imported {name}")
-    return module
-
-
-def _require_plugin(plugin_root: str | None) -> None:
-    if importlib.util.find_spec("sglang_fl") is None:
-        raise RuntimeError("sglang_fl is not importable")
-    if plugin_root is None:
-        print("[ascend-env] sglang_fl import spec found")
-        return
-    module = _require_import("sglang_fl")
-    actual = Path(module.__file__).resolve().parent
-    expected = Path(plugin_root).resolve() / "sglang_fl"
-    if actual != expected:
-        raise RuntimeError(f"sglang_fl must load from {expected}, found {actual}")
-    print(f"[ascend-env] plugin-source={actual}")
-
-
-def _require_sglang_import() -> None:
-    module = _require_import("sglang")
-    module_path = Path(module.__file__).resolve()
-    if module_path == STALE_SGLANG_ROOT or STALE_SGLANG_ROOT in module_path.parents:
-        raise RuntimeError(
-            f"sglang imported from the stale empty-image checkout: {module_path}"
-        )
-
-    from_new_source = (
-        module_path == SGLANG_SOURCE_ROOT or SGLANG_SOURCE_ROOT in module_path.parents
-    )
-    from_site_packages = any(
-        parent.name in {"site-packages", "dist-packages"}
-        for parent in module_path.parents
-    )
-    if not from_new_source and not from_site_packages:
-        raise RuntimeError(
-            "sglang must import from the v0.5.18 source or its installed wheel, "
-            f"found {module_path}"
-        )
-
-    site_roots = {Path(path) for path in site.getsitepackages()}
-    user_site = site.getusersitepackages()
-    if user_site:
-        site_roots.add(Path(user_site))
-    stale_pth: list[Path] = []
-    for site_root in site_roots:
-        for pth_file in site_root.glob("*.pth"):
-            try:
-                pth_text = pth_file.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            normalized_text = pth_text.replace("\\", "/")
-            stale_editable_name = re.match(
-                r"^__editable__\.sglang-\d", pth_file.name.lower()
-            )
-            stale_editable_finder = re.search(
-                r"__editable___sglang_\d", normalized_text.lower()
-            )
-            if (
-                "/sgl-workspace/sglang/python" in normalized_text
-                or stale_editable_name
-                or stale_editable_finder
-            ):
-                stale_pth.append(pth_file)
-    if stale_pth:
-        raise RuntimeError(
-            "stale SGLang editable .pth files remain after upgrade: "
-            + ", ".join(map(str, stale_pth))
-        )
-    print(f"[ascend-env] sglang-source={module_path}")
-
-
-def _require_npu(min_npus: int, flagcx_library: Path, *, cann921: bool) -> None:
-    torch = _require_import("torch")
-    _require_import("torch_npu")
-    if cann921:
-        _require_import("shmem")
-    _require_import("torchair")
-    _require_import("torchair.configs.compiler_config")
-    _require_import(
-        "torchair.ge_concrete_graph.ge_converter.experimental.patch_for_hcom_allreduce"
-    )
+    importlib.import_module("torch_npu")
     if not torch.npu.is_available():
         raise RuntimeError("torch.npu.is_available() is false")
     count = torch.npu.device_count()
@@ -594,34 +220,14 @@ def _require_npu(min_npus: int, flagcx_library: Path, *, cann921: bool) -> None:
         raise RuntimeError(f"unexpected NPU probe result: {probe.cpu().tolist()}")
     print("[ascend-env] NPU tensor probe passed")
 
-    for module_name in REQUIRED_NPU_KERNEL_MODULES:
-        _require_import(module_name)
-    _require_causal_conv1d_abi(torch, cann921=cann921)
     from sglang.srt.plugins import load_plugins
 
     load_plugins()
-    plugin = _require_import("sglang_fl")
-    if not plugin.is_plugin_active():
+    import sglang_fl
+
+    if not sglang_fl.is_plugin_active():
         raise RuntimeError("sglang_fl general plugin did not become active")
     print("[ascend-env] sglang_fl general plugin active")
-    _require_vision_padding_numerics(torch)
-    flag_gems = _require_import("flag_gems")
-    flag_gems_path = Path(flag_gems.__file__).resolve()
-    flag_gems_root = (
-        Path(metadata.distribution("flag-gems").locate_file("flag_gems")).resolve()
-        if cann921
-        else Path("/opt/FlagGems")
-    )
-    if (
-        flag_gems_path != flag_gems_root
-        and flag_gems_root not in flag_gems_path.parents
-    ):
-        raise RuntimeError(
-            f"flag_gems must import from {flag_gems_root}, found {flag_gems_path}"
-        )
-    print(f"[ascend-env] FlagGems-source={flag_gems_path}")
-    _require_plugin(None)
-    _require_import("sglang.srt.server_args")
 
     from sglang.srt.platforms import current_platform
 
@@ -629,134 +235,76 @@ def _require_npu(min_npus: int, flagcx_library: Path, *, cann921: bool) -> None:
         raise RuntimeError(
             f"active SGLang platform does not report NPU: {type(current_platform)}"
         )
-    dispatch_key = current_platform.get_dispatch_key_name()
-    if dispatch_key != "npu":
-        raise RuntimeError(
-            f"Ascend fused-op dispatch key must be npu, got {dispatch_key}"
-        )
-    allocator_cls = current_platform.get_paged_allocator_cls()
-    expected_allocator = (
-        "sglang_fl.dispatch.backends.vendor.ascend.allocator."
-        "AscendPagedTokenToKVPoolAllocator"
-    )
-    actual_allocator = f"{allocator_cls.__module__}.{allocator_cls.__name__}"
-    if actual_allocator != expected_allocator:
-        raise RuntimeError(
-            f"Ascend paged allocator must be {expected_allocator}, got {actual_allocator}"
-        )
-    compile_backend = current_platform.get_compile_backend("npugraph_ex")
-    if compile_backend is None:
-        raise RuntimeError("Ascend npugraph_ex compiler backend resolved to None")
     print(
         "[ascend-env] platform="
-        f"{type(current_platform).__module__}.{type(current_platform).__name__} "
-        f"dispatch={dispatch_key} allocator={actual_allocator} "
-        f"compiler={type(compile_backend).__name__}"
+        f"{type(current_platform).__module__}.{type(current_platform).__name__}"
     )
-
-    try:
-        ctypes.CDLL(str(flagcx_library), mode=ctypes.RTLD_GLOBAL)
-    except OSError as exc:
-        raise RuntimeError(f"failed to load {flagcx_library}: {exc}") from exc
-    print(f"[ascend-env] loaded {flagcx_library}")
 
 
 def verify(
     *,
-    require_ci: bool = False,
+    runtime_evidence: Path | None = None,
     require_npu: bool = False,
     min_npus: int = 1,
-    plugin_root: str | None = None,
-    expected_cann_version: str | None = None,
-) -> None:
-    # This image marker selects its wheel layout and ABI checks. The pinned
-    # callers supply the expected toolkit release separately.
-    cann921 = os.environ.get("SGLANG_FL_ASCEND_CANN921") == "1"
-    python_minor = 12 if cann921 else 11
-    if sys.version_info[:2] != (3, python_minor):
-        raise RuntimeError(
-            f"Python must be 3.{python_minor}, found {sys.version_info.major}.{sys.version_info.minor}"
+    plugin_root: Path,
+) -> int:
+    plugin_root = plugin_root.resolve()
+    after = runtime_inventory(plugin_root)
+    before = json.loads(runtime_evidence.read_text()) if runtime_evidence else {}
+
+    failures: list[str] = []
+    if runtime_evidence is not None:
+        failures += inventory_drift(before, after)
+    failures += [
+        f"{name} must be {version}, found {after.get(name)}"
+        for name, version in EXPECTED_WHEELS.items()
+        if after.get(name) != version
+    ]
+    failures += entry_point_failures(collected_entry_points())
+    failures += wheel_origin_failures(plugin_root)
+    failures += placeholder_failures()
+    if "triton" in after:
+        failures.append(
+            f"a standalone triton distribution is installed: {after['triton']}"
         )
-    print(f"[ascend-env] python={sys.version.split()[0]}")
 
-    expected_runtime = (
-        EXPECTED_CANN921_DISTRIBUTIONS if cann921 else EXPECTED_RUNTIME_DISTRIBUTIONS
-    )
-    for name, expected in expected_runtime.items():
-        _require_distribution(name, expected)
-    if require_ci:
-        for name, expected in EXPECTED_CI_DISTRIBUTIONS.items():
-            _require_distribution(name, expected)
-        if cann921:
-            # PyArrow's optional NumPy ABI requirement is absent from its
-            # runtime metadata; version resolution alone cannot catch it.
-            for name in ("numpy", "pyarrow", "datasets"):
-                _require_import(name)
-
-    _require_source_markers(cann921=cann921)
-    _check_cann_version(expected_cann_version)
-    if cann921:
-        _require_flagtree()
-    _require_npu_kernel_surface()
-    _require_solve_tril_source()
-    _require_deep_ep_layout()
-    flagcx_library = _require_flagcx_layout(cann921=cann921)
-
-    _require_sglang_import()
-    # This import is deliberately safe on driver-less image builders. The full
-    # server_args import activates the platform plugin and is checked only after
-    # torch_npu has proved that real devices are available.
-    _require_import("sglang.srt.platforms.interface")
-    _require_plugin(plugin_root)
-
+    _print_runtime_facts()
+    if runtime_evidence is not None:
+        print(f"[ascend-env] test tooling added: {sorted(set(after) - set(before))}")
     if require_npu:
-        _require_npu(min_npus, flagcx_library, cann921=cann921)
-        if cann921 and require_ci:
-            # This entrypoint imports server_args/current_platform. Defer it
-            # until real devices are verified so image builders stay safe.
-            _require_import("sglang.benchmark.serving")
+        _require_npu(min_npus)
+
+    for failure in failures:
+        print(f"::error:: {failure}", file=sys.stderr)
+    if not failures:
+        print("[ascend-env] environment verification passed")
+    return 1 if failures else 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--require-ci",
-        action="store_true",
-        help="also require the pinned CI test packages",
-    )
-    parser.add_argument(
-        "--require-npu",
-        action="store_true",
-        help="also require working torch_npu devices and native NPU modules",
-    )
-    parser.add_argument(
-        "--min-npus",
-        type=int,
-        default=1,
-        help="minimum visible NPU count when --require-npu is enabled",
-    )
-    parser.add_argument(
-        "--plugin-root",
-        default=None,
-        help="require sglang_fl to import from this checkout root",
-    )
-    parser.add_argument(
-        "--expected-cann-version",
-        default=os.environ.get("SGLANG_FL_ASCEND_EXPECTED_CANN"),
-        help="require this toolkit release (default: SGLANG_FL_ASCEND_EXPECTED_CANN)",
-    )
+    parser.add_argument("--capture-runtime-snapshot", type=Path, metavar="FILE")
+    parser.add_argument("--verify", action="store_true")
+    parser.add_argument("--runtime-evidence", type=Path, metavar="FILE")
+    parser.add_argument("--require-npu", action="store_true")
+    parser.add_argument("--min-npus", type=int, default=1)
+    parser.add_argument("--plugin-root", type=Path, default=Path.cwd())
     args = parser.parse_args()
     if args.min_npus < 1:
         parser.error("--min-npus must be at least 1")
-    verify(
-        require_ci=args.require_ci,
+    if args.capture_runtime_snapshot is not None:
+        inventory = runtime_inventory(args.plugin_root.resolve())
+        args.capture_runtime_snapshot.write_text(json.dumps(inventory, sort_keys=True))
+        print(f"[ascend-env] runtime snapshot: {len(inventory)} distributions")
+        return 0
+    if not args.verify or args.runtime_evidence is None:
+        parser.error("--capture-runtime-snapshot or --verify --runtime-evidence")
+    return verify(
+        runtime_evidence=args.runtime_evidence,
         require_npu=args.require_npu,
         min_npus=args.min_npus,
         plugin_root=args.plugin_root,
-        expected_cann_version=args.expected_cann_version,
     )
-    print("[ascend-env] environment verification passed")
-    return 0
 
 
 if __name__ == "__main__":

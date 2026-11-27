@@ -115,10 +115,14 @@ fi
 # ---------------------------------------------------------------------------
 # 5. Verify the complete pinned runtime and require the TP=4 device allocation.
 # ---------------------------------------------------------------------------
+# The Runtime's PYTHONPATH ends with an empty entry (cwd precedence); strip
+# empty entries so the checkout cannot shadow the installed wheel.
+export PYTHONPATH="$(python -c 'import os; print(":".join(e for e in os.environ.get("PYTHONPATH", "").split(":") if e))')"
+
 echo "--- Pinned runtime and torch_npu probe ---"
 verify_rc=0
 python3 .github/scripts/ascend/verify_environment.py \
-  --require-ci \
+  --verify \
   --require-npu \
   --min-npus 4 || verify_rc=$?
 
