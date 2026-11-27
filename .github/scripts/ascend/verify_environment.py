@@ -297,8 +297,10 @@ def main() -> int:
         args.capture_runtime_snapshot.write_text(json.dumps(inventory, sort_keys=True))
         print(f"[ascend-env] runtime snapshot: {len(inventory)} distributions")
         return 0
-    if not args.verify or args.runtime_evidence is None:
-        parser.error("--capture-runtime-snapshot or --verify --runtime-evidence")
+    if not args.capture_runtime_snapshot and not args.verify:
+        parser.error("--capture-runtime-snapshot or --verify")
+    # --verify without evidence is the device-preflight form check.sh uses;
+    # drift checking only applies when setup.sh supplies the snapshot.
     return verify(
         runtime_evidence=args.runtime_evidence,
         require_npu=args.require_npu,

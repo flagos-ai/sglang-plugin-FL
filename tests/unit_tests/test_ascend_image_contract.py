@@ -147,7 +147,7 @@ def test_ci_config_keeps_the_validated_container_contract() -> None:
     )[1]
 
     assert config["ci_image"].startswith(
-        "harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:"
+        "harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:"
     )
     assert "flagcicd-910c" in config["runner_labels"]
     assert "/data/models/Qwen" in str(config["container_volumes"])
