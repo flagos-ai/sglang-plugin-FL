@@ -3,10 +3,27 @@
 
 platform: hygon
 
-# Docker image for this hardware
-# Published tag: 0.5.18-hygon-ci-20261015; anonymous manifest/config verified.
-# The old main image contains SGLang 0.5.11 and is rejected by setup.
-ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:d21327c133c4abd40297cf717278bd9190397916a544dc84cbfe9068f09b6c96
+# Docker image for this hardware: the SGLang 0.5.18+flagos.hcu1 two-wheel
+# image on the operations runtime, assembled by the tooling in docker/hygon/
+# (compatibility blocks documented in docker/hygon/README.md). CI consumes the
+# image by the RepoDigest below. The operations-runtime image is ~18 GB; a
+# cold runner spends most of an hour pulling it, so all platform stages get
+# 180 minutes.
+#
+# TEMP candidate, not release-ready. The digest below is the offline-wheelhouse
+# DEVELOPMENT CANDIDATE (org.flagos.ci.release-ready=false,
+# org.flagos.ci.resolver-mode=offline-wheelhouse), built by
+# docker/hygon/build_two_wheel.sh --offline-wheelhouse while the FlagOS
+# package indexes were unreachable, on the operations runtime
+# sha256:03e598b348e58e7233628394bbefa0ccef26969a091c7e6f2f02835161757f8b
+# rather than on the moving tag (amdsmi ABI, build-infra#1960). It consumed no
+# published wheel: sglang_fl was built from the checkout and the two derived
+# wheels came from their pinned inputs. The release path stays
+# docker/hygon/runtime-0.5.18.containerfile with the published indexes and
+# published wheels (docker/hygon/README.md).
+test_timeout: 180
+
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:b2049b1bbc47ac5b1b51a0a5506e98e32dc36f634c2c369ed3c7b6dc3a87aa86
 
 # Runner labels for this hardware
 runner_labels:

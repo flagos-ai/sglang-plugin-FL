@@ -28,6 +28,41 @@ dependencies = [
 
 [project.optional-dependencies]
 cuda = ["sglang==0.5.18"]
+# The Hygon two-wheel CI image installs this wheel together with the
+# flagos-built SGLang wheel; the extra states the application contract the
+# image resolver must satisfy. Runtime-owned distributions (torch, numpy,
+# flagtree, flagcx) are frozen by the image's dynamic runtime constraints
+# and are deliberately not restated here; SGLang closure dependencies
+# (xgrammar, compressed-tensors, loguru, transformers,
+# apache-tvm-ffi, ...) arrive through the SGLang wheel's own requirements
+# and must not be duplicated in the plugin extra.
+hygon = [
+    # The derived HCU SGLang wheel: the exact published flagos wheel with
+    # the reviewed HCU gating patch folded in BEFORE image assembly (see
+    # tools/wheels/hygon/derive_sglang_wheel.py), so the product image
+    # installs a normal wheel and never patches site-packages.
+    "sglang==0.5.18+flagos.hcu1",
+    # Compatibility assertion only: the operations Runtime supplies this
+    # distribution (flag-gems==5.4.0); restating the exact line keeps a
+    # resolver run against different indexes from selecting another build
+    # whose libentry contract mismatches the Runtime's FlagTree Triton.
+    "flag-gems==5.4.0",
+    # Product compatibility pin requested by the Runtime owner. SGLang's
+    # closure reaches datasets, while this Runtime supplies fsspec 2026.9.0;
+    # datasets==5.2.0 is the first tested release without the older fsspec
+    # upper bound. Keeping the pin in the selected platform extra makes it
+    # part of the wheel contract instead of a hidden Docker requirement.
+    "datasets==5.2.0",
+    # Triton is intentionally absent here. The Hygon Runtime provides the
+    # compiler as the /opt/flagtree module tree (Triton 3.6.0, selected by
+    # the image-level PYTHONPATH), not as a pip distribution; its FlagGems
+    # 5.4.0 build targets that launcher path. The image build therefore
+    # supplies a metadata-corrected, SHA-bound xgrammar platform wheel that
+    # removes its inaccurate HCU ``Requires-Dist: triton``. The old resolver
+    # exclusion and exact pip-check exception remain temporarily until the
+    # unavailable FlagOS indexes recover and the no-excludes real plan,
+    # candidate build and full acceptance all pass.
+]
 
 [project.entry-points."sglang.srt.platforms"]
 sglang_fl = "sglang_fl:activate_platform"

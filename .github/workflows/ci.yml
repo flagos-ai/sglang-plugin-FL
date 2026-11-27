@@ -66,7 +66,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      platforms: ${{ steps.detect.outputs.platforms }}
+      # TEMP(probe/hygon-two-wheel-hwci): the restrict step may pin this to
+      # ["hygon"] for the single-platform hardware probe; see that step.
+      platforms: ${{ steps.restrict.outputs.platforms || steps.detect.outputs.platforms }}
       # PR test tier from labels (see header); workflow_dispatch = full.
       run_e2e: ${{ steps.tier.outputs.run_e2e }}
       run_benchmark: ${{ steps.tier.outputs.run_benchmark }}
@@ -148,6 +150,16 @@ jobs:
           else
             python3 .github/scripts/detect_platforms.py
           fi
+
+      # TEMP(probe/hygon-two-wheel-hwci): CI-only single-platform validation.
+      - name: Restrict platforms for the Hygon Runtime-env probe (TEMP)
+        id: restrict
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.ref == 'probe/hygon-two-wheel-hwci'
+        run: |
+          echo 'platforms=["hygon"]' >> "$GITHUB_OUTPUT"
+          echo "probe platform restriction active: hygon only"
 
   # ============================================================
   # Jobs 6a-6g: per-platform testing (routed by discover)

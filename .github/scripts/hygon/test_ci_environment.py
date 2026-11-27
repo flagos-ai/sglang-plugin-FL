@@ -3,20 +3,20 @@
 import importlib.util
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import yaml
-
 from ci_environment import (
     allocation_mask,
     main,
     normalized_environment,
     persist_for_actions,
+    verify_ci_packages,
     verify_image_metadata,
 )
 
@@ -165,14 +165,15 @@ class ImageAndSetupTests(unittest.TestCase):
             verify_image_metadata(version)
         self.assertEqual(calls, ["sglang"])
 
-    def test_expected_image_requires_preinstalled_ci_dependencies(self):
+    def test_expected_image_passes_the_pregate_without_ci_packages(self):
+        # check.sh runs --check-image before setup.sh installs the test
+        # runner, so the sglang gate must not require CI packages.
+        verify_image_metadata(lambda name: "0.5.18+flagos.hcu1")
+
+    def test_expected_image_requires_ci_packages_after_install(self):
         with self.assertRaisesRegex(RuntimeError, "missing pytest"):
-            verify_image_metadata(
-                lambda name: (
-                    "0.5.18"
-                    if name == "sglang"
-                    else (_ for _ in ()).throw(RuntimeError("missing pytest"))
-                )
+            verify_ci_packages(
+                lambda name: (_ for _ in ()).throw(RuntimeError("missing pytest"))
             )
 
     def test_check_image_failure_cannot_execute_install_command(self):
@@ -197,15 +198,59 @@ class ImageAndSetupTests(unittest.TestCase):
                 )
             run.assert_not_called()
 
-    def test_setup_has_one_dependency_preserving_install(self):
+    def test_setup_installs_only_the_test_runner(self):
         source = (SCRIPTS / "setup.sh").read_text(encoding="utf-8")
+        requirements = (SCRIPTS / "test-requirements.txt").read_text(encoding="utf-8")
+        verifier_source = (SCRIPTS / "verify_environment.py").read_text(
+            encoding="utf-8"
+        )
+        image_source = (ROOT / "docker/hygon/runtime-0.5.18.containerfile").read_text(
+            encoding="utf-8"
+        )
         installs = [line for line in source.splitlines() if "pip install" in line]
+        # The image ships the real application wheels; the job installs
+        # only the pinned test runner and never an editable checkout.
         self.assertEqual(len(installs), 1)
-        self.assertIn("--no-deps --no-build-isolation -e", installs[0])
+        self.assertIn(
+            '-r "$PLUGIN_ROOT/.github/scripts/hygon/test-requirements.txt"', source
+        )
+        self.assertEqual(
+            [
+                line.strip()
+                for line in requirements.splitlines()
+                if line.strip() and not line.lstrip().startswith("#")
+            ],
+            [
+                "pytest==9.1.1",
+                "pytest-timeout==2.4.0",
+                "iniconfig==2.3.1",
+                "pluggy==1.7.0",
+            ],
+        )
+        self.assertNotIn("pytest==", source)
+        self.assertIn("--check-ci-packages", source)
         self.assertNotIn("--upgrade", source)
         self.assertNotIn(".[dev]", source)
-        self.assertIn("--baseline", source)
+        self.assertNotIn("--no-deps --no-build-isolation -e", source)
+        self.assertIn("--runtime-evidence", source)
         self.assertIn("--require-gpu --min-gpus 2", source)
+        # Installed-wheel mode: the test harness must reject the checkout
+        # as a plugin source in every subprocess.
+        self.assertIn("SGLANG_FL_TEST_SOURCE=wheel", source)
+        self.assertIn("python .github/scripts/hygon/verify_environment.py", source)
+        self.assertIn('locate_file("")', verifier_source)
+        self.assertIn("attention_backend", verifier_source)
+        # The Runtime owns the DTK prefix contract; the job verifies the Bash
+        # environment and never recreates it in the application image.
+        self.assertNotIn("enable_flagtree_device_lib_fallback.py", source)
+        self.assertNotIn("enable_sglang_scalar_fallback.py", source)
+        self.assertIn("/opt/dtk/aillvm/bin/clang-18", verifier_source)
+        self.assertIn('"${ROCM_PATH}/bin/hipcc" --version', source)
+        self.assertIn("ROCM_PATH:-", source)
+        self.assertNotIn("/opt/rocm", source)
+        self.assertNotIn("TRITON_HIP_CLANG_PATH", image_source)
+        self.assertNotIn("/opt/hcu-clang", image_source)
+        self.assertIn("SGLANG_HYGON_DIAGNOSTIC_TRITON_ATTENTION=1", source)
 
 
 class WorkflowTests(unittest.TestCase):

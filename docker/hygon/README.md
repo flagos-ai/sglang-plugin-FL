@@ -58,7 +58,7 @@ docker exec hygon-sglang-0518 /usr/bin/env \
 ## 安装前应用 SGLang 源码补丁
 
 必须对 **SGLang v0.5.18 源码**应用
-[`sglang-v0.5.18-hcu.patch`](sglang-v0.5.18-hcu.patch)，然后再安装 SGLang。
+[`sglang-v0.5.18-hcu.patch`](../tools/wheels/hygon/sglang-v0.5.18-hcu.patch)，然后再安装 SGLang。
 仅安装或更新插件无法修复这一上游导入问题：量化注册表在插件补丁执行前就会
 根据 HIP 标记导入 AMD Quark/AITER 内核；HCU 同样使用 HIP，但不提供这些内核。
 
@@ -68,8 +68,8 @@ docker exec hygon-sglang-0518 /usr/bin/env \
 export PLUGIN_ROOT=/opt/sglang-plugin-fl
 export SGLANG_SOURCE_ROOT=/opt/sglang-0.5.18
 cd "$SGLANG_SOURCE_ROOT"
-git apply --check "$PLUGIN_ROOT/docker/hygon/sglang-v0.5.18-hcu.patch"
-git apply "$PLUGIN_ROOT/docker/hygon/sglang-v0.5.18-hcu.patch"
+git apply --check "$PLUGIN_ROOT/tools/wheels/hygon/sglang-v0.5.18-hcu.patch"
+git apply "$PLUGIN_ROOT/tools/wheels/hygon/sglang-v0.5.18-hcu.patch"
 ```
 
 之后按容器配方安装该 SGLang 源码与插件。补丁仅让海光跳过三个不适用的 AMD
@@ -327,3 +327,363 @@ python tests/run.py --platform hygon --device bw1000 --scope e2e --task mtp
 
 benchmark 保持显式启用。上面的 MTP 结果来自手动实机验收；工作流配置完成和
 镜像发布不代表 GitHub 硬件 CI 通过，应以对应 PR 最新提交的实际 job 结果为准。
+
+## 两-wheel CI 镜像：构建与构建后验收
+
+`runtime-0.5.18.containerfile` 只做镜像组装：Runtime 基底（moving semver
+tag，见下）、一次 uv 解析安装两个真实 wheel（派生 HCU wheel
+`sglang-0.5.18+flagos.hcu1`——由 `tools/wheels/hygon/derive_sglang_wheel.py` 在
+staging 期从 SHA 钉定的 `sglang-0.5.18+flagos` 输入 wheel 折入 reviewed HCU
+patch 而来——与本仓库构建的 `sglang_fl`）、以及 HCU/DTK 兼容层。所有验收都不在镜像构建
+期执行：
+
+```bash
+# 组装构建 + 构建后验收 + 可选推送（唯一发布入口：验收是发布门，
+# --push 只在验收通过后可达；staging + tag→digest 解析 + 从解析出的
+# digest 动态采集 runtime-constraints + 由配方生成的 dry-run 计划门 +
+# docker build 带 provenance label + verify_image.sh 八阶段验收）
+docker/hygon/build_two_wheel.sh [--push] <tag>
+
+# 离线 wheelhouse 开发候选（TEMP；见下文“离线 wheelhouse 开发候选”）
+docker/hygon/build_wheelhouse.sh --cache-source <绿镜像 repo@sha256:…> --out <仓库外目录>
+docker/hygon/build_two_wheel.sh --offline-wheelhouse <wheelhouse 目录> \
+    --runtime-image <Runtime repo@sha256:…> [--push-candidate] <候选 tag>
+
+# 也可对已构建镜像单独验收（基底从镜像自身的 OCI label 读取）
+docker/hygon/scripts/verify_image.sh <tag>
+```
+
+- 基底是 Runtime owner 要求的 moving semver tag
+  （`flagos-runtime-hygon-dtk26.04:2.3.0`；固定 digest 曾被 registry 清理
+  而失效）。`build_two_wheel.sh` 构建前把 tag 解析成 repo digest：参考
+  数据采集、dry-run 门、`docker build` 全部用同一 digest，并把 digest 记
+  进 `org.flagos.ci.base-digest` label，验收从该 label 回读基底——tag 再
+  移动也不影响已构建镜像的可复现验收。离线 wheelhouse 候选不走 tag：
+  `--runtime-image` 必须是 `name@sha256:<digest>`，且该对象必须已在本地
+  Docker store 里并通过身份核对（见下文）；
+- `datasets==5.2.0` 已按 Runtime owner 的 review 意见进入插件的 Hygon extra：
+  Runtime 自带 fsspec 2026.9.0，平台 index 上的更旧 datasets 都对 fsspec 封顶
+  而导致 ResolutionImpossible，5.2.0 是首个放开该上限的测试版本。Runtime
+  动态 constraints 则由 `build_two_wheel.sh` 从解析出的 digest 生成，只保护
+  Runtime distributions 不被 resolver 替换，仅作构建临时输入（/tmp，同一
+  RUN 内消费并删除），不留在最终镜像；
+- 构建输入（constraints、两个应用 wheel、修正元数据的 xgrammar wheel、
+  excludes）由 BuildKit 只读 bind mount
+  给唯一安装 `RUN`，不进入最终镜像的任何 blob；uv 同时使用 `--no-cache`，
+  验收明确拒绝 `/root/.cache/uv`（旧候选曾残留约 1.1 GB）。镜像不设 `WORKDIR`
+  （继承 Runtime 的 `/app`），不含 `/opt/sglang-ci` 或任何构建痕迹。HCU
+  patch 不再进入镜像：它折入派生 wheel（staging 期严格差异门禁保证只有
+  patch 文件、METADATA Version 行、dist-info 目录名与 RECORD 变化）；派生
+  wheel 的 SHA256 记为 `org.flagos.ci.sglang-wheel-sha256` label，验收期核
+  对已安装 distribution 版本即 `0.5.18+flagos.hcu1`。xgrammar 同样在 staging
+  期从 SHA 钉定的官方 `0.2.1` wheel 派生为 `0.2.1+flagos.hcu1`：只删除 HCU
+  上错误的 active `Requires-Dist: triton`，严格门保证其余 METADATA、tags、
+  payload/native 文件逐字节不变；其 SHA 由
+  `org.flagos.ci.xgrammar-wheel-sha256` 与外置 provenance 双重绑定；
+- 参考数据（freeze、site-packages 哈希、pip-check 基线、provenance）每次
+  从 label 指向的 digest 现场采集，只存在于 `mktemp`/CI artifact，不提交
+  仓库，也不进镜像；
+- `verify_image.sh` 覆盖：runtime 零漂移六门、vendor 模块 provenance、
+  plugin guard 冒烟、Runtime clang 无卡 HSACO 编译、SGLang import 冒烟、Triton 多入口
+  解析、installed-wheel 父/子进程解析、镜像级 ENV/label 合同（含
+  LD_LIBRARY_PATH 前插语义、中性 WORKDIR、无 CI 工作目录残留）。Triton 相关
+  各门按镜像 label `org.flagos.ci.triton-slot` 声明的 slot 取**该 slot 的真实
+  合同**（见下文），没有为实验放宽的统一口径；
+- 严格验收还把三个 wheel **整体**与已安装内容逐成员比对
+  （`scripts/verify_installed_wheel.py`；installer 改写的 RECORD 除外，console
+  script 只允许 shebang/启动跳板不同）：派生 SGLang 不再只核对 patch 文件，
+  native payload 在内的每个成员都必须是 staged wheel 的字节；`sglang_fl`、
+  `sglang` 的包目录里不允许出现 wheel 之外的文件；
+- dry-run 计划门不再手抄安装命令：`scripts/uv_install_contract.py` 直接读配方
+  里的 `RUN`，`--dry-run` 是与真实安装唯一的语义差异；同一模块把 `RUN` 自己的
+  bind mount 与 network 模式翻译成 dry-run 容器的 `--volume`/`--network`；
+- 每个 `build_two_wheel.sh` 产出的镜像都带 `org.flagos.ci.resolver-mode`
+  （`index` 或 `offline-wheelhouse`）与 `org.flagos.ci.base-local-image-id`，
+  验收要求镜像的 RootFS 以声明基底的**全部**层为前缀（候选携带完整
+  Runtime，推送会上传 registry 缺失的每一层），并扫描镜像内不存在
+  wheelhouse、wheel 归档、constraints、resolver plan、provenance、checkout 或
+  测试 runner；
+- wheel 的 METADATA/entry point/payload 验收在 staging 期
+  （`scripts/check_plugin_wheel.py`）与验收期（六门之五）各跑一次。
+
+### 候选输入：staging、内容钉定与发布边界
+
+`docker/hygon/stage_wheels.sh` 产出构建上下文（wheel、provenance、constraints、
+excludes；disposable，不入仓库、不进镜像）。一条版本只对应一份内容：
+
+- 两个派生 wheel 的 SHA256 在脚本内钉定（`SGLANG_DERIVED_SHA256`、
+  `XGRAMMAR_DERIVED_SHA256`）。现场派生结果与钉定值不符即失败：内容变了就要
+  下一个 local version（`hcu2`），绝不重发 `hcu1`；
+- 已派生好的 wheel（发布件，或有 SHA 佐证的本地副本）用
+  `SGLANG_DERIVED_WHEEL` / `XGRAMMAR_DERIVED_WHEEL` 指定：staging 复制它与
+  相邻的 provenance JSON，并比对同一钉定值，不在镜像内解包、patch、重打包；
+- 插件 wheel `sglang_fl-0.1.0` 由 `scripts/stage_plugin_wheel.py` 进 staging，
+  有两种不能混用的身份：
+  - **开发候选**（默认）：从当前 checkout 构建，zip 时间戳取自提交
+    （`SOURCE_DATE_EPOCH` = 提交时间），同一提交两次构建逐字节相同。此前的
+    差异只在 6 个 dist-info 成员的时间戳上。可复现不等于可发布：这种镜像不能
+    push；
+  - **release 输入**：`SGLANG_FL_WHEEL=<已发布的 wheel>` 加
+    `SGLANG_FL_SHA256=<其钉定 digest>`，wheel 旁边必须有记录了构建提交
+    `source_commit` 的 provenance JSON。staging 只校验和复制，不构建；
+  - `build_two_wheel.sh --push` 在插件 wheel 不是已发布制品时直接拒绝。镜像
+    label `org.flagos.ci.sglang-fl-wheel-sha256` 记录它的 digest；严格验收逐个
+    比较已安装的 `sglang_fl` 文件与 wheel 内容（installer 改写的 RECORD
+    除外），并对其 provenance 做与派生 wheel 相同的谱系检查；
+- staging 末尾写出 `publication-manifest.json`
+  （`tools/wheels/hygon/publication_manifest.py`）：每个制品的 distribution、
+  version、文件名、字节数、SHA256 与建议的 Nexus 仓库/路径
+  （`flagos-pypi-hygon`，`packages/<name>/<version>/<file>`，与已发布输入
+  wheel 的现有布局一致）。本轮全部制品状态为 LOCAL DEVELOPMENT CANDIDATE，
+  没有发布任何内容；reviewer r4627443492 要求的“wheel 来自
+  resource.flagos.net”在制品 owner 发布之前属于 externally blocked；
+- 正式镜像只应消费已发布、不可变、SHA 钉定的 wheel。已发布件一定早于镜像的
+  提交派生，所以严格验收对 provenance 的 `source_commit` 要求的是**谱系**而
+  不是相等：派生提交必须存在于本仓库，且是镜像 `source-commit` 的祖先
+  （`scripts/provenance_lineage.py`）。wheel 的内容绑定仍由 SHA256 label 与
+  逐文件 manifest 负责，这部分没有放宽。
+
+### 离线 wheelhouse 开发候选（TEMP）
+
+FlagOS 包索引不可用时（2026-11-23：`flagos-pypi-hygon/simple/torch/` 持续
+HTTP 500，`packages/sglang/…` 与 `simple/sglang/` 404），release 路径的镜像内
+安装无法解析。TEMP 候选模式让开发候选在完全离线的条件下解析闭包，产出可验收、
+可上硬件矩阵的镜像；它不替代 release 路径。
+
+- **wheelhouse 来源**：`build_wheelhouse.sh --cache-source <repo@sha256:…>`。
+  来源必须已在本地 Docker store 里并通过身份核对（image ID 或 RepoDigests
+  等于该 digest；不 pull、不看 tag）。脚本导出其 `/root/.cache/uv`，
+  `scripts/wheelhouse.py` 读出上一次绿构建下载过的每个 registry wheel 的记录
+  （原始 URL、文件名、registry 声明的 SHA256、解包树），按原始 URL 重新下载
+  **上游原始字节**（通用 wheel 的原始 URL 不可达时才用腾讯镜像的精确文件
+  链接补齐），再逐个做三重校验：SHA256 等于 cache 记录的 registry digest；每个
+  成员与 cache 解包树逐字节相同；METADATA Name/Version 等于文件名。没有
+  “从解包树重新打包”的回退：身份立不住的 wheel 直接失败，且不留下半成品；
+- **旧镜像的 site-packages 不是安装输入**，只用 cache 对“当时下载了什么”的
+  记录。`wheelhouse-manifest.json` 记 cache 来源镜像与每个 wheel 的 filename、
+  规范名、完整版本、SHA256、来源 URL 和实际下载 URL；三个显式 wheel 在绿构建
+  里的原件（如原始 xgrammar 0.2.1）不进 wheelhouse，记在
+  `excluded_explicit_requirements`；
+- **staging**：`HYGON_WHEELHOUSE=<目录>` 让 `stage_wheels.sh` 先按 manifest 复核
+  wheelhouse（少文件、多文件、内容变化都失败），再把它复制进构建上下文；
+- **配方**：`runtime-0.5.18.offline-wheelhouse.containerfile` 与 release 配方在
+  resolver 来源之外逐条指令相同（契约测试保证）：三个 wheel 路径、constraints
+  和 excludes 全部一致；两者都不覆盖 Runtime 管理的 `PYTHONPATH`、
+  `LD_LIBRARY_PATH`、`ROCM_PATH`，也不创建 `/opt/rocm`。差别只是
+  `--index…/--default-index…/--index-strategy…` 换成
+  `--no-index --find-links /wheelhouse`、`RUN --network=none` 和 wheelhouse 的
+  只读 bind mount。没有 `# syntax=` 指令：固定的 frontend 镜像在 docker.io 上，
+  离线构建不依赖它；
+- **构建入口**：`build_two_wheel.sh --offline-wheelhouse <dir> --runtime-image
+  <name@sha256:…>`。`--runtime-image` 必须是 digest 形式且本地存在，不回落到
+  任何 tag；远端 manifest 已被清理不是阻塞（构建用核对过身份的本地对象，
+  push 上传父层），该状态只记录不设门。dry-run 在同基底、同挂载、
+  `--network none` 的容器里执行，并把计划绑定到 wheelhouse：计划里的每个闭包
+  包都必须是 wheelhouse 里同版本的 wheel。`--push` 拒绝此模式；
+- **labels**：`org.flagos.ci.release-ready=false`、
+  `resolver-mode=offline-wheelhouse`、`resolver-cache-source=<cache 来源镜像的
+  repo@sha256:…>`、`base-digest`、`base-local-image-id`、`source-commit`、三个
+  wheel 的 SHA256、`triton-slot=/opt/flagtree`、`wheelhouse-manifest-sha256`。
+  验收逐项核对这些 label 与手上的构建输入，并把 Runtime 之上新增的每个
+  distribution 绑定到“三个显式 wheel 或 wheelhouse 里同版本的 wheel”；
+- **发布**：只有 `--push-candidate`。tag 必须是
+  `harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.5.18-hygon-2w-offline-<source 短 sha>-<UTC 时间>`
+  且 registry 里尚不存在（无法确认是否空闲同样拒绝）。推送后
+  `scripts/verify_remote_candidate.sh` 直接读 registry：tag 解析到的 RepoDigest
+  （CI 消费的就是它）、每个平台 manifest 的 config digest、每个 blob（config 与
+  所有层）都存在于 registry，并按 digest 重新 pull 与本地已验收镜像比对 RootFS
+  与 labels；
+- **边界**：不是 release 路径，不消费已发布的 wheel，也不构成真实索引下
+  `--excludes` 可以退役的证据（`no_excludes_gate.sh` 仍未在真实索引上通过）。
+  镜像是否满足发布要求由 reviewer / Runtime owner 裁定。
+
+### 插件自有的 kernel import guard 与激活时序
+
+HCU Runtime 没有 `sgl-kernel` / FlashInfer wheel，而 SGLang 0.5.18 在加载层模块时
+会 eager import 它们。reviewer r4627477929 指出这些 stub 应属于 plugin repo：
+它们现在位于 `sglang_fl` wheel 内
+（`sglang_fl/dispatch/backends/vendor/hygon/early.py` + `import_guard.py`），
+镜像里不再写任何 stub 文件或 `.pth`。
+
+- **方案 A（early activation，已实现）**：Hygon 平台发现（`sglang_fl` 的 vendor
+  early hook）执行时，把只对 `sgl_kernel`、`flashinfer` 两个根生效的 placeholder
+  finder **追加**到 `sys.meta_path` 末尾——真实已安装的包永远优先；每个包可用
+  `SGLANG_FL_HYGON_SGL_KERNEL_STUB=0` / `SGLANG_FL_HYGON_FLASHINFER_STUB=0`
+  单独关闭。这不是 #197 那种全局 import-adjusting hook：finder 只回答这两个
+  根下的名字；
+- **语义与原镜像 stub 一致**：`sgl_kernel.utils.is_arch_support_pdl()` 返回
+  `False`；`sgl_kernel.scalar_type` 永不伪造（`find_spec` 返回 `None`，保住
+  SGLang 的纯 Python fallback）；其它对象可 import、调用即抛 `RuntimeError`；
+  不伪造 distribution metadata；`SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK=1` 只在
+  `sgl_kernel` placeholder 生效时写入，与 stubs 同进退；
+- **激活时序实证**（无卡；真实 `python -m sglang.launch_server` 冷启动，CPU
+  torch 2.9.0 + 伪造 HCU 设备信息）：`sglang_fl.activate_platform()` 首次执行于
+  `import sglang`（`sglang/__init__.py:21` → `sglang/srt/utils/__init__.py:2`
+  → `sglang/srt/utils/common.py:100` 的 `current_platform` 惰性解析），此时仅
+  19 个 sglang 模块已加载；激活之前 sgl_kernel/flashinfer 的 import 请求数为
+  0，直到 launch import、`load_plugins()` 与 `prepare_server_args()` 结束也
+  没有（guard 自身的 `_installed()` 探测除外）。对这 19 个模块的全分支
+  module-scope import 闭包做静态复核，同样为 0。激活之后 placeholder 对两个
+  根都生效：`is_arch_support_pdl()` 为 `False`，
+  `find_spec("sgl_kernel.scalar_type")` 为 `None`；
+- **卸载无残留**：guard 随 `sglang_fl` distribution 安装/卸载，没有 `.pth`、
+  没有物理 `sgl_kernel`/`flashinfer` 包（单测
+  `test_plugin_wheel_carries_the_guard_and_uninstall_leaves_nothing`）；
+- **构建后验收按行为检查**：`verify_runtime_immutable.py` 在镜像内导入已安装
+  的 guard 文件并断言上述语义，而不是匹配源码字符串。
+
+局限：CPU torch 跑不了 `torch.cuda` 相关的 import 期代码，engine import 链在
+“Torch not compiled with CUDA enabled”处停止；真实入口上的时序确认仍欠 Hygon
+硬件矩阵。
+
+### clang wrapper 替代矩阵（reviewer r4627367002）
+
+Reviewer 不认可“塞进镜像的 clang 包装脚本”。候选改用**直接调用 Runtime 自带的
+`/opt/dtk/aillvm/bin/clang-18`**，依据是下面的无卡真实编译探针；**wrapper 能否
+最终删除，以 Hygon 硬件矩阵上的真实 kernel 编译为准，验证前不作此声明。**
+
+探针：在解析出的 Runtime digest
+`acccfccbde7681de6615ae2b411a9c642b14edbd3f4bdb74d75477028878a9f6` 的临时容器内，
+调用 FlagTree HCU backend **自己的** `make_amdgcn` + `make_hsaco` 编译含
+`__ocml_fabs_f32` 的验收 IR（`scripts/hcu-device-lib-check.ll`，gfx936），
+`scripts/flagtree_compile_probe.py` 记录 clang 路径、argv、cc1 载入的 device
+bitcode 和产物 SHA256。“旧布局”指模拟的更早 Runtime：没有 `/opt/dtk/amdgcn`，
+device libs 只在 `/opt/dtk/dcc/dccgcn/bitcode`（build-infra #1786 的现场）。
+
+| 变体 | 相对 A 的唯一差异 | 当前布局 | 旧布局 |
+|---|---|---|---|
+| **A 直接 Runtime clang（候选采用）** | —（FlagTree 默认参数，含 1 个空串参数） | 通过：asm `10a0c529…`，HSACO `ea37ba47…`（3040 B），device bitcode 取自 `/opt/dtk/amdgcn/bitcode` | **失败**：`clang-18: error: cannot find ROCm device library; provide its path via '--rocm-path' or '--rocm-device-lib-path', or pass '-nogpulib' to build without ROCm device library`（即 #1786） |
+| B 已删除的 wrapper（对照基线） | `TRITON_HIP_CLANG_PATH` 指向包装脚本：丢弃空串参数并追加 `--rocm-device-lib-path=/opt/dtk/dcc/dccgcn/bitcode` | 通过，产物与 A 逐字节相同（bitcode 取自 `/opt/dtk/dcc/dccgcn/bitcode`） | 通过，产物与 A（当前布局）相同 |
+| C 目录别名 | 新增 `/opt/dtk/amdgcn/bitcode → /opt/dtk/dcc/dccgcn/bitcode` 符号链接，不改任何 Runtime 文件 | 不适用（标准路径已存在） | 通过，产物相同 |
+| D1 backend 追加 `-nogpulib` 并去掉空串参数 | FlagTree 源码改动（原型副本） | **失败**：asm 不同（`991c06b4…`，cc1 未载入任何 device bitcode），链接步 `ld.lld: error: undefined symbol: __ocml_fabs_f32` | 未跑 |
+| D2 backend 显式传 `--rocm-device-lib-path=<backend 自算的 libdir>` 并去掉空串参数 | FlagTree 源码改动（原型副本） | 通过，产物相同 | 通过，产物相同 |
+
+A 的 IR→assembly argv（当前布局）：
+
+```text
+clang -target amdgcn-amd-amdhsa -mcpu=gfx936:xnack- -mllvm=-check-valu-data-forward-hazards=0 \
+  -mllvm=-disable-cluster-lds-memops=true -mllvm=-hcu-pre-emit-load-store-opt=false '' \
+  -mllvm=-support-768-vgprs=true -mllvm=-enable-hcu-approx-fp-math=true \
+  -mllvm=-hcu-update-wait-by-reverse-search=true -O3 <probe>.ll -S -o <out>.amdgcn
+```
+
+结论与去向：
+
+- 当前 Runtime 上 A 成立，是因为 device libs 同时存在于 clang 自动探测的标准
+  路径 `/opt/dtk/amdgcn/bitcode`；backend 把 device libs 链进 IR 之后，交给
+  clang 的 IR 仍声明 `__ocml_*` / `__ockl_*`，clang 这一步自己也必须找到它们；
+- A 对 Runtime 布局敏感（旧布局即 #1786）。若硬件矩阵或未来的 Runtime 上 A
+  失败，不需要恢复 wrapper：C（目录别名）与 D2 都产出与 A 相同的产物；
+- D 是根治方案，需要 FlagTree / FlagOS Runtime owner 落地：候选补丁在
+  [`upstream/flagtree-0.7.0+hcu3.6-explicit-device-lib-dir.patch`](upstream/flagtree-0.7.0+hcu3.6-explicit-device-lib-dir.patch)，
+  本仓库从不应用它；
+- 构建后验收与 CI 环境门要求直接选中 Runtime clang，并拒绝
+  `TRITON_HIP_CLANG_PATH` 等覆盖（探针负例已验证：旧布局、存在覆盖两种情况均
+  FATAL）。
+
+复跑探针（`verify_image.sh` 第 4 阶段即此命令；矩阵脚本本身属 disposable
+证据，不提交）：
+
+```bash
+docker run --rm --platform linux/amd64 \
+  --volume "$PWD/docker/hygon/scripts":/scripts:ro \
+  --entrypoint bash <candidate-image> -c 'exec python "$@"' bash \
+  /scripts/flagtree_compile_probe.py \
+  --probe /scripts/hcu-device-lib-check.ll
+```
+
+### Triton 编译器 slot：`/opt/flagtree` vs `/opt/triton`（reviewer r4627164234）
+
+Runtime 自带两套编译器树。生产镜像不覆盖环境，由 Runtime 的 Bash 初始化选择
+`/opt/flagtree`；一次性 A/B 薄层才用 `ENV PYTHONPATH` 切换两臂：
+
+| slot | 模块版本 | triton dist-info | backends | pip check 是否看到 triton |
+|---|---|---|---|---|
+| `/opt/flagtree`（生产默认） | 3.6.0 | 无（由 `flagtree 0.7.0+hcu3.6` distribution 提供） | `hcu` | 否 |
+| `/opt/triton` | 3.5.1 | `triton-3.5.1+das.opt1.dtk2604.torch290.dist-info` | `amd`、`nvidia` | 是 |
+
+- 候选默认继续 `/opt/flagtree`。镜像 label `org.flagos.ci.triton-slot` 记录所选
+  slot（构建脚本写入，值只允许 `/opt/flagtree` 或 `/opt/triton`），验收脚本从
+  label 读回，并按**该 slot 的真实合同**逐项核对：模块版本、dist-info 有无、
+  backend 目录、`import triton` 的解析路径、pip check 是否看到 triton。合同定义
+  在 `scripts/triton_slot.py`，没有为 A/B 放宽任何一条；
+- `/opt/triton` 下的 dist-info 让 `pip check` 即使对**原始** xgrammar wheel 也
+  满足，但它把编译器换成 vendor 3.5.1（没有 `hcu` backend）；该组合在 HCU 上
+  是否可用未知，只能由硬件实验回答。
+
+A/B 命令（单变量；两臂都是同一个已验收候选之上的薄层）：
+
+```bash
+docker/hygon/triton_slot_ab.sh --experiment <ID> --context <staging-context-dir> \
+  <已验收候选镜像> <tag-a> <tag-b>
+# A 臂 PYTHONPATH=/opt/flagtree，B 臂 PYTHONPATH=/opt/triton
+```
+
+脚本先证明单变量（`scripts/verify_triton_slot_pair.py`：两臂 `RootFS.Layers`
+相同、ENV 只差 `PYTHONPATH`、label 只差 slot label、`/opt/flagtree`、`/opt/triton`
+与 site-packages 的树摘要相同、基底 digest 与两个 wheel 的 SHA label 相同），
+再对每臂跑一遍完整 `verify_image.sh`，不推送。无卡部分只在一个伪候选上验证
+过（31 层相同；B 臂报告 triton distribution
+`3.5.1+das.opt1.dtk2604.torch290`）；**真实候选上的 A/B 尚未运行**。
+
+硬件 A/B 与解除条件：
+
+1. 候选镜像先通过无卡验收（需 Nexus 可用以完成构建）；
+2. 用一次性分支把 `.github/configs/hygon.yml` 的 `ci_image` 指向 A 臂，另一
+   分支指向 B 臂，各自推送镜像并跑 Hygon 硬件矩阵——本轮不允许改该文件、
+   不允许推送，故未执行；
+3. 只有 A、B 两臂在同一候选 digest 上各自跑完矩阵才形成 slot 结论；A 臂自身
+   失败的实验无效。此前的硬件 A 尝试即属此类：基线 A 因 amdsmi×hyhal ABI
+   失败，变量未隔离，结论无效；
+4. 在此之前容器文件默认继续 `/opt/flagtree`。
+
+### `--excludes triton` 的退役门
+
+修正元数据的 xgrammar wheel 去掉了闭包里唯一活跃的 `triton` 依赖，因此过渡期的
+`--excludes triton`（及记录它的 pip-check 精确豁免）在删除前必须先被证明已成
+no-op。`docker/hygon/no_excludes_gate.sh` 对**真实索引**、同一解析 digest、同一份
+staged artifacts 跑两次 `uv pip install --dry-run`：
+
+- plan A：containerfile 的安装参数原样（由 `scripts/uv_install_contract.py` 从
+  containerfile 提取，仍带 `--excludes`）；
+- plan B：同一命令去掉 `--excludes <file>`。
+
+两个 plan 都要过常规 plan 门（选中 `xgrammar==0.2.1+flagos.hcu1`、无 standalone
+triton、零 Runtime distribution 被替换），且必须逐行相同，plan B 还必须选中
+`datasets==5.2.0`。
+
+```bash
+docker/hygon/no_excludes_gate.sh <staging-context-dir> [--evidence-dir DIR]
+```
+
+删除 `runtime-0.5.18.excludes.txt` 与精确豁免的条件（缺一不可）：gate 通过 →
+删除后的候选构建 → `pip check` → 完整 `verify_image.sh`。索引不可用时 gate 失败
+并保留全部 resolver 输出；不改索引优先级、不伪造已安装 triton metadata 绕过。
+
+### 剩余兼容债速查（Docker 注释保持简短，完整证据口径在此）
+
+下表记录历史兼容项及现状。前三项 Docker 覆盖和 `/opt/rocm` 别名已经移除：
+实际 Runtime 通过 `BASH_ENV=/etc/bash_env.sh` 加载 vendor profile，生产入口实测获得
+`PYTHONPATH=/opt/flagtree`、`ROCM_PATH=/opt/dtk` 和 DTK loader 路径；SGLang
+v0.5.18 的 `rocm_home()` 优先使用 `ROCM_PATH`，因此不需要 `/opt/rocm`。
+CI 结论均按 job 级数据核对。
+
+| 兼容块 | observed failure（首错误） | 证据 | owner | removal gate |
+|---|---|---|---|---|
+| `PYTHONPATH=/opt/flagtree` | **已移除 Docker 覆盖**；绕过 Bash 的裸 entrypoint 不在 Runtime 合同内 | Runtime OCI `BASH_ENV=/etc/bash_env.sh`；实际 Bash 探针 | FlagOS Runtime | 已满足：vendor profile 导出 `/opt/flagtree`；验收强制经 Bash 启动 |
+| `LD_LIBRARY_PATH=/opt/dtk/…` | **已移除 Docker 覆盖** | 同上；实际 Bash 探针可 import Runtime 栈 | FlagOS Runtime | 已满足：vendor profile 提供 DTK loader 路径 |
+| `ROCM_PATH=/opt/dtk` | **已移除 Docker 覆盖** | 实际 Bash 探针；FlagTree 编译探针 | FlagOS Runtime | 已满足：vendor profile 导出 `/opt/dtk` |
+| `/opt/rocm -> /opt/dtk` | **已移除**；SGLang v0.5.18 `rocm_home()` 先读 `ROCM_HOME`/`ROCM_PATH`，实测返回 `/opt/dtk` | Runtime Bash 探针与上游 `toolchain.py` | 无 | 已满足：`ROCM_PATH=/opt/dtk`，`${ROCM_PATH}/bin/hipcc` 可执行 |
+| 直接 Runtime clang（wrapper 已从候选移除） | 无卡探针通过；真实 kernel 编译尚未在硬件上验证 | 上文矩阵 | 本仓库（候选选择） | Hygon 硬件矩阵通过后才声明 wrapper 可删除；失败则改用 C 或 D2 |
+| 派生 xgrammar wheel `0.2.1+flagos.hcu1` | 官方 0.2.1 wheel 在 Linux/x86_64 无条件要求 standalone triton，但 HCU Runtime 的编译器能力由 `/opt/flagtree` 模块树提供且无 distribution metadata | 闭包扫描唯一声明者为 xgrammar；原 wheel 的离线 uv 对照会继续解析 triton，修正 wheel 不会；两次派生 SHA 均为 `c2deb285…1a2` 且 49 个非 RECORD 文件（含 11 个 native）逐字节不变；run 44465620210（Hygon PR 档 CI）：镜像内没有 triton distribution，`triton.__file__` 位于 `/opt/flagtree` 下 | xgrammar/upstream 或 FlagOS artifact owner | 发布 metadata 正确且不可变的 HCU wheel 后，删除仓库派生步骤 |
+| `--excludes triton`（暂留） | 无（过渡项） | 2026-11-23 的多次 `no_excludes_gate.sh` 重试均停在 `flagos-pypi-hygon/simple/torch/` HTTP 500；离线门已通过，但按合同不足以授权删除 | 本仓库 | `no_excludes_gate.sh` 通过 → 删除后候选构建 → pip check → 完整 `verify_image.sh`，再单独删除 excludes 与精确豁免 |
+| `--index-strategy unsafe-first-match`（release 配方） | 此前的 `first-index` 在第一个带该包名的索引处即穷尽：Hygon index 有 `xgrammar` 但没有 `xgrammar==0.2.1`，解析停在包名上不回落，报 `No solution found` | commit `3cb3f31`（真实 Runtime 上的 dry-run：154 resolved、132 planned、无 standalone triton）；构建网络不可达 pypi.org，通用 wheel 由腾讯镜像提供 | 本仓库（构建工具） | FlagOS index 能完整提供闭包时再评估；此前不改索引顺序 |
+| 离线 wheelhouse resolver（TEMP；`runtime-0.5.18.offline-wheelhouse.containerfile`，见上文“离线 wheelhouse 开发候选”） | release 路径的镜像内 `uv pip install` 停在 `flagos-pypi-hygon/simple/torch/` HTTP 500（2026-11-23，当天 30 次 gate 尝试全部停在该地址），随后 `packages/sglang/…` 与 `simple/sglang/` 也返回 404 | wheelhouse 的每个 wheel 都与绿镜像 uv cache 记录的 registry SHA256 和解包树一致（`build_wheelhouse.sh` 三重校验）；离线 dry-run 的 129 个闭包 wheel 版本与硬件全绿镜像逐一相同 | 本仓库（构建工具）；根因在制品服务（Nexus owner） | Nexus 恢复后 `no_excludes_gate.sh` 通过，且 release 路径在真实索引上完成候选构建与完整验收；届时删除离线配方、`--offline-wheelhouse`/`--push-candidate` 与 wheelhouse 工具 |
+| 候选基底固定为旧 Runtime `03e598b3…`（TEMP） | 当前 moving tag `2.3.0` 指向的 Runtime 带 `amdsmi==7.0.2`，与 runner 的 `/opt/hyhal/lib/libamd_smi.so` ABI 不匹配：`undefined symbol: amdsmi_get_gpu_enumeration_info` | run 44665785767 / job 136054960644；build-infra#1960；已知全绿对照 run 44497585856 用的是旧 Runtime | FlagOS Runtime | Runtime owner 发布 amdsmi ABI 修复后的 Runtime；候选改回 moving tag 并重跑完整硬件矩阵 |
+| HCU patch（折入派生 wheel `0.5.18+flagos.hcu1`，输入在 `tools/wheels/hygon/`） | `ModuleNotFoundError: No module named 'aiter'`（SGLang 把一切 HIP 当 AMD ROCm，eager 导入 AMD AITER） | commit a5d492a | SGLang upstream | 上游 wheel 自带 HCU-vs-ROCm gating（届时删除派生步骤，改钉上游 wheel） |
+| 插件 import guard（不伪造 `sgl_kernel.scalar_type`） | `ModuleNotFoundError: No module named 'sgl_kernel.kvcacheio'`；伪造 scalar_type 后变成 `'function' object has no attribute 'uint4b8'` | CI run 43311162022 / job 131508435886 与 run 43361932722 / job 131677473082（均 functional 失败）；时序实证见上节 | SGLang / HCU kernel wheel owner | SGLang 改为 lazy/guarded import，或 HCU 提供经验证的真实 wheel |
+
+CI 侧（`.github/scripts/hygon/`）：测试 runner 依赖单源于
+`test-requirements.txt`；容器启动快照与全部安装后 Python 校验集中在
+`verify_environment.py`（`--capture-runtime-snapshot` 采集，`--plugin-source
+wheel --runtime-evidence` 校验）。
