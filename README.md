@@ -638,12 +638,7 @@ runtime error and treats only error 801 as the observed msys compatibility
 case; every other non-zero result raises an error after cleanup. On the first
 `CUDA_PROFILER` marker, the plugin verifies the required symbols in the active
 `libmusart.so`; marker-error diagnostics include the runtime version when that
-API is available. An earlier implementation validated the msys workflow with
-MUSA Runtime 4.3.x, Torch/TorchMUSA 2.9.0 and Moore Perf System 1.8.0. The
-current leaf redirects and lifecycle refactor have CPU unit coverage only;
-hardware revalidation is pending. Treat
-the generated `.msys-rep` as the source of truth; Moore Perf System 1.8.0 was
-observed to finalize the report after the wrapped server exits.
+API is available. Request `CUDA_PROFILER` separately from CPU/GPU profiling on multi-rank workers. Treat the generated `.msys-rep` as the source of truth; the profiler may finalize it after the wrapped server exits.
 
 ## Project Structure
 

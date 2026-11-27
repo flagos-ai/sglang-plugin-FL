@@ -29,8 +29,6 @@ from inspect import signature
 
 logger = logging.getLogger(__name__)
 
-_patches_applied = False
-
 
 def _require_profiler_contract(profiler_mixin, profiler_list) -> None:
     """Check the APIs used by both adapters before changing either class."""
@@ -61,7 +59,9 @@ def _reset_legacy_state(scheduler) -> None:
     scheduler.profiler_start_forward_ct = None
 
 
-def _wrap_legacy_profiler_lifecycle(profiler_mixin, marker_error_type: type) -> None:
+def _wrap_legacy_profiler_lifecycle(
+    profiler_mixin, marker_error_type: type, changes=None
+) -> None:
     if getattr(profiler_mixin, "_musa_profiler_lifecycle_patched", False):
         return
 
@@ -104,12 +104,20 @@ def _wrap_legacy_profiler_lifecycle(profiler_mixin, marker_error_type: type) -> 
             _reset_legacy_state(self)
             raise
 
-    profiler_mixin.start_profile = start_profile_with_rollback
-    profiler_mixin.stop_profile = stop_profile_with_cleanup
-    profiler_mixin._musa_profiler_lifecycle_patched = True
+    patches = [
+        (profiler_mixin, "start_profile", start_profile_with_rollback),
+        (profiler_mixin, "stop_profile", stop_profile_with_cleanup),
+        (profiler_mixin, "_musa_profiler_lifecycle_patched", True),
+    ]
+    if changes is None:
+        install_patches(patches)
+    else:
+        changes.extend(patches)
 
 
-def _wrap_profiler_list_lifecycle(profiler_list) -> None:
+def _wrap_profiler_list_lifecycle(
+    profiler_list, changes=None, local_abort=None
+) -> None:
     if getattr(profiler_list, "_musa_profiler_lifecycle_patched", False):
         return
 
@@ -122,7 +130,10 @@ def _wrap_profiler_list_lifecycle(profiler_list) -> None:
         except Exception:
             for inner in reversed(started):
                 try:
-                    inner.stop()
+                    if local_abort is None:
+                        inner.stop()
+                    else:
+                        local_abort(inner)
                 except Exception:
                     logger.exception(
                         "Failed to stop a profiler while rolling back profiler startup"
@@ -147,29 +158,101 @@ def _wrap_profiler_list_lifecycle(profiler_list) -> None:
         if first_error is not None:
             raise first_error.with_traceback(first_traceback)
 
-    profiler_list.start = start_transactionally
-    profiler_list.stop = stop_all
-    profiler_list._musa_profiler_lifecycle_patched = True
+    patches = [
+        (profiler_list, "start", start_transactionally),
+        (profiler_list, "stop", stop_all),
+        (profiler_list, "_musa_profiler_lifecycle_patched", True),
+    ]
+    if changes is None:
+        install_patches(patches)
+    else:
+        changes.extend(patches)
 
 
-def apply_profiler_lifecycle_patch(
-    marker_error_type: type,
-) -> None:
-    """Adapt the required legacy/composite APIs without a version-string gate."""
-    global _patches_applied
-    if _patches_applied:
-        return
+_MISSING = object()
 
+
+def install_patches(changes):
+    """Install a pre-built set of dependent patches as one transaction."""
+    installed = []
     try:
-        from sglang.srt.managers.scheduler_profiler_mixin import SchedulerProfilerMixin
-        from sglang.srt.utils.profile_utils import _ProfilerList
+        for target, name, replacement in changes:
+            previous = vars(target).get(name, _MISSING)
+            try:
+                setattr(target, name, replacement)
+            except Exception:
+                if vars(target).get(name, _MISSING) is not previous:
+                    installed.append((target, name, previous))
+                raise
+            installed.append((target, name, previous))
+    except Exception:
+        for target, name, previous in reversed(installed):
+            if previous is _MISSING:
+                delattr(target, name)
+            else:
+                setattr(target, name, previous)
+        raise
+
+
+def _guard_profile_request(mixin, profile_response, start_type, world_size):
+    profile = mixin.profile
+    signature(profile).bind(None, None)
+
+    @wraps(profile)
+    def guarded(self, recv_req):
+        if recv_req.type == start_type:
+            activities = set(recv_req.activities or ())
+            uses_collective = activities & {"CPU", "GPU", "XPU", "RPD"}
+            if "CUDA_PROFILER" in activities and uses_collective:
+                if world_size(self.dp_tp_cpu_group) > 1:
+                    return profile_response(
+                        success=False,
+                        message=(
+                            "On multi-rank MUSA workers, CUDA_PROFILER must be "
+                            "requested separately from CPU/GPU profiling."
+                        ),
+                    )
+        return profile(self, recv_req)
+
+    return guarded
+
+
+def prepare_profiler_lifecycle_patch(marker_error_type: type) -> list:
+    """Prepare the SGLang patch without mutating any live entry point."""
+    try:
+        from sglang.srt.managers.scheduler_profiler_mixin import (
+            ProfileReqOutput,
+            ProfileReqType,
+            SchedulerProfilerMixin,
+        )
+        from sglang.srt.utils.profile_utils import (
+            _ProfilerList,
+            _ProfilerRPD,
+            _ProfilerTorch,
+        )
+        from torch.distributed import get_world_size
     except ImportError as exc:
         raise RuntimeError(
             "Required SGLang profiler cleanup APIs are unavailable"
         ) from exc
 
     _require_profiler_contract(SchedulerProfilerMixin, _ProfilerList)
-    _wrap_legacy_profiler_lifecycle(SchedulerProfilerMixin, marker_error_type)
-    _wrap_profiler_list_lifecycle(_ProfilerList)
-    _patches_applied = True
-    logger.info("SGLang profiler transactional cleanup patch applied")
+    guarded = _guard_profile_request(
+        SchedulerProfilerMixin,
+        ProfileReqOutput,
+        ProfileReqType.START_PROFILE,
+        get_world_size,
+    )
+
+    def abort_inner(inner):
+        # A startup exception can be rank-local. Do not enter the collective
+        # export/stop path of the upstream Torch or ROCm profiler here.
+        if isinstance(inner, _ProfilerTorch):
+            inner.torch_profiler.stop()
+        elif not isinstance(inner, _ProfilerRPD):
+            inner.stop()
+
+    changes = [(SchedulerProfilerMixin, "profile", guarded)]
+    _wrap_legacy_profiler_lifecycle(SchedulerProfilerMixin, marker_error_type, changes)
+    _wrap_profiler_list_lifecycle(_ProfilerList, changes, abort_inner)
+    return changes

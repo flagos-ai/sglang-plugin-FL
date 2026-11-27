@@ -644,7 +644,7 @@ curl -X POST http://127.0.0.1:30000/start_profile \
 curl -X POST http://127.0.0.1:30000/stop_profile
 ```
 
-已验证配置的手动 start/stop 端点需使用 `SGLANG_PROFILE_V2=0`；其 V2 路径只支持按 stage 触发。MUSA 4.3 的 runtime 可能让 profiler API 返回错误码 801，但 msys 仍接受 range marker；插件会立即清除 sticky runtime error，并且只把 801 作为已验证的 msys 兼容情况继续执行，其他非零错误在清理后抛出。首次使用 `CUDA_PROFILER` marker 时，插件会检查当前 `libmusart.so` 的必需符号；marker 报错时，如果接口可用，诊断信息会包含 runtime 版本。早期版本曾在 MUSA Runtime 4.3.x、Torch/TorchMUSA 2.9.0 和 Moore Perf System 1.8.0 上验证 msys 流程；当前叶子重定向与 lifecycle 重构仅完成 CPU 单测，尚未实机复验。以生成的 `.msys-rep` 为最终判断依据；Moore Perf System 1.8.0 在实测环境中会等被包裹的服务进程退出后完成报告落盘。
+已验证配置的手动 start/stop 端点需使用 `SGLANG_PROFILE_V2=0`；其 V2 路径只支持按 stage 触发。MUSA 4.3 的 runtime 可能让 profiler API 返回错误码 801，但 msys 仍接受 range marker；插件会立即清除 sticky runtime error，并且只把 801 作为已验证的 msys 兼容情况继续执行，其他非零错误在清理后抛出。首次使用 `CUDA_PROFILER` marker 时，插件会检查当前 `libmusart.so` 的必需符号；marker 报错时，如果接口可用，诊断信息会包含 runtime 版本。多 rank 运行时，请分别请求 `CUDA_PROFILER` 和 CPU/GPU profiling。以生成的 `.msys-rep` 为准；报告可能在被包裹的服务进程退出后才落盘。
 
 ## 项目结构
 

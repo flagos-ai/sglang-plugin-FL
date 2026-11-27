@@ -139,14 +139,24 @@ def test_torch_redirects_reuse_sglang_gpu_and_cuda_profiler_paths(monkeypatch):
     original_cudart = lambda: SimpleNamespace(cudaHostRegister="host_register")
     fake_activity = SimpleNamespace(CUDA="cuda", PrivateUse1="privateuse1")
     fake_torch = SimpleNamespace(
-        profiler=SimpleNamespace(ProfilerActivity=fake_activity),
+        profiler=SimpleNamespace(
+            ProfilerActivity=fake_activity, profile=lambda **kw: kw
+        ),
         cuda=SimpleNamespace(cudart=original_cudart),
     )
     monkeypatch.setattr(musa_profiler, "torch", fake_torch)
 
-    musa_profiler._install_torch_profiler_redirects()
+    lifecycle.install_patches(musa_profiler._prepare_torch_profiler_redirects())
 
-    assert fake_activity.CUDA == "privateuse1"
+    assert fake_activity.CUDA == "cuda"
+    assert fake_torch.profiler.profile(activities=["cuda"])["activities"] == [
+        "privateuse1"
+    ]
+    assert fake_torch.profiler.profile(activities=["cpu", "cuda"])["activities"] == [
+        "cpu",
+        "privateuse1",
+    ]
+    assert fake_torch.profiler.profile(activities=["cpu"])["activities"] == ["cpu"]
     assert fake_torch.cuda.cudart().cudaHostRegister == "host_register"
     assert isinstance(fake_torch.cuda.cudart(), musa_profiler.MusaCudartProxy)
 
@@ -156,12 +166,10 @@ def test_patch_install_keeps_musart_loading_lazy(monkeypatch):
     monkeypatch.setattr(musa_profiler, "_patches_applied", False)
     monkeypatch.setattr(
         musa_profiler,
-        "apply_profiler_lifecycle_patch",
-        lambda _error_type: None,
+        "prepare_profiler_lifecycle_patch",
+        lambda _error_type: [],
     )
-    monkeypatch.setattr(
-        musa_profiler, "_install_torch_profiler_redirects", lambda: None
-    )
+    monkeypatch.setattr(musa_profiler, "_prepare_torch_profiler_redirects", lambda: [])
     monkeypatch.setattr(
         musa_profiler.ctypes,
         "CDLL",
@@ -284,6 +292,9 @@ def test_profile_v2_list_attempts_every_stop_before_raising():
 @pytest.fixture
 def profiler_contract(monkeypatch):
     class SchedulerProfilerMixin:
+        def profile(self, recv_req):
+            return "configured"
+
         def start_profile(self, stage=None):
             pass
 
@@ -302,12 +313,15 @@ def profiler_contract(monkeypatch):
 
     scheduler_module = ModuleType("sglang.srt.managers.scheduler_profiler_mixin")
     scheduler_module.SchedulerProfilerMixin = SchedulerProfilerMixin
+    scheduler_module.ProfileReqOutput = SimpleNamespace
+    scheduler_module.ProfileReqType = SimpleNamespace(START_PROFILE="start")
     list_module = ModuleType("sglang.srt.utils.profile_utils")
     list_module._ProfilerList = ProfilerList
+    list_module._ProfilerTorch = type("FakeTorchProfiler", (), {})
+    list_module._ProfilerRPD = type("FakeRPD", (), {})
     monkeypatch.setitem(sys.modules, scheduler_module.__name__, scheduler_module)
     monkeypatch.setitem(sys.modules, list_module.__name__, list_module)
     monkeypatch.setattr(musa_profiler, "_patches_applied", False)
-    monkeypatch.setattr(lifecycle, "_patches_applied", False)
     return SchedulerProfilerMixin, ProfilerList
 
 
@@ -320,17 +334,17 @@ def test_contract_install_does_not_gate_redirects_by_version(
     fake_activity = SimpleNamespace(CUDA="cuda", PrivateUse1="privateuse1")
     original_cudart = lambda: SimpleNamespace(cudaHostRegister="host_register")
     fake_torch = SimpleNamespace(
-        profiler=SimpleNamespace(ProfilerActivity=fake_activity),
+        profiler=SimpleNamespace(
+            ProfilerActivity=fake_activity, profile=lambda **kw: kw
+        ),
         cuda=SimpleNamespace(cudart=original_cudart),
     )
     monkeypatch.setattr(musa_profiler, "torch", fake_torch)
-    monkeypatch.setattr(musa_profiler, "_MUSA_CUDART_PROXY", None)
 
     musa_profiler.apply_musa_profiler_patches()
 
-    assert fake_activity.CUDA == "privateuse1"
+    assert fake_activity.CUDA == "cuda"
     assert isinstance(fake_torch.cuda.cudart(), musa_profiler.MusaCudartProxy)
-    assert lifecycle._patches_applied
     assert musa_profiler._patches_applied
 
 
@@ -354,13 +368,9 @@ def test_invalid_contract_fails_before_any_patch(
         profiler_list.__init__ = lambda self, inners: setattr(
             self, "inners", list(reversed(inners))
         )
+    monkeypatch.setattr(musa_profiler, "_prepare_torch_profiler_redirects", lambda: [])
     original_start = scheduler.start_profile
     original_list_start = profiler_list.start
-    monkeypatch.setattr(
-        musa_profiler,
-        "_install_torch_profiler_redirects",
-        lambda: pytest.fail("must check the lifecycle contract first"),
-    )
 
     with pytest.raises(RuntimeError, match="SGLang profiler cleanup requires"):
         musa_profiler.apply_musa_profiler_patches()
@@ -370,7 +380,6 @@ def test_invalid_contract_fails_before_any_patch(
     assert not getattr(scheduler, "_musa_profiler_lifecycle_patched", False)
     assert not getattr(profiler_list, "_musa_profiler_lifecycle_patched", False)
     assert not musa_profiler._patches_applied
-    assert not lifecycle._patches_applied
 
 
 @pytest.mark.parametrize("missing_api", ["activity", "cudart"])
@@ -387,7 +396,12 @@ def test_missing_torch_api_fails_before_any_patch(
     monkeypatch.setattr(
         musa_profiler,
         "torch",
-        SimpleNamespace(profiler=SimpleNamespace(ProfilerActivity=activity), cuda=cuda),
+        SimpleNamespace(
+            profiler=SimpleNamespace(
+                ProfilerActivity=activity, profile=lambda **kw: kw
+            ),
+            cuda=cuda,
+        ),
     )
     with pytest.raises(musa_profiler.MusaProfilerError):
         musa_profiler.apply_musa_profiler_patches()
@@ -395,25 +409,19 @@ def test_missing_torch_api_fails_before_any_patch(
     assert activity.CUDA == "cuda"
     assert not getattr(scheduler, "_musa_profiler_lifecycle_patched", False)
     assert not getattr(profiler_list, "_musa_profiler_lifecycle_patched", False)
-    assert not lifecycle._patches_applied
     assert not musa_profiler._patches_applied
 
 
 def test_missing_lifecycle_api_fails_before_any_patch(monkeypatch, profiler_contract):
     scheduler, profiler_list = profiler_contract
     monkeypatch.delattr(sys.modules["sglang.srt.utils.profile_utils"], "_ProfilerList")
-    monkeypatch.setattr(
-        musa_profiler,
-        "_install_torch_profiler_redirects",
-        lambda: pytest.fail("must reject the missing cleanup API first"),
-    )
+    monkeypatch.setattr(musa_profiler, "_prepare_torch_profiler_redirects", lambda: [])
 
     with pytest.raises(RuntimeError, match="profiler cleanup APIs are unavailable"):
         musa_profiler.apply_musa_profiler_patches()
 
     assert not getattr(scheduler, "_musa_profiler_lifecycle_patched", False)
     assert not getattr(profiler_list, "_musa_profiler_lifecycle_patched", False)
-    assert not lifecycle._patches_applied
     assert not musa_profiler._patches_applied
 
 
@@ -500,3 +508,130 @@ def test_legacy_marker_stop_failure_clears_state_after_native_stops():
     assert scheduler.torch_profiler is None
     assert not scheduler.profile_in_progress
     assert scheduler.profiler_start_forward_ct is None
+
+
+def test_multi_rank_mixed_marker_rejected_before_arming(profiler_contract, monkeypatch):
+    scheduler, _ = profiler_contract
+    sizes = []
+    monkeypatch.setattr(
+        "torch.distributed.get_world_size",
+        lambda group: sizes.append(group) or group,
+    )
+    lifecycle.install_patches(
+        lifecycle.prepare_profiler_lifecycle_patch(musa_profiler.MusaProfilerError)
+    )
+    worker = scheduler()
+    worker.dp_tp_cpu_group = 2
+    for activities in (["GPU", "CUDA_PROFILER"], ["CPU", "GPU", "CUDA_PROFILER"]):
+        result = worker.profile(SimpleNamespace(type="start", activities=activities))
+        assert not result.success and "separately" in result.message
+    assert (
+        worker.profile(SimpleNamespace(type="start", activities=["GPU"]))
+        == "configured"
+    )
+    assert (
+        worker.profile(SimpleNamespace(type="start", activities=["CUDA_PROFILER"]))
+        == "configured"
+    )
+    assert sizes == [2, 2]
+    worker.dp_tp_cpu_group = 1
+    assert (
+        worker.profile(
+            SimpleNamespace(type="start", activities=["CPU", "GPU", "CUDA_PROFILER"])
+        )
+        == "configured"
+    )
+
+
+@pytest.mark.parametrize("failure_index", range(9))
+def test_atomic_patch_install_restores_entries_and_retries(
+    profiler_contract, monkeypatch, failure_index
+):
+    scheduler, profiler_list = profiler_contract
+    original = lambda **kwargs: kwargs
+    base_cuda = lambda: SimpleNamespace(cudaHostRegister=object())
+    fake_activity = SimpleNamespace(CUDA="cuda", PrivateUse1="musa")
+    fake = SimpleNamespace(
+        profiler=SimpleNamespace(ProfilerActivity=fake_activity, profile=original),
+        cuda=SimpleNamespace(cudart=base_cuda),
+    )
+    monkeypatch.setattr(musa_profiler, "torch", fake)
+    targets = [scheduler, profiler_list, fake.profiler, fake.cuda]
+    before = [dict(vars(target)) for target in targets]
+    install = lifecycle.install_patches
+
+    class FailOnce:
+        def __setattr__(self, name, value):
+            raise RuntimeError("injected mount failure")
+
+    def fail(changes):
+        failing = list(changes)
+        failing.insert(failure_index, (FailOnce(), "entry", None))
+        install(failing)
+
+    monkeypatch.setattr(musa_profiler, "install_patches", fail)
+    with pytest.raises(RuntimeError, match="injected mount failure"):
+        musa_profiler.apply_musa_profiler_patches()
+    assert [dict(vars(target)) for target in targets] == before
+    assert not musa_profiler._patches_applied
+    assert fake_activity.CUDA == "cuda"
+
+    monkeypatch.setattr(musa_profiler, "install_patches", install)
+    musa_profiler.apply_musa_profiler_patches()
+    wrapped = fake.profiler.profile
+    proxy = fake.cuda.cudart()
+    musa_profiler.apply_musa_profiler_patches()
+    assert fake.profiler.profile is wrapped
+    assert fake.cuda.cudart() is proxy
+    assert fake_activity.CUDA == "cuda"
+
+
+def test_multi_rank_startup_rollback_stops_torch_locally(profiler_contract):
+    _, profiler_list = profiler_contract
+    framework = sys.modules["sglang.srt.utils.profile_utils"]
+    events = []
+
+    class TorchProbe(framework._ProfilerTorch):
+        def start(self):
+            self.torch_profiler = SimpleNamespace(
+                stop=lambda: events.append("local torch stop")
+            )
+
+        def stop(self):
+            pytest.fail("must not enter upstream collective-based stop")
+
+    class FailingMemory:
+        def start(self):
+            raise RuntimeError("local startup problem")
+
+    lifecycle.install_patches(
+        lifecycle.prepare_profiler_lifecycle_patch(musa_profiler.MusaProfilerError)
+    )
+    with pytest.raises(RuntimeError, match="local startup problem"):
+        profiler_list([TorchProbe(), FailingMemory()]).start()
+    assert events == ["local torch stop"]
+
+
+def test_isolated_redirect_install_does_not_replace_prior_proxy(monkeypatch):
+    def facade(value):
+        return SimpleNamespace(
+            profiler=SimpleNamespace(
+                ProfilerActivity=SimpleNamespace(CUDA="cuda", PrivateUse1="musa"),
+                profile=lambda **kw: kw,
+            ),
+            cuda=SimpleNamespace(cudart=lambda: SimpleNamespace(delegated=value)),
+        )
+
+    real = facade("existing")
+    monkeypatch.setattr(musa_profiler, "torch", real)
+    lifecycle.install_patches(musa_profiler._prepare_torch_profiler_redirects())
+    original_proxy = real.cuda.cudart()
+    original_profile = real.profiler.profile
+    with monkeypatch.context() as isolated:
+        fake = facade("test")
+        isolated.setattr(musa_profiler, "torch", fake)
+        lifecycle.install_patches(musa_profiler._prepare_torch_profiler_redirects())
+        assert fake.cuda.cudart().delegated == "test"
+        assert real.cuda.cudart() is original_proxy
+    assert real.cuda.cudart().delegated == "existing"
+    assert real.profiler.profile is original_profile

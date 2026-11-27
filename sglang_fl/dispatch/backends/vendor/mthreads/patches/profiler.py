@@ -18,7 +18,7 @@ SGLang owns the profiler lifecycle and recognizes the public activity
 names ``GPU`` and ``CUDA_PROFILER``. On MUSA workers this module redirects the
 two CUDA-specific leaves used by that implementation:
 
-* ``ProfilerActivity.CUDA`` becomes TorchMUSA's PrivateUse1/MUSA activity.
+* Requests for CUDA activity are mapped to TorchMUSA at construction.
 * ``torch.cuda.cudart()`` returns a delegating proxy whose profiler markers
   call ``musaProfilerStart`` and ``musaProfilerStop``.
 
@@ -36,7 +36,7 @@ from typing import Callable
 
 import torch
 
-from .profiler_lifecycle import apply_profiler_lifecycle_patch
+from .profiler_lifecycle import install_patches, prepare_profiler_lifecycle_patch
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +216,6 @@ class MusaCudartProxy:
 
 
 _MUSA_PROFILER_API = MusaProfilerApi()
-_MUSA_CUDART_PROXY = None
 _patches_applied = False
 
 
@@ -234,45 +233,44 @@ def _torch_musa_activity():
     return activity
 
 
-def _torch_profiler_redirect_targets():
+def _prepare_torch_profiler_redirects() -> list:
     activity = _torch_musa_activity()
+    cuda_activity = torch.profiler.ProfilerActivity.CUDA
+    original_profile = getattr(torch.profiler, "profile", None)
     original_cudart = getattr(torch.cuda, "cudart", None)
-    if not callable(original_cudart):
+    if not callable(original_profile) or not callable(original_cudart):
         raise MusaProfilerError(
-            "This PyTorch build does not expose torch.cuda.cudart()"
+            "This PyTorch build must expose torch.profiler.profile and torch.cuda.cudart()"
         )
-    return activity, original_cudart
+    proxy = MusaCudartProxy(original_cudart, _MUSA_PROFILER_API)
 
-
-def _install_torch_profiler_redirects() -> None:
-    global _MUSA_CUDART_PROXY
-
-    activity, original_cudart = _torch_profiler_redirect_targets()
-    _MUSA_CUDART_PROXY = MusaCudartProxy(original_cudart, _MUSA_PROFILER_API)
+    @wraps(original_profile)
+    def musa_profile(*args, **kwargs):
+        activities = kwargs.get("activities")
+        if activities is not None:
+            kwargs["activities"] = [
+                activity if item == cuda_activity else item for item in activities
+            ]
+        return original_profile(*args, **kwargs)
 
     @wraps(original_cudart)
     def musa_cudart():
-        return _MUSA_CUDART_PROXY
+        return proxy
 
-    torch.profiler.ProfilerActivity.CUDA = activity
-    torch.cuda.cudart = musa_cudart
+    return [
+        (torch.profiler, "profile", musa_profile),
+        (torch.cuda, "cudart", musa_cudart),
+    ]
 
 
 def apply_musa_profiler_patches() -> None:
-    """Install the SGLang profiler adaptation for the required APIs once.
-
-    ``libmusart.so`` remains lazy: workers that never request
-    ``CUDA_PROFILER`` do not need to load the capture-range marker ABI.
-    """
+    """Install the MUSA profiler adaptation once on the MThreads worker."""
     global _patches_applied
     if _patches_applied:
         return
 
-    _torch_profiler_redirect_targets()
-    apply_profiler_lifecycle_patch(MusaProfilerError)
-    _install_torch_profiler_redirects()
+    torch_changes = _prepare_torch_profiler_redirects()
+    lifecycle_changes = prepare_profiler_lifecycle_patch(MusaProfilerError)
+    install_patches(lifecycle_changes + torch_changes)
     _patches_applied = True
-    logger.info(
-        "MUSA profiler redirects applied: "
-        "GPU->PrivateUse1 and CUDA_PROFILER->musaProfilerStart/Stop"
-    )
+    logger.info("MUSA profiler activity and runtime redirects applied")
