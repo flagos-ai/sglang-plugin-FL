@@ -292,8 +292,10 @@ scheduler 自然退出、本地进程退出码均为 0、从节点原始 CLI 退
 
 ## GitHub CI
 
-海光复用 main 分支的 `ci-sglang-plugin-fl-hygon` runner、驱动挂载和共享
-unit/functional/E2E 流程。CI 配置见 [hygon.yml](../../.github/configs/hygon.yml)；
+海光运行在 self-hosted runner 上（labels `self-hosted`、`Linux`、`X64`、`hygon`），
+沿用共享的 unit/functional/E2E 流程。两-wheel 镜像跟的是 Runtime 当前的驱动线，
+原 `ci-sglang-plugin-fl-hygon` 池的驱动更旧，尚未用该镜像验证过；待池子升级驱动后
+再评估启用。CI 配置见 [hygon.yml](../../.github/configs/hygon.yml)；
 模型目录从宿主机 `/data/models/Qwen` 只读映射到 `/models`。
 
 已发布的 CI tag 为
@@ -354,13 +356,13 @@ docker/hygon/scripts/verify_image.sh <tag> [base]   # 只验收
 ### 候选镜像（TEMP）
 
 `.github/configs/hygon.yml` 的 `ci_image` 当前指向
-`harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:b2049b1bbc47ac5b1b51a0a5506e98e32dc36f634c2c369ed3c7b6dc3a87aa86`。
-这是 Hygon-only 硬件验证通过的开发候选，不是 release-ready：`release-ready=false`，
-`sglang_fl` 来自 checkout，两个派生 wheel 的内容与钉定值一致，基底仍是已验证的旧
-Runtime `sha256:03e598b3…`。run [45370620025](https://github.com/flagos-ai/sglang-plugin-FL/actions/runs/45370620025)
-中 Setup、unit、functional、inference 和 serving 成功，benchmark job 没有选择任何
-用例；其他平台、graph/nightly 变体和正式制品发布不由该 run 覆盖。moving tag `2.3.0`
-带来的 `amdsmi` ABI 不匹配仍由 build-infra#1960 跟踪。
+`harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:17b3a0f55150b4d84760730760ac9b3f337631d50b452e2ce56e24fa8ccc06f2`。
+这是开发候选，不是 release-ready：`release-ready=false`，`sglang_fl` 来自 checkout
+（源提交 `42c007e`），两个派生 wheel 的内容与钉定值一致，基底是 moving tag `2.3.0`
+当前解析到的 Runtime `sha256:cfa5a5a3…`。构建机上的四段验收已通过；真机结果以
+[PR #180](https://github.com/flagos-ai/sglang-plugin-FL/pull/180) 在 self-hosted
+runner 上的 run 为准。`amdsmi` ABI 不匹配（build-infra#1960）只影响旧 runner 池，
+CI 脚本和插件都不导入 `amdsmi`。
 
 ### 插件自有的 kernel import guard
 
@@ -369,6 +371,14 @@ eager import 它们。Hygon 平台发现（`early.py`）在 `sys.meta_path` 末�
 `sgl_kernel`、`flashinfer` 两个根的 finder：真实已安装的包永远优先；
 `sgl_kernel.scalar_type` 永不伪造（SGLang 的纯 Python fallback 依赖那个 ImportError）；
 其它对象可 import，调用即抛 `RuntimeError`。镜像里没有任何 `.pth` 或物理 stub 包。
+
+占位模块只保证 import 成功，不提供实现：被调用的算子要靠 dispatch 表转到 HCU 实现。
+少数调用点不走 dispatch 表、直接调到占位模块——Triton fused-experts 的
+`moe_align_block_size` 和门控激活，以及 EAGLE/MTP 的 `fast_topk`、建树和贪心校验——
+由 `sgl_kernel_fallbacks.py` 的对照表顶上：`torch.topk`、FlagGems 的
+`moe_align_block_size`、SGLang 在非 CUDA 后端上自己选的 Triton kernel。真实安装的
+`sgl_kernel` 仍然优先，不被触碰。`tree_speculative_sampling_target_only` 没有对应的
+替代实现，带采样的 MTP 在 HCU 上仍会抛占位错误。
 
 ### 剩余兼容债
 

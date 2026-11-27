@@ -118,7 +118,7 @@ platforms:
       - .github/configs/thead.yml
       - tests/platforms/thead.yaml
   hygon:
-    # Self-hosted runner pool: label ci-sglang-plugin-fl-hygon (8x BW1000 DCU).
+    # Self-hosted runners: labels self-hosted, Linux, X64, hygon (BW1000 DCU).
     # CI image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl:0.2.0-hygon-ci.
     enabled: true
     trigger_paths:

@@ -9,11 +9,16 @@ platform: hygon
 # most of an hour pulling it, so all platform stages get 180 minutes.
 test_timeout: 180
 
-ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:b2049b1bbc47ac5b1b51a0a5506e98e32dc36f634c2c369ed3c7b6dc3a87aa86
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:17b3a0f55150b4d84760730760ac9b3f337631d50b452e2ce56e24fa8ccc06f2
 
-# Runner labels for this hardware
+# Runner labels for this hardware. The two-wheel image needs the Runtime's
+# current driver line; the ci-sglang-plugin-fl-hygon pool stays on the older
+# one until it is upgraded (docker/hygon/README.md).
 runner_labels:
-  - ci-sglang-plugin-fl-hygon
+  - self-hosted
+  - Linux
+  - X64
+  - hygon
 
 # Container volumes (hardware-specific paths).
 # The CI image ships only the DTK userspace; the DCU driver userspace lives on
