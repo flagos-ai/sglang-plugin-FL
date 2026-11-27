@@ -58,7 +58,7 @@ docker exec hygon-sglang-0518 /usr/bin/env \
 ## 安装前应用 SGLang 源码补丁
 
 必须对 **SGLang v0.5.18 源码**应用
-[`sglang-v0.5.18-hcu.patch`](sglang-v0.5.18-hcu.patch)，然后再安装 SGLang。
+[`sglang-v0.5.18-hcu.patch`](../tools/wheels/hygon/sglang-v0.5.18-hcu.patch)，然后再安装 SGLang。
 仅安装或更新插件无法修复这一上游导入问题：量化注册表在插件补丁执行前就会
 根据 HIP 标记导入 AMD Quark/AITER 内核；HCU 同样使用 HIP，但不提供这些内核。
 
@@ -68,8 +68,8 @@ docker exec hygon-sglang-0518 /usr/bin/env \
 export PLUGIN_ROOT=/opt/sglang-plugin-fl
 export SGLANG_SOURCE_ROOT=/opt/sglang-0.5.18
 cd "$SGLANG_SOURCE_ROOT"
-git apply --check "$PLUGIN_ROOT/docker/hygon/sglang-v0.5.18-hcu.patch"
-git apply "$PLUGIN_ROOT/docker/hygon/sglang-v0.5.18-hcu.patch"
+git apply --check "$PLUGIN_ROOT/tools/wheels/hygon/sglang-v0.5.18-hcu.patch"
+git apply "$PLUGIN_ROOT/tools/wheels/hygon/sglang-v0.5.18-hcu.patch"
 ```
 
 之后按容器配方安装该 SGLang 源码与插件。补丁仅让海光跳过三个不适用的 AMD
@@ -327,3 +327,61 @@ python tests/run.py --platform hygon --device bw1000 --scope e2e --task mtp
 
 benchmark 保持显式启用。上面的 MTP 结果来自手动实机验收；工作流配置完成和
 镜像发布不代表 GitHub 硬件 CI 通过，应以对应 PR 最新提交的实际 job 结果为准。
+
+## 两-wheel CI 镜像：构建与构建后验收
+
+[`runtime-0.5.18.containerfile`](runtime-0.5.18.containerfile) 只做镜像组装：
+Runtime 基底、一次 uv 解析安装三个 wheel（派生的 HCU SGLang wheel、`sglang_fl[hygon]`、
+去掉 triton 声明的 xgrammar wheel）。Runtime 的 Bash 初始化负责暴露 FlagTree、DTK
+loader 路径和 `ROCM_PATH`；容器配方不再复制这些环境设置或创建 `/opt/rocm` 别名。
+HCU gating patch 在
+staging 期由 [`tools/wheels/hygon/`](../../tools/wheels/hygon/README.md) 折入派生
+wheel，镜像内不 patch site-packages。
+
+```bash
+docker/hygon/build_two_wheel.sh <tag>               # staging + 构建 + 构建后验收
+docker/hygon/scripts/verify_image.sh <tag> [base]   # 只验收
+```
+
+- 基底是 Runtime owner 要求的 moving semver tag，构建时解析成 repo digest；
+- Runtime 参考（distribution freeze、site-packages 文件哈希、pip check 基线、编译器
+  slot）每次从该 digest 现场采集，只存在于临时目录；同一份采集生成
+  `runtime-constraints.txt`，保证 resolver 不替换任何 Runtime distribution；
+- 验收分四段：采集参考、六门零漂移（`scripts/verify_runtime_immutable.py`）、vendor
+  模块来源、镜像级 ENV/父层/残留检查，在无卡构建机上即可运行；真实 import 与 e2e
+  在 HCU CI 上验证。
+
+### 候选镜像（TEMP）
+
+`.github/configs/hygon.yml` 的 `ci_image` 当前指向
+`harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:b2049b1bbc47ac5b1b51a0a5506e98e32dc36f634c2c369ed3c7b6dc3a87aa86`。
+这是 Hygon-only 硬件验证通过的开发候选，不是 release-ready：`release-ready=false`，
+`sglang_fl` 来自 checkout，两个派生 wheel 的内容与钉定值一致，基底仍是已验证的旧
+Runtime `sha256:03e598b3…`。run [45370620025](https://github.com/flagos-ai/sglang-plugin-FL/actions/runs/45370620025)
+中 Setup、unit、functional、inference 和 serving 成功，benchmark job 没有选择任何
+用例；其他平台、graph/nightly 变体和正式制品发布不由该 run 覆盖。moving tag `2.3.0`
+带来的 `amdsmi` ABI 不匹配仍由 build-infra#1960 跟踪。
+
+### 插件自有的 kernel import guard
+
+HCU Runtime 没有 `sgl-kernel` / FlashInfer wheel，而 SGLang 0.5.18 加载层模块时会
+eager import 它们。Hygon 平台发现（`early.py`）在 `sys.meta_path` 末尾追加一个只响应
+`sgl_kernel`、`flashinfer` 两个根的 finder：真实已安装的包永远优先；
+`sgl_kernel.scalar_type` 永不伪造（SGLang 的纯 Python fallback 依赖那个 ImportError）；
+其它对象可 import，调用即抛 `RuntimeError`。镜像里没有任何 `.pth` 或物理 stub 包。
+
+### 剩余兼容债
+
+四项原先位于容器文件中的环境设置已移除。候选镜像的 Hygon run
+45370620025 通过 `shell: bash` 使用 Runtime 的 `/etc/bash_env.sh`，实证了
+`PYTHONPATH=/opt/flagtree`、`ROCM_PATH=/opt/dtk` 和 DTK loader 路径均由 Runtime
+提供，且不需要 `/opt/rocm` 别名或应用层 OCI ENV 覆盖。以下只保留仍有独立退出条件
+的兼容项；CI 结论均按 job 级数据核对。
+
+| 兼容块 | observed failure（首错误） | 证据 | owner | removal gate |
+|---|---|---|---|---|
+| 派生 SGLang wheel `0.5.18+flagos.hcu1` | `ModuleNotFoundError: No module named 'aiter'`（SGLang 把一切 HIP 当 AMD ROCm，eager 导入 AMD AITER） | 不打补丁时启动到达 eager import 的 Quark 模块即终止 | SGLang upstream | 上游 wheel 自带 HCU-vs-ROCm gating 后删除派生步骤 |
+| 派生 xgrammar wheel `0.2.1+flagos.hcu1` | 官方 0.2.1 wheel 在 Linux/x86_64 无条件要求 standalone triton，而 Runtime 的编译器是 `/opt/flagtree` 模块树且无 distribution metadata | run 44465620210：镜像内没有 triton distribution，`triton.__file__` 位于 `/opt/flagtree` 下 | xgrammar/upstream 或 FlagOS artifact owner | 发布 metadata 正确且不可变的 HCU wheel 后删除派生步骤 |
+| `--excludes triton`（暂留） | 无（过渡项） | 2026-11-23 多次真实索引重试停在 `flagos-pypi-hygon/simple/torch/` HTTP 500 | 本仓库 | 真实索引下无 excludes 的安装计划与有 excludes 的一致后删除 |
+| `--index-strategy unsafe-first-match` | `first-index` 在第一个带该包名的索引处即穷尽：Hygon index 有 `xgrammar` 但没有 `xgrammar==0.2.1`，报 `No solution found` | 真实 Runtime 上的 dry-run 对照：只改策略后 `Resolved 154 packages` | 本仓库 | FlagOS index 能完整提供闭包时再评估 |
+| 插件 import guard（不伪造 `sgl_kernel.scalar_type`） | `ModuleNotFoundError: No module named 'sgl_kernel.kvcacheio'`；伪造 scalar_type 后变成 `'function' object has no attribute 'uint4b8'` | CI run 43311162022 / job 131508435886（functional 失败） | SGLang / HCU kernel wheel owner | SGLang 改为 lazy/guarded import，或 HCU 提供经验证的真实 wheel |

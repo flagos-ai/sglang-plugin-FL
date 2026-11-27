@@ -3,14 +3,22 @@
 
 platform: hygon
 
-# Docker image for this hardware
-# Published tag: 0.5.18-hygon-ci-20261015; anonymous manifest/config verified.
-# The old main image contains SGLang 0.5.11 and is rejected by setup.
-ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:d21327c133c4abd40297cf717278bd9190397916a544dc84cbfe9068f09b6c96
+# Two-wheel image on the operations runtime (docker/hygon/runtime-0.5.18.containerfile):
+# sglang 0.5.18+flagos.hcu1 and sglang_fl[hygon]. The digest below is a TEMP candidate,
+# not release-ready (docker/hygon/README.md). The image is large; a cold runner spends
+# most of an hour pulling it, so all platform stages get 180 minutes.
+test_timeout: 180
+
+ci_image: harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:ede34d46a6d725a40ed703ca31be279b015778b6e5b4a79abd6e3b64244dc1db
 
 # Runner labels for this hardware
+# TEMP validation on the new self-hosted machine; restore the CI pool label
+# before merging #180.
 runner_labels:
-  - ci-sglang-plugin-fl-hygon
+  - self-hosted
+  - Linux
+  - X64
+  - hygon
 
 # Container volumes (hardware-specific paths).
 # The CI image ships only the DTK userspace; the DCU driver userspace lives on

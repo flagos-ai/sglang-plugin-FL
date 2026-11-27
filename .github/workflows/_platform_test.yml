@@ -161,7 +161,8 @@ jobs:
 
   benchmark:
     needs: [setup, functional, e2e]
-    if: always() && inputs.run_benchmark && needs.functional.result == 'success' && (needs.e2e.result == 'success' || needs.e2e.result == 'skipped')
+    # TEMP experiment: benchmark off while the MoE align probe runs.
+    if: ${{ false }} && always() && inputs.run_benchmark && needs.functional.result == 'success' && (needs.e2e.result == 'success' || needs.e2e.result == 'skipped')
     uses: ./.github/workflows/_benchmark_test.yml
     with:
       platform: ${{ inputs.platform }}
