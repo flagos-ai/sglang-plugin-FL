@@ -46,8 +46,9 @@ global_trigger_paths:
   - _typos.toml
 
 platforms:
+  # TEMP while #180 is validated: only Hygon runs; restore the others before merge.
   nvidia:
-    enabled: true
+    enabled: false
     trigger_paths:
       - sglang_fl/dispatch/config/nvidia.yaml
       - .github/scripts/nvidia/
@@ -60,7 +61,7 @@ platforms:
       - .github/configs/nvidia.yml
       - tests/platforms/nvidia.yaml
   ascend:
-    enabled: true
+    enabled: false
     trigger_paths:
       - sglang_fl/dispatch/config/ascend.yaml
       - .github/scripts/ascend/
@@ -75,7 +76,7 @@ platforms:
       - .github/configs/ascend.yml
       - tests/platforms/ascend.yaml
   musa:
-    enabled: true
+    enabled: false
     trigger_paths:
       - sglang_fl/dispatch/config/musa.yaml
       - .github/scripts/musa/
@@ -88,7 +89,7 @@ platforms:
       - .github/configs/musa.yml
       - tests/platforms/musa.yaml
   iluvatar:
-    enabled: true
+    enabled: false
     trigger_paths:
       - sglang_fl/dispatch/config/iluvatar.yaml
       - .github/scripts/iluvatar/
@@ -102,7 +103,7 @@ platforms:
     # Self-hosted runner pool: label flagcicd-810e (4 runners, online).
     # SGLang 0.5.18 empty-mode CI image is pinned in thead.yml (built from
     # docker/thead/empty-0.5.18.containerfile).
-    enabled: true
+    enabled: false
     trigger_paths:
       - sglang_fl/dispatch/config/thead.yaml
       - sglang_fl/dispatch/config/tsingmicro.yaml
@@ -135,7 +136,7 @@ platforms:
   kunlunxin:
     # harbor CI image from docker/kunlunxin/ci-0.5.18.containerfile are ready.
     # Local matrix: tests/platforms/kunlunxin.yaml.
-    enabled: true
+    enabled: false
 
   tsingmicro:
     # TX8110 (TXDA), SGLang 0.5.18 empty runtime. CI image (from
@@ -156,7 +157,7 @@ platforms:
       - tests/platforms/tsingmicro.yaml
 
   enflame:
-    enabled: true
+    enabled: false
   metax:
     # Self-hosted runner label: ci-sglang-plugin-fl-metax (C550).
     # Disabled until the SGLang 0.5.18 empty-mode CI image is published and

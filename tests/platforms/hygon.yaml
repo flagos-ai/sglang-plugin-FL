@@ -48,10 +48,30 @@ bw1000: &bw1000_profile
   tests: &bw1000_tests
     unit:
       include: "*"
-      exclude: []
+      # TEMP validation-only: dev/0.5.18 gained the txda vendor package
+      # (#187) after the candidate images were built, so their installed
+      # sglang_fl wheel cannot import it. Drop this entry with the probe.
+      exclude:
+        - platform/test_tsingmicro_dummy_weights.py
+        - platform/test_tsingmicro_eagle_runtime.py
+        - platform/test_tsingmicro_fused_moe.py
+        - platform/test_tsingmicro_gdn_verify_conv.py
+        - platform/test_tsingmicro_gemma_rms_norm.py
+        - platform/test_tsingmicro_kv_leak_fix.py
+        - platform/test_tsingmicro_model_runner_timer.py
+        - platform/test_tsingmicro_plugin_bootstrap.py
+        - platform/test_tsingmicro_post_import_hook.py
+        - platform/test_tsingmicro_speculative_cache_locs.py
+        - platform/test_tsingmicro_speculative_tree.py
+        - platform/test_sglang_version_compat.py
     functional:
       include: "*"
-      exclude: []
+      # Runtime FlashAttention has a vendor-confirmed wont-fix for the
+      # paged-KV BF16/GQA head_dim=256 MTP shape in this test file. Keep the
+      # source test unchanged and exclude only this Hygon-specific regression
+      # until the Runtime provides a corrected kernel.
+      exclude:
+        - ops/test_hygon_mtp_attention.py
     e2e:
       # concurrent/mtp stay in the pr stage: scheduled workflows only fire on
       # the default branch, so until this line merges back the nightly stage

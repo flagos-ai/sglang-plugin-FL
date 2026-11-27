@@ -28,6 +28,18 @@ dependencies = [
 
 [project.optional-dependencies]
 cuda = ["sglang==0.5.18"]
+# The Hygon two-wheel image (docker/hygon) installs the derived HCU SGLang wheel
+# (tools/wheels/hygon) together with this extra. Runtime-owned distributions are
+# frozen by the image's generated runtime constraints and are not restated here;
+# that includes Triton, which the Runtime provides as the /opt/flagtree module
+# tree rather than as a pip distribution.
+hygon = [
+    "sglang==0.5.18+flagos.hcu1",
+    "flag-gems==5.4.0",
+    # Product compatibility pin requested by the Runtime owner: the Runtime
+    # supplies fsspec 2026.9.0 and older datasets releases cap fsspec.
+    "datasets==5.2.0",
+]
 
 [project.entry-points."sglang.srt.platforms"]
 sglang_fl = "sglang_fl:activate_platform"
