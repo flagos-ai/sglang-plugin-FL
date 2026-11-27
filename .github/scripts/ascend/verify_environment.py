@@ -40,6 +40,33 @@ EXPECTED_CI_DISTRIBUTIONS = {
     "pytest-timeout": "2.4.0",
 }
 
+EXPECTED_FLAGTREE_VERSION = "0.7.0+ascend3.5"
+EXPECTED_FLAGTREE_TRITON = "3.5.1"
+EXPECTED_FLAGTREE_SOURCE = (
+    "Source-Commit, https://github.com/flagos-ai/FlagTree/commit/"
+    "2b5b81320c18dbf4008cf6ad14d3c246bd74f7ff"
+)
+EXPECTED_CANN921_DISTRIBUTIONS = {
+    "sglang": "0.5.18",
+    "sglang-fl": "0.1.0",
+    "torch": "2.13.0+cpu",
+    "torch-npu": "2.13.0",
+    "transformers": "5.12.1",
+    "flag-gems": "5.4.0",
+    "flagcx": "0.14.1+cann9.2.1",
+    "cann-shmem": "1.6.0",
+    "xgrammar": "0.2.1",
+    "compressed-tensors": "0.16.0",
+    "sgl-kernel-npu": "2026.9.0",
+    "deep-ep": "1.0.0+d5107fb6.cann.9.2.0.b237",
+    "attentions": "0.2",
+    "custom-ops": "1.0",
+    "torch-memory-saver": "0.0.8",
+    "numpy": "1.26.4",
+    "pyarrow": "25.0.1",
+    "datasets": "5.2.0",
+}
+
 EXPECTED_SOURCE_MARKERS = {
     Path("/opt/sglang-0.5.18/.flagos-source-commit"): (
         "sglang",
@@ -75,7 +102,6 @@ REQUIRED_NPU_KERNEL_MODULES = (
     "sgl_kernel_npu.sample.verify_tree_greedy",
 )
 
-CANN_VERSION = "8.5.0"
 SGLANG_SOURCE_ROOT = Path("/opt/sglang-0.5.18/python/sglang")
 STALE_SGLANG_ROOT = Path("/sgl-workspace/sglang")
 SOLVE_TRIL_RELATIVE_PATH = Path("sgl_kernel_npu/fla/solve_tril.py")
@@ -104,8 +130,54 @@ def _require_distribution(name: str, expected: str) -> None:
     print(f"[ascend-env] {name}={actual}")
 
 
-def _require_source_markers() -> None:
+def _require_flagtree() -> None:
+    _require_distribution("flagtree", EXPECTED_FLAGTREE_VERSION)
+    distribution = metadata.distribution("flagtree")
+    if EXPECTED_FLAGTREE_SOURCE not in distribution.metadata.get_all("Project-URL", []):
+        raise RuntimeError("FlagTree wheel source commit does not match the CI image")
+    owned_files = {
+        Path(distribution.locate_file(path)).resolve(): path
+        for path in distribution.files or ()
+    }
+    triton = _require_import("triton")
+    if triton.__version__ != EXPECTED_FLAGTREE_TRITON:
+        raise RuntimeError(
+            f"FlagTree must provide Triton {EXPECTED_FLAGTREE_TRITON}, "
+            f"found {triton.__version__}"
+        )
+    for name in (
+        "triton",
+        "triton._C.libtriton",
+        "triton.language.extra.cann.extension",
+    ):
+        module = _require_import(name) if name != "triton" else triton
+        path = Path(module.__file__).resolve()
+        entry = owned_files.get(path)
+        if entry is None or not path.is_relative_to("/opt/flagtree"):
+            raise RuntimeError(
+                f"FlagTree does not own the loaded {name} module at {path}"
+            )
+        with path.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").digest()
+        encoded = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+        if (
+            entry.hash is None
+            or entry.hash.mode != "sha256"
+            or entry.hash.value != encoded
+        ):
+            raise RuntimeError(f"FlagTree RECORD digest mismatch for {path}")
+        print(f"[ascend-env] FlagTree owns {name}={path} (RECORD SHA256 verified)")
+    from triton.language.extra.cann import extension
+
+    if not callable(getattr(extension, "insert_slice", None)):
+        raise RuntimeError("FlagTree is missing CANN insert_slice for sgl-kernel-npu")
+    print(f"[ascend-env] triton-module={triton.__version__} (provided by FlagTree)")
+
+
+def _require_source_markers(*, cann921: bool) -> None:
     for path, (name, expected) in EXPECTED_SOURCE_MARKERS.items():
+        if cann921 and name != "sglang":
+            continue  # The CANN 9.2.1 image supplies pinned vendor wheels.
         try:
             actual = path.read_text(encoding="utf-8").strip()
         except OSError as exc:
@@ -123,6 +195,7 @@ def _read_cann_version() -> tuple[Path, str]:
     )
     candidates = (
         home / "version.cfg",
+        home / "aarch64-linux" / "ascend_all_cann_install.info",
         home / "aarch64-linux" / "ascend_toolkit_install.info",
     )
     for path in candidates:
@@ -141,10 +214,10 @@ def _read_cann_version() -> tuple[Path, str]:
     )
 
 
-def _require_cann() -> None:
+def _check_cann_version(expected: str | None) -> None:
     path, actual = _read_cann_version()
-    if not actual.startswith(CANN_VERSION):
-        raise RuntimeError(f"CANN must be {CANN_VERSION}, found {actual} in {path}")
+    if expected and not re.match(rf"{re.escape(expected)}(?![0-9])", actual):
+        raise RuntimeError(f"CANN must be {expected}, found {actual} in {path}")
     print(f"[ascend-env] CANN={actual} ({path})")
 
 
@@ -257,15 +330,18 @@ def _require_deep_ep_layout() -> None:
     print(f"[ascend-env] deep-ep-extension={extension} -> {extension.resolve()}")
 
 
-def _require_causal_conv1d_abi(torch: object) -> None:
+def _require_causal_conv1d_abi(torch: object, *, cann921: bool = False) -> None:
     try:
         schema = str(torch.ops.npu.causal_conv1d.default._schema)
     except (AttributeError, RuntimeError) as exc:
         raise RuntimeError("npu::causal_conv1d is not registered") from exc
-    if schema != EXPECTED_CAUSAL_CONV1D_SCHEMA:
+    expected = EXPECTED_CAUSAL_CONV1D_SCHEMA
+    if cann921:
+        # The newer native build explicitly annotates the state mutation.
+        expected = expected.replace("Tensor conv_states", "Tensor(a!) conv_states")
+    if schema != expected:
         raise RuntimeError(
-            "npu::causal_conv1d ABI mismatch: "
-            f"expected {EXPECTED_CAUSAL_CONV1D_SCHEMA}, found {schema}"
+            f"npu::causal_conv1d ABI mismatch: expected {expected}, found {schema}"
         )
     print(f"[ascend-env] causal-conv1d-schema={schema}")
 
@@ -390,7 +466,15 @@ def _require_vision_padding_numerics(torch: object) -> None:
     )
 
 
-def _require_flagcx_layout() -> Path:
+def _require_flagcx_layout(*, cann921: bool) -> Path:
+    if cann921:
+        dist = metadata.distribution("flagcx")
+        library = Path(dist.locate_file("flagcx/lib/libflagcx.so"))
+        if not library.is_file():
+            raise RuntimeError(
+                f"required packaged FlagCX library is missing: {library}"
+            )
+        return library
     root = Path(os.environ.get("FLAGCX_PATH", "/opt/FlagCX"))
     library = root / "build" / "lib" / "libflagcx.so"
     wrapper = root / "plugin" / "interservice" / "flagcx_wrapper.py"
@@ -483,9 +567,11 @@ def _require_sglang_import() -> None:
     print(f"[ascend-env] sglang-source={module_path}")
 
 
-def _require_npu(min_npus: int, flagcx_library: Path) -> None:
+def _require_npu(min_npus: int, flagcx_library: Path, *, cann921: bool) -> None:
     torch = _require_import("torch")
     _require_import("torch_npu")
+    if cann921:
+        _require_import("shmem")
     _require_import("torchair")
     _require_import("torchair.configs.compiler_config")
     _require_import(
@@ -510,7 +596,7 @@ def _require_npu(min_npus: int, flagcx_library: Path) -> None:
 
     for module_name in REQUIRED_NPU_KERNEL_MODULES:
         _require_import(module_name)
-    _require_causal_conv1d_abi(torch)
+    _require_causal_conv1d_abi(torch, cann921=cann921)
     from sglang.srt.plugins import load_plugins
 
     load_plugins()
@@ -521,7 +607,11 @@ def _require_npu(min_npus: int, flagcx_library: Path) -> None:
     _require_vision_padding_numerics(torch)
     flag_gems = _require_import("flag_gems")
     flag_gems_path = Path(flag_gems.__file__).resolve()
-    flag_gems_root = Path("/opt/FlagGems")
+    flag_gems_root = (
+        Path(metadata.distribution("flag-gems").locate_file("flag_gems")).resolve()
+        if cann921
+        else Path("/opt/FlagGems")
+    )
     if (
         flag_gems_path != flag_gems_root
         and flag_gems_root not in flag_gems_path.parents
@@ -577,25 +667,40 @@ def verify(
     require_npu: bool = False,
     min_npus: int = 1,
     plugin_root: str | None = None,
+    expected_cann_version: str | None = None,
 ) -> None:
-    if sys.version_info[:2] != (3, 11):
+    # This image marker selects its wheel layout and ABI checks. The pinned
+    # callers supply the expected toolkit release separately.
+    cann921 = os.environ.get("SGLANG_FL_ASCEND_CANN921") == "1"
+    python_minor = 12 if cann921 else 11
+    if sys.version_info[:2] != (3, python_minor):
         raise RuntimeError(
-            f"Python must be 3.11, found {sys.version_info.major}.{sys.version_info.minor}"
+            f"Python must be 3.{python_minor}, found {sys.version_info.major}.{sys.version_info.minor}"
         )
     print(f"[ascend-env] python={sys.version.split()[0]}")
 
-    for name, expected in EXPECTED_RUNTIME_DISTRIBUTIONS.items():
+    expected_runtime = (
+        EXPECTED_CANN921_DISTRIBUTIONS if cann921 else EXPECTED_RUNTIME_DISTRIBUTIONS
+    )
+    for name, expected in expected_runtime.items():
         _require_distribution(name, expected)
     if require_ci:
         for name, expected in EXPECTED_CI_DISTRIBUTIONS.items():
             _require_distribution(name, expected)
+        if cann921:
+            # PyArrow's optional NumPy ABI requirement is absent from its
+            # runtime metadata; version resolution alone cannot catch it.
+            for name in ("numpy", "pyarrow", "datasets"):
+                _require_import(name)
 
-    _require_source_markers()
-    _require_cann()
+    _require_source_markers(cann921=cann921)
+    _check_cann_version(expected_cann_version)
+    if cann921:
+        _require_flagtree()
     _require_npu_kernel_surface()
     _require_solve_tril_source()
     _require_deep_ep_layout()
-    flagcx_library = _require_flagcx_layout()
+    flagcx_library = _require_flagcx_layout(cann921=cann921)
 
     _require_sglang_import()
     # This import is deliberately safe on driver-less image builders. The full
@@ -605,7 +710,11 @@ def verify(
     _require_plugin(plugin_root)
 
     if require_npu:
-        _require_npu(min_npus, flagcx_library)
+        _require_npu(min_npus, flagcx_library, cann921=cann921)
+        if cann921 and require_ci:
+            # This entrypoint imports server_args/current_platform. Defer it
+            # until real devices are verified so image builders stay safe.
+            _require_import("sglang.benchmark.serving")
 
 
 def main() -> int:
@@ -631,6 +740,11 @@ def main() -> int:
         default=None,
         help="require sglang_fl to import from this checkout root",
     )
+    parser.add_argument(
+        "--expected-cann-version",
+        default=os.environ.get("SGLANG_FL_ASCEND_EXPECTED_CANN"),
+        help="require this toolkit release (default: SGLANG_FL_ASCEND_EXPECTED_CANN)",
+    )
     args = parser.parse_args()
     if args.min_npus < 1:
         parser.error("--min-npus must be at least 1")
@@ -639,6 +753,7 @@ def main() -> int:
         require_npu=args.require_npu,
         min_npus=args.min_npus,
         plugin_root=args.plugin_root,
+        expected_cann_version=args.expected_cann_version,
     )
     print("[ascend-env] environment verification passed")
     return 0

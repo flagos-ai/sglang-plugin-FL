@@ -79,7 +79,11 @@ configure_ascend_common() {
   # A3 AIV BF16 reductions otherwise vary their accumulation order even with
   # fixed seeds. Match the platform default and preserve explicit overrides.
   export HCCL_DETERMINISTIC="${HCCL_DETERMINISTIC-true}"
-  export FLAGCX_PATH="${FLAGCX_PATH:-/opt/FlagCX}"
+  # The CANN 9.2.1 image ships FlagCX as a wheel. A nonempty explicit
+  # FLAGCX_PATH still selects the legacy source-tree wrapper.
+  if [[ "${SGLANG_FL_ASCEND_CANN921:-0}" != 1 ]]; then
+    export FLAGCX_PATH="${FLAGCX_PATH:-/opt/FlagCX}"
+  fi
   export ASCEND_VISIBLE_DEVICES="${ASCEND_VISIBLE_DEVICES:-${ASCEND_RT_VISIBLE_DEVICES:-0,1,2,3}}"
   export ASCEND_RT_VISIBLE_DEVICES="${ASCEND_RT_VISIBLE_DEVICES:-${ASCEND_VISIBLE_DEVICES}}"
   export SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK="${SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK:-128}"
@@ -128,6 +132,10 @@ run_logged() {
   local log_file="$1"
   shift
   mkdir -p -- "$(dirname -- "${log_file}")"
+  local first_line=1
+  if [[ "${SGLANG_FL_DIST_BACKEND:-}" == flagcx && -f "${log_file}" ]]; then
+    first_line=$(( $(wc -l <"${log_file}") + 1 ))
+  fi
   printf '[ascend-acceptance] command:' | tee -a "${log_file}"
   printf ' %q' "$@" | tee -a "${log_file}"
   printf '\n' | tee -a "${log_file}"
@@ -137,6 +145,11 @@ run_logged() {
   local status=${PIPESTATUS[0]}
   set -e
   ((status == 0)) || die "command failed with exit code ${status}; see ${log_file}"
+  if [[ "${SGLANG_FL_DIST_BACKEND:-}" == flagcx ]] \
+    && tail -n "+${first_line}" "${log_file}" | grep -E \
+      'FlagCX wrapper import failed|Failed to load libflagcx[.]so|FlagCX communicator (init|creation) failed|CommunicatorFL creation failed' >/dev/null; then
+    die "FlagCX initialization fell back to torch.distributed; see ${log_file}"
+  fi
 }
 
 wait_for_health() {
@@ -209,7 +222,7 @@ write_environment_manifest() {
     printf 'SGLANG_PLUGINS=%s\n' "${SGLANG_PLUGINS}"
     printf 'SGLANG_FL_DIST_BACKEND=%s\n' "${SGLANG_FL_DIST_BACKEND}"
     printf 'SGLANG_FL_PER_OP=%s\n' "${SGLANG_FL_PER_OP}"
-    printf 'FLAGCX_PATH=%s\n' "${FLAGCX_PATH}"
+    printf 'FLAGCX_PATH=%s\n' "${FLAGCX_PATH:-<unset>}"
     printf 'SGLANG_ENABLE_OVERLAP_PLAN_STREAM=%s\n' "${SGLANG_ENABLE_OVERLAP_PLAN_STREAM}"
     printf 'SGLANG_NPU_USE_MULTI_STREAM=%s\n' "${SGLANG_NPU_USE_MULTI_STREAM:-<unset>}"
     printf 'STREAMS_PER_DEVICE=%s\n' "${STREAMS_PER_DEVICE:-<unset>}"

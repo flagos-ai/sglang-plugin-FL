@@ -96,6 +96,7 @@ jobs:
 
       - name: Run Ascend compatibility probe
         if: inputs.platform == 'ascend'
+        shell: bash
         run: python3 examples/ascend_compat_probe.py
 
       - name: Run unit tests
@@ -106,9 +107,13 @@ jobs:
           if [ "${{ inputs.platform }}" = "hygon" ]; then
             unset CUDA_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES
           fi
-          python "$TEST_DRIVER" \
+          set -- python "$TEST_DRIVER" \
             --platform ${{ inputs.platform }} \
             --scope unit
+          if [ "${{ inputs.platform }}" = "ascend" ]; then
+            exec bash -c 'exec "$@"' bash "$@"
+          fi
+          exec "$@"
 
       - name: Run Hygon vendor-stack verifier regressions
         if: inputs.platform == 'hygon'
@@ -123,9 +128,13 @@ jobs:
           if [ "${{ inputs.platform }}" = "hygon" ]; then
             unset CUDA_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES
           fi
-          python "$TEST_DRIVER" \
+          set -- python "$TEST_DRIVER" \
             --platform ${{ inputs.platform }} \
             --scope functional
+          if [ "${{ inputs.platform }}" = "ascend" ]; then
+            exec bash -c 'exec "$@"' bash "$@"
+          fi
+          exec "$@"
 
       - name: Upload test results
         if: always()

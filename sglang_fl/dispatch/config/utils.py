@@ -195,6 +195,20 @@ def get_flagos_blacklist(config: Optional[dict] = None) -> Optional[list[str]]:
     return None
 
 
+def get_flagos_runtime_blacklist(
+    vendor: Optional[str], flaggems_version: Optional[str]
+) -> list[str]:
+    """Load the bundled blacklist for a FlagGems runtime with known failures."""
+    if vendor != "ascend" or flaggems_version != "5.4.0":
+        return []
+
+    from sglang_fl.dispatch.backends.vendor.ascend.runtime import uses_flagtree_cann921
+
+    if not uses_flagtree_cann921():
+        return []
+    return get_flagos_blacklist(load_platform_config("ascend-cann921") or {}) or []
+
+
 def get_oot_blacklist(config: Optional[dict] = None) -> Optional[list[str]]:
     """
     Extract OOT operator blacklist from config.

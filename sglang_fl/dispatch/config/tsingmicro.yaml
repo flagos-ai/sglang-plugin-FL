@@ -1,11 +1,51 @@
 # SGLang-FL Dispatch Configuration for tsingmicro (TXDA) platform
+# Validated with SGLang 0.5.18, FlagTree 0.7.1a1+tsingmicro3.6, runtime/CCL
+# 0.30279.6 (Qwen3.6-27B / 35B-A3B, TP8 single node and TP8/PP2 cross node).
+#
+# Operator-level policy only. Server-argument defaults (device, dtype, radix
+# cache, vision attention, ...) live in
+# sglang_fl/dispatch/backends/vendor/tsingmicro/runtime_config.py; the
+# attention backend (txda_oot) comes from sglang_fl/platform.py.
 prefer: flagos
+
+# ATen ops kept on native torch_txda instead of FlagGems.
+# This is the list every validated TXDA run used; it was previously passed
+# only via SGLANG_FL_FLAGOS_BLACKLIST in the launch scripts (that env var still
+# overrides this list completely).
+#   lt/ge/eq/ne/le (+ scalar / in-place forms), copy_: carried over unchanged
+#            from the validated launch scripts (TODO: record per-op reason).
+#   cat, cat_out: a cold-cache 35B-A3B run without them (and without
+#            SGLANG_FL_GDN_NORM=1, now a plugin default) hung on-device with
+#            "AP Kernel Run Timeout". TRITON_PIPELINE=0, also set in that run,
+#            is FlagTree tsingmicro's own default (pipelining only with "1").
+flagos_blacklist:
+  - lt_scalar
+  - lt
+  - lt_scalar_
+  - lt_
+  - ge_scalar
+  - ge
+  - eq_scalar
+  - eq
+  - ne_scalar
+  - ne
+  - le_scalar
+  - le
+  - copy_
+  - cat
+  - cat_out
 
 # Per-operator backend selection order.
 # Tokens: vendor (platform-native), flagos (FlagGems/Triton), reference (pure PyTorch)
 # Each op tries candidates left-to-right; falls to the next on failure.
 op_backends:
   silu_and_mul:
-    - reference
-    - vendor       # vendor.tsingmicro – pure PyTorch, safe on TXDA hardware
-    - flagos       # default.flagos – Triton kernel, may not be TXDA-verified
+    - reference    # reference.torch – the validated TXDA path
+    - flagos       # default.flagos – Triton kernel, not validated on TXDA
+
+  # GemmaRMSNorm has no flagos registration, so it never reaches default.flagos;
+  # vendor.tsingmicro drives the FlagGems _tsingmicro RMSNorm kernels with a
+  # precomputed fp32 (1 + weight) and is preferred over the pure-PyTorch path.
+  gemma_rms_norm:
+    - vendor       # vendor.tsingmicro – FlagGems _tsingmicro RMSNorm kernels
+    - reference    # reference.torch – pure PyTorch, fp32 weight+1

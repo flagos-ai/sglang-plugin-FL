@@ -486,6 +486,7 @@ def _setup_flaggems(config: dict = None):
         return
 
     import flag_gems
+    from sglang_fl.dispatch.config.utils import get_flagos_runtime_blacklist
 
     # Whitelist/blacklist: env > YAML config
     if config is not None:
@@ -509,6 +510,22 @@ def _setup_flaggems(config: dict = None):
     whitelist = _parse_list(whitelist_str)
     if blacklist_str:
         blacklist = _parse_list(blacklist_str)
+
+    runtime_blacklist = get_flagos_runtime_blacklist(
+        getattr(flag_gems, "vendor_name", None),
+        getattr(flag_gems, "__version__", None),
+    )
+    if runtime_blacklist:
+        # Runtime exclusions also apply to explicit operator selections.
+        if whitelist:
+            whitelist = [op for op in whitelist if op not in runtime_blacklist]
+            if not whitelist:
+                logger.info(
+                    "FlagGems: runtime blacklist excludes all requested ATen ops"
+                )
+                return
+        else:
+            blacklist = list(dict.fromkeys([*(blacklist or []), *runtime_blacklist]))
 
     fg_kwargs = dict(
         record=record,
@@ -634,9 +651,9 @@ def _setup_communicator_hooks():
     routes through CommunicatorFL; otherwise hooks preserve SGLang's native
     collective selection.
 
-    Hooks (13 total):
+    Hooks (14 total):
       - __init__: inject self.fl_communicator, suppress PyNccl when FlagCX active
-      - all_reduce, _reduce_scatter_tensor, _all_gather_into_tensor,
+      - all_reduce, all_gather, _reduce_scatter_tensor, _all_gather_into_tensor,
         reduce_scatterv, all_gatherv, send, recv, broadcast: delegate to an active
         fl_communicator
       - broadcast_tensor_dict, send_tensor_dict, recv_tensor_dict:
@@ -697,7 +714,50 @@ def _setup_communicator_hooks():
             return
         return original_fn(self, output, input_)
 
-    # ── all_gather_into_tensor hook ──
+    # ── all_gather hooks ──
+
+    def _all_gather_hook(
+        original_fn, self, input_, dim=-1, output_tensor_list=None
+    ):
+        comm = getattr(self, "fl_communicator", None)
+        npu_comm = getattr(self, "npu_communicator", None)
+        hpu_comm = getattr(self, "hpu_communicator", None)
+        if (
+            self.world_size == 1
+            or input_.is_cpu
+            or not _fl_communicator_is_active(comm, input_)
+            or npu_comm is None
+            or npu_comm.disabled
+            or (hpu_comm is not None and not hpu_comm.disabled)
+            or output_tensor_list is not None
+        ):
+            return original_fn(
+                self, input_, dim=dim, output_tensor_list=output_tensor_list
+            )
+
+        # SGLang's NPU shortcut returns before _all_gather_into_tensor, so
+        # logits gathering otherwise initializes a second HCCL communicator
+        # after KV-cache sizing. Keep the native communicator enabled for
+        # quant_all_reduce, but route this gather through active FlagCX.
+        assert -input_.dim() <= dim < input_.dim(), (
+            f"Invalid dim ({dim}) for input tensor with shape {input_.size()}"
+        )
+        if dim < 0:
+            dim += input_.dim()
+        input_size = input_.size()
+        output_size = (input_size[0] * self.world_size,) + input_size[1:]
+        output = torch.empty(output_size, dtype=input_.dtype, device=input_.device)
+        # FlagCX consumes a flat pointer and does not interpret tensor strides.
+        comm.all_gather(output, input_.contiguous())
+        return (
+            output.reshape((self.world_size,) + input_size)
+            .movedim(0, dim)
+            .reshape(
+                input_size[:dim]
+                + (self.world_size * input_size[dim],)
+                + input_size[dim + 1 :]
+            )
+        )
 
     def _all_gather_into_tensor_hook(original_fn, self, output, input_):
         comm = getattr(self, "fl_communicator", None)
@@ -853,6 +913,7 @@ def _setup_communicator_hooks():
 
     HookRegistry.register(f"{_GC_TARGET}.__init__", _init_hook, HookType.AROUND)
     HookRegistry.register(f"{_GC_TARGET}.all_reduce", _all_reduce_hook, HookType.AROUND)
+    HookRegistry.register(f"{_GC_TARGET}.all_gather", _all_gather_hook, HookType.AROUND)
     HookRegistry.register(
         f"{_GC_TARGET}._reduce_scatter_tensor",
         _reduce_scatter_tensor_hook,
@@ -891,7 +952,7 @@ def _setup_communicator_hooks():
 
     logger.info(
         "CommunicatorFL AROUND hooks registered on GroupCoordinator "
-        "(12 communication hooks plus PP shutdown compatibility)"
+        "(13 communication hooks plus PP shutdown compatibility)"
     )
 
 
@@ -1042,6 +1103,12 @@ def load_plugin():
                 "chunk_gated_delta_rule",
                 "fused_recurrent_gated_delta_rule_packed_decode",
             )
+        elif device_info is not None and device_info.vendor_name == "tsingmicro":
+            # TXDA has no own GDN decode kernel: let SGLang call its Triton
+            # packed-decode kernel directly instead of a pass-through dispatch
+            # hop on every decode step of every GDN layer.
+            fla_excluded_ops = ("fused_recurrent_gated_delta_rule_packed_decode",)
+            fla_excluded_gdn_ops = ("fused_recurrent_gated_delta_rule_packed_decode",)
         patch_fla_functions(
             excluded_ops=fla_excluded_ops,
             excluded_gdn_ops=fla_excluded_gdn_ops,

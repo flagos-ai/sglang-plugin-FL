@@ -157,6 +157,7 @@ def test_active_flagcx_tensor_hooks_preserve_cpu_native_paths(
     output = torch.empty(1)
     cases = [
         ("all_reduce", (cpu_tensor,), {}, comm.all_reduce),
+        ("all_gather", (cpu_tensor,), {}, comm.all_gather),
         ("_reduce_scatter_tensor", (output, cpu_tensor), {}, comm.reduce_scatter),
         ("_all_gather_into_tensor", (output, cpu_tensor), {}, comm.all_gather),
         ("reduce_scatterv", (cpu_tensor,), {}, comm.reduce_scatterv),
@@ -172,6 +173,139 @@ def test_active_flagcx_tensor_hooks_preserve_cpu_native_paths(
         assert hook(original, coordinator, *args, **kwargs) == "native-result"
         original.assert_called_once()
         fl_method.assert_not_called()
+
+
+class _AcceleratorTensor(torch.Tensor):
+    """Keep real CPU storage while exercising accelerator routing without NPU."""
+
+    @property
+    def device(self):
+        return torch.device("cuda:0")
+
+    @property
+    def is_cpu(self):
+        return False
+
+
+@pytest.mark.parametrize("dim", [0, 1, -1, -2])
+@pytest.mark.parametrize("layout", ["contiguous", "transpose", "strided"])
+def test_npu_logits_all_gather_bypasses_native_shortcut(
+    communicator_hooks, monkeypatch, dim, layout
+) -> None:
+    hook = communicator_hooks[f"{_GC_TARGET}.all_gather"]
+    values = torch.arange(48, dtype=torch.float32).reshape(4, 3, 4)
+    if layout == "transpose":
+        values = values.transpose(0, 1)
+    elif layout == "strided":
+        values = values[::2]
+    input_ = values.as_subclass(_AcceleratorTensor)
+    comm = _communicator(flagcx=SimpleNamespace(disabled=False))
+    native = SimpleNamespace(
+        disabled=False,
+        all_gather=Mock(return_value="native-hccl-result"),
+        quant_all_reduce=Mock(return_value="native-quant-result"),
+    )
+    coordinator = SimpleNamespace(
+        fl_communicator=comm, npu_communicator=native, world_size=2
+    )
+
+    def original(self, tensor, dim=-1, output_tensor_list=None):
+        # This upstream early return never reaches _all_gather_into_tensor,
+        # which is the only gather entry point the old plugin intercepted.
+        if not self.npu_communicator.disabled:
+            return self.npu_communicator.all_gather(tensor, dim)
+        raise AssertionError("The native NPU communicator must stay enabled")
+
+    assert original(coordinator, input_, dim) == "native-hccl-result"
+    native.all_gather.reset_mock()
+
+    real_empty = torch.empty
+
+    def empty_on_cpu(*args, **kwargs):
+        assert kwargs["device"] == torch.device("cuda:0")
+        return real_empty(*args, **{**kwargs, "device": "cpu"})
+
+    monkeypatch.setattr(torch, "empty", empty_on_cpu)
+
+    def gather(output, tensor):
+        assert tensor.is_contiguous(), "FlagCX reads a flat storage pointer"
+        local = tensor.as_subclass(torch.Tensor)
+        output.copy_(torch.cat([local, local + 100], dim=0))
+
+    comm.all_gather.side_effect = gather
+    result = hook(original, coordinator, input_, dim=dim)
+
+    assert torch.equal(result, torch.cat([values, values + 100], dim=dim))
+    comm.all_gather.assert_called_once()
+    native.all_gather.assert_not_called()
+    assert coordinator.npu_communicator is native
+    assert native.disabled is False
+    assert native.quant_all_reduce(input_) == "native-quant-result"
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "cpu",
+        "cross_device",
+        "inactive",
+        "outer_disabled",
+        "flagcx_disabled",
+        "single_rank",
+        "output_list",
+        "npu_missing",
+        "npu_disabled",
+        "hpu_active",
+    ],
+)
+def test_npu_all_gather_preserves_other_routes(communicator_hooks, case) -> None:
+    hook = communicator_hooks[f"{_GC_TARGET}.all_gather"]
+    original = Mock(return_value="native-result")
+    comm = _communicator(flagcx=SimpleNamespace(disabled=False))
+    input_ = torch.arange(6).reshape(2, 3).as_subclass(_AcceleratorTensor)
+    native = SimpleNamespace(disabled=False)
+    coordinator = SimpleNamespace(
+        fl_communicator=comm, npu_communicator=native, world_size=2
+    )
+    output_tensor_list = None
+    dim = -1
+    if case == "cpu":
+        input_ = input_.as_subclass(torch.Tensor)
+    elif case == "cross_device":
+        comm.device = torch.device("cuda:1")
+    elif case == "inactive":
+        comm._flagcx_comm = None
+    elif case == "outer_disabled":
+        comm.disabled = True
+    elif case == "flagcx_disabled":
+        comm._flagcx_comm.disabled = True
+    elif case == "single_rank":
+        coordinator.world_size = 1
+        input_ = torch.tensor(1).as_subclass(_AcceleratorTensor)
+        dim = 100  # Upstream returns single-rank inputs before checking dim.
+    elif case == "output_list":
+        output_tensor_list = [object(), object()]
+    elif case == "npu_missing":
+        del coordinator.npu_communicator
+    elif case == "npu_disabled":
+        native.disabled = True
+    elif case == "hpu_active":
+        coordinator.hpu_communicator = SimpleNamespace(disabled=False)
+
+    assert (
+        hook(
+            original,
+            coordinator,
+            input_,
+            dim=dim,
+            output_tensor_list=output_tensor_list,
+        )
+        == "native-result"
+    )
+    original.assert_called_once_with(
+        coordinator, input_, dim=dim, output_tensor_list=output_tensor_list
+    )
+    comm.all_gather.assert_not_called()
 
 
 def test_nccl_all_gatherv_forwards_preallocated_output_to_sglang(

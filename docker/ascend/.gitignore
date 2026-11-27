@@ -3,3 +3,6 @@
 # runtime), so this file is no longer a build input -- left excluded in case the
 # tar still lingers locally.
 ascend-driver-*.tar.gz
+
+# Staged local inputs for the CANN 9.2.1 image build.
+/.build-inputs/

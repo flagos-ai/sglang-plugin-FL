@@ -3,10 +3,9 @@
 
 platform: ascend
 
-# Published SGLang 0.5.18 ARM64 CI image. The immutable Harbor digest was
-# pulled back and passed the four-card 910C baked-image gate; build provenance
-# and the canonical rebuild recipe are documented in the 0.5.18 usage guide.
-ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:8aee90099504bfdec9a1c0caf484ebff74273eeda4480ff07554138d727de62e
+# SGLang 0.5.18 CI image for Ascend 910C A3 with CANN 9.2.1 and
+# FlagTree 0.7.0+ascend3.5. The recipe is in docker/ascend/cann921-0.5.18.containerfile.
+ci_image: harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:037caa98e33bedd7d1652b0c513bff0721b5a309e8b18754583d419d0cd4b5ab
 
 # Runner labels for this hardware
 runner_labels:
@@ -48,9 +47,15 @@ container_volumes:
 # and pip install needs write access to /usr/local. This matches org convention.
 # --init: tini as PID 1 reaps orphan zombies from sglang TP workers on shutdown
 # (PID 1 was tail -f /dev/null, never wait()s -> zombies pile up, kill_process_tree times out)
+# Docker 20.10.8 blocks clone3 used by the image's glibc and Actions Node 24.
+# Scope the seccomp workaround to this container and drop Linux capabilities.
+# The device nodes grant read/write access to the Ascend driver group (1000).
 container_options: >-
   --hostname sglang-plugin-fl
   --runtime=ascend
+  --security-opt seccomp=unconfined
+  --cap-drop=ALL
+  --group-add=1000
   --ipc=host
   --shm-size=64g
   --ulimit memlock=-1
@@ -58,6 +63,7 @@ container_options: >-
   --user root
   -e ASCEND_VISIBLE_DEVICES=0,1,2,3
   -e ASCEND_RT_VISIBLE_DEVICES=0,1,2,3
+  -e SGLANG_FL_ASCEND_EXPECTED_CANN=9.2.1
   -e GLOO_SOCKET_IFNAME=lo
   -e HCCL_HOST_SOCKET_PORT_RANGE=auto
   -e HCCL_NPU_SOCKET_PORT_RANGE=auto

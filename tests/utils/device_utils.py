@@ -27,6 +27,7 @@ _PLATFORM_VISIBLE_DEVICE_ENV: dict[str, str] = {
     # per-process is a no-op; validated on S5000: pinned engines then
     # landed on physical 0..tp-1 and collided.
     "ascend": "ASCEND_RT_VISIBLE_DEVICES",
+    "tsingmicro": "TXDA_VISIBLE_DEVICES",
 }
 
 
@@ -40,7 +41,7 @@ def get_device_count() -> int:
     """Count available accelerators for the active FL_TEST_PLATFORM.
 
     Vendor stacks that attach their own device layer (torch_gcu, torch_musa,
-    torch_npu) report zero through torch.cuda; probe them directly (same
+    torch_npu, torch_txda) report zero through torch.cuda; probe them directly (same
     probes as the .github/scripts/<platform>/check.sh scripts). Returns 0
     when nothing can be counted — the caller falls back to serial execution.
     """
@@ -50,6 +51,7 @@ def get_device_count() -> int:
         "enflame": ("torch_gcu", "gcu"),
         "musa": ("torch_musa", "musa"),
         "ascend": ("torch_npu", "npu"),
+        "tsingmicro": ("torch_txda", "txda"),
     }
     if platform in vendor_probes:
         module, attr = vendor_probes[platform]
