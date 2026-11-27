@@ -561,7 +561,7 @@ def step4_round2_table() -> bool:
             f"verify reject-all topk={topk}",
             0,
             [5000] + [0] * (num_draft - 1),
-            accept_index=[0],
+            want_index=[0],
         )
         accept_all = along([0] + chain, None)
         accept_all[chain[-1]] = 4242
@@ -570,7 +570,7 @@ def step4_round2_table() -> bool:
             f"verify accept-all topk={topk}",
             len(chain),
             placed([0] + chain, 4242),
-            accept_index=[0] + chain,
+            want_index=[0] + chain,
         )
         # The target agrees on the first draft and rejects the second.
         partial = along([0] + chain, chain[1])
@@ -579,19 +579,28 @@ def step4_round2_table() -> bool:
             f"verify partial-accept topk={topk}",
             1,
             placed([0, chain[0]], wrong),
-            accept_index=[0, chain[0]],
+            want_index=[0, chain[0]] + [0] * (steps - 1),
         )
         if topk == 2:
-            # Take the sibling branch: 1 -> 4 -> 6 instead of 1 -> 3 -> 5.
-            sibling = [1, 4, 6]
-            rows = along([0] + sibling, None)
-            rows[sibling[-1]] = 4242
+            # The root picks its second child (2, sibling of 1).
+            rows = along([0, 2], None)
+            rows[2] = 4242
             run(
                 rows,
-                "verify sibling-branch topk=2",
-                3,
-                placed([0] + sibling, 4242),
-                accept_index=[0] + sibling,
+                "verify root-sibling topk=2",
+                1,
+                placed([0, 2], 4242),
+                want_index=[0, 2, 0, 0],
+            )
+            # Node 1 keeps the path, then picks its second child (4, sibling of 3).
+            rows = along([0, 1, 4], None)
+            rows[4] = 4242
+            run(
+                rows,
+                "verify mid-sibling topk=2",
+                2,
+                placed([0, 1, 4], 4242),
+                want_index=[0, 1, 4, 0],
             )
     # SGLang's own reference case for this kernel
     # (kernels/aot/tests/speculative/test_eagle_utils.py), inputs and expected
