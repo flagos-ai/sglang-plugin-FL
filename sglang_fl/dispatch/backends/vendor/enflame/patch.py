@@ -19,6 +19,7 @@ from .patches.speculative import patch_speculative
 from .patches.logprob import patch_logprob
 from .patches.mtp_graph import patch_mtp_graph
 from .patches.topk import patch_topk
+from .patches.elementwise import patch_fused_sigmoid_mul
 
 logger = logging.getLogger(__name__)
 _patches_applied = False
@@ -49,5 +50,6 @@ def apply_gcu_patches():
     patch_logprob()
     patch_mtp_graph()
     patch_topk()
+    patch_fused_sigmoid_mul()
 
 apply_gcu_patches()

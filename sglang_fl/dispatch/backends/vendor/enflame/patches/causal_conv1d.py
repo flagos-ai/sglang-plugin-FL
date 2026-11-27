@@ -24,6 +24,13 @@ def causal_conv1d_fn(
 
     if has_initial_state is not None and has_initial_state.dtype != torch.int8:
         has_initial_state = has_initial_state.to(torch.int8)
+    # GCU native kernel indexes these as int32. Upstream may hand us int64
+    # (GCU does not support int64), so cast explicitly. No copy when already
+    # int32, which is the normal case in the current GDN metadata.
+    if cache_indices is not None and cache_indices.dtype != torch.int32:
+        cache_indices = cache_indices.to(torch.int32).contiguous()
+    if query_start_loc is not None and query_start_loc.dtype != torch.int32:
+        query_start_loc = query_start_loc.to(torch.int32).contiguous()
     weight_prepared = weight.t().contiguous()
 
     torch.ops.sgl_kernel.causal_conv1d_fwd(

@@ -23,6 +23,13 @@ def chunk_gated_delta_rule_gcu(
 ):
     from sglang.kernels.ops.attention.fla.chunk import ChunkGatedDeltaRuleFunction
 
+    # GCU has no native int64: normalise index tensors before FLA kernels,
+    # same as the packed-decode path below and the other enflame patches.
+    if initial_state_indices is not None and initial_state_indices.dtype == torch.int64:
+        initial_state_indices = initial_state_indices.to(torch.int32)
+    if cu_seqlens is not None and cu_seqlens.dtype == torch.int64:
+        cu_seqlens = cu_seqlens.to(torch.int32)
+
     o, h = ChunkGatedDeltaRuleFunction.apply(
         q,
         k,
