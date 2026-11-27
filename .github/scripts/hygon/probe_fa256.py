@@ -24,6 +24,9 @@ import torch
 
 PREFIX = "[fa-probe]"
 TOL = 0.05
+# FA_PROBE_DEVICE / FA_PROBE_MOCK only exist to dry-run the probe on a CPU box.
+DEV = os.environ.get("FA_PROBE_DEVICE", "cuda")
+MOCK = os.environ.get("FA_PROBE_MOCK") == "1"
 
 
 def say(*parts: object) -> None:
@@ -39,11 +42,13 @@ def env_info() -> None:
         say("flash_attn version unavailable", repr(error))
     import flash_attn
 
-    say("flash_attn file", flash_attn.__file__)
+    say("flash_attn file", getattr(flash_attn, "__file__", None))
     try:
         import flash_attn_interface
 
-        say("flash_attn_interface file", flash_attn_interface.__file__)
+        say(
+            "flash_attn_interface file", getattr(flash_attn_interface, "__file__", None)
+        )
         say(
             "flash_attn_interface ops",
             sorted(
@@ -60,15 +65,18 @@ def env_info() -> None:
             for key in ("FLASH", "HCU", "HIP_", "ROCM", "DTK", "TORCH_DEVICE")
         ):
             say("env", name, "=", os.environ[name])
-    prop = torch.cuda.get_device_properties(0)
-    say(
-        "device",
-        prop.name,
-        "gcnArchName",
-        getattr(prop, "gcnArchName", None),
-        "count",
-        torch.cuda.device_count(),
-    )
+    try:
+        prop = torch.cuda.get_device_properties(0)
+        say(
+            "device",
+            prop.name,
+            "gcnArchName",
+            getattr(prop, "gcnArchName", None),
+            "count",
+            torch.cuda.device_count(),
+        )
+    except Exception as error:  # noqa: BLE001
+        say("device properties unavailable", repr(error))
     say(
         "uname",
         subprocess.run(["uname", "-r"], capture_output=True, text=True).stdout.strip(),
@@ -86,22 +94,18 @@ def reference(
     length: int,
     scale: float,
 ):
-    """q: (1, Hq, D); returns (1, Hq, D) in fp32."""
+    """q: (1, Hq, D); returns (1, Hq, D) in fp32. Query head h reads KV head h // group."""
     page = k_cache.shape[1]
     pages = (length + page - 1) // page
-    k = k_cache[table_row[:pages].long()].reshape(
-        -1, k_cache.shape[2], k_cache.shape[3]
-    )[:length]
-    v = v_cache[table_row[:pages].long()].reshape(
-        -1, v_cache.shape[2], v_cache.shape[3]
-    )[:length]
+    slots = table_row[:pages].long()
+    k = k_cache[slots].reshape(-1, k_cache.shape[2], k_cache.shape[3])[:length]
+    v = v_cache[slots].reshape(-1, v_cache.shape[2], v_cache.shape[3])[:length]
     heads = q.shape[1]
     group = heads // k.shape[1]
+    k = k.repeat_interleave(group, dim=1)
+    v = v.repeat_interleave(group, dim=1)
     score = torch.einsum("hd,shd->hs", q[0].float(), k.float()) * scale
-    out = torch.einsum("hs,shd->hd", score.softmax(dim=-1), v.float())
-    if group > 1:
-        out = out.reshape(k.shape[1], group, -1).reshape(heads, -1)
-    return out[None]
+    return torch.einsum("hs,shd->hd", score.softmax(dim=-1), v.float())[None]
 
 
 def mock_paged_attention(q, k_cache, v_cache, table, lens, scale):
@@ -123,7 +127,9 @@ def mock_paged_attention(q, k_cache, v_cache, table, lens, scale):
             ).sum(-1)
             * scale
         ).softmax(-1)
-        rows.append((probs @ v.transpose(0, 1)[:, None]).reshape(heads, dim))
+        rows.append(
+            (probs[:, :, None, :] @ v.transpose(0, 1)[:, None]).reshape(heads, dim)
+        )
     return torch.stack(rows)[:, None]
 
 
@@ -141,7 +147,7 @@ def run_case(
 ):
     """Return a dict describing one flash_attn_with_kvcache call against the reference."""
     torch.manual_seed(seed)
-    dev = "cuda"
+    dev = DEV
     batch = len(lengths)
     pages_needed = [(n + P - 1) // P for n in lengths]
     if num_blocks is None:
@@ -164,7 +170,7 @@ def run_case(
     q = torch.randn(batch, 1, heads[0], D, dtype=dtype, device=dev)
     lens = torch.tensor(lengths, dtype=torch.int32, device=dev)
     kwargs = {} if num_splits is None else {"num_splits": num_splits}
-    if mock:
+    if mock or MOCK:
         out = mock_paged_attention(q, k_cache, v_cache, table, lens, D**-0.5)
     else:
         out = flash_attn.flash_attn_with_kvcache(
@@ -178,7 +184,8 @@ def run_case(
             softcap=0.0,
             **kwargs,
         )
-    torch.cuda.synchronize()
+    if DEV != "cpu":
+        torch.cuda.synchronize()
     expected = torch.cat(
         [
             reference(q[b : b + 1, 0], k_cache, v_cache, table[b], lengths[b], D**-0.5)
@@ -365,40 +372,41 @@ def main() -> None:
             traceback.format_exc()[-800:],
         )
 
-    try:
-        # S7: FlagSVT's minimal case verbatim in shape.
-        torch.manual_seed(0)
-        D, Hq, Hkv, S, P = 256, 24, 4, 2, 64
-        k = torch.randn(1, S, Hkv, D, dtype=torch.bfloat16, device="cuda")
-        v = torch.randn_like(k)
-        kc = torch.zeros(1, P, Hkv, D, dtype=torch.bfloat16, device="cuda")
-        vc = torch.zeros_like(kc)
-        kc[0, :S] = k[0]
-        vc[0, :S] = v[0]
-        q = torch.randn(1, 1, Hq, D, dtype=torch.bfloat16, device="cuda")
-        out = flash_attn.flash_attn_with_kvcache(
-            q=q,
-            k_cache=kc,
-            v_cache=vc,
-            cache_seqlens=torch.tensor([S], dtype=torch.int32, device="cuda"),
-            block_table=torch.zeros(1, 1, dtype=torch.int32, device="cuda"),
-            softmax_scale=D**-0.5,
-            causal=True,
-            softcap=0.0,
-            num_splits=1,
-        )
-        out2 = flash_attn.flash_attn_func(q, k, v, causal=True)
-        say(
-            f"S7 FlagSVT-minimal paged out.abs().sum() = {out.float().abs().sum().item()} (bad -> 0.0)"
-        )
-        say(
-            f"S7 FlagSVT-minimal non-paged out.abs().sum() = {out2.float().abs().sum().item()}"
-        )
-    except Exception:
-        say(
-            "SECTION FAILED # S7: FlagSVT's minimal case verbatim in shape.",
-            traceback.format_exc()[-800:],
-        )
+    if not MOCK:
+        try:
+            # S7: FlagSVT's minimal case verbatim in shape.
+            torch.manual_seed(0)
+            D, Hq, Hkv, S, P = 256, 24, 4, 2, 64
+            k = torch.randn(1, S, Hkv, D, dtype=torch.bfloat16, device=DEV)
+            v = torch.randn_like(k)
+            kc = torch.zeros(1, P, Hkv, D, dtype=torch.bfloat16, device=DEV)
+            vc = torch.zeros_like(kc)
+            kc[0, :S] = k[0]
+            vc[0, :S] = v[0]
+            q = torch.randn(1, 1, Hq, D, dtype=torch.bfloat16, device=DEV)
+            out = flash_attn.flash_attn_with_kvcache(
+                q=q,
+                k_cache=kc,
+                v_cache=vc,
+                cache_seqlens=torch.tensor([S], dtype=torch.int32, device=DEV),
+                block_table=torch.zeros(1, 1, dtype=torch.int32, device=DEV),
+                softmax_scale=D**-0.5,
+                causal=True,
+                softcap=0.0,
+                num_splits=1,
+            )
+            out2 = flash_attn.flash_attn_func(q, k, v, causal=True)
+            say(
+                f"S7 FlagSVT-minimal paged out.abs().sum() = {out.float().abs().sum().item()} (bad -> 0.0)"
+            )
+            say(
+                f"S7 FlagSVT-minimal non-paged out.abs().sum() = {out2.float().abs().sum().item()}"
+            )
+        except Exception:
+            say(
+                "SECTION FAILED # S7: FlagSVT's minimal case verbatim in shape.",
+                traceback.format_exc()[-800:],
+            )
 
     say("done")
 
