@@ -568,7 +568,19 @@ def _setup_flaggems(config: dict = None):
                 h.addFilter(_AtenOnlyFilter())
 
 
-# ─── Vendor-specific sglang patches ───────────────────────────────────────────
+# ─── sglang internal patches (common + vendor-specific) ───────────────────────
+
+
+def _apply_common_patches() -> None:
+    """Apply vendor-independent monkey-patches from ``sglang_fl/patches``
+    (e.g. backports of upstream SGLang fixes missing from the pinned base).
+    Runs right before ``_apply_vendor_patches`` so vendor patches can still
+    override them.
+    """
+    from sglang_fl.patches import apply_common_patches
+
+    apply_common_patches()
+    logger.info("common patches loaded: sglang_fl.patches")
 
 
 def _apply_vendor_patches() -> None:
@@ -1126,7 +1138,9 @@ def load_plugin():
     # 4. Communicator hooks (CommunicatorFL with FlagCX/torch.distributed)
     _setup_communicator_hooks()
 
-    # 5. Vendor-specific patches — final overlay on top of all sglang_fl layers
+    # 5. sglang internal patches: vendor-independent fixes first, then the
+    #    vendor-specific overlay — final layer on top of all sglang_fl layers
+    _apply_common_patches()
     _apply_vendor_patches()
 
     # 6. FlagCX PD-disaggregation transfer backend. the FlagCX connector itself is
