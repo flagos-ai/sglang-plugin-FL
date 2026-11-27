@@ -126,3 +126,8 @@ python .github/scripts/hygon/ci_environment.py -- \
 # moe_align_block_size replace the sgl_kernel one on HCU? Read-only probe.
 python "$PLUGIN_ROOT/.github/scripts/hygon/probe_moe_align.py" 2>&1 \
   | sed 's/^/[moe-probe-setup] /' || true
+
+# TEMP probe for the token-id-0 output: is the vendor flash_attn paged decode
+# kernel numerically right per head_dim / page_size / length / batch?
+python "$PLUGIN_ROOT/.github/scripts/hygon/probe_fa256.py" 2>&1 \
+  | sed 's/^/[fa-probe-setup] /' || true
