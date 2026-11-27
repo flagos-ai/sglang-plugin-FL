@@ -27,7 +27,9 @@ stubs:
 * ``sgl_kernel.scalar_type`` is never fabricated, preserving SGLang's
   ``ImportError`` fallback;
 * every other unknown object may be imported but raises ``RuntimeError`` when
-  called; and
+  called, except the operators listed in ``sgl_kernel_fallbacks``, which reach
+  the placeholder from call sites the dispatch table does not route and get a
+  real implementation there; and
 * no distribution metadata is fabricated.  The SGLang kernel-version probe is
   skipped only while the ``sgl_kernel`` placeholder is active.
 
@@ -105,6 +107,16 @@ class _PlaceholderFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         module = _PlaceholderModule(spec.name)
         module.__path__ = []
         module.__sglang_fl_placeholder__ = True
+        if spec.name == "sgl_kernel":
+            from sglang_fl.dispatch.backends.vendor.hygon import (
+                sgl_kernel_fallbacks,
+            )
+
+            for (
+                name,
+                implementation,
+            ) in sgl_kernel_fallbacks.SGL_KERNEL_FALLBACKS.items():
+                setattr(module, name, implementation)
         if spec.name == "sgl_kernel.utils":
             module.is_arch_support_pdl = _pdl_is_unsupported
         return module

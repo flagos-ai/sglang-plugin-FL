@@ -401,3 +401,157 @@ def test_installed_plugin_carries_the_guard_and_leaves_nothing_outside_record():
         [sys.executable, "-I", "-c", code], capture_output=True, text=True
     )
     assert ran.returncode == 0 and "installed-guard-ok" in ran.stdout, ran.stderr[-800:]
+
+
+def _fallbacks():
+    from sglang_fl.dispatch.backends.vendor.hygon import sgl_kernel_fallbacks
+
+    return sgl_kernel_fallbacks
+
+
+def _recording_module(monkeypatch, module_name, function_name):
+    """Put a fake module in sys.modules whose function records its calls."""
+    calls = []
+    module = types.ModuleType(module_name)
+
+    def record(*args):
+        calls.append(args)
+        return "recorded"
+
+    setattr(module, function_name, record)
+    monkeypatch.setitem(sys.modules, module_name, module)
+    return calls
+
+
+def test_sgl_kernel_placeholder_carries_the_fallback_table(clean, monkeypatch):
+    activate_placeholders_first(monkeypatch)
+
+    import sgl_kernel
+
+    for name, implementation in _fallbacks().SGL_KERNEL_FALLBACKS.items():
+        assert getattr(sgl_kernel, name) is implementation
+    # Outside the table the placeholder keeps failing loudly, in the root and
+    # in submodules: MTP with sampling has no fallback on HCU.
+    with pytest.raises(RuntimeError, match="sgl_kernel is not installed on HCU"):
+        sgl_kernel.tree_speculative_sampling_target_only()
+    from sgl_kernel.sampling import top_k_softmax
+
+    with pytest.raises(RuntimeError, match="sgl_kernel is not installed on HCU"):
+        top_k_softmax()
+
+
+def test_fast_topk_is_torch_topk():
+    torch = pytest.importorskip("torch")
+    values = torch.randn(5, 7)
+
+    for topk in (1, 3):
+        got = _fallbacks().fast_topk(values, topk, dim=-1)
+        want = torch.topk(values, topk, dim=-1)
+        assert torch.equal(got.values, want.values)
+        assert torch.equal(got.indices, want.indices)
+
+
+def test_moe_align_block_size_fills_the_callers_buffers(monkeypatch):
+    torch = pytest.importorskip("torch")
+    calls = []
+
+    def align(topk_ids, block_size, num_experts):
+        calls.append((block_size, num_experts))
+        return (
+            torch.arange(12, dtype=torch.int32),
+            torch.tensor([0, 1, 2], dtype=torch.int32),
+            torch.tensor([7], dtype=torch.int32),
+        )
+
+    fake = types.ModuleType("flag_gems")
+    fake.moe_align_block_size = align
+    monkeypatch.setitem(sys.modules, "flag_gems", fake)
+    topk_ids = torch.tensor([[0, 1, 2]])
+    cumsum = torch.zeros(4, dtype=torch.int32)
+
+    # Buffers smaller than the kernel's: only the overlap is written.
+    sorted_token_ids = torch.full((5,), -1, dtype=torch.int32)
+    experts_ids = torch.full((2,), -1, dtype=torch.int32)
+    num_tokens_post_pad = torch.zeros(1, dtype=torch.int32)
+    _fallbacks().moe_align_block_size(
+        topk_ids, 3, 4, sorted_token_ids, experts_ids, num_tokens_post_pad, cumsum
+    )
+    assert calls == [(4, 3)]
+    assert sorted_token_ids.tolist() == [0, 1, 2, 3, 4]
+    assert experts_ids.tolist() == [0, 1]
+    assert num_tokens_post_pad.tolist() == [7]
+    assert cumsum.tolist() == [0, 0, 0, 0]
+
+    # Buffers larger than the kernel's: the rest stays padding.
+    sorted_token_ids = torch.zeros(16, dtype=torch.int32)
+    experts_ids = torch.zeros(5, dtype=torch.int32)
+    _fallbacks().moe_align_block_size(
+        topk_ids, 3, 4, sorted_token_ids, experts_ids, num_tokens_post_pad, cumsum
+    )
+    assert sorted_token_ids.tolist() == list(range(12)) + [3] * 4
+    assert experts_ids.tolist() == [0, 1, 2, 0, 0]
+
+    with pytest.raises(RuntimeError, match="ignore_invalid_expert"):
+        _fallbacks().moe_align_block_size(
+            topk_ids,
+            3,
+            4,
+            sorted_token_ids,
+            experts_ids,
+            num_tokens_post_pad,
+            cumsum,
+            ignore_invalid_expert=True,
+        )
+
+
+def test_delegating_fallbacks_forward_the_call(monkeypatch):
+    """Each delegate hands SGLang's own kernel exactly the original arguments."""
+    fallbacks = _fallbacks()
+    activation = _recording_module(
+        monkeypatch, "sglang.kernels.ops.activation.activation", "silu_and_mul"
+    )
+    source, out = object(), object()
+    assert fallbacks.silu_and_mul(source, out) == "recorded"
+    assert activation == [((source, out))]
+
+    sum_reduce = _recording_module(
+        monkeypatch,
+        "sglang.kernels.ops.moe.fused_moe_triton_kernels",
+        "moe_sum_reduce_triton",
+    )
+    fallbacks.moe_sum_reduce(1, 2, 0.5)
+    assert sum_reduce == [((1, 2, 0.5))]
+
+    renorm = _recording_module(
+        monkeypatch,
+        "sglang.kernels.ops.sampling.renorm_triton",
+        "top_k_renorm_probs_triton",
+    )
+    fallbacks.top_k_renorm_prob("probs", 17)
+    assert renorm == [(("probs", 17))]
+
+    tree = _recording_module(
+        monkeypatch,
+        "sglang.srt.speculative.eagle_utils",
+        "sgl_build_tree_kernel_triton",
+    )
+    arguments = tuple(range(12))
+    fallbacks.build_tree_kernel_efficient(*arguments)
+    assert tree == [arguments]
+
+
+def test_verify_tree_greedy_takes_sglangs_keywords_in_order(monkeypatch):
+    fallbacks = _fallbacks()
+    verify = _recording_module(
+        monkeypatch, "sglang.srt.speculative.eagle_utils", "verify_tree_greedy_triton"
+    )
+    leads = (object(), object(), object(), object())
+    tree = tuple(object() for _ in fallbacks._TREE_KEYWORDS)
+
+    fallbacks.verify_tree_greedy(*leads, **dict(zip(fallbacks._TREE_KEYWORDS, tree)))
+    assert verify == [leads + tree]
+
+    with pytest.raises(TypeError, match="retrive_next_token"):
+        fallbacks.verify_tree_greedy(
+            *leads, **dict(zip(fallbacks._TREE_KEYWORDS[:2], tree))
+        )
