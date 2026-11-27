@@ -119,11 +119,11 @@ def mock_paged_attention(q, k_cache, v_cache, table, lens, scale):
         probs = (
             (
                 q[row, 0].float().reshape(kv_heads, heads // kv_heads, 1, dim)
-                * k[:, None]
+                * k.transpose(0, 1)[:, None]
             ).sum(-1)
             * scale
         ).softmax(-1)
-        rows.append((probs @ v[:, None]).reshape(heads, dim))
+        rows.append((probs @ v.transpose(0, 1)[:, None]).reshape(heads, dim))
     return torch.stack(rows)[:, None]
 
 
@@ -225,6 +225,7 @@ def guarded(tag, **kwargs):
         say(f"{tag} {kwargs} EXCEPTION {type(error).__name__}: {str(error)[:200]}")
         return None
     keys = ("D", "P", "lengths", "heads", "layout", "num_blocks", "num_splits")
+    say(f"RAW {tag} " + " ".join(f"{k}={kwargs.get(k)}" for k in keys))
     show(
         tag,
         *(
@@ -251,101 +252,154 @@ def main() -> None:
         2000: [2000],
     }
 
-    # S0: self-check of the probe's own reference against a plain-torch stand-in.
-    for case in (
-        dict(D=64, P=64, lengths=[65]),
-        dict(D=256, P=64, lengths=[2, 65, 3]),
-        dict(D=256, P=128, lengths=[2000], heads=(12, 2), layout="scatter"),
-        dict(D=128, P=64, lengths=[64, 1, 129], heads=(8, 8)),
-    ):
-        checked = run_case(mock=True, **case)
-        say(f"S0 self-check {case} max_diff={checked['max_diff']:.3g} (must be ~0)")
-
-    # S1: main sweep.
-    for D in (64, 128, 192, 224, 256):
-        for P in (64, 128):
-            for S in lengths_by_s:
-                for batch in (1, 4):
-                    lengths = (
-                        lengths_by_s[S] if batch == 1 else [S, max(1, S // 2), S + 1, S]
-                    )
-                    for layout in ("contig", "scatter"):
-                        guarded("S1", D=D, P=P, lengths=lengths, layout=layout)
-
-    # S2: number of blocks in the KV cache (the real pool is far larger than the minimal repro).
-    for S in (2, 65, 300):
-        for blocks in (1 if S == 2 else 2, 16, 256, 2048):
-            guarded(
-                "S2",
-                D=256,
-                P=64,
-                lengths=[S],
-                layout="scatter",
-                num_blocks=max(blocks, (S + 63) // 64 + 2),
-            )
-
-    # S3: head configuration (TP2 gives 12/2 for Qwen3.6-27B).
-    for heads in ((24, 4), (12, 2), (8, 8), (8, 1), (2, 1), (1, 1)):
-        guarded("S3", D=256, P=64, lengths=[65], heads=heads)
-
-    # S4: num_splits.
-    for S in (2, 65, 2000):
-        for splits in (1, None):
-            guarded("S4", D=256, P=64, lengths=[S], num_splits=splits)
-
-    # S5: dtype.
-    guarded("S5", D=256, P=64, lengths=[65], dtype=torch.float16)
-    guarded("S5", D=128, P=64, lengths=[65], dtype=torch.float16)
-
-    # S6: stability, fixed seed then varying seeds.
-    for S in (2, 65, 2000):
-        fixed = [run_case(D=256, P=64, lengths=[S]) for _ in range(20)]
-        say(
-            f"S6 fixed-seed D=256 P=64 S={S} repeats=20 distinct_outputs={len({r['digest'] for r in fixed})} "
-            f"broken={sum(r['max_diff'] > TOL for r in fixed)} all_zero={sum(r['zero_rows'] == r['rows'] for r in fixed)} "
-            f"out_sum_min={min(r['out_sum'] for r in fixed):.4g} out_sum_max={max(r['out_sum'] for r in fixed):.4g}",
-        )
-        varied = [run_case(D=256, P=64, lengths=[S], seed=100 + i) for i in range(20)]
-        say(
-            f"S6 varied-seed D=256 P=64 S={S} repeats=20 broken={sum(r['max_diff'] > TOL for r in varied)} "
-            f"all_zero={sum(r['zero_rows'] == r['rows'] for r in varied)} "
-            f"out_sum_min={min(r['out_sum'] for r in varied):.4g} out_sum_max={max(r['out_sum'] for r in varied):.4g}",
-        )
-        for D in (64, 128):
-            varied = [run_case(D=D, P=64, lengths=[S], seed=100 + i) for i in range(20)]
+    try:
+        # S0: self-check of the probe's own reference against a plain-torch stand-in.
+        for case in (
+            dict(D=64, P=64, lengths=[65]),
+            dict(D=256, P=64, lengths=[2, 65, 3]),
+            dict(D=256, P=128, lengths=[2000], heads=(12, 2), layout="scatter"),
+            dict(D=128, P=64, lengths=[64, 1, 129], heads=(8, 8)),
+        ):
+            try:
+                checked = run_case(mock=True, **case)
+            except Exception:
+                say(f"S0 self-check {case} EXCEPTION {traceback.format_exc()[-300:]}")
+                continue
             say(
-                f"S6 varied-seed D={D} P=64 S={S} repeats=20 broken={sum(r['max_diff'] > TOL for r in varied)} "
-                f"max_diff_max={max(r['max_diff'] for r in varied):.4g}",
+                f"S0 self-check {case} max_diff={checked['max_diff']:.3g} "
+                f"out_sum={checked['out_sum']:.4g} (max_diff must be ~0)"
             )
+    except Exception:
+        say(
+            "SECTION FAILED # S0: self-check of the probe's own reference against a plain-torch stand-in.",
+            traceback.format_exc()[-800:],
+        )
 
-    # S7: FlagSVT's minimal case verbatim in shape.
-    torch.manual_seed(0)
-    D, Hq, Hkv, S, P = 256, 24, 4, 2, 64
-    k = torch.randn(1, S, Hkv, D, dtype=torch.bfloat16, device="cuda")
-    v = torch.randn_like(k)
-    kc = torch.zeros(1, P, Hkv, D, dtype=torch.bfloat16, device="cuda")
-    vc = torch.zeros_like(kc)
-    kc[0, :S] = k[0]
-    vc[0, :S] = v[0]
-    q = torch.randn(1, 1, Hq, D, dtype=torch.bfloat16, device="cuda")
-    out = flash_attn.flash_attn_with_kvcache(
-        q=q,
-        k_cache=kc,
-        v_cache=vc,
-        cache_seqlens=torch.tensor([S], dtype=torch.int32, device="cuda"),
-        block_table=torch.zeros(1, 1, dtype=torch.int32, device="cuda"),
-        softmax_scale=D**-0.5,
-        causal=True,
-        softcap=0.0,
-        num_splits=1,
-    )
-    out2 = flash_attn.flash_attn_func(q, k, v, causal=True)
-    say(
-        f"S7 FlagSVT-minimal paged out.abs().sum() = {out.float().abs().sum().item()} (bad -> 0.0)"
-    )
-    say(
-        f"S7 FlagSVT-minimal non-paged out.abs().sum() = {out2.float().abs().sum().item()}"
-    )
+    try:
+        # S1: main sweep.
+        for D in (64, 128, 192, 224, 256):
+            for P in (64, 128):
+                for S in lengths_by_s:
+                    for batch in (1, 4):
+                        lengths = (
+                            lengths_by_s[S]
+                            if batch == 1
+                            else [S, max(1, S // 2), S + 1, S]
+                        )
+                        for layout in ("contig", "scatter"):
+                            guarded("S1", D=D, P=P, lengths=lengths, layout=layout)
+    except Exception:
+        say("SECTION FAILED # S1: main sweep.", traceback.format_exc()[-800:])
+
+    try:
+        # S2: number of blocks in the KV cache (the real pool is far larger than the minimal repro).
+        for S in (2, 65, 300):
+            for blocks in (1 if S == 2 else 2, 16, 256, 2048):
+                guarded(
+                    "S2",
+                    D=256,
+                    P=64,
+                    lengths=[S],
+                    layout="scatter",
+                    num_blocks=max(blocks, (S + 63) // 64 + 2),
+                )
+    except Exception:
+        say(
+            "SECTION FAILED # S2: number of blocks in the KV cache (the real pool is far larger than the minimal repro).",
+            traceback.format_exc()[-800:],
+        )
+
+    try:
+        # S3: head configuration (TP2 gives 12/2 for Qwen3.6-27B).
+        for heads in ((24, 4), (12, 2), (8, 8), (8, 1), (2, 1), (1, 1)):
+            guarded("S3", D=256, P=64, lengths=[65], heads=heads)
+    except Exception:
+        say(
+            "SECTION FAILED # S3: head configuration (TP2 gives 12/2 for Qwen3.6-27B).",
+            traceback.format_exc()[-800:],
+        )
+
+    try:
+        # S4: num_splits.
+        for S in (2, 65, 2000):
+            for splits in (1, None):
+                guarded("S4", D=256, P=64, lengths=[S], num_splits=splits)
+    except Exception:
+        say("SECTION FAILED # S4: num_splits.", traceback.format_exc()[-800:])
+
+    try:
+        # S5: dtype.
+        guarded("S5", D=256, P=64, lengths=[65], dtype=torch.float16)
+        guarded("S5", D=128, P=64, lengths=[65], dtype=torch.float16)
+    except Exception:
+        say("SECTION FAILED # S5: dtype.", traceback.format_exc()[-800:])
+
+    try:
+        # S6: stability, fixed seed then varying seeds.
+        for S in (2, 65, 2000):
+            fixed = [run_case(D=256, P=64, lengths=[S]) for _ in range(20)]
+            say(
+                f"S6 fixed-seed D=256 P=64 S={S} repeats=20 distinct_outputs={len({r['digest'] for r in fixed})} "
+                f"broken={sum(r['max_diff'] > TOL for r in fixed)} all_zero={sum(r['zero_rows'] == r['rows'] for r in fixed)} "
+                f"out_sum_min={min(r['out_sum'] for r in fixed):.4g} out_sum_max={max(r['out_sum'] for r in fixed):.4g}",
+            )
+            varied = [
+                run_case(D=256, P=64, lengths=[S], seed=100 + i) for i in range(20)
+            ]
+            say(
+                f"S6 varied-seed D=256 P=64 S={S} repeats=20 broken={sum(r['max_diff'] > TOL for r in varied)} "
+                f"all_zero={sum(r['zero_rows'] == r['rows'] for r in varied)} "
+                f"out_sum_min={min(r['out_sum'] for r in varied):.4g} out_sum_max={max(r['out_sum'] for r in varied):.4g}",
+            )
+            for D in (64, 128):
+                varied = [
+                    run_case(D=D, P=64, lengths=[S], seed=100 + i) for i in range(20)
+                ]
+                say(
+                    f"S6 varied-seed D={D} P=64 S={S} repeats=20 broken={sum(r['max_diff'] > TOL for r in varied)} "
+                    f"max_diff_max={max(r['max_diff'] for r in varied):.4g}",
+                )
+    except Exception:
+        say(
+            "SECTION FAILED # S6: stability, fixed seed then varying seeds.",
+            traceback.format_exc()[-800:],
+        )
+
+    try:
+        # S7: FlagSVT's minimal case verbatim in shape.
+        torch.manual_seed(0)
+        D, Hq, Hkv, S, P = 256, 24, 4, 2, 64
+        k = torch.randn(1, S, Hkv, D, dtype=torch.bfloat16, device="cuda")
+        v = torch.randn_like(k)
+        kc = torch.zeros(1, P, Hkv, D, dtype=torch.bfloat16, device="cuda")
+        vc = torch.zeros_like(kc)
+        kc[0, :S] = k[0]
+        vc[0, :S] = v[0]
+        q = torch.randn(1, 1, Hq, D, dtype=torch.bfloat16, device="cuda")
+        out = flash_attn.flash_attn_with_kvcache(
+            q=q,
+            k_cache=kc,
+            v_cache=vc,
+            cache_seqlens=torch.tensor([S], dtype=torch.int32, device="cuda"),
+            block_table=torch.zeros(1, 1, dtype=torch.int32, device="cuda"),
+            softmax_scale=D**-0.5,
+            causal=True,
+            softcap=0.0,
+            num_splits=1,
+        )
+        out2 = flash_attn.flash_attn_func(q, k, v, causal=True)
+        say(
+            f"S7 FlagSVT-minimal paged out.abs().sum() = {out.float().abs().sum().item()} (bad -> 0.0)"
+        )
+        say(
+            f"S7 FlagSVT-minimal non-paged out.abs().sum() = {out2.float().abs().sum().item()}"
+        )
+    except Exception:
+        say(
+            "SECTION FAILED # S7: FlagSVT's minimal case verbatim in shape.",
+            traceback.format_exc()[-800:],
+        )
+
     say("done")
 
 
