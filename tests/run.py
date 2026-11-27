@@ -25,6 +25,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -40,6 +41,136 @@ from tests.utils.device_scheduler import DeviceScheduler
 from tests.utils.device_utils import get_device_count, get_visible_device_env_var
 from tests.utils.model_config import ModelConfig
 from tests.utils.platform_config import PlatformConfig
+
+# ---------------------------------------------------------------------------
+# Installed-wheel test mode (SGLANG_FL_TEST_SOURCE=wheel)
+#
+# CI runs inside a checkout of this repository, and the naive invocation
+# (cwd=repo root + `python -m pytest`, which prepends the CWD) puts the
+# checkout's sglang_fl/ ahead of the wheel in sys.path. In wheel mode the
+# pytest subprocess (and everything it spawns, including SGLang engine
+# workers) runs from a staging directory whose only payload is a `tests`
+# symlink, with PYTHONSAFEPATH disabling the CWD/script-dir prepends and
+# pytest's importlib mode disabling conftest-dir insertion. `tests.*`
+# helpers stay importable through the symlink; sglang_fl can therefore
+# only resolve from site-packages. Default (checkout) mode is unchanged.
+# ---------------------------------------------------------------------------
+
+WHEEL_SOURCE_MODE = os.environ.get("SGLANG_FL_TEST_SOURCE", "checkout") == "wheel"
+_wheel_staging: Path | None = None
+
+
+def _wheel_staging_dir() -> Path:
+    global _wheel_staging
+    if _wheel_staging is None:
+        staging = Path(tempfile.mkdtemp(prefix="fl-wheel-mode."))
+        (staging / "tests").symlink_to(_TESTS_DIR.resolve())
+        _wheel_staging = staging
+    return _wheel_staging
+
+
+def _filter_pythonpath(existing: str, repo_root: Path) -> list[str]:
+    """Keep PYTHONPATH entries the checkout must not shadow.
+
+    Drops empty entries and anything at or under the repository root (the
+    checkout's sglang_fl must never win over the installed wheel) while
+    preserving legitimate entries such as the Runtime's /opt/flagtree
+    compiler slot selected by setup.sh.
+    """
+    root = repo_root.resolve()
+    kept: list[str] = []
+    for entry in existing.split(os.pathsep):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            resolved = Path(entry).resolve()
+        except OSError:
+            resolved = Path(entry)
+        if resolved == root or root in resolved.parents:
+            continue
+        kept.append(entry)
+    return kept
+
+
+def _wheel_mode_child_env(base_env: dict[str, str]) -> dict[str, str]:
+    staging = _wheel_staging_dir()
+    env = dict(base_env)
+    # Prepend the staging dir but keep every legitimate PYTHONPATH entry
+    # (notably /opt/flagtree, the Runtime's default compiler slot that
+    # setup.sh selects): the installed plugin's view and the Triton
+    # slot contract depend on it surviving the test harness.
+    kept = _filter_pythonpath(env.get("PYTHONPATH", ""), _REPO_ROOT)
+    env["PYTHONPATH"] = os.pathsep.join([str(staging), *kept])
+    env["PYTHONSAFEPATH"] = "1"
+    return env
+
+
+def _absolutize_ignore_flags(cmd: list[str]) -> list[str]:
+    """Absolutize repo-root-relative --ignore/--ignore-glob filters.
+
+    In installed-wheel mode the pytest child runs from the staging dir
+    with an absolute pytest target; the platform config's relative
+    filters would silently match nothing there and every unit/functional
+    exclusion would be lost. Absolute values pass through unchanged
+    (pathlib's ``/`` keeps an absolute right operand). Only the
+    space-separated form is rewritten -- the one this repo's platform
+    configs generate.
+    """
+    for i, arg in enumerate(cmd[:-1]):
+        if arg in ("--ignore", "--ignore-glob"):
+            cmd[i + 1] = str((_REPO_ROOT / cmd[i + 1]).resolve())
+    return cmd
+
+
+_GUARD_SCRIPT = """
+import sys
+from importlib import metadata
+from pathlib import Path
+
+repo_root = Path(sys.argv[1]).resolve()
+module_file = Path(
+    __import__("sglang_fl", fromlist=["__file__"]).__file__
+).resolve()
+# The authoritative origin is the installed distribution's own root,
+# resolved through the public locate_file API (no private fields, no
+# site-packages string matching).
+dist = metadata.distribution("sglang-fl")
+distribution_root = Path(dist.locate_file("")).resolve()
+installed = module_file.is_relative_to(distribution_root)
+from_checkout = repo_root == module_file.parent or repo_root in module_file.parents
+if not installed or from_checkout:
+    print(
+        f"installed-wheel mode guard: sglang_fl at {module_file} is not from "
+        f"the installed distribution root {distribution_root}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+print(f"sglang_fl from installed distribution at {distribution_root}")
+"""
+
+
+# Bound at import, before any test can monkeypatch the module attribute:
+# the guard's pre-flight probe is an internal diagnostic, not a case
+# launch, and in-process drivers of main() intercept ``subprocess.run``
+# to observe exactly the launches the CLI performs.
+_REAL_SUBPROCESS_RUN = subprocess.run
+
+
+def _guard_installed_plugin(env: dict[str, str]) -> None:
+    """Fail loudly if sglang_fl does not resolve from the installed wheel."""
+    guard = _REAL_SUBPROCESS_RUN(
+        [sys.executable, "-c", _GUARD_SCRIPT, str(_REPO_ROOT)],
+        cwd=str(_wheel_staging_dir()),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if guard.returncode != 0:
+        raise SystemExit(
+            "installed-wheel mode: the guard rejected the test environment:\n"
+            f"{guard.stderr}{guard.stdout}"
+        )
 
 
 def load_structured_config(path: Path) -> dict[str, Any]:
@@ -524,9 +655,17 @@ class TestRunner:
                 parallel path already emits a timestamped START line and
                 replays captured output with a per-case prefix).
         """
-        cmd = [sys.executable, "-m", "pytest", case.pytest_path]
+        pytest_path = case.pytest_path
+        if WHEEL_SOURCE_MODE:
+            # Absolute paths: the child no longer runs from the repo root.
+            pytest_path = str((_REPO_ROOT / case.pytest_path).resolve())
+        cmd = [sys.executable, "-m", "pytest", pytest_path]
         cmd.extend(case.extra_args)
         cmd.extend(self.extra_pytest_args)
+        if WHEEL_SOURCE_MODE and "--import-mode=importlib" not in cmd:
+            cmd.append("--import-mode=importlib")
+        if WHEEL_SOURCE_MODE:
+            cmd = _absolutize_ignore_flags(cmd)
 
         if not quiet:
             print(f"[run] --- {case.name} ---")
@@ -546,7 +685,12 @@ class TestRunner:
         if extra_env_override:
             env.update(extra_env_override)
 
-        kwargs: dict[str, Any] = {"cwd": str(_REPO_ROOT), "env": env}
+        if WHEEL_SOURCE_MODE:
+            env = _wheel_mode_child_env(env)
+            _guard_installed_plugin(env)
+            kwargs: dict[str, Any] = {"cwd": str(_wheel_staging_dir()), "env": env}
+        else:
+            kwargs: dict[str, Any] = {"cwd": str(_REPO_ROOT), "env": env}
         if quiet:
             kwargs.update(capture_output=True, text=True)
         result = subprocess.run(cmd, **kwargs)

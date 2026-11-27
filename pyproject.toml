@@ -28,6 +28,15 @@ dependencies = [
 
 [project.optional-dependencies]
 cuda = ["sglang==0.5.18"]
+# The thead extra carries the platform anchor plus the bounds the SGLang
+# closure needs on a Runtime that still provides NumPy 1.x: pyarrow 26
+# imports only on NumPy 2 but declares no NumPy requirement, so no resolver
+# can see the conflict. Everything else the install needs is Runtime-owned
+# (flag_gems, pyyaml, both declared by the generic dependencies above),
+# served by the plugin's semantic sgl_kernel placeholder
+# (vendor/thead/import_guard.py), or resolved transitively from the SGLang
+# wheel.
+thead = ["sglang==0.5.18", "pyarrow<26"]
 
 [project.entry-points."sglang.srt.platforms"]
 sglang_fl = "sglang_fl:activate_platform"
