@@ -359,9 +359,12 @@ docker/hygon/scripts/verify_image.sh <tag> [base]   # 只验收
 `harbor.baai.ac.cn/flagos-dev/sglang-plugin-fl@sha256:17b3a0f55150b4d84760730760ac9b3f337631d50b452e2ce56e24fa8ccc06f2`。
 这是开发候选，不是 release-ready：`release-ready=false`，`sglang_fl` 来自 checkout
 （源提交 `42c007e`），两个派生 wheel 的内容与钉定值一致，基底是 moving tag `2.3.0`
-当前解析到的 Runtime `sha256:cfa5a5a3…`。构建机上的四段验收已通过；真机结果以
-[PR #180](https://github.com/flagos-ai/sglang-plugin-FL/pull/180) 在 self-hosted
-runner 上的 run 为准。`amdsmi` ABI 不匹配（build-infra#1960）只影响旧 runner 池，
+当前解析到的 Runtime `sha256:cfa5a5a3…`。构建机上的四段验收已通过。真机证据：
+run [45926688983](https://github.com/flagos-ai/sglang-plugin-FL/actions/runs/45926688983)
+（head `ff9a224`，self-hosted runner `hygon25`）中 Setup、unit（1468 passed）、
+functional 通过；e2e 的 inference/serving/concurrent/mtp 在 eager 与 graph 两个 profile
+下 14 个用例全部通过，benchmark job 没有选择任何用例。其他平台、nightly 变体和正式
+制品发布不由该 run 覆盖。`amdsmi` ABI 不匹配（build-infra#1960）只影响旧 runner 池，
 CI 脚本和插件都不导入 `amdsmi`。
 
 ### 插件自有的 kernel import guard
