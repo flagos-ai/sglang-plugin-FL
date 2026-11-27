@@ -136,11 +136,14 @@ class TestGlobalPolicyFunctions:
             assert get_policy().prefer == PREFER_VENDOR
         assert get_policy().prefer == PREFER_DEFAULT
 
-    def test_with_strict_mode(self):
-        reset_global_policy()
-        with with_strict_mode():
-            assert get_policy().strict is True
-        assert get_policy().strict is False
+    @pytest.mark.parametrize("initial_strict", [False, True])
+    def test_with_strict_mode(self, initial_strict):
+        # Scope restoration must work regardless of the platform default.
+        initial = SelectionPolicy(strict=initial_strict)
+        with policy_context(initial):
+            with with_strict_mode():
+                assert get_policy().strict is True
+            assert get_policy() == initial
 
     def test_with_allowed_vendors(self):
         reset_global_policy()

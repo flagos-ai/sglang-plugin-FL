@@ -16,6 +16,7 @@
 
 import importlib
 import logging
+from types import SimpleNamespace
 
 import pytest
 
@@ -36,9 +37,7 @@ def _make_platform_stub(vendor_name, device_type="test_device"):
 
 
 class TestInitBackendVendorAutoImport:
-    def test_loaded_when_register_platform_exists(
-        self, caplog, inject_vendor_module
-    ):
+    def test_loaded_when_register_platform_exists(self, caplog, inject_vendor_module):
         inject_vendor_module("fakevendor", "register_platform")
         p = _make_platform_stub("fakevendor")
         with caplog.at_level(logging.INFO, logger="sglang_fl.platform"):
@@ -83,3 +82,22 @@ class TestInitBackendVendorAutoImport:
             p.init_backend()
             p.init_backend()
         assert caplog.text.count("vendor_module=loaded") == 3
+
+    def test_mthreads_initializes_profiler_through_platform_hook(self, monkeypatch):
+        calls = []
+        real_import = importlib.import_module
+
+        def _import(name, *args, **kwargs):
+            if name.endswith(".mthreads.register_platform"):
+                return SimpleNamespace()
+            if name.endswith(".mthreads.patches.profiler"):
+                return SimpleNamespace(
+                    apply_musa_profiler_patches=lambda: calls.append("profiler")
+                )
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(importlib, "import_module", _import)
+
+        _make_platform_stub("mthreads", device_type="musa").init_backend()
+
+        assert calls == ["profiler"]
