@@ -137,3 +137,8 @@ echo "[hcu-fallback-probe] hook installed under $purelib"
 # is installed, so steps 2-4 exercise the fallbacks as the e2e processes do.
 python "$PLUGIN_ROOT/.github/scripts/hygon/probe_moe_align.py" 2>&1 \
   | sed 's/^/[moe-probe-setup] /' || true
+
+# TEMP probe for the token-id-0 output: is the vendor flash_attn paged decode
+# kernel numerically right per head_dim / page_size / length / batch?
+python "$PLUGIN_ROOT/.github/scripts/hygon/probe_fa256.py" 2>&1 \
+  | sed 's/^/[fa-probe-setup] /' || true
