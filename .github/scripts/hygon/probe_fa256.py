@@ -244,8 +244,38 @@ def guarded(tag, **kwargs):
     return result
 
 
+GROUPS = [
+    (256, 64),
+    (256, 128),
+    (192, 64),
+    (192, 128),
+    (224, 64),
+    (224, 128),
+    (128, 128),
+    (128, 64),
+    (64, 64),
+    (64, 128),
+]
+TASKS = [f"s1:{d},{p}" for d, p in GROUPS] + ["s2", "s3", "s4", "s5", "s6", "s7"]
+
+
+def run_child(task: str) -> None:
+    """Run one task in a child process and stream its lines through."""
+    say(f"CHILD {task} start")
+    env = dict(os.environ, FA_PROBE_CHILD=task)
+    code = subprocess.call([sys.executable, __file__], env=env)
+    say(f"CHILD {task} exit={code}")
+
+
 def main() -> None:
-    env_info()
+    # Every task runs in its own child process: the vendor kernel can take the
+    # process down with a GPU page fault, and that must not hide later tasks.
+    task = os.environ.get("FA_PROBE_CHILD")
+    if task is None:
+        env_info()
+        for name in TASKS:
+            run_child(name)
+        return
     lengths_by_s = {
         1: [1],
         2: [2],
@@ -259,33 +289,41 @@ def main() -> None:
         2000: [2000],
     }
 
-    try:
-        # S0: self-check of the probe's own reference against a plain-torch stand-in.
-        for case in (
-            dict(D=64, P=64, lengths=[65]),
-            dict(D=256, P=64, lengths=[2, 65, 3]),
-            dict(D=256, P=128, lengths=[2000], heads=(12, 2), layout="scatter"),
-            dict(D=128, P=64, lengths=[64, 1, 129], heads=(8, 8)),
-        ):
-            try:
-                checked = run_case(mock=True, **case)
-            except Exception:
-                say(f"S0 self-check {case} EXCEPTION {traceback.format_exc()[-300:]}")
-                continue
+    if True:  # the self-check is cheap; run it in every child
+        try:
+            # S0: self-check of the probe's own reference against a plain-torch stand-in.
+            for case in (
+                dict(D=64, P=64, lengths=[65]),
+                dict(D=256, P=64, lengths=[2, 65, 3]),
+                dict(D=256, P=128, lengths=[2000], heads=(12, 2), layout="scatter"),
+                dict(D=128, P=64, lengths=[64, 1, 129], heads=(8, 8)),
+            ):
+                try:
+                    checked = run_case(mock=True, **case)
+                except Exception:
+                    say(
+                        f"S0 self-check {case} EXCEPTION {traceback.format_exc()[-300:]}"
+                    )
+                    continue
+                say(
+                    f"S0 self-check {case} max_diff={checked['max_diff']:.3g} "
+                    f"out_sum={checked['out_sum']:.4g} (max_diff must be ~0)"
+                )
+        except Exception:
             say(
-                f"S0 self-check {case} max_diff={checked['max_diff']:.3g} "
-                f"out_sum={checked['out_sum']:.4g} (max_diff must be ~0)"
+                "SECTION FAILED # S0: self-check of the probe's own reference against a plain-torch stand-in.",
+                traceback.format_exc()[-800:],
             )
-    except Exception:
-        say(
-            "SECTION FAILED # S0: self-check of the probe's own reference against a plain-torch stand-in.",
-            traceback.format_exc()[-800:],
-        )
 
-    try:
-        # S1: main sweep.
-        for D in (64, 128, 192, 224, 256):
-            for P in (64, 128):
+    groups = (
+        GROUPS
+        if task.startswith("s2")
+        else [tuple(int(x) for x in task[3:].split(","))]
+    )
+    if task.startswith("s1:"):
+        try:
+            # S1: main sweep.
+            for D, P in groups:
                 for S in lengths_by_s:
                     for batch in (1, 4):
                         lengths = (
@@ -295,84 +333,90 @@ def main() -> None:
                         )
                         for layout in ("contig", "scatter"):
                             guarded("S1", D=D, P=P, lengths=lengths, layout=layout)
-    except Exception:
-        say("SECTION FAILED # S1: main sweep.", traceback.format_exc()[-800:])
+        except Exception:
+            say("SECTION FAILED # S1: main sweep.", traceback.format_exc()[-800:])
 
-    try:
-        # S2: number of blocks in the KV cache (the real pool is far larger than the minimal repro).
-        for S in (2, 65, 300):
-            for blocks in (1 if S == 2 else 2, 16, 256, 2048):
-                guarded(
-                    "S2",
-                    D=256,
-                    P=64,
-                    lengths=[S],
-                    layout="scatter",
-                    num_blocks=max(blocks, (S + 63) // 64 + 2),
+    if task == "s2":
+        try:
+            # S2: number of blocks in the KV cache (the real pool is far larger than the minimal repro).
+            for S in (2, 65, 300):
+                for blocks in (1 if S == 2 else 2, 16, 256, 2048):
+                    guarded(
+                        "S2",
+                        D=256,
+                        P=64,
+                        lengths=[S],
+                        layout="scatter",
+                        num_blocks=max(blocks, (S + 63) // 64 + 2),
+                    )
+        except Exception:
+            say(
+                "SECTION FAILED # S2: number of blocks in the KV cache (the real pool is far larger than the minimal repro).",
+                traceback.format_exc()[-800:],
+            )
+
+    if task == "s3":
+        try:
+            # S3: head configuration (TP2 gives 12/2 for Qwen3.6-27B).
+            for heads in ((24, 4), (12, 2), (8, 8), (8, 1), (2, 1), (1, 1)):
+                guarded("S3", D=256, P=64, lengths=[65], heads=heads)
+        except Exception:
+            say(
+                "SECTION FAILED # S3: head configuration (TP2 gives 12/2 for Qwen3.6-27B).",
+                traceback.format_exc()[-800:],
+            )
+
+    if task == "s4":
+        try:
+            # S4: num_splits.
+            for S in (2, 65, 2000):
+                for splits in (1, None):
+                    guarded("S4", D=256, P=64, lengths=[S], num_splits=splits)
+        except Exception:
+            say("SECTION FAILED # S4: num_splits.", traceback.format_exc()[-800:])
+
+    if task == "s5":
+        try:
+            # S5: dtype.
+            guarded("S5", D=256, P=64, lengths=[65], dtype=torch.float16)
+            guarded("S5", D=128, P=64, lengths=[65], dtype=torch.float16)
+        except Exception:
+            say("SECTION FAILED # S5: dtype.", traceback.format_exc()[-800:])
+
+    if task == "s6":
+        try:
+            # S6: stability, fixed seed then varying seeds.
+            for S in (2, 65, 2000):
+                fixed = [run_case(D=256, P=64, lengths=[S]) for _ in range(20)]
+                say(
+                    f"S6 fixed-seed D=256 P=64 S={S} repeats=20 distinct_outputs={len({r['digest'] for r in fixed})} "
+                    f"broken={sum(r['max_diff'] > TOL for r in fixed)} all_zero={sum(r['zero_rows'] == r['rows'] for r in fixed)} "
+                    f"out_sum_min={min(r['out_sum'] for r in fixed):.4g} out_sum_max={max(r['out_sum'] for r in fixed):.4g}",
                 )
-    except Exception:
-        say(
-            "SECTION FAILED # S2: number of blocks in the KV cache (the real pool is far larger than the minimal repro).",
-            traceback.format_exc()[-800:],
-        )
-
-    try:
-        # S3: head configuration (TP2 gives 12/2 for Qwen3.6-27B).
-        for heads in ((24, 4), (12, 2), (8, 8), (8, 1), (2, 1), (1, 1)):
-            guarded("S3", D=256, P=64, lengths=[65], heads=heads)
-    except Exception:
-        say(
-            "SECTION FAILED # S3: head configuration (TP2 gives 12/2 for Qwen3.6-27B).",
-            traceback.format_exc()[-800:],
-        )
-
-    try:
-        # S4: num_splits.
-        for S in (2, 65, 2000):
-            for splits in (1, None):
-                guarded("S4", D=256, P=64, lengths=[S], num_splits=splits)
-    except Exception:
-        say("SECTION FAILED # S4: num_splits.", traceback.format_exc()[-800:])
-
-    try:
-        # S5: dtype.
-        guarded("S5", D=256, P=64, lengths=[65], dtype=torch.float16)
-        guarded("S5", D=128, P=64, lengths=[65], dtype=torch.float16)
-    except Exception:
-        say("SECTION FAILED # S5: dtype.", traceback.format_exc()[-800:])
-
-    try:
-        # S6: stability, fixed seed then varying seeds.
-        for S in (2, 65, 2000):
-            fixed = [run_case(D=256, P=64, lengths=[S]) for _ in range(20)]
-            say(
-                f"S6 fixed-seed D=256 P=64 S={S} repeats=20 distinct_outputs={len({r['digest'] for r in fixed})} "
-                f"broken={sum(r['max_diff'] > TOL for r in fixed)} all_zero={sum(r['zero_rows'] == r['rows'] for r in fixed)} "
-                f"out_sum_min={min(r['out_sum'] for r in fixed):.4g} out_sum_max={max(r['out_sum'] for r in fixed):.4g}",
-            )
-            varied = [
-                run_case(D=256, P=64, lengths=[S], seed=100 + i) for i in range(20)
-            ]
-            say(
-                f"S6 varied-seed D=256 P=64 S={S} repeats=20 broken={sum(r['max_diff'] > TOL for r in varied)} "
-                f"all_zero={sum(r['zero_rows'] == r['rows'] for r in varied)} "
-                f"out_sum_min={min(r['out_sum'] for r in varied):.4g} out_sum_max={max(r['out_sum'] for r in varied):.4g}",
-            )
-            for D in (64, 128):
                 varied = [
-                    run_case(D=D, P=64, lengths=[S], seed=100 + i) for i in range(20)
+                    run_case(D=256, P=64, lengths=[S], seed=100 + i) for i in range(20)
                 ]
                 say(
-                    f"S6 varied-seed D={D} P=64 S={S} repeats=20 broken={sum(r['max_diff'] > TOL for r in varied)} "
-                    f"max_diff_max={max(r['max_diff'] for r in varied):.4g}",
+                    f"S6 varied-seed D=256 P=64 S={S} repeats=20 broken={sum(r['max_diff'] > TOL for r in varied)} "
+                    f"all_zero={sum(r['zero_rows'] == r['rows'] for r in varied)} "
+                    f"out_sum_min={min(r['out_sum'] for r in varied):.4g} out_sum_max={max(r['out_sum'] for r in varied):.4g}",
                 )
-    except Exception:
-        say(
-            "SECTION FAILED # S6: stability, fixed seed then varying seeds.",
-            traceback.format_exc()[-800:],
-        )
+                for D in (64, 128):
+                    varied = [
+                        run_case(D=D, P=64, lengths=[S], seed=100 + i)
+                        for i in range(20)
+                    ]
+                    say(
+                        f"S6 varied-seed D={D} P=64 S={S} repeats=20 broken={sum(r['max_diff'] > TOL for r in varied)} "
+                        f"max_diff_max={max(r['max_diff'] for r in varied):.4g}",
+                    )
+        except Exception:
+            say(
+                "SECTION FAILED # S6: stability, fixed seed then varying seeds.",
+                traceback.format_exc()[-800:],
+            )
 
-    if not MOCK:
+    if not MOCK and task == "s7":
         try:
             # S7: FlagSVT's minimal case verbatim in shape.
             torch.manual_seed(0)
@@ -407,8 +451,6 @@ def main() -> None:
                 "SECTION FAILED # S7: FlagSVT's minimal case verbatim in shape.",
                 traceback.format_exc()[-800:],
             )
-
-    say("done")
 
 
 if __name__ == "__main__":
