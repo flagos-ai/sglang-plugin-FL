@@ -1,506 +1,193 @@
-# Copyright (c) 2026 BAAI. All rights reserved.
+# Copyright 2026 FlagOS Contributors
+# SPDX-License-Identifier: Apache-2.0
+"""Static and executable contracts for the Ascend two-wheel image recipe.
 
-"""Static and executable contracts for the Ascend 0.5.18 image recipe."""
+The CI image is the operations Runtime plus exactly the two application
+wheels; every assertion here pins a decision a reviewer cannot see from the
+diff alone: the containerfile stays assembly-only, the resolver cannot
+replace a Runtime distribution, the wheel acceptance covers the ascend
+payload, and the job-time verifier asserts plugin-owned facts only.
+"""
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import importlib.util
-import re
-import sys
 from pathlib import Path
-from types import SimpleNamespace
+import re
 
-import pytest
 import yaml
 
-
 _ROOT = Path(__file__).parents[2]
-_DOCKERFILE = _ROOT / "docker" / "ascend" / "empty-0.5.18.containerfile"
-_DOCKERIGNORE = Path(f"{_DOCKERFILE}.dockerignore")
-_CANN921_DOCKERFILE = _DOCKERFILE.with_name("cann921-0.5.18.containerfile")
+_CONTAINERFILE = _ROOT / "docker" / "ascend" / "runtime-0.5.18.containerfile"
+_DOCKERIGNORE = Path(f"{_CONTAINERFILE}.dockerignore")
+_BUILD_SCRIPT = _ROOT / "docker" / "ascend" / "build_two_wheel.sh"
+_WHEEL_CHECK = _ROOT / "docker" / "ascend" / "scripts" / "check_plugin_wheel.py"
+_SETUP = _ROOT / ".github" / "scripts" / "ascend" / "setup.sh"
+_VERIFIER = _ROOT / ".github" / "scripts" / "ascend" / "verify_environment.py"
 _ASCEND_CONFIG = _ROOT / ".github" / "configs" / "ascend.yml"
-_ASCEND_CHECK = _ROOT / ".github" / "scripts" / "ascend" / "check.sh"
-_PLATFORM_REGISTRY = _ROOT / ".github" / "configs" / "platforms.yml"
-_ASCEND_TEST_CONFIG = _ROOT / "tests" / "platforms" / "ascend.yaml"
-_PLATFORM_UNIT_TESTS = _ROOT / "tests" / "unit_tests" / "platform"
-_FUNCTIONAL_WORKFLOW = _ROOT / ".github" / "workflows" / "_functional_test.yml"
-_COMPAT_PROBE_PATH = _ROOT / "examples" / "ascend_compat_probe.py"
-_VERIFIER_PATH = _ROOT / ".github" / "scripts" / "ascend" / "verify_environment.py"
-_SPEC = importlib.util.spec_from_file_location(
-    "ascend_verify_environment", _VERIFIER_PATH
+_PLATFORM_CONFIG = _ROOT / "tests" / "platforms" / "ascend.yaml"
+_PYPROJECT = _ROOT / "pyproject.toml"
+_RUNTIME_TAG = (
+    "harbor.baai.ac.cn/flagos-runtime/flagos-runtime-ascend-cann9.2.1-910c:2.3.0"
 )
-assert _SPEC is not None and _SPEC.loader is not None
-_VERIFIER = importlib.util.module_from_spec(_SPEC)
-sys.modules[_SPEC.name] = _VERIFIER
-_SPEC.loader.exec_module(_VERIFIER)
 
 
-def test_vendor_runtime_versions_match_the_real_empty_image() -> None:
-    assert _VERIFIER.EXPECTED_RUNTIME_DISTRIBUTIONS["torch"] == "2.8.0+cpu"
-    assert _VERIFIER.EXPECTED_RUNTIME_DISTRIBUTIONS["triton-ascend"] == "3.2.1"
+def test_containerfile_is_assembly_only() -> None:
+    containerfile = _CONTAINERFILE.read_text(encoding="utf-8")
 
-    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
-    assert "'torch==2.8.0+cpu'" in dockerfile
-    assert "'triton-ascend==3.2.1'" in dockerfile
-    assert "'torch':'2.8.0+cpu'" in dockerfile
-    assert "'triton-ascend':'3.2.1'" in dockerfile
-
-
-def test_source_archive_versions_are_guarded() -> None:
-    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
-
-    assert "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SGLANG=${SGLANG_VERSION}" in dockerfile
-    assert "SETUPTOOLS_SCM_PRETEND_VERSION=${SGLANG_VERSION}" not in dockerfile
-    assert "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_FLAG_GEMS" not in dockerfile
-    assert "old='version = \\\"5.3.0rc2\\\"'" in dockerfile
-    assert "expected one FlagGems version anchor" in dockerfile
-    assert "actual=m.version('sglang')" in dockerfile
-    assert "actual != '${SGLANG_VERSION}'" in dockerfile
-    assert "actual=m.version('flag-gems')" in dockerfile
-    assert "actual != '${FLAGGEMS_VERSION}'" in dockerfile
-    assert _VERIFIER.EXPECTED_RUNTIME_DISTRIBUTIONS["sglang"] == "0.5.18"
-    assert _VERIFIER.EXPECTED_RUNTIME_DISTRIBUTIONS["flag-gems"] == "5.3.0"
-
-
-def test_image_contract_checks_survive_python_optimized_mode() -> None:
-    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
-
-    assert "python3 -c" in dockerfile
-    assert "assert " not in dockerfile
-    assert "sys.exit(" in dockerfile
+    # The Runtime tag is a moving tag owned by the runtime team; the build
+    # script records the resolved digest.
+    assert f"ARG BASE_IMAGE={_RUNTIME_TAG}" in containerfile
+    # One resolver install of the two application wheels, with the Runtime's
+    # own freeze as the only constraints input. No version constraint is
+    # written in the containerfile; dependency bounds live in wheel metadata.
+    assert "uv pip install" in containerfile
+    assert "sglang-0.5.18-py3-none-any.whl[srt_empty,runtime_common]" in containerfile
+    assert "sglang_fl-0.1.0-py3-none-any.whl[ascend]" in containerfile
+    assert "runtime-constraints.txt" in containerfile
+    assert re.search(r":=.*==|==\d", containerfile) is None
+    # Nothing the Runtime owns may be replaced, moved or re-exposed.
+    assert "/opt/flagtree" not in containerfile
+    assert "uninstall" not in containerfile
+    assert "pip install --force-reinstall" not in containerfile
+    assert "ENV " not in containerfile
+    assert "WORKDIR" not in containerfile
+    # The plugin is never installed from the checkout.
+    assert "COPY pyproject.toml" not in containerfile
+    assert "COPY sglang_fl" not in containerfile
+    # No platform-artifact wheel (sgl-kernel / FlagGems) is installed here;
+    # the sgl_kernel_npu gap is carried by the plugin's placeholder+fallbacks.
+    for instruction in containerfile.splitlines():
+        if re.match(r"\s*(RUN|COPY|ADD)\b", instruction):
+            assert "sgl-kernel" not in instruction
+            assert "flag_gems" not in instruction
 
 
-def test_official_kernel_release_is_pinned_without_source_patching() -> None:
-    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
+def test_containerfile_dockerignore_ships_only_the_staging_contract() -> None:
     dockerignore = _DOCKERIGNORE.read_text(encoding="utf-8")
 
-    assert "ARG SGL_KERNEL_NPU_RELEASE=2026.8.10" in dockerfile
-    assert (
-        "ARG SGL_KERNEL_NPU_COMMIT=e05fc90e85041d6080431c8ce543ab112c56e16d"
-        in dockerfile
+    assert "**" in dockerignore
+    assert "runtime-0.5.18.containerfile" in dockerignore
+    assert "artifacts/" in dockerignore
+
+
+def test_build_script_pins_its_inputs() -> None:
+    build = _BUILD_SCRIPT.read_text(encoding="utf-8")
+
+    # The SGLang input wheel is built from (or verified against) the pinned
+    # upstream commit; the builder is digest-pinned so two builds of one
+    # commit produce identical wheels.
+    assert "SGLANG_COMMIT=" in build
+    assert "python:3.12-slim@sha256:" in build
+    assert "SOURCE_DATE_EPOCH" in build
+    assert "staging-record.txt" in build
+    # The Runtime's constraints are read from the exact base the build uses.
+    assert "pip freeze --all" in build
+    assert "imagetools inspect" in build
+
+
+def test_wheel_check_covers_the_ascend_contract() -> None:
+    check = _WHEEL_CHECK.read_text(encoding="utf-8")
+
+    assert 'EXPECTED_EXTRA = ("sglang==0.5.18", "pyarrow<26")' in check
+    assert '"numpy", "triton"' in check
+    assert "sglang_fl:activate_platform" in check
+    assert "sglang_fl:load_plugin" in check
+    # The gap-filling payload the wheel must ship.
+    for payload in (
+        "vendor/ascend/import_guard.py",
+        "vendor/ascend/sgl_kernel_npu_fallbacks.py",
+        "vendor/ascend/early.py",
+        "config/ascend.yaml",
+        "config/ascend-cann921.yaml",
+    ):
+        assert payload in check
+
+
+def test_pyproject_declares_the_ascend_extra() -> None:
+    pyproject = _PYPROJECT.read_text(encoding="utf-8")
+
+    assert 'ascend = ["sglang==0.5.18", "pyarrow<26"]' in pyproject
+    # pyarrow 26 imports only on NumPy 2 without declaring that requirement;
+    # the Runtime provides NumPy 1.x. The bound lives in wheel metadata, not
+    # in the containerfile.
+    assert "pyarrow<26" not in _CONTAINERFILE.read_text(encoding="utf-8")
+
+
+def test_setup_installs_only_the_pinned_test_runner() -> None:
+    setup = _SETUP.read_text(encoding="utf-8")
+
+    assert "test-requirements.txt" in setup
+    assert "SGLANG_FL_TEST_SOURCE=wheel" in setup
+    assert "verify_environment.py" in setup
+    # The checkout is never installed over the image's wheel.
+    assert "pip install -e" not in setup
+    assert "--no-deps --no-build-isolation -e" not in setup
+
+
+def test_verifier_asserts_plugin_owned_facts_only() -> None:
+    verifier = _VERIFIER.read_text(encoding="utf-8")
+
+    assert 'EXPECTED_WHEELS = {"sglang": "0.5.18", "sglang-fl": "0.1.0"}' in verifier
+    # Runtime-owned versions are printed, never pinned as expectations.
+    assert "EXPECTED_RUNTIME_DISTRIBUTIONS" not in verifier
+    assert "EXPECTED_FLAGTREE_VERSION" not in verifier
+    assert "torchair" not in verifier
+    assert "runtime CANN=" in verifier
+    # The placeholder contract is asserted together with the op fallback.
+    assert "npu::causal_conv1d" in verifier
+    assert "fused_rope_qk_mqa" in verifier
+
+
+def test_ci_config_keeps_the_validated_container_contract() -> None:
+    config = yaml.safe_load(_ASCEND_CONFIG.read_text(encoding="utf-8"))
+    options = _ASCEND_CONFIG.read_text(encoding="utf-8").split(
+        "container_options:", maxsplit=1
+    )[1]
+
+    assert config["ci_image"].startswith(
+        "harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:"
     )
-    assert "ARG SGL_KERNEL_NPU_VERSION=2026.6.1" in dockerfile
-    assert (
-        "ARG SGL_KERNEL_NPU_SHA256="
-        "fa4ad5afa6bb748d683da5ee8a9cc702c13d0398d3db53651b4bb79e3f8d0e95" in dockerfile
-    )
-    assert (
-        "sgl-kernel-npu-2026.8.10-torch2.8.0-py311-cann8.5.0-a3-aarch64.zip"
-        in dockerfile
-    )
-    assert "deep_ep-${DEEP_EP_VERSION}-cp311-cp311-linux_aarch64.whl" in dockerfile
-    assert "sgl_kernel_npu-${SGL_KERNEL_NPU_VERSION}" in dockerfile
-    assert "torch_memory_saver-0.0.8" in dockerfile
-    assert "ln -sf deep_ep/deep_ep_cpp*.so" in dockerfile
-    assert "patch_sgl_kernel_npu" not in dockerfile
-    assert "patch_sgl_kernel_npu" not in dockerignore
-    assert "not hasattr(tl, 'insert_slice')" in dockerfile
-    assert "sys.exit('triton-ascend insert_slice API mismatch')" in dockerfile
-
-
-def test_source_trees_are_recreated_instead_of_overlaid() -> None:
-    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
-
-    assert "rm -rf /opt/sglang-0.5.18" in dockerfile
-    assert "rm -rf /opt/FlagGems" in dockerfile
-    assert "rm -rf /opt/sglang-plugin-fl" in dockerfile
-
-
-def test_plugin_source_revision_is_required_and_labeled() -> None:
-    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
-
-    assert "ARG SGLANG_FL_REVISION" in dockerfile
-    assert 'test -n "${SGLANG_FL_REVISION}"' in dockerfile
-    assert "/opt/sglang-plugin-fl/.flagos-source-commit" in dockerfile
-    assert "ai.flagos.sglang-plugin-fl.revision" in dockerfile
-    assert '--build-arg SGLANG_FL_REVISION="$(git rev-parse HEAD)"' in dockerfile
-
-
-def test_kernel_release_provenance_is_labeled() -> None:
-    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
-
-    assert _VERIFIER.EXPECTED_SOLVE_TRIL_SHA256 in dockerfile
-    assert "ai.flagos.sgl-kernel-npu.release" in dockerfile
-    assert "ai.flagos.sgl-kernel-npu.revision" in dockerfile
-    assert "ai.flagos.sgl-kernel-npu.version" in dockerfile
-    assert "ai.flagos.sgl-kernel-npu.archive.sha256" in dockerfile
-    assert "ai.flagos.sgl-kernel-npu.solve-tril.sha256" in dockerfile
-    assert "ai.flagos.deep-ep.version" in dockerfile
-
-
-def test_ci_uses_the_ascend_runtime_without_privileged_mode() -> None:
-    config = _ASCEND_CONFIG.read_text(encoding="utf-8")
-    options = config.split("container_options:", maxsplit=1)[1]
-
-    assert "--runtime=ascend" in options
-    assert "ASCEND_VISIBLE_DEVICES=0,1,2,3" in options
-    assert "ASCEND_RT_VISIBLE_DEVICES=0,1,2,3" in options
-    assert "GLOO_SOCKET_IFNAME=lo" in options
-    assert "HCCL_HOST_SOCKET_PORT_RANGE=auto" in options
-    assert "HCCL_NPU_SOCKET_PORT_RANGE=auto" in options
-    assert "HCCL_IF_BASE_PORT=" not in options
+    assert "flagcicd-910c" in config["runner_labels"]
+    assert "/data/models/Qwen" in str(config["container_volumes"])
+    for required in (
+        "--runtime=ascend",
+        "ASCEND_VISIBLE_DEVICES=0,1,2,3",
+        "GLOO_SOCKET_IFNAME=lo",
+        "HCCL_HOST_SOCKET_PORT_RANGE=auto",
+    ):
+        assert required in options
     assert "--privileged" not in options
-    assert "--device /dev/" not in options
-
-
-def test_pinned_ascend_ci_and_image_builds_expect_their_cann_release() -> None:
-    config = yaml.safe_load(_ASCEND_CONFIG.read_text(encoding="utf-8"))
-    assert "-e SGLANG_FL_ASCEND_EXPECTED_CANN=9.2.1" in config["container_options"]
-    for path, release in ((_DOCKERFILE, "8.5.0"), (_CANN921_DOCKERFILE, "9.2.1")):
-        dockerfile = path.read_text(encoding="utf-8")
-        assert dockerfile.count(f"--expected-cann-version {release}") == 2
-
-
-def test_verifier_reports_cann_without_a_required_release(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
-) -> None:
-    monkeypatch.setenv("ASCEND_TOOLKIT_HOME", str(tmp_path))
-    (tmp_path / "version.cfg").write_text("version=9.3.0\n", encoding="utf-8")
-
-    _VERIFIER._check_cann_version(None)
-
-    assert "CANN=9.3.0" in capsys.readouterr().out
-
-
-def test_verifier_checks_the_requested_cann_release(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("ASCEND_TOOLKIT_HOME", str(tmp_path))
-    config = tmp_path / "version.cfg"
-    config.write_text("version=9.2.1.B100\n", encoding="utf-8")
-    _VERIFIER._check_cann_version("9.2.1")
-
-    config.write_text("version=9.2.10\n", encoding="utf-8")
-    with pytest.raises(RuntimeError, match=r"CANN must be 9\.2\.1, found 9\.2\.10"):
-        _VERIFIER._check_cann_version("9.2.1")
-
-
-@pytest.mark.parametrize(
-    ("ci_expectation", "explicit", "expected"),
-    [(None, None, None), ("9.2.1", None, "9.2.1"), ("9.2.1", "8.5.0", "8.5.0")],
-)
-def test_verifier_cli_reads_the_cann_release_from_its_caller(
-    monkeypatch: pytest.MonkeyPatch,
-    ci_expectation: str | None,
-    explicit: str | None,
-    expected: str | None,
-) -> None:
-    if ci_expectation is None:
-        monkeypatch.delenv("SGLANG_FL_ASCEND_EXPECTED_CANN", raising=False)
-    else:
-        monkeypatch.setenv("SGLANG_FL_ASCEND_EXPECTED_CANN", ci_expectation)
-    argv = [str(_VERIFIER_PATH)]
-    if explicit is not None:
-        argv.extend(("--expected-cann-version", explicit))
-    monkeypatch.setattr(sys, "argv", argv)
-    calls = []
-    monkeypatch.setattr(_VERIFIER, "verify", lambda **kwargs: calls.append(kwargs))
-
-    assert _VERIFIER.main() == 0
-    assert calls[0]["expected_cann_version"] == expected
-
-
-def _stub_verifier_runtime(monkeypatch: pytest.MonkeyPatch, *, cann921: bool):
-    events = []
-    monkeypatch.setenv("SGLANG_FL_ASCEND_CANN921", "1" if cann921 else "0")
-    monkeypatch.setattr(
-        _VERIFIER,
-        "sys",
-        SimpleNamespace(version_info=(3, 12 if cann921 else 11), version="test"),
-    )
-    monkeypatch.setattr(
-        _VERIFIER,
-        "_require_distribution",
-        lambda name, expected: events.append(("distribution", name, expected)),
-    )
-    for name in (
-        "_require_source_markers",
-        "_check_cann_version",
-        "_require_flagtree",
-        "_require_npu_kernel_surface",
-        "_require_solve_tril_source",
-        "_require_deep_ep_layout",
-        "_require_sglang_import",
-        "_require_plugin",
-    ):
-        monkeypatch.setattr(_VERIFIER, name, lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        _VERIFIER, "_require_flagcx_layout", lambda **kwargs: Path("libflagcx.so")
-    )
-    monkeypatch.setattr(
-        _VERIFIER,
-        "_require_npu",
-        lambda *args, **kwargs: events.append(("npu",)),
-    )
-    return events
-
-
-@pytest.mark.parametrize("cann921", (False, True))
-@pytest.mark.parametrize("require_ci", (False, True))
-@pytest.mark.parametrize("require_npu", (False, True))
-def test_benchmark_imports_are_scoped_to_the_new_ci_image_and_device_readiness(
-    monkeypatch: pytest.MonkeyPatch,
-    cann921: bool,
-    require_ci: bool,
-    require_npu: bool,
-) -> None:
-    events = _stub_verifier_runtime(monkeypatch, cann921=cann921)
-    monkeypatch.setattr(
-        _VERIFIER, "_require_import", lambda name: events.append(("import", name))
-    )
-
-    _VERIFIER.verify(require_ci=require_ci, require_npu=require_npu)
-
-    for name, version in (
-        ("numpy", "1.26.4"),
-        ("pyarrow", "25.0.1"),
-        ("datasets", "5.2.0"),
-    ):
-        assert (("distribution", name, version) in events) is cann921
-        assert (("import", name) in events) is (cann921 and require_ci)
-    benchmark_import = ("import", "sglang.benchmark.serving")
-    assert (benchmark_import in events) is (cann921 and require_ci and require_npu)
-    if benchmark_import in events:
-        assert events.index(("npu",)) < events.index(benchmark_import)
-
-
-def test_ci_verifier_rejects_pyarrow_numpy_abi_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    events = _stub_verifier_runtime(monkeypatch, cann921=True)
-
-    def import_module(name: str):
-        if name == "pyarrow":
-            raise ImportError("pyarrow requires NumPy 2.0 or newer, found 1.26.4")
-        return SimpleNamespace()
-
-    monkeypatch.setattr(_VERIFIER.importlib, "import_module", import_module)
-
-    with pytest.raises(
-        RuntimeError, match="failed to import pyarrow: ImportError"
-    ) as exc:
-        _VERIFIER.verify(require_ci=True, require_npu=True)
-
-    assert isinstance(exc.value.__cause__, ImportError)
-    assert ("npu",) not in events
-
-
-def test_ci_mounts_host_models_and_driver_read_only() -> None:
-    config = yaml.safe_load(_ASCEND_CONFIG.read_text(encoding="utf-8"))
-    volumes = config["container_volumes"]
-
-    assert "/mnt/airs-business/cicd/models:/data/models/Qwen:ro" in volumes
-    assert "/usr/local/Ascend/driver:/usr/local/Ascend/driver:ro" in volumes
-    assert "/usr/local/Ascend/firmware:/usr/local/Ascend/firmware:ro" in volumes
-    assert "/etc/ascend_install.info:/etc/ascend_install.info:ro" in volumes
-    assert "/var/queue_schedule:/var/queue_schedule" in volumes
-    assert "/var/queue_schedule:/var/queue_schedule:ro" not in volumes
-
-
-def test_ascend_check_ignores_empty_npu_smi_stub() -> None:
-    script = _ASCEND_CHECK.read_text(encoding="utf-8")
-
-    assert '[ -x "$path_hit" ] && [ -s "$path_hit" ]' in script
-    assert 'if [ -x "$cand" ] && [ -s "$cand" ]; then' in script
-    assert script.index("    /usr/local/bin/npu-smi \\") < script.index(
-        "    /usr/local/sbin/npu-smi \\"
-    )
-
-
-def test_ascend_unit_scope_excludes_musa_autopatch_tests() -> None:
-    config = yaml.safe_load(_ASCEND_TEST_CONFIG.read_text(encoding="utf-8"))
-    excluded = set(config["910c"]["tests"]["unit"]["exclude"])
-    musa_tests = {
-        path.relative_to(_ROOT / "tests" / "unit_tests").as_posix()
-        for path in _PLATFORM_UNIT_TESTS.glob("test_musa_*.py")
-    }
-
-    assert musa_tests
-    assert musa_tests <= excluded
-
-
-def test_enabled_ascend_ci_requires_an_immutable_image_digest() -> None:
-    registry = yaml.safe_load(_PLATFORM_REGISTRY.read_text(encoding="utf-8"))
-    config = yaml.safe_load(_ASCEND_CONFIG.read_text(encoding="utf-8"))
-    enabled = registry["platforms"]["ascend"]["enabled"]
-    image = config["ci_image"]
-
-    digest_reference = re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", image)
-    assert not enabled or digest_reference is not None, (
-        "Ascend CI may be enabled only after ci_image is pinned to its "
-        "registry-reported sha256 digest"
-    )
-    if enabled:
-        assert image.startswith("harbor.baai.ac.cn/plugin/sglang-plugin-fl@sha256:")
-
-
-def test_functional_matrix_runs_the_real_ascend_compatibility_probe() -> None:
-    workflow = _FUNCTIONAL_WORKFLOW.read_text(encoding="utf-8")
-    probe = _COMPAT_PROBE_PATH.read_text(encoding="utf-8")
-
-    assert "- name: Run Ascend compatibility probe" in workflow
-    assert "if: inputs.platform == 'ascend'" in workflow
-    assert "run: python3 examples/ascend_compat_probe.py" in workflow
-    assert "MTP_SOURCE_SHAPE = (1, 1, 2, 2, 128, 128)" in probe
-    assert "LOGSUMEXP_SHAPE = (2, 16384)" in probe
-    assert "kernel_module.move_intermediate_cache(" in probe
-    assert "row_logsumexp_topk(" in probe
-
-
-class _Distribution:
-    def __init__(self, root: Path):
-        self.root = root
-        self.files = [Path("sgl_kernel_npu-2026.6.1.dist-info/RECORD")]
-
-    def locate_file(self, relative_path: Path) -> Path:
-        return self.root / relative_path
-
-
-def _solve_tril_source(*, old: int, new: int) -> str:
-    lines = ["import triton.language.extra.cann.extension as al"]
-    lines.extend(f"new_{index} = al.insert_slice(" for index in range(new))
-    lines.extend(f"old_{index} = tl.insert_slice(" for index in range(old))
-    return "\n".join(lines) + "\n"
-
-
-def _write_kernel_installation(tmp_path: Path, *, old: int, new: int) -> Path:
-    path = tmp_path / _VERIFIER.SOLVE_TRIL_RELATIVE_PATH
-    path.parent.mkdir(parents=True)
-    content = _solve_tril_source(old=old, new=new).encode()
-    path.write_bytes(content)
-    record = tmp_path / "sgl_kernel_npu-2026.6.1.dist-info" / "RECORD"
-    record.parent.mkdir()
-    digest = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=")
-    record.write_text(
-        f"{_VERIFIER.SOLVE_TRIL_RELATIVE_PATH.as_posix()},"
-        f"sha256={digest.decode('ascii')},{len(content)}\n",
-        encoding="utf-8",
-    )
-    return path
-
-
-def test_verifier_accepts_the_official_kernel_source(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    path = _write_kernel_installation(tmp_path, old=0, new=15)
-    monkeypatch.setattr(
-        _VERIFIER,
-        "EXPECTED_SOLVE_TRIL_SHA256",
-        hashlib.sha256(path.read_bytes()).hexdigest(),
-    )
-    monkeypatch.setattr(
-        _VERIFIER.metadata,
-        "distribution",
-        lambda name: _Distribution(tmp_path),
-    )
-
-    _VERIFIER._require_solve_tril_source()
-
-
-def test_verifier_rejects_unexpected_kernel_source_digest(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _write_kernel_installation(tmp_path, old=0, new=15)
-    monkeypatch.setattr(
-        _VERIFIER.metadata,
-        "distribution",
-        lambda name: _Distribution(tmp_path),
-    )
-
-    with pytest.raises(RuntimeError, match="digest mismatch"):
-        _VERIFIER._require_solve_tril_source()
-
-
-def test_verifier_rejects_stale_record(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    path = _write_kernel_installation(tmp_path, old=0, new=15)
-    monkeypatch.setattr(
-        _VERIFIER,
-        "EXPECTED_SOLVE_TRIL_SHA256",
-        hashlib.sha256(path.read_bytes()).hexdigest(),
-    )
-    record = tmp_path / "sgl_kernel_npu-2026.6.1.dist-info" / "RECORD"
-    record.write_text(
-        f"{_VERIFIER.SOLVE_TRIL_RELATIVE_PATH.as_posix()},sha256=stale,1\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        _VERIFIER.metadata,
-        "distribution",
-        lambda name: _Distribution(tmp_path),
-    )
-
-    with pytest.raises(RuntimeError, match="RECORD does not describe"):
-        _VERIFIER._require_solve_tril_source()
-
-
-@pytest.mark.parametrize(("old", "new"), [(1, 15), (0, 14), (0, 16)])
-def test_verifier_rejects_any_other_kernel_call_counts(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    old: int,
-    new: int,
-) -> None:
-    _write_kernel_installation(tmp_path, old=old, new=new)
-    monkeypatch.setattr(
-        _VERIFIER.metadata,
-        "distribution",
-        lambda name: _Distribution(tmp_path),
-    )
-
-    with pytest.raises(RuntimeError, match="source mismatch"):
-        _VERIFIER._require_solve_tril_source()
-
-
-class _Schema:
-    def __init__(self, value: str):
-        self.value = value
-
-    def __str__(self) -> str:
-        return self.value
-
-
-def _torch_with_causal_conv1d_schema(schema: str) -> SimpleNamespace:
-    default = SimpleNamespace(_schema=_Schema(schema))
-    causal_conv1d = SimpleNamespace(default=default)
-    return SimpleNamespace(
-        ops=SimpleNamespace(npu=SimpleNamespace(causal_conv1d=causal_conv1d))
-    )
-
-
-def test_verifier_accepts_the_sglang_0_5_18_causal_conv1d_abi() -> None:
-    torch = _torch_with_causal_conv1d_schema(_VERIFIER.EXPECTED_CAUSAL_CONV1D_SCHEMA)
-
-    _VERIFIER._require_causal_conv1d_abi(torch)
-
-
-def test_verifier_rejects_the_legacy_causal_conv1d_abi() -> None:
-    legacy = (
-        "npu::causal_conv1d(Tensor x, Tensor weight, Tensor conv_states, "
-        "Tensor query_start_loc, Tensor cache_indices, Tensor has_initial_state, "
-        "Tensor? bias=None, bool activation_mode=False, int pad_slot_id=-1) -> Tensor"
-    )
-    torch = _torch_with_causal_conv1d_schema(legacy)
-
-    with pytest.raises(RuntimeError, match="ABI mismatch"):
-        _VERIFIER._require_causal_conv1d_abi(torch)
-
-
-def test_verifier_rejects_a_missing_causal_conv1d_op() -> None:
-    torch = SimpleNamespace(ops=SimpleNamespace(npu=SimpleNamespace()))
-
-    with pytest.raises(RuntimeError, match="is not registered"):
-        _VERIFIER._require_causal_conv1d_abi(torch)
-
-
-def test_verifier_blocks_on_the_real_packed_vision_padding_probe() -> None:
-    source = _VERIFIER_PATH.read_text(encoding="utf-8")
-
-    assert "_sglang_fl_unaligned_head_fallback" in source
-    assert "VisionAscendAttention" in source
-    assert "sequence_ends = (3, 8)" in source
-    assert "max_error > 0.02 or mean_error > 0.002" in source
-    assert "_require_vision_padding_numerics(torch)" in source
+    # The old image's expected-CANN knob died with the baked verifier.
+    assert "SGLANG_FL_ASCEND_EXPECTED_CANN" not in options
+
+
+def test_platform_matrix_stays_nograph_for_the_two_wheel_image() -> None:
+    platform = yaml.safe_load(_PLATFORM_CONFIG.read_text(encoding="utf-8"))
+    pr_cases = platform["910c"]["tests"]["e2e"]["pr"]
+
+    assert set(pr_cases) == {"inference", "serving"}
+    for group in pr_cases.values():
+        for model, cases in group.items():
+            assert all(case.endswith("_nograph") for case in cases), (model, cases)
+
+
+def test_gdn_workarounds_stay_gated_on_the_affected_flagtree_versions() -> None:
+    runtime = (
+        _ROOT
+        / "sglang_fl"
+        / "dispatch"
+        / "backends"
+        / "vendor"
+        / "ascend"
+        / "runtime.py"
+    ).read_text(encoding="utf-8")
+
+    assert '"0.7.0+ascend3.5"' in runtime
+    assert '"0.7.1a1+ascend3.5"' in runtime
+
+
+def test_legacy_recipes_are_untouched() -> None:
+    # The CANN 8.5 and 9.2.1 source-build recipes remain for their own image
+    # lines; this PR only adds the two-wheel runtime recipe and retargets CI.
+    assert (_ROOT / "docker" / "ascend" / "empty-0.5.18.containerfile").exists()
+    assert (_ROOT / "docker" / "ascend" / "cann921-0.5.18.containerfile").exists()
