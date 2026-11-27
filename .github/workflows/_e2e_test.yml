@@ -117,6 +117,7 @@ jobs:
         # dispatch config flagos_blacklist (for example, ascend.yaml).
         env:
           TEST_DRIVER: ${{ inputs.test_driver }}
+        shell: bash
         run: |
           if [ "${{ inputs.platform }}" = "hygon" ]; then
             unset CUDA_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES
