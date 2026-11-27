@@ -52,6 +52,9 @@ class TestLoadPluginStepOrder:
             sglang_fl, "_setup_communicator_hooks", _record("communicator")
         )
         monkeypatch.setattr(
+            sglang_fl, "_apply_common_patches", _record("common_patches")
+        )
+        monkeypatch.setattr(
             sglang_fl, "_apply_vendor_patches", _record("vendor_patches")
         )
 
@@ -65,6 +68,7 @@ class TestLoadPluginStepOrder:
             "flaggems",
             "dispatch",
             "communicator",
+            "common_patches",
             "vendor_patches",
         ], f"vendor_patches must be last; got {call_order}"
 
@@ -91,6 +95,7 @@ class TestLoadPluginIdempotency:
         monkeypatch.setattr(
             sglang_fl, "_setup_communicator_hooks", lambda: None
         )
+        monkeypatch.setattr(sglang_fl, "_apply_common_patches", lambda: None)
         monkeypatch.setattr(
             sglang_fl, "_apply_vendor_patches", _count("vendor_patches")
         )
