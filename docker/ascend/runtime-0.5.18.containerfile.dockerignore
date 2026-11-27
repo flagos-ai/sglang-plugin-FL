@@ -1,0 +1,10 @@
+# The build context is assembled by build_two_wheel.sh outside the
+# repository: it carries only this containerfile and the staged artifacts
+# directory (two wheels + the Runtime's constraints), all as read-only bind
+# mounts inside the containerfile.
+**
+!runtime-0.5.18.containerfile
+!artifacts/
+!artifacts/**
+**/__pycache__/
+**/*.py[cod]

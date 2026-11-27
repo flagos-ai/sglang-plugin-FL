@@ -8,6 +8,19 @@ import os
 from importlib import metadata
 from pathlib import Path
 
+# FlagTree builds carrying the known CANN 9.2.1 defects the workarounds below
+# compensate for (FlagTree #1668 indirect-pointer load, FlagGems #7207/#6802
+# gelu/lift_fresh). The operations Runtime 2.3.0 ships 0.7.1a1+ascend3.5; the
+# workarounds stay active on it until the hardware matrix proves the defects
+# are gone, because both workarounds are no-ops when their trigger conditions
+# do not fire.
+_AFFECTED_FLAGTREE_VERSIONS = frozenset(
+    (
+        "0.7.0+ascend3.5",
+        "0.7.1a1+ascend3.5",
+    )
+)
+
 
 def uses_flagtree_cann921() -> bool:
     try:
@@ -16,7 +29,7 @@ def uses_flagtree_cann921() -> bool:
         flagtree = metadata.distribution("flagtree")
     except metadata.PackageNotFoundError:
         return False
-    if flagtree.version != "0.7.0+ascend3.5":
+    if flagtree.version not in _AFFECTED_FLAGTREE_VERSIONS:
         return False
 
     triton = importlib.util.find_spec("triton")

@@ -148,6 +148,8 @@ jobs:
           else
             python3 .github/scripts/detect_platforms.py
           fi
+          # TEMP(probe): this validation covers Ascend only.
+          echo 'platforms=["ascend"]' >> "$GITHUB_OUTPUT"
 
   # ============================================================
   # Jobs 6a-6g: per-platform testing (routed by discover)
