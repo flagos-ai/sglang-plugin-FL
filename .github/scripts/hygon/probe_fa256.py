@@ -19,6 +19,7 @@ import subprocess
 import sys
 import traceback
 
+import flash_attn
 import torch
 
 PREFIX = "[fa-probe]"
@@ -237,8 +238,6 @@ def guarded(tag, **kwargs):
 
 def main() -> None:
     env_info()
-    import flash_attn
-
     lengths_by_s = {
         1: [1],
         2: [2],
