@@ -315,11 +315,10 @@ def main() -> None:
                 traceback.format_exc()[-800:],
             )
 
-    groups = (
-        GROUPS
-        if task.startswith("s2")
-        else [tuple(int(x) for x in task[3:].split(","))]
-    )
+    if task.startswith("s1:"):
+        groups = [tuple(int(x) for x in task[3:].split(","))]
+    else:
+        groups = GROUPS
     if task.startswith("s1:"):
         try:
             # S1: main sweep.
